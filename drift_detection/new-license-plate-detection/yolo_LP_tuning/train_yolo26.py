@@ -14,7 +14,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--model",
-        default="yolo26n.pt",
+        default="yolo26x.pt",
         help="Path or name of the pretrained YOLO26 checkpoint.",
     )
     parser.add_argument(
@@ -75,8 +75,12 @@ def main() -> None:
         name=args.name,
         workers=args.workers,
         resume=args.resume,
+        cos_lr=True,
+        freeze=5,
     )
 
 
 if __name__ == "__main__":
     main()
+
+# python train_yolo26.py --data custom_dataset.yaml --device 0 --workers 4
