@@ -14,12 +14,12 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--model",
-        default="yolo_LP_tuning/yolo26x.pt",
+        default="yolo26n.pt",
         help="Path or name of the pretrained YOLO26 checkpoint.",
     )
     parser.add_argument(
         "--data",
-        required=True,
+        default="data/dataset_lp.yaml",
         help="Path to the dataset YAML file (Ultralytics format).",
     )
     parser.add_argument("--epochs", type=int, default=100, help="Number of epochs.")
@@ -32,7 +32,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--project",
-        default="yolo_LP_tuning/runs/train",
+        default="runs",
         help="Project directory for training outputs.",
     )
     parser.add_argument(
@@ -57,21 +57,26 @@ def parse_args() -> argparse.Namespace:
 def main() -> None:
     args = parse_args()
 
-    data_path = Path(args.data)
-    if not data_path.exists():
-        raise FileNotFoundError(
-            f"Dataset YAML not found: {data_path}. "
-            "Update --data to point to your dataset config."
-        )
+    ROOT = Path(__file__).resolve().parent
 
-    model = YOLO(args.model)
+    data_path = (ROOT / args.data).resolve()
+    if not data_path.exists():
+        raise FileNotFoundError(f"Dataset YAML not found: {data_path}")
+
+    model_path = (ROOT / args.model).resolve()
+    if not model_path.exists():
+        raise FileNotFoundError(f"Model checkpoint not found: {model_path}")
+
+    project_path = (ROOT / args.project).resolve()
+
+    model = YOLO(str(model_path))
     model.train(
         data=str(data_path),
         epochs=args.epochs,
         imgsz=args.imgsz,
         batch=args.batch,
         device=args.device,
-        project=args.project,
+        project=str(project_path),
         name=args.name,
         workers=args.workers,
         resume=args.resume,
@@ -83,4 +88,4 @@ def main() -> None:
 if __name__ == "__main__":
     main()
 
-# python train_yolo26.py --data custom_dataset.yaml --device 0 --workers 4
+# python train_yolo26_lp.py --device 0 --workers 4
