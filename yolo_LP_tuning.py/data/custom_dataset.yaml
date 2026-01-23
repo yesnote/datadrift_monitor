@@ -1,6 +1,0 @@
-path: D:\DataDrift\datasets\(Sample) 185.CCTV 기반 차량정보 및 교통정보 계측 데이터\01-1.정식개방데이터\dataset_lp
-train: images/train
-val: images/val
-
-names:
-  0: license_plate
