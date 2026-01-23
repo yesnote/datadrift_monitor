@@ -37,7 +37,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--name",
-        default="yolo26-custom",
+        default="yolo26-LP",
         help="Run name for training outputs.",
     )
     parser.add_argument(
