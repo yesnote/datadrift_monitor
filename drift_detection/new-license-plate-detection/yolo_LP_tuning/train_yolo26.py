@@ -14,7 +14,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--model",
-        default="yolo26x.pt",
+        default="yolo_LP_tuning/yolo26x.pt",
         help="Path or name of the pretrained YOLO26 checkpoint.",
     )
     parser.add_argument(
@@ -24,7 +24,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--epochs", type=int, default=100, help="Number of epochs.")
     parser.add_argument("--imgsz", type=int, default=640, help="Image size.")
-    parser.add_argument("--batch", type=int, default=16, help="Batch size.")
+    parser.add_argument("--batch", type=int, default=1, help="Batch size.")
     parser.add_argument(
         "--device",
         default="",
@@ -32,7 +32,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--project",
-        default="runs/train",
+        default="yolo_LP_tuning/runs/train",
         help="Project directory for training outputs.",
     )
     parser.add_argument(
