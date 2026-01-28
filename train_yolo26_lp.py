@@ -82,6 +82,7 @@ def main() -> None:
         resume=args.resume,
         cos_lr=True,
         freeze=5,
+        # verbose=False,
     )
 
 
