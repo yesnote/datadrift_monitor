@@ -77,7 +77,7 @@ def main():
 
             img = cv2.imread(str(img_path))
             img = cv2.resize(img, (args.imgsz, args.imgsz))
-            img = img[:, :, ::-1]
+            img = img[:, :, ::-1].copy()
             img = torch.from_numpy(img).permute(2, 0, 1).float() / 255.0
             img = img.unsqueeze(0).to(device)
 
