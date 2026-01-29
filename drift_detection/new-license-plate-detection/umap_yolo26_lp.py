@@ -1,3 +1,8 @@
+"""
+YOLO26n model's 22th layer feature visualization using UMAP.
+22th layer: the layer computing semantic feature right before detection header.
+"""
+
 from __future__ import annotations
 
 import argparse
