@@ -1,12 +1,11 @@
 """
-YOLO26n model's 22nd layer feature visualization using UMAP.
-22nd layer: semantic feature right before detection head.
+YOLO26n model's intermediate layer feature visualization using UMAP.
 
 - Load model from <root>/weights/best.pt
-- Extract layer-22 features
+- Extract features from specified layer (--layer)
 - Save:
-  - features + labels -> <root>/umap/umap_layer22.npz
-  - UMAP image       -> <root>/umap/umap_layer22.png
+  - features + labels -> <root>/umap/umap_layer{L}.npz
+  - UMAP image       -> <root>/umap/umap_layer{L}.png
 """
 
 from __future__ import annotations
@@ -38,6 +37,12 @@ def parse_args():
         required=True,
         help="dataset_lp_balanced_val root",
     )
+    parser.add_argument(
+        "--layer",
+        type=int,
+        default=22,
+        help="layer index to extract features from (default: 22)",
+    )
     parser.add_argument("--imgsz", type=int, default=640)
     parser.add_argument("--device", default="0")
     return parser.parse_args()
@@ -66,8 +71,8 @@ def main():
     out_dir = root / "umap"
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    png_path = out_dir / "umap_layer22.png"
-    npz_path = out_dir / "umap_layer22.npz"
+    png_path = out_dir / f"umap_layer{args.layer}.png"
+    npz_path = out_dir / f"umap_layer{args.layer}.npz"
 
     device = f"cuda:{args.device}" if args.device != "cpu" else "cpu"
 
@@ -77,18 +82,23 @@ def main():
     model = YOLO(str(model_path))
     net = model.model.to(device).eval()
 
+    assert args.layer < len(net.model), (
+        f"invalid layer index {args.layer}, "
+        f"model has {len(net.model)} layers"
+    )
+
     img_dir = Path(args.data) / "images" / "val"
     meta_dir = Path(args.data) / "meta" / "val"
 
     features = []
     labels = []
 
-    # hook: layer 22
+    # hook: selected layer
     def hook_fn(module, inp, out):
         f = out.mean(dim=(2, 3))  # GAP
         features.append(f.detach().cpu())
 
-    handle = net.model[22].register_forward_hook(hook_fn)
+    handle = net.model[args.layer].register_forward_hook(hook_fn)
 
     img_paths = sorted(img_dir.glob("*.jpg"))
 
@@ -96,7 +106,7 @@ def main():
     # Feature extraction
     # -------------------------
     with torch.no_grad():
-        for img_path in tqdm(img_paths, desc="Extract features"):
+        for img_path in tqdm(img_paths, desc=f"Extract features (layer {args.layer})"):
             stem = img_path.stem
             meta_path = meta_dir / f"{stem}.json"
             if not meta_path.exists():
@@ -106,7 +116,7 @@ def main():
 
             img = cv2.imread(str(img_path))
             img = cv2.resize(img, (args.imgsz, args.imgsz))
-            img = img[:, :, ::-1].copy()  # BGR -> RGB (avoid negative stride)
+            img = img[:, :, ::-1].copy()  # BGR -> RGB
             img = torch.from_numpy(img).permute(2, 0, 1).float() / 255.0
             img = img.unsqueeze(0).to(device)
 
@@ -125,6 +135,7 @@ def main():
         npz_path,
         features=X,
         labels=y,
+        layer=args.layer,
     )
     print(f"[SAVE] features -> {npz_path}")
 
@@ -157,7 +168,7 @@ def main():
         )
 
     plt.legend(markerscale=2)
-    plt.title("YOLO26 Layer22 UMAP (by class_ID)")
+    plt.title(f"YOLO26 Layer {args.layer} UMAP (by class_ID)")
     plt.tight_layout()
     plt.savefig(png_path, dpi=200)
     plt.close()
@@ -168,5 +179,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
-# python umap_yolo26_lp.py --root runs/yolo26-LP --data dataset_lp_balanced_val
