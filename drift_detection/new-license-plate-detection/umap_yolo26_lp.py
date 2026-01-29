@@ -1,12 +1,12 @@
 """
 YOLO26n model's 22nd layer feature visualization using UMAP.
+22nd layer: semantic feature right before detection head.
 
-- Extract features from layer 22 (pre-detection semantic feature)
-- Save features to .npz
-- Reload saved features if exists
-- Visualize UMAP:
-  - static PNG
-  - interactive HTML (browser)
+- Load model from <root>/weights/best.pt
+- Extract layer-22 features
+- Save:
+  - features + labels -> <root>/umap/umap_layer22.npz
+  - UMAP image       -> <root>/umap/umap_layer22.png
 """
 
 from __future__ import annotations
@@ -17,10 +17,8 @@ import json
 import cv2
 import torch
 import numpy as np
-import pandas as pd
-import umap
 import matplotlib.pyplot as plt
-import plotly.express as px
+import umap
 from ultralytics import YOLO
 from tqdm import tqdm
 
@@ -30,16 +28,18 @@ from tqdm import tqdm
 # -------------------------
 def parse_args():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--model", required=True, help="YOLO weight (.pt)")
-    parser.add_argument("--data", required=True, help="dataset_lp_balanced_val root")
+    parser.add_argument(
+        "--root",
+        required=True,
+        help="run root directory (e.g., runs/yolo26-LP)",
+    )
+    parser.add_argument(
+        "--data",
+        required=True,
+        help="dataset_lp_balanced_val root",
+    )
     parser.add_argument("--imgsz", type=int, default=640)
     parser.add_argument("--device", default="0")
-    parser.add_argument("--out", default="umap_layer22")
-    parser.add_argument(
-        "--reuse",
-        action="store_true",
-        help="Reuse saved feature file if exists",
-    )
     return parser.parse_args()
 
 
@@ -54,19 +54,31 @@ def read_class_id(meta_path: Path) -> str:
 
 
 # -------------------------
-# Feature Extraction
+# Main
 # -------------------------
-def extract_features(
-    model_path: Path,
-    data_root: Path,
-    imgsz: int,
-    device: str,
-):
+def main():
+    args = parse_args()
+
+    root = Path(args.root)
+    model_path = root / "weights" / "best.pt"
+    assert model_path.exists(), f"model not found: {model_path}"
+
+    out_dir = root / "umap"
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    png_path = out_dir / "umap_layer22.png"
+    npz_path = out_dir / "umap_layer22.npz"
+
+    device = f"cuda:{args.device}" if args.device != "cpu" else "cpu"
+
+    # -------------------------
+    # Load model
+    # -------------------------
     model = YOLO(str(model_path))
     net = model.model.to(device).eval()
 
-    img_dir = data_root / "images" / "val"
-    meta_dir = data_root / "meta" / "val"
+    img_dir = Path(args.data) / "images" / "val"
+    meta_dir = Path(args.data) / "meta" / "val"
 
     features = []
     labels = []
@@ -80,6 +92,9 @@ def extract_features(
 
     img_paths = sorted(img_dir.glob("*.jpg"))
 
+    # -------------------------
+    # Feature extraction
+    # -------------------------
     with torch.no_grad():
         for img_path in tqdm(img_paths, desc="Extract features"):
             stem = img_path.stem
@@ -90,8 +105,8 @@ def extract_features(
             class_id = read_class_id(meta_path)
 
             img = cv2.imread(str(img_path))
-            img = cv2.resize(img, (imgsz, imgsz))
-            img = img[:, :, ::-1].copy()  # BGR → RGB, avoid negative stride
+            img = cv2.resize(img, (args.imgsz, args.imgsz))
+            img = img[:, :, ::-1].copy()  # BGR -> RGB (avoid negative stride)
             img = torch.from_numpy(img).permute(2, 0, 1).float() / 255.0
             img = img.unsqueeze(0).to(device)
 
@@ -103,44 +118,15 @@ def extract_features(
     X = torch.cat(features, dim=0).numpy()  # (N, C)
     y = np.array(labels)
 
-    return X, y
-
-
-# -------------------------
-# Main
-# -------------------------
-def main():
-    args = parse_args()
-    device = f"cuda:{args.device}" if args.device != "cpu" else "cpu"
-
-    out_base = Path(args.out)
-    feat_path = out_base.with_suffix(".npz")
-    png_path = out_base.with_suffix(".png")
-    html_path = out_base.with_suffix(".html")
-
     # -------------------------
-    # Load or Extract Features
+    # Save features
     # -------------------------
-    if args.reuse and feat_path.exists():
-        print(f"[LOAD] loading features from {feat_path}")
-        data = np.load(feat_path, allow_pickle=True)
-        X = data["features"]
-        y = data["labels"]
-    else:
-        print("[INFO] extracting features from model")
-        X, y = extract_features(
-            model_path=Path(args.model),
-            data_root=Path(args.data),
-            imgsz=args.imgsz,
-            device=device,
-        )
-
-        np.savez(
-            feat_path,
-            features=X,
-            labels=y,
-        )
-        print(f"[SAVE] features saved to {feat_path}")
+    np.savez(
+        npz_path,
+        features=X,
+        labels=y,
+    )
+    print(f"[SAVE] features -> {npz_path}")
 
     # -------------------------
     # UMAP
@@ -154,7 +140,7 @@ def main():
     X_umap = reducer.fit_transform(X)
 
     # -------------------------
-    # Static plot (PNG)
+    # Plot (PNG)
     # -------------------------
     plt.figure(figsize=(7, 7))
     classes = sorted(set(y))
@@ -176,30 +162,11 @@ def main():
     plt.savefig(png_path, dpi=200)
     plt.close()
 
-    print(f"[SAVE] static UMAP saved to {png_path}")
-
-    # -------------------------
-    # Interactive plot (HTML)
-    # -------------------------
-    df = pd.DataFrame({
-        "x": X_umap[:, 0],
-        "y": X_umap[:, 1],
-        "class_ID": y,
-    })
-
-    fig = px.scatter(
-        df,
-        x="x",
-        y="y",
-        color="class_ID",
-        title="YOLO26 Layer22 UMAP (by class_ID)",
-        opacity=0.85,
-    )
-
-    fig.write_html(html_path)
-    print(f"[SAVE] interactive UMAP saved to {html_path}")
+    print(f"[SAVE] UMAP image -> {png_path}")
     print("[DONE]")
 
 
 if __name__ == "__main__":
     main()
+
+# python umap_yolo26_lp.py --root runs/yolo26-LP --data dataset_lp_balanced_val
