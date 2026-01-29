@@ -123,3 +123,5 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+# python umap_yolo26_lp.py --model runs/yolo26-LP/weights/best.pt --data dataset_lp_balanced_val --out umap_layer22_by_class.png
