@@ -1,6 +1,12 @@
 """
-YOLO26n model's 22th layer feature visualization using UMAP.
-22th layer: the layer computing semantic feature right before detection header.
+YOLO26n model's 22nd layer feature visualization using UMAP.
+
+- Extract features from layer 22 (pre-detection semantic feature)
+- Save features to .npz
+- Reload saved features if exists
+- Visualize UMAP:
+  - static PNG
+  - interactive HTML (browser)
 """
 
 from __future__ import annotations
@@ -11,11 +17,12 @@ import json
 import cv2
 import torch
 import numpy as np
-import matplotlib.pyplot as plt
+import pandas as pd
 import umap
+import matplotlib.pyplot as plt
+import plotly.express as px
 from ultralytics import YOLO
 from tqdm import tqdm
-from collections import defaultdict
 
 
 # -------------------------
@@ -27,7 +34,12 @@ def parse_args():
     parser.add_argument("--data", required=True, help="dataset_lp_balanced_val root")
     parser.add_argument("--imgsz", type=int, default=640)
     parser.add_argument("--device", default="0")
-    parser.add_argument("--out", default="umap_layer22_by_class.png")
+    parser.add_argument("--out", default="umap_layer22")
+    parser.add_argument(
+        "--reuse",
+        action="store_true",
+        help="Reuse saved feature file if exists",
+    )
     return parser.parse_args()
 
 
@@ -42,17 +54,19 @@ def read_class_id(meta_path: Path) -> str:
 
 
 # -------------------------
-# Main
+# Feature Extraction
 # -------------------------
-def main():
-    args = parse_args()
-    device = f"cuda:{args.device}" if args.device != "cpu" else "cpu"
-
-    model = YOLO(args.model)
+def extract_features(
+    model_path: Path,
+    data_root: Path,
+    imgsz: int,
+    device: str,
+):
+    model = YOLO(str(model_path))
     net = model.model.to(device).eval()
 
-    img_dir = Path(args.data) / "images" / "val"
-    meta_dir = Path(args.data) / "meta" / "val"
+    img_dir = data_root / "images" / "val"
+    meta_dir = data_root / "meta" / "val"
 
     features = []
     labels = []
@@ -76,18 +90,57 @@ def main():
             class_id = read_class_id(meta_path)
 
             img = cv2.imread(str(img_path))
-            img = cv2.resize(img, (args.imgsz, args.imgsz))
-            img = img[:, :, ::-1].copy()
+            img = cv2.resize(img, (imgsz, imgsz))
+            img = img[:, :, ::-1].copy()  # BGR → RGB, avoid negative stride
             img = torch.from_numpy(img).permute(2, 0, 1).float() / 255.0
             img = img.unsqueeze(0).to(device)
 
             _ = net(img)
-
             labels.append(class_id)
 
     handle.remove()
 
     X = torch.cat(features, dim=0).numpy()  # (N, C)
+    y = np.array(labels)
+
+    return X, y
+
+
+# -------------------------
+# Main
+# -------------------------
+def main():
+    args = parse_args()
+    device = f"cuda:{args.device}" if args.device != "cpu" else "cpu"
+
+    out_base = Path(args.out)
+    feat_path = out_base.with_suffix(".npz")
+    png_path = out_base.with_suffix(".png")
+    html_path = out_base.with_suffix(".html")
+
+    # -------------------------
+    # Load or Extract Features
+    # -------------------------
+    if args.reuse and feat_path.exists():
+        print(f"[LOAD] loading features from {feat_path}")
+        data = np.load(feat_path, allow_pickle=True)
+        X = data["features"]
+        y = data["labels"]
+    else:
+        print("[INFO] extracting features from model")
+        X, y = extract_features(
+            model_path=Path(args.model),
+            data_root=Path(args.data),
+            imgsz=args.imgsz,
+            device=device,
+        )
+
+        np.savez(
+            feat_path,
+            features=X,
+            labels=y,
+        )
+        print(f"[SAVE] features saved to {feat_path}")
 
     # -------------------------
     # UMAP
@@ -101,32 +154,52 @@ def main():
     X_umap = reducer.fit_transform(X)
 
     # -------------------------
-    # Plot by class_ID
+    # Static plot (PNG)
     # -------------------------
     plt.figure(figsize=(7, 7))
-    class_to_idx = {c: i for i, c in enumerate(sorted(set(labels)))}
-    colors = plt.cm.tab10(np.linspace(0, 1, len(class_to_idx)))
+    classes = sorted(set(y))
+    colors = plt.cm.tab10(np.linspace(0, 1, len(classes)))
 
-    for cls, idx in class_to_idx.items():
-        mask = np.array(labels) == cls
+    for cls, c in zip(classes, colors):
+        mask = y == cls
         plt.scatter(
             X_umap[mask, 0],
             X_umap[mask, 1],
             s=8,
-            color=colors[idx],
+            color=c,
             label=cls,
         )
 
     plt.legend(markerscale=2)
     plt.title("YOLO26 Layer22 UMAP (by class_ID)")
     plt.tight_layout()
-    plt.savefig(args.out, dpi=200)
+    plt.savefig(png_path, dpi=200)
     plt.close()
 
-    print(f"[DONE] saved: {args.out}")
+    print(f"[SAVE] static UMAP saved to {png_path}")
+
+    # -------------------------
+    # Interactive plot (HTML)
+    # -------------------------
+    df = pd.DataFrame({
+        "x": X_umap[:, 0],
+        "y": X_umap[:, 1],
+        "class_ID": y,
+    })
+
+    fig = px.scatter(
+        df,
+        x="x",
+        y="y",
+        color="class_ID",
+        title="YOLO26 Layer22 UMAP (by class_ID)",
+        opacity=0.85,
+    )
+
+    fig.write_html(html_path)
+    print(f"[SAVE] interactive UMAP saved to {html_path}")
+    print("[DONE]")
 
 
 if __name__ == "__main__":
     main()
-
-# python umap_yolo26_lp.py --model runs/yolo26-LP/weights/best.pt --data dataset_lp_balanced_val --out umap_layer22_by_class.png
