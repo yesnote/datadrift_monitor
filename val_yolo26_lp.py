@@ -3,9 +3,11 @@ YOLO class-wise validation using Ultralytics official model.val()
 
 - Input:
   --root : runs/<exp_name> (expects weights/best.pt)
-  --data : validation dataset root (Ultralytics dataset.yaml 경로)
+  --data : dataset.yaml path
 - Output:
-  - 콘솔에 class-wise P / R / mAP 출력
+  - results saved to:
+    runs/<exp_name>/detect/val
+  - console: class-wise AP, overall mAP
 """
 
 from __future__ import annotations
@@ -48,6 +50,8 @@ def main():
         conf=args.conf,
         iou=args.iou,
         split="val",
+        project=str(root),
+        name="val",
         verbose=True,
     )
 
