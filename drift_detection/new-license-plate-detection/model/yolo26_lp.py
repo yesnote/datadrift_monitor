@@ -1,119 +1,114 @@
 from __future__ import annotations
 
 import torch
-from typing import List, Optional
+from typing import List, Tuple, Optional
+from ultralytics import YOLO
 
 
 class YOLO26LP:
     """
-    YOLO26-LP wrapper for DiL (NO NMS).
-
+    YOLO26-LP wrapper for DiL.
     Provides:
-      1) Detect head raw output (Mo)          -> for Grad-CAM (Eq.1)
-      2) Confidence-thresholded boxes only    -> for BL / CL computation
+      1) Detect head raw output (pre-NMS)  -> Mo
+      2) Post-NMS predicted bounding boxes -> GT 비교 / BL 계산
     """
 
     def __init__(
         self,
-        model: torch.nn.Module,
-        conf_thresh: float = 0.5,
+        weight_path: str,
         device: Optional[str] = None,
+        conf_thresh: float = 0.5,
+        iou_thresh: float = 0.5,
         img_size: int = 640,
     ):
-        self.model = model
+        self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
         self.conf_thresh = conf_thresh
+        self.iou_thresh = iou_thresh
         self.img_size = img_size
-        self.device = device or next(model.parameters()).device
 
-        self.model.eval().to(self.device)
+        # Load YOLO model
+        self.model = YOLO(weight_path)
+        self.model.to(self.device)
+        self.model.eval()
 
-        # Detect head raw output (Mo)
+        # storage for Detect head raw output (Mo)
         self._det_raw = None
         self._register_detect_hook()
 
-    # --------------------------------------------------
-    # Detect head hook (NMS 이전)
-    # --------------------------------------------------
+    # ---------------------------------------------------------
+    # Hook: Detect head (NMS 이전)
+    # ---------------------------------------------------------
     def _register_detect_hook(self):
         """
-        YOLO26: Detect head = last module
+        Register forward hook on Detect head.
+        Ultralytics YOLO: Detect module is model.model[-1]
         """
-        detect_layer = self.model.model[-1]
+        detect_layer = self.model.model.model[-1]
 
         def hook_fn(module, inputs, outputs):
-            # outputs: raw detect tensor(s), NMS 이전
+            """
+            outputs:
+              - training: list of feature maps
+              - inference: list / tuple depending on version
+            """
             self._det_raw = outputs
 
         detect_layer.register_forward_hook(hook_fn)
 
-    # --------------------------------------------------
-    # Forward
-    # --------------------------------------------------
-    @torch.no_grad()
+    # ---------------------------------------------------------
+    # Forward (used by DiL)
+    # ---------------------------------------------------------
     def forward(self, x: torch.Tensor):
         """
         Args:
-            x: (1, 3, H, W), float in [0,1]
+            x: (1,3,H,W) float tensor in [0,1]
 
         Returns:
-            det_raw   : Detect head raw output (Mo)
-            pred_boxes: List[[x1,y1,x2,y2]]  (conf threshold only)
+            det_raw   : Detect head raw output (pre-NMS)
+            pred_boxes: List[List[float]]  (xyxy, pixel)
         """
-        x = x.to(self.device)
+        # --- Run inference (this triggers Detect hook) ---
+        results = self.model.predict(
+            source=x,
+            conf=self.conf_thresh,
+            iou=self.iou_thresh,
+            imgsz=self.img_size,
+            verbose=False,
+        )
 
-        # 1. forward (hook에서 det_raw 저장됨)
-        outputs = self.model(x)
+        # --- Post-NMS predictions ---
+        r0 = results[0]
+        if r0.boxes is None or len(r0.boxes) == 0:
+            pred_boxes = []
+        else:
+            pred_boxes = r0.boxes.xyxy.detach().cpu().tolist()
 
-        if self._det_raw is None:
-            raise RuntimeError("Detect head raw output was not captured.")
+        # --- Detect head raw output (Mo) ---
+        det_raw = self._det_raw
+        if det_raw is None:
+            raise RuntimeError(
+                "Detect head raw output not captured. "
+                "Check hook registration or Ultralytics version."
+            )
 
-        # 2. decode boxes from detect output (NO NMS)
-        pred_boxes = self._decode_boxes(self._det_raw, x.shape[-2:])
+        return det_raw, pred_boxes
 
-        return self._det_raw, pred_boxes
-
-    # --------------------------------------------------
-    # Decode YOLO26 detect output (NO NMS)
-    # --------------------------------------------------
-    def _decode_boxes(self, det_raw, img_hw):
+    # ---------------------------------------------------------
+    # Convenience: no-grad prediction only
+    # ---------------------------------------------------------
+    @torch.no_grad()
+    def predict_boxes(self, x: torch.Tensor) -> List[List[float]]:
         """
-        det_raw: list of feature maps from detect head
-        img_hw : (H, W)
-
-        YOLO-style output per scale:
-          (B, A, H, W, 5 + C)
-          -> [cx, cy, w, h, obj, cls...]
+        Only post-NMS boxes (for debugging / GT matching).
         """
-        H_img, W_img = img_hw
-        boxes = []
-
-        if not isinstance(det_raw, (list, tuple)):
-            det_raw = [det_raw]
-
-        for out in det_raw:
-            # expected shape: (B, A, H, W, 5 + C)
-            if out.dim() != 5:
-                continue
-
-            out = out[0]  # batch=1
-            obj = out[..., 4]
-
-            mask = obj >= self.conf_thresh
-            if mask.sum() == 0:
-                continue
-
-            cx = out[..., 0][mask]
-            cy = out[..., 1][mask]
-            w  = out[..., 2][mask]
-            h  = out[..., 3][mask]
-
-            # assume cx,cy,w,h are normalized (YOLO-style)
-            x1 = (cx - w / 2) * W_img
-            y1 = (cy - h / 2) * H_img
-            x2 = (cx + w / 2) * W_img
-            y2 = (cy + h / 2) * H_img
-
-            for b in zip(x1, y1, x2, y2):
-                boxes.append([v.item() for v in b])
-
-        return boxes
+        results = self.model.predict(
+            source=x,
+            conf=self.conf_thresh,
+            iou=self.iou_thresh,
+            imgsz=self.img_size,
+            verbose=False,
+        )
+        r0 = results[0]
+        if r0.boxes is None:
+            return []
+        return r0.boxes.xyxy.detach().cpu().tolist()
