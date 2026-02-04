@@ -10,7 +10,7 @@ from xai.gradcam_yolo import YOLOGradCAM
 from model.yolo26_lp import YOLO26LP
 
 # 1. load config
-with open("config/dataset_lp.yaml") as f:
+with open("config/yolo26-LP.yaml") as f:
     cfg = yaml.safe_load(f)
 
 # 2. load model
@@ -23,10 +23,13 @@ detector = YOLO26LP(yolo26_lp_model)
 # 3. dataloader
 loader = build_dataloader(cfg)
 
-# 4. GradCAM (target layer는 backbone/neck의 conv layer 1개를 쓰는 것이 권장)
+# 4. GradCAM
+layer_idx = cfg["xai"]["layer"]
+target_layer = yolo26_lp_model.model.model[layer_idx]
+
 gradcam = YOLOGradCAM(
     yolo26_lp_model,
-    target_layer=yolo26_lp_model.model[24].m[0]  # 예시: 적절한 conv layer로 조정
+    target_layer=target_layer
 )
 
 # 5. inference + DiL

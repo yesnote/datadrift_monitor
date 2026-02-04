@@ -14,3 +14,6 @@ model:
   weight: /path/to/yolo26_lp.pt
   conf_thresh: 0.5
   iou_thresh: 0.5
+
+xai:
+  layer: 22
