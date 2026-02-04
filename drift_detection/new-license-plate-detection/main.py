@@ -4,7 +4,7 @@ import numpy as np
 
 from data.dataloader import build_dataloader
 from eval.missed_detection import is_missed_detection
-from utils.metrics import eval_thresholds
+from utils.metrics import compute_binary_classification_metrics
 from dil.dil_score import compute_dil
 from xai.gradcam_yolo import YOLOGradCAM
 from model.yolo26_lp import YOLO26LP
@@ -23,21 +23,22 @@ detector = YOLO26LP(yolo26_lp_model)
 # 3. dataloader
 loader = build_dataloader(cfg)
 
-# 4. GradCAM (Detect head 3 branches)
+# 4. GradCAM (target layer는 backbone/neck의 conv layer 1개를 쓰는 것이 권장)
 gradcam = YOLOGradCAM(
     yolo26_lp_model,
-    [yolo26_lp_model.model[24].m[i] for i in range(3)]
+    target_layer=yolo26_lp_model.model[24].m[0]  # 예시: 적절한 conv layer로 조정
 )
 
 # 5. inference + DiL
-dils, missed_flags = [], []
+dils = []
+missed_flags = []
 
 for batch in loader:
     x = batch["image"].to(device)
     gt_boxes = batch["gt_boxes"]
 
     det_raw, pred_boxes = detector.forward(x)
-    cam = gradcam.saliency(det_raw)
+    cam = gradcam.saliency(det_raw, input_shape=x.shape)
 
     dil = compute_dil(cam, pred_boxes)
     missed = is_missed_detection(
@@ -47,8 +48,15 @@ for batch in loader:
     )
 
     dils.append(dil)
-    missed_flags.append(missed)
+    missed_flags.append(int(missed))
 
-# 6. threshold sweep
-thresholds = np.linspace(0, 1, 50)
-metrics = eval_thresholds(dils, missed_flags, thresholds)
+# 6. PR / ROC metrics (sklearn)
+metrics = compute_binary_classification_metrics(
+    scores=dils,
+    labels=missed_flags,
+    compute_roc=True,
+)
+
+print(f"AP (Missed Detection): {metrics['pr']['ap']:.4f}")
+if "roc" in metrics:
+    print(f"ROC AUC: {metrics['roc']['auc']:.4f}")

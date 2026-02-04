@@ -1,14 +1,62 @@
-import numpy as np
+def compute_binary_classification_metrics(
+    scores,
+    labels,
+    compute_roc=True,
+):
+    """
+    Args:
+        scores (list or np.ndarray):
+            Continuous scores (e.g., DiL). Higher = more likely positive.
+        labels (list or np.ndarray):
+            Binary GT labels.
+            1: missed detection
+            0: normal detection
+        compute_roc (bool):
+            Whether to also compute ROC metrics.
 
-def eval_thresholds(dils, missed, thresholds):
-    out = []
-    for t in thresholds:
-        pred = [d >= t for d in dils]
-        tp = sum(p and m for p, m in zip(pred, missed))
-        fp = sum(p and not m for p, m in zip(pred, missed))
-        fn = sum((not p) and m for p, m in zip(pred, missed))
+    Returns:
+        metrics (dict):
+            {
+              "pr": {
+                  "precision": np.ndarray,
+                  "recall": np.ndarray,
+                  "thresholds": np.ndarray,
+                  "ap": float,
+              },
+              "roc": {           # only if compute_roc=True
+                  "fpr": np.ndarray,
+                  "tpr": np.ndarray,
+                  "thresholds": np.ndarray,
+                  "auc": float,
+              }
+            }
+    """
+    y_true = np.asarray(labels, dtype=int)
+    y_score = np.asarray(scores, dtype=float)
 
-        recall = tp / (tp + fn + 1e-6)
-        precision = tp / (tp + fp + 1e-6)
-        out.append((t, recall, precision))
-    return out
+    # Precision–Recall
+    precision, recall, pr_thresholds = precision_recall_curve(y_true, y_score)
+    ap = average_precision_score(y_true, y_score)
+
+    metrics = {
+        "pr": {
+            "precision": precision,
+            "recall": recall,
+            "thresholds": pr_thresholds,
+            "ap": ap,
+        }
+    }
+
+    # ROC (optional)
+    if compute_roc:
+        fpr, tpr, roc_thresholds = roc_curve(y_true, y_score)
+        roc_auc = auc(fpr, tpr)
+
+        metrics["roc"] = {
+            "fpr": fpr,
+            "tpr": tpr,
+            "thresholds": roc_thresholds,
+            "auc": roc_auc,
+        }
+
+    return metrics
