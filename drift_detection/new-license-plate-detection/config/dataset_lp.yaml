@@ -1,0 +1,15 @@
+dataset:
+  root: /path/to/dataset_lp
+  images:
+    val: images/val
+  labels:
+    val: labels/val
+
+dataloader:
+  batch_size: 1
+  num_workers: 4
+  img_size: [640, 640]
+
+model:
+  conf_thresh: 0.5
+  iou_thresh: 0.5
