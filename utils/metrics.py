@@ -1,3 +1,12 @@
+import numpy as np
+from sklearn.metrics import (
+    precision_recall_curve,
+    average_precision_score,
+    roc_curve,
+    auc,
+)
+
+
 def compute_binary_classification_metrics(
     scores,
     labels,
