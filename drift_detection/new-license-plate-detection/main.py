@@ -1,6 +1,9 @@
 import yaml
 import torch
 import numpy as np
+import os
+import csv
+import cv2
 
 from data.dataloader import build_dataloader
 from eval.missed_detection import is_missed_detection
@@ -9,9 +12,12 @@ from dil.dil_score import compute_dil
 from xai.gradcam_yolo import YOLOGradCAM
 from model.yolo26_lp import YOLO26LP
 
+
 # 1. load config
 with open("config/yolo26-LP.yaml") as f:
     cfg = yaml.safe_load(f)
+
+os.makedirs(cfg["output"]["vis_dir"], exist_ok=True)
 
 # 2. load model
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -36,7 +42,9 @@ gradcam = YOLOGradCAM(
 dils = []
 missed_flags = []
 
-for batch in loader:
+csv_rows = []
+
+for idx, batch in enumerate(loader):
     x = batch["image"].to(device)
     gt_boxes = batch["gt_boxes"]
 
@@ -53,7 +61,39 @@ for batch in loader:
     dils.append(dil)
     missed_flags.append(int(missed))
 
-# 6. PR / ROC metrics (sklearn)
+    # save csv row
+    csv_rows.append({
+        "index": idx,
+        "dil": float(dil),
+        "missed": int(missed),
+    })
+
+    # visualization
+    img = x[0].detach().cpu().permute(1, 2, 0).numpy()
+    img = (img - img.min()) / (img.max() - img.min() + 1e-6)
+
+    heatmap = cam[0, 0].detach().cpu().numpy()
+    heatmap = cv2.applyColorMap(
+        np.uint8(255 * heatmap),
+        cv2.COLORMAP_JET
+    )
+    heatmap = cv2.cvtColor(heatmap, cv2.COLOR_BGR2RGB) / 255.0
+
+    overlay = np.clip(img + heatmap * 0.5, 0, 1)
+    overlay = (overlay * 255).astype(np.uint8)
+
+    cv2.imwrite(
+        os.path.join(cfg["output"]["vis_dir"], f"{idx:05d}.jpg"),
+        overlay[:, :, ::-1],  # RGB → BGR
+    )
+
+# 6. save DiL CSV
+with open(cfg["output"]["dil_csv"], "w", newline="") as f:
+    writer = csv.DictWriter(f, fieldnames=["index", "dil", "missed"])
+    writer.writeheader()
+    writer.writerows(csv_rows)
+
+# 7. PR / ROC metrics
 metrics = compute_binary_classification_metrics(
     scores=dils,
     labels=missed_flags,
