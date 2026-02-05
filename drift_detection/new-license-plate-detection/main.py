@@ -14,7 +14,7 @@ from model.yolo26_lp import YOLO26LP
 
 
 # 1. load config
-with open("config/yolo26-LP.yaml") as f:
+with open("config/yolo26-LP.yaml", encoding="utf-8") as f:
     cfg = yaml.safe_load(f)
 
 os.makedirs(cfg["output"]["vis_dir"], exist_ok=True)
