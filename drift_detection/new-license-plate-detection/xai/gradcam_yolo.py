@@ -6,7 +6,7 @@ class YOLOGradCAM:
     """
     Grad-CAM for DiL (YOLO26).
     - Hook: backbone / neck conv feature
-    - Target: sum of objectness outputs (Mo)
+    - Target: sum of objectness outputs
     """
 
     def __init__(self, model, target_layer):
@@ -29,33 +29,37 @@ class YOLOGradCAM:
 
     def _aggregate_objectness(self, det_raw):
         """
-        Implements Eq.(1) in DiL paper:
-        sum of all objectness scores
+        Eq.(1) in DiL paper: sum of objectness scores
+        Expected YOLO26 one-to-one head:
+          det_raw: (B, N, 6)  -> [..., 4] = objectness
         """
-        score = 0.0
+        assert det_raw.dim() == 3, \
+            f"Expected det_raw dim=3, got {det_raw.shape}"
 
-        if isinstance(det_raw, (list, tuple)):
-            for out in det_raw:
-                # out shape depends on head
-                # YOLO26 one-to-one: (B, 300, 6)
-                # assume objectness at index 4
-                score += out[..., 4].sum()
-        else:
-            score = det_raw[..., 4].sum()
+        assert det_raw.size(-1) >= 5, \
+            f"Expected last dim >=5 (bbox+obj+cls), got {det_raw.shape}"
 
-        return score
+        # objectness channel index = 4
+        return det_raw[..., 4].sum()
 
     def saliency(self, det_raw, input_shape):
         """
         Returns:
             cam: (1, 1, H, W)
         """
+        # reset states
+        self.activation = None
+        self.gradient = None
+
         # 1. aggregate objectness
         score = self._aggregate_objectness(det_raw)
 
         # 2. backward
         self.model.zero_grad()
         score.backward(retain_graph=True)
+
+        assert self.activation is not None, "Activation not captured"
+        assert self.gradient is not None, "Gradient not captured"
 
         # 3. Grad-CAM
         grad = self.gradient          # (B, C, h, w)
@@ -65,7 +69,7 @@ class YOLOGradCAM:
         cam = (weights * act).sum(dim=1, keepdim=True)
         cam = F.relu(cam)
 
-        # 4. upsample to input size
+        # 4. upsample
         cam = F.interpolate(
             cam,
             size=input_shape[-2:],
