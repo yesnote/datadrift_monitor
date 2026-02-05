@@ -17,3 +17,7 @@ model:
 
 xai:
   layer: 22
+
+output:
+  vis_dir: outputs/gradcam
+  dil_csv: outputs/dil_scores.csv
