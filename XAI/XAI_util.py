@@ -134,7 +134,7 @@ class Explainer():
         for idx,(original_image,heatmap_cam,prediction_dict,file_name) in enumerate(zip(original_images,heatmap_cams,prediction_dicts,file_names)):
             curr_heat_map_output_path = os.path.join(output_path,f'{file_name}.jpg')
             self.visualize_explanation(original_image,heatmap_cam,prediction_dict['boxes'],prediction_dict['classes'],
-                                                                     prediction_dict['labels'],curr_heat_map_output_path,
+                                                                     prediction_dict['labels'],prediction_dict['scores'],curr_heat_map_output_path,
                                                                      bbox_renormalize,save)
             if save and idx < len(self.last_pre_relu_cams) and self.last_pre_relu_cams[idx] is not None:
                 pre_relu_path = os.path.join(output_path, f'{file_name}_pre_relu.jpg')
@@ -143,13 +143,14 @@ class Explainer():
                                            prediction_dict['boxes'],
                                            prediction_dict['classes'],
                                            prediction_dict['labels'],
+                                           prediction_dict['scores'],
                                            pre_relu_path,
                                            bbox_renormalize,
                                            save)
         if not save:
             return self.explanations
 
-    def visualize_explanation(self,original_image,heatmap_cam,boxes, classes,labels,output_path,bbox_renormalize,save):
+    def visualize_explanation(self,original_image,heatmap_cam,boxes, classes,labels,scores,output_path,bbox_renormalize,save):
         """
         Save a single heatmap using a given output path.
         :param original_image: required. Image in a numpy format.
@@ -166,7 +167,9 @@ class Explainer():
         if bbox_renormalize:
             heatmap_cam = self.renormalize_cam_in_bounding_boxes(boxes,heatmap_cam)
         cam_image = show_cam_on_image(original_image, heatmap_cam, use_rgb=True)
-        image_with_bounding_boxes = self.object_detection_model.draw_boxes(boxes, labels, classes, cam_image)
+        image_with_bounding_boxes = self.object_detection_model.draw_boxes(
+            boxes, labels, classes, cam_image, scores=scores
+        )
         image_with_bounding_boxes = cv2.cvtColor(image_with_bounding_boxes, cv2.COLOR_BGR2RGB)
         if save:
             cv2.imwrite(output_path, image_with_bounding_boxes)

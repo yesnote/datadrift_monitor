@@ -2,6 +2,7 @@ import os.path
 
 import torch
 from OD_models.Object_detector import Object_detection_model
+from Data.Data_util import coco_names
 
 
 class configs:
@@ -22,9 +23,17 @@ class configs:
         }
         # decision threshold works best with : COCO: 0.8 to Faster RCNN and 0.5 to YOLOv5, SuperStore: 0.7 to faster RCNN and 0.7 to YOLOv5
         self.init_decision_thresholds()
-        # Custom dataset setup
-        self.model_params["num_of_classes"] = 1
-        self.model_params["class_names"] = ["object"]
+        # Class setup per dataset
+        if self.model_params["model_dataset"] == "COCO":
+            self.model_params["num_of_classes"] = 80
+            # For YOLOv5+COCO use built-in YOLO 80-class names (0..79 aligned).
+            # Data_util.coco_names is Faster R-CNN style and includes '__background__' / 'N/A'.
+            self.model_params["class_names"] = (
+                None if self.model_params["model_algorithm"] == "YOLOv5" else coco_names
+            )
+        else:
+            self.model_params["num_of_classes"] = 1
+            self.model_params["class_names"] = ["object"]
         # get pretrained models for each dataset
         self.COCO_models, self.Superstore_models = self.init_model_zoo()
         # select the specific model to use in the current experiment from: double_heads_faster_rcnn, grid_rcnn, yolox_l,cascade_rcnn_r101_fpn,yolo_f,yolo_v3,cascade_rpn_r50_fpn
@@ -37,10 +46,21 @@ class configs:
             else self.COCO_model
         )
         if self.model_params["model_algorithm"] == "YOLOv5":
-            # User-trained YOLOv5 checkpoint
-            self.model_params["model_path"] = [
-                os.path.join("models_weights", "yolov5-LP_best.pt")
-            ]
+            if self.model_params["model_dataset"] == "COCO":
+                # COCO-pretrained YOLOv5 checkpoint
+                self.model_params["model_path"] = ["yolov5x.pt"]
+            else:
+                # User-trained YOLOv5 checkpoint
+                self.model_params["model_path"] = [
+                    os.path.join(
+                        "models_weights",
+                        "DiL Models",
+                        "SuperStore",
+                        "YOLOv5",
+                        "finetune",
+                        "best.pt",
+                    )
+                ]
 
         # Use GPU or CPU (cuda or cpu)
         self.model_params["device"] = torch.device(
@@ -56,16 +76,14 @@ class configs:
             "img_size": 640,
             "names": None,
             "batch_size": 1,
-            "COCO_dataset_root_folder": os.path.join(self.dataset_root_folder, "COCO"),
+            "COCO_dataset_root_folder": os.path.join(
+                self.dataset_root_folder, "DiL datasets", "COCO"
+            ),
         }
-        # Custom dataset paths (YOLOv5, single-class)
-        self.COCO_dataset_params["images_dir"] = r"datasets/dataset_lp_100/images/val"
-        self.COCO_dataset_params["annotations_path"] = (
-            r"datasets/dataset_lp_100/annotations.json"
-        )
-        self.COCO_dataset_params["objects_count_path"] = (
-            r"datasets/dataset_lp_100/objects_count.csv"
-        )
+        # Use dataset_path-based defaults for COCO assets in Main.py:
+        # images -> <dataset_path>/images
+        # annotations -> <dataset_path>/annotations/annotations.json
+        # object counts -> <dataset_path>/objects_count/objects_count.csv
         self.COCO_dataset_params["clean_validation_set_path"] = os.path.join(
             self.COCO_dataset_params["COCO_dataset_root_folder"], "Clean"
         )
@@ -370,7 +388,7 @@ class configs:
         )
         return patches
 
-    def init_decision_thresholds(self):
+    def init_decision_thresholds(self, saliency_based_on_objectness=None):
         if self.model_params["model_algorithm"] == "YOLOv5":
             self.model_params["xai_decision_threshold"] = 0.0
             if self.model_params["model_dataset"] == "COCO":

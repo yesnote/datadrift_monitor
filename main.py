@@ -580,7 +580,7 @@ if __name__ == "__main__":
 
     # Select here the evaluation space and use case
     evaluation_space = evaluation_space_options[0]
-    evaluation_use_case = evaluation_use_case_options[0]
+    evaluation_use_case = evaluation_use_case_options[1]
 
     #  Upload the images and their corresponding file ids from the chosen dataset.
     if evaluation_space == "digital":
