@@ -1,6 +1,7 @@
 import numpy as np
 # from deep_utils.utils.box_utils.boxes import Box, Point
 import torch
+import os
 from OD_models.yolov5.models.experimental import attempt_load
 from OD_models.yolov5.utils.general import xywh2xyxy
 from OD_models.yolov5.utils.general import xywh2xyxy
@@ -61,6 +62,9 @@ class YOLOV5TorchObjectDetector(nn.Module):
                           'hair drier', 'toothbrush']
         else:
             self.names = names
+        self.debug_shapes = os.getenv('YOLO_SHAPE_DEBUG', '0') == '1'
+        if hasattr(self.model, 'model') and len(self.model.model) > 0:
+            setattr(self.model.model[-1], 'debug_shapes', self.debug_shapes)
 
         # preventing cold start
         img = torch.zeros((1, 3, *self.img_size), device=device)
@@ -68,7 +72,7 @@ class YOLOV5TorchObjectDetector(nn.Module):
 
     @staticmethod
     def non_max_suppression(prediction, logits, conf_thres=0.6, iou_thres=0.45, classes=None, agnostic=False,
-                            multi_label=False, labels=(), max_det=300):
+                            multi_label=False, labels=(), max_det=300, debug_shapes=False):
         """Runs Non-Maximum Suppression (NMS) on inference and logits results
 
         Returns:
@@ -77,6 +81,9 @@ class YOLOV5TorchObjectDetector(nn.Module):
 
         nc = prediction.shape[2] - 5  # number of classes
         xc = prediction[..., 4] > conf_thres  # candidates
+        if debug_shapes:
+            print(f"[SHAPE][NMS] prediction in: {tuple(prediction.shape)}, logits in: {tuple(logits.shape)}")
+            print(f"[SHAPE][NMS] candidate mask xc: {tuple(xc.shape)}")
 
         # Checks
         assert 0 <= conf_thres <= 1, f'Invalid Confidence threshold {conf_thres}, valid values are between 0.0 and 1.0'
@@ -95,10 +102,14 @@ class YOLOV5TorchObjectDetector(nn.Module):
         logits_output = [torch.zeros((0, 80), device=logits.device)] * logits.shape[0]
         objectivness_output = [torch.zeros((0, 1), device=prediction.device)]
         for xi, (x, log_) in enumerate(zip(prediction, logits)):  # image index, image inference
+            if debug_shapes:
+                print(f"[SHAPE][NMS] image={xi} raw per-image pred/logits: {tuple(x.shape)} / {tuple(log_.shape)}")
             # Apply constraints
             # x[((x[..., 2:4] < min_wh) | (x[..., 2:4] > max_wh)).any(1), 4] = 0  # width-height
             x = x[xc[xi]]  # confidence
             log_ = log_[xc[xi]]
+            if debug_shapes:
+                print(f"[SHAPE][NMS] image={xi} after conf mask: {tuple(x.shape)} / {tuple(log_.shape)}")
             # Cat apriori labels if autolabelling
             if labels and len(labels[xi]):
                 l = labels[xi]
@@ -115,6 +126,8 @@ class YOLOV5TorchObjectDetector(nn.Module):
             # Compute conf
             objectivness = x.clone()
             objectivness = objectivness[:, 4:5].view(-1)
+            if debug_shapes:
+                print(f"[SHAPE][NMS] image={xi} objectness vector before cls filter: {tuple(objectivness.shape)}")
             x[:, 5:] = x[:, 5:] * x[:, 4:5]  # conf = obj_conf * cls_conf
             # x[:, 5:] *= x[:, 4:5]  # conf = obj_conf * cls_conf
             # log_ *= x[:, 4:5]
@@ -130,6 +143,8 @@ class YOLOV5TorchObjectDetector(nn.Module):
                 # log_ = x[:, 5:]
                 x = torch.cat((box, conf, j.float()), 1)[conf.view(-1) > conf_thres]
                 log_ = log_[conf.view(-1) > conf_thres]
+                if debug_shapes:
+                    print(f"[SHAPE][NMS] image={xi} after best-class conf filter: {tuple(x.shape)} / {tuple(log_.shape)}")
             # Filter by class
             if classes is not None:
                 x = x[(x[:, 5:6] == torch.tensor(classes, device=x.device)).any(1)]
@@ -158,6 +173,8 @@ class YOLOV5TorchObjectDetector(nn.Module):
             output[xi] = x[i]
             logits_output[xi] = log_[i]
             objectivness_output[xi] = objectivness[i]
+            if debug_shapes:
+                print(f"[SHAPE][NMS] image={xi} after NMS keep={i.shape[0]} -> det/logits/objectness: {tuple(output[xi].shape)} / {tuple(logits_output[xi].shape)} / {tuple(objectivness_output[xi].shape)}")
             assert log_[i].shape[0] == x[i].shape[0]
             if (time.time() - t) > time_limit:
                 print(f'WARNING: NMS time limit {time_limit}s exceeded')
@@ -172,9 +189,12 @@ class YOLOV5TorchObjectDetector(nn.Module):
 
     def forward(self, img):
         prediction, logits,x = self.model(img, augment=False)
+        if self.debug_shapes:
+            print(f"[SHAPE][Detector] model outputs pred/logits/raw: {tuple(prediction.shape)} / {tuple(logits.shape)} / {[tuple(t.shape) for t in x]}")
         prediction, logits,objectivness = self.non_max_suppression(prediction, logits, self.confidence, self.iou_thresh,
-                                                      classes=None,
-                                                      agnostic=self.agnostic)
+                                                       classes=None,
+                                                       agnostic=self.agnostic,
+                                                       debug_shapes=self.debug_shapes)
         self.boxes, self.class_names, self.classes, self.confidences = [[[] for _ in range(img.shape[0])] for _ in
                                                                         range(4)]
         for i, det in enumerate(prediction):  # detections per image
