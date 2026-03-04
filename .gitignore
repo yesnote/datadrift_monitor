@@ -2,3 +2,5 @@ runs
 *.pt
 datasets
 Experiments_output
+*.zip
+models_weights
