@@ -52,6 +52,11 @@ class Object_detection_model():
         elif self.algorithm == 'YOLOv5':
             yolo_weights = target_model_path[0] if target_model_path else 'yolov5x.pt'
             class_names = self.model_params.get('class_names', None)
+            # Guard against Faster R-CNN style COCO labels ("__background__", "N/A", etc.)
+            # which are misaligned with YOLOv5 0..79 class indices.
+            if class_names is not None:
+                if len(class_names) != 80 or class_names[0] == '__background__':
+                    class_names = None
             model = YOLOV5TorchObjectDetector(yolo_weights, self.device, img_size=self.img_size, names=class_names,
                                               confidence=decision_threshold)
         elif self.algorithm == 'MMDetection':
@@ -290,7 +295,7 @@ class Object_detection_model():
         }
         return pred_dict
 
-    def draw_boxes(self, boxes, labels, classes, image):
+    def draw_boxes(self, boxes, labels, classes, image, scores=None):
         """
         Function that visualize a prediction (draw bounding boxes and classes) on a frame.
         :param boxes: required, numpy array of lists representing the detection bounding box.
@@ -309,9 +314,22 @@ class Object_detection_model():
                 (int(box[2]), int(box[3])),
                 color, 6
             )
-            # cv2.putText(image, labels[i], (int(box[0]), int(box[1] - 5)),
-            #             cv2.FONT_HERSHEY_SIMPLEX, 0.8, color, 2,
-            #             lineType=cv2.LINE_AA)
+            label_text = str(labels[i]) if i < len(labels) else str(classes[i])
+            if scores is not None and i < len(scores):
+                label_text = f"{label_text}: {float(scores[i]):.2f}"
+            x1, y1, x2, y2 = int(box[0]), int(box[1]), int(box[2]), int(box[3])
+            text_x = x1 + 5
+            text_y = min(y2 - 6, y1 + 20)
+            cv2.putText(
+                image,
+                label_text,
+                (text_x, text_y),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.8,
+                (255, 255, 255),
+                2,
+                lineType=cv2.LINE_AA,
+            )
         return image
 
     @staticmethod
