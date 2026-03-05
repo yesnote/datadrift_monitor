@@ -232,29 +232,53 @@ class dil_interface:
             XAI_method=self.xai_params["XAI_method"],
             model_algorithm=self.model_params["model_algorithm"],
         )
+        selected_indices = list(range(len(file_names)))
+        selected_images = input_images
+        selected_file_names = file_names
+        selected_base_model_preds = base_model_preds
+        if (
+            self.model_params["model_algorithm"] == "YOLOv5"
+            and not self.xai_params["saliency-based-on-objectness"]
+        ):
+            selected_indices = [
+                i
+                for i, pred in enumerate(base_model_preds)
+                if len(pred.get("boxes", [])) > 0
+            ]
+            selected_images = [input_images[i] for i in selected_indices]
+            selected_file_names = [file_names[i] for i in selected_indices]
+            selected_base_model_preds = [base_model_preds[i] for i in selected_indices]
+            print(
+                f"XAI skip (no final preds): {len(file_names) - len(selected_file_names)} / {len(file_names)}"
+            )
+        if len(selected_file_names) == 0:
+            print("No images with final predictions for XAI. Skipping XAI visualization.")
+            return [float("nan")] * len(file_names), []
+
         saliency_maps, _ = exp.apply_explanations(
-            input_images,
+            selected_images,
             saliency_based_on_objectness=self.xai_params[
                 "saliency-based-on-objectness"
             ],
             eigen_smooth=self.xai_params["eigen_smooth"],
+            class_logit_topk=self.xai_params.get("class-logit-topk", 1),
         )
         saliency_target_values = getattr(exp, "last_saliency_target_values", [])
         xai_file_names = [
-            f"{file_name}_o{objectness_value:.4f}"
-            for file_name, objectness_value in zip(file_names, saliency_target_values)
+            f"{file_name}_o{target_value:.4f}"
+            for file_name, target_value in zip(selected_file_names, saliency_target_values)
         ]
-        if len(xai_file_names) < len(file_names):
+        if len(xai_file_names) < len(selected_file_names):
             xai_file_names.extend(
                 [
                     f"{file_name}_oNA"
-                    for file_name in file_names[len(xai_file_names) :]
+                    for file_name in selected_file_names[len(xai_file_names) :]
                 ]
             )
         exp.visualize(
-            original_images=input_images,
+            original_images=selected_images,
             heatmap_cams=saliency_maps,
-            prediction_dicts=base_model_preds,
+            prediction_dicts=selected_base_model_preds,
             output_path=output_path,
             bbox_renormalize=config.XAI_params["bbox_normalization"],
             file_names=xai_file_names,
@@ -263,7 +287,7 @@ class dil_interface:
         complete_localization_score, complete_localization_list = saliency_sum(
             saliency_maps
         )
-        saliency_maps_back = mask_objects_saliency_map(saliency_maps, base_model_preds)
+        saliency_maps_back = mask_objects_saliency_map(saliency_maps, selected_base_model_preds)
         background_localization_score, background_localization_list = saliency_sum(
             saliency_maps_back
         )
@@ -289,7 +313,7 @@ class dil_interface:
                 complete_localization_list,
                 background_localization_list,
                 distinctive_localization_score,
-                file_names,
+                selected_file_names,
             ):
                 if dil_score > dil_t or file_name in self.file_names_fool:
                     filtered_dils.append(dil_score)
@@ -303,7 +327,12 @@ class dil_interface:
                 f"Mean background localization score: {sum(filtered_cackground) / len(filtered_cackground)}"
             )
             print(f"Mean DiL score: {sum(filtered_dils) / len(filtered_dils)}")
-        return distinctive_localization_score, saliency_maps
+        if len(selected_indices) == len(file_names):
+            return distinctive_localization_score, saliency_maps
+        full_distinctive_scores = [float("nan")] * len(file_names)
+        for idx, score in zip(selected_indices, distinctive_localization_score):
+            full_distinctive_scores[idx] = score
+        return full_distinctive_scores, saliency_maps
 
     def generate_dynamic_threshold(self, dil_scores):
         """

@@ -226,10 +226,14 @@ class BaseCAM:
                     if self.debug_shapes:
                         print(f"[SHAPE][XAI] target uses objectness[0]: {tuple(saliency.shape)} -> sum scalar")
                 else:
-                    # saliency = torch.stack([logit[cls] for logit, cls in zip(logits[0], predictions[1][0])])
-                    saliency = torch.stack([max(logit) for logit in logits[0]])
+                    # Sum top-k class logits per detection (k=1 matches previous max-logit behavior).
+                    logit_tensor = logits[0]
+                    k = max(1, int(getattr(self, "class_logit_topk", 1)))
+                    k = min(k, logit_tensor.shape[1])
+                    topk_vals, _ = torch.topk(logit_tensor, k=k, dim=1)
+                    saliency = topk_vals.sum(dim=1)
                     if self.debug_shapes:
-                        print(f"[SHAPE][XAI] target uses per-detection max logits stack: {tuple(saliency.shape)} -> sum scalar")
+                        print(f"[SHAPE][XAI] target uses per-detection top-{k} logits sum: {tuple(saliency.shape)} -> sum scalar")
 
                 saliency = torch.sum(saliency)
                 saliency_target_value = float(saliency.detach().item())
@@ -433,9 +437,11 @@ class BaseCAM:
                  targets: List[torch.nn.Module] = None,
                  aug_smooth: bool = False,
                  eigen_smooth: bool = False,
-                 based_on_objectness = False) -> np.ndarray:
+                 based_on_objectness = False,
+                 class_logit_topk = 1) -> np.ndarray:
 
         self.based_on_objectness = based_on_objectness
+        self.class_logit_topk = class_logit_topk
         # Smooth the CAM result with test time augmentation
         if aug_smooth is True:
             return self.forward_augmentation_smoothing(
