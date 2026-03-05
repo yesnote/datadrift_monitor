@@ -54,7 +54,8 @@ class Explainer():
         if self.model_algorithm == 'Faster_RCNN' or self.model_algorithm == 'SSD300':
             return [self.object_detection_model.model.rpn._modules['head']._modules['cls_logits']]
         else:
-            target_layers = ['model.24.m.0','model.24.m.1','model.24.m.2']
+            # target_layers = ['model.24.m.0','model.24.m.1','model.24.m.2']
+            target_layers = ['model.24.m.2']
             return [find_yolo_layer(self.object_detection_model.model,target_layer) for target_layer in target_layers]
 
 
