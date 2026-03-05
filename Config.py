@@ -140,11 +140,21 @@ class configs:
             "XAI_method": "GradCAM",
             # based the saliency methods on the objectness score (default is true, in YOLOv5 also logits is possible)
             "bbox_normalization": False,
+            # When using class-logit target (saliency-based-on-objectness=False),
+            # use sum of top-k class logits per detection (k=1 keeps previous behavior).
+            "class-logit-topk": 1,
         }
-        self.XAI_params["saliency-based-on-objectness"] = True
+        self.XAI_params["saliency-based-on-objectness"] = False
         self.XAI_params["eigen_smooth"] = (
             False if self.XAI_params["saliency-based-on-objectness"] else True
         )
+        if (
+            self.model_params["model_algorithm"] == "YOLOv5"
+            and not self.XAI_params["saliency-based-on-objectness"]
+        ):
+            self.model_params["xai_decision_threshold"] = self.model_params[
+                "decision_threshold"
+            ]
 
         self.attack_params = {
             "target_model_in_art_wrapper": False,

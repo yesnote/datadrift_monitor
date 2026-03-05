@@ -74,7 +74,7 @@ class Explainer():
                                                              use_cuda=True,
                                                              model_algorithm=self.model_algorithm)
 
-    def apply_explanations(self, images, saliency_based_on_objectness=True,eigen_smooth = False):
+    def apply_explanations(self, images, saliency_based_on_objectness=True,eigen_smooth = False, class_logit_topk=1):
         """
         Wrapper function that applies saliency maps to multiple images.
         :param images: required. numpy array of images (in numpy array format).
@@ -91,7 +91,12 @@ class Explainer():
             if self.model_algorithm== 'Faster_RCNN':
                 saliency_map,predictions,saliency_target_value = self.explain(image,eigen_smooth)
             else:
-                saliency_map,predictions,saliency_target_value = self.explain(image.requires_grad_(requires_grad=True),saliency_based_on_objectness,eigen_smooth)
+                saliency_map,predictions,saliency_target_value = self.explain(
+                    image.requires_grad_(requires_grad=True),
+                    saliency_based_on_objectness,
+                    eigen_smooth,
+                    class_logit_topk,
+                )
             heatmaps.append(saliency_map)
             prediction_dicts.append(predictions)
             saliency_target_values.append(saliency_target_value)
@@ -102,7 +107,7 @@ class Explainer():
         return heatmaps,prediction_dicts
 
 
-    def explain(self,image,saliency_based_on_objectness = False,eigen_smooth=False):
+    def explain(self,image,saliency_based_on_objectness = False,eigen_smooth=False,class_logit_topk=1):
         """
         Function that produce saliency map for a single frame.
         :param image: required. Image in a numpy format.
@@ -110,7 +115,12 @@ class Explainer():
         """
         if self.model_algorithm== "YOLOv5":
             image = image.to(self.object_detection_model.device)
-            heatmap_cam,predictions,saliency_target_value = self.XAI_method(image, eigen_smooth=eigen_smooth, based_on_objectness=saliency_based_on_objectness)
+            heatmap_cam,predictions,saliency_target_value = self.XAI_method(
+                image,
+                eigen_smooth=eigen_smooth,
+                based_on_objectness=saliency_based_on_objectness,
+                class_logit_topk=class_logit_topk,
+            )
         else:
             heatmap_cam,predictions,saliency_target_value = self.XAI_method(image, eigen_smooth=eigen_smooth)
         heatmap_cam = heatmap_cam[0, :]
