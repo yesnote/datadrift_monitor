@@ -2,6 +2,7 @@ import numpy as np
 import torch
 import cv2
 import os
+import contextlib
 import ttach as tta
 import gc
 from typing import Callable, List, Tuple
@@ -111,6 +112,7 @@ class BaseCAM:
         self.debug_shapes = os.getenv('YOLO_SHAPE_DEBUG', '0') == '1'
         self.last_cam_per_layer_pre_relu = []
         self.last_cam_pre_relu = None
+        self.last_image_class_logits = None
 
     """ Get a vector of weights for every channel in the target layer.
         Methods that return weights channels,
@@ -189,6 +191,18 @@ class BaseCAM:
         self.activations_and_grads.model.eval()
         if self.model_algorithm== "YOLOv5":
             predictions, logits,objectivness,x = self.activations_and_grads(input_tensor)
+            # Per-image class-logit summary for logging/saving: max over detections for each class.
+            nc = None
+            with contextlib.suppress(Exception):
+                nc = int(self.model.model.model[-1].nc)
+            if len(logits) > 0 and isinstance(logits[0], torch.Tensor) and logits[0].numel() > 0:
+                self.last_image_class_logits = (
+                    logits[0].max(dim=0).values.detach().cpu().numpy().astype(np.float32)
+                )
+            else:
+                if nc is None:
+                    nc = 0
+                self.last_image_class_logits = np.zeros((nc,), dtype=np.float32)
             if self.debug_shapes:
                 def _shape_info(v):
                     if isinstance(v, torch.Tensor):

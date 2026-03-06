@@ -47,6 +47,7 @@ class Explainer():
         self.model_algorithm = model_algorithm
         self.last_saliency_target_values = []
         self.last_pre_relu_cams = []
+        self.last_class_logits = []
         self.target_layers = self.set_target_layer()
         self.XAI_method = self.init_XAI_method(XAI_method)
 
@@ -54,8 +55,8 @@ class Explainer():
         if self.model_algorithm == 'Faster_RCNN' or self.model_algorithm == 'SSD300':
             return [self.object_detection_model.model.rpn._modules['head']._modules['cls_logits']]
         else:
-            # target_layers = ['model.24.m.0','model.24.m.1','model.24.m.2']
-            target_layers = ['model.24.m.2']
+            target_layers = ['model.24.m.0','model.24.m.1','model.24.m.2']
+            # target_layers = ['model.24.m.2']
             return [find_yolo_layer(self.object_detection_model.model,target_layer) for target_layer in target_layers]
 
 
@@ -87,6 +88,7 @@ class Explainer():
         prediction_dicts = []
         saliency_target_values = []
         self.last_pre_relu_cams = []
+        self.last_class_logits = []
         GPUtil.showUtilization()
         for image in tqdm(images, desc="Explain images"):
             if self.model_algorithm== 'Faster_RCNN':
@@ -102,6 +104,7 @@ class Explainer():
             prediction_dicts.append(predictions)
             saliency_target_values.append(saliency_target_value)
             self.last_pre_relu_cams.append(getattr(self.XAI_method, 'last_cam_pre_relu', None))
+            self.last_class_logits.append(getattr(self.XAI_method, 'last_image_class_logits', None))
             del saliency_map
             # GPUtil.showUtilization()
         self.last_saliency_target_values = saliency_target_values

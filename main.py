@@ -253,6 +253,13 @@ class dil_interface:
             )
         if len(selected_file_names) == 0:
             print("No images with final predictions for XAI. Skipping XAI visualization.")
+            num_classes = int(self.model_params.get("num_of_classes", 0))
+            logits_array = np.empty((0, num_classes), dtype=np.float32)
+            stats_dir = os.path.join(os.path.dirname(output_path), "stats")
+            os.makedirs(stats_dir, exist_ok=True)
+            logits_output_path = os.path.join(stats_dir, "logits.npy")
+            np.save(logits_output_path, logits_array)
+            print(f"Saved logits: {logits_output_path} shape={logits_array.shape}")
             return [float("nan")] * len(file_names), []
 
         saliency_maps, _ = exp.apply_explanations(
@@ -264,6 +271,41 @@ class dil_interface:
             class_logit_topk=self.xai_params.get("class-logit-topk", 1),
         )
         saliency_target_values = getattr(exp, "last_saliency_target_values", [])
+        image_class_logits = getattr(exp, "last_class_logits", [])
+        pre_relu_cams = getattr(exp, "last_pre_relu_cams", [])
+        num_classes = int(self.model_params.get("num_of_classes", 0))
+        if num_classes <= 0:
+            for v in image_class_logits:
+                if v is not None:
+                    num_classes = int(np.asarray(v).reshape(-1).shape[0])
+                    break
+        # Save logits in 1:1 alignment with actually saved XAI images.
+        # For each base XAI image, append one row; if pre-ReLU image is also saved, append the same row again.
+        logits_rows = []
+        for local_idx in range(len(selected_file_names)):
+            if local_idx >= len(image_class_logits):
+                continue
+            vec = image_class_logits[local_idx]
+            if vec is None:
+                continue
+            row = np.zeros((num_classes,), dtype=np.float32)
+            vec = np.asarray(vec, dtype=np.float32).reshape(-1)
+            c = min(num_classes, vec.shape[0])
+            if c > 0:
+                row[:c] = vec[:c]
+            logits_rows.append(row.copy())  # base XAI image
+            if local_idx < len(pre_relu_cams) and pre_relu_cams[local_idx] is not None:
+                logits_rows.append(row.copy())  # pre-ReLU XAI image
+        logits_array = (
+            np.stack(logits_rows).astype(np.float32)
+            if len(logits_rows) > 0
+            else np.empty((0, num_classes), dtype=np.float32)
+        )
+        stats_dir = os.path.join(os.path.dirname(output_path), "stats")
+        os.makedirs(stats_dir, exist_ok=True)
+        logits_output_path = os.path.join(stats_dir, "logits.npy")
+        np.save(logits_output_path, logits_array)
+        print(f"Saved logits: {logits_output_path} shape={logits_array.shape}")
         xai_file_names = [
             f"{file_name}_o{target_value:.4f}"
             for file_name, target_value in zip(selected_file_names, saliency_target_values)
@@ -609,7 +651,7 @@ if __name__ == "__main__":
 
     # Select here the evaluation space and use case
     evaluation_space = evaluation_space_options[0]
-    evaluation_use_case = evaluation_use_case_options[2]
+    evaluation_use_case = evaluation_use_case_options[0]
 
     #  Upload the images and their corresponding file ids from the chosen dataset.
     if evaluation_space == "digital":
