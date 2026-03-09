@@ -270,7 +270,6 @@ class dil_interface:
             eigen_smooth=self.xai_params["eigen_smooth"],
             class_logit_topk=self.xai_params.get("class-logit-topk", 1),
         )
-        saliency_target_values = getattr(exp, "last_saliency_target_values", [])
         image_class_logits = getattr(exp, "last_class_logits", [])
         pre_relu_cams = getattr(exp, "last_pre_relu_cams", [])
         num_classes = int(self.model_params.get("num_of_classes", 0))
@@ -306,25 +305,6 @@ class dil_interface:
         logits_output_path = os.path.join(stats_dir, "logits.npy")
         np.save(logits_output_path, logits_array)
         print(f"Saved logits: {logits_output_path} shape={logits_array.shape}")
-        xai_file_names = [
-            f"{file_name}_o{target_value:.4f}"
-            for file_name, target_value in zip(selected_file_names, saliency_target_values)
-        ]
-        if len(xai_file_names) < len(selected_file_names):
-            xai_file_names.extend(
-                [
-                    f"{file_name}_oNA"
-                    for file_name in selected_file_names[len(xai_file_names) :]
-                ]
-            )
-        exp.visualize(
-            original_images=selected_images,
-            heatmap_cams=saliency_maps,
-            prediction_dicts=selected_base_model_preds,
-            output_path=output_path,
-            bbox_renormalize=config.XAI_params["bbox_normalization"],
-            file_names=xai_file_names,
-        )
         self.od_model.model.eval()
         complete_localization_score, complete_localization_list = saliency_sum(
             saliency_maps
@@ -339,6 +319,25 @@ class dil_interface:
                 complete_localization_list, background_localization_list
             )
         ]
+        xai_file_names = [
+            f"{file_name}_DiL{dil_value:.4f}"
+            for file_name, dil_value in zip(selected_file_names, distinctive_localization_score)
+        ]
+        if len(xai_file_names) < len(selected_file_names):
+            xai_file_names.extend(
+                [
+                    f"{file_name}_DiLNA"
+                    for file_name in selected_file_names[len(xai_file_names) :]
+                ]
+            )
+        exp.visualize(
+            original_images=selected_images,
+            heatmap_cams=saliency_maps,
+            prediction_dicts=selected_base_model_preds,
+            output_path=output_path,
+            bbox_renormalize=config.XAI_params["bbox_normalization"],
+            file_names=xai_file_names,
+        )
         if mode == "clean":
             print(f"Mean complete localization score: {complete_localization_score}")
             print(
