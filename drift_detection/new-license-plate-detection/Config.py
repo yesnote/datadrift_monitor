@@ -144,7 +144,7 @@ class configs:
             # use sum of top-k class logits per detection (k=1 keeps previous behavior).
             "class-logit-topk": 1,
         }
-        self.XAI_params["saliency-based-on-objectness"] = True
+        self.XAI_params["saliency-based-on-objectness"] = False
         self.XAI_params["eigen_smooth"] = (
             False if self.XAI_params["saliency-based-on-objectness"] else True
         )
