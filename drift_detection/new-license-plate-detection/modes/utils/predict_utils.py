@@ -1,6 +1,7 @@
 import json
 from pathlib import Path
 
+import cv2
 import numpy as np
 import torch
 
@@ -127,14 +128,21 @@ def register_layer_hooks(model, target_layers):
     return activations, handles
 
 
-def parse_grad_config(predict_cfg):
-    cue = str(predict_cfg.get("cue", "grad")).lower()
+def parse_output_config(output_cfg):
+    save_csv_cfg = output_cfg.get("save_csv", {})
+    if isinstance(save_csv_cfg, bool):
+        save_csv_enabled = save_csv_cfg
+        cue = "grad"
+        grad_cfg = {}
+    else:
+        save_csv_enabled = bool(save_csv_cfg.get("enabled", True))
+        cue = str(save_csv_cfg.get("cue", "grad")).lower()
+        grad_cfg = save_csv_cfg.get("grad", {})
+
     if cue != "grad":
-        raise ValueError(f"Unsupported predict.cue='{cue}'. Only 'grad' is supported.")
+        raise ValueError(f"Unsupported output.save_csv.cue='{cue}'. Only 'grad' is supported.")
 
-    grad_cfg = predict_cfg.get("grad", {})
     iou_match_threshold = float(grad_cfg.get("iou_match_threshold", 0.5))
-
     target_values = [v.lower() for v in normalize_to_list(grad_cfg.get("target_value", ["obj"]))]
     valid_values = {"obj", "cls"}
     invalid_values = [v for v in target_values if v not in valid_values]
@@ -142,10 +150,34 @@ def parse_grad_config(predict_cfg):
         raise ValueError(f"Unsupported target_value(s): {invalid_values}. Use {sorted(valid_values)}")
 
     target_layers = normalize_to_list(grad_cfg.get("target_layer", []))
-    if not target_layers:
-        raise ValueError("predict.grad.target_layer must contain at least one layer name.")
+    if not target_layers and save_csv_enabled:
+        raise ValueError("output.save_csv.grad.target_layer must contain at least one layer name.")
 
-    return iou_match_threshold, target_values, target_layers
+    save_image_cfg = output_cfg.get("save_image", {})
+    if isinstance(save_image_cfg, bool):
+        save_image_enabled = save_image_cfg
+        image_step = 1
+        image_num = 1
+    else:
+        save_image_enabled = bool(save_image_cfg.get("enabled", False))
+        image_step = int(save_image_cfg.get("step", 1))
+        image_num = int(save_image_cfg.get("num", 1))
+
+    if image_step <= 0:
+        raise ValueError("output.save_image.step must be >= 1.")
+    if image_num <= 0:
+        raise ValueError("output.save_image.num must be >= 1.")
+
+    return {
+        "save_csv_enabled": save_csv_enabled,
+        "cue": cue,
+        "iou_match_threshold": iou_match_threshold,
+        "target_values": target_values,
+        "target_layers": target_layers,
+        "save_image_enabled": save_image_enabled,
+        "image_step": image_step,
+        "image_num": image_num,
+    }
 
 
 def build_target_scalar(target_value, preds, logits, objectness):
@@ -221,7 +253,7 @@ def preprocess_with_letterbox(detector, image_tensor, device):
     resized = np.ascontiguousarray(resized)
     input_tensor = torch.from_numpy(resized).float().unsqueeze(0).to(device) / 255.0
     input_tensor.requires_grad_(True)
-    return input_tensor, ratio, pad
+    return input_tensor, ratio, pad, resized
 
 
 def map_boxes_to_letterbox(boxes_tensor, ratio, pad):
@@ -233,6 +265,25 @@ def map_boxes_to_letterbox(boxes_tensor, ratio, pad):
     boxes[:, [0, 2]] = boxes[:, [0, 2]] * ratio_w + pad_w
     boxes[:, [1, 3]] = boxes[:, [1, 3]] * ratio_h + pad_h
     return boxes.tolist()
+
+
+def draw_predictions(image_chw, boxes, labels, scores):
+    # image_chw: C,H,W uint8
+    image = np.transpose(image_chw, (1, 2, 0)).copy()
+    for box, label, score in zip(boxes, labels, scores):
+        x1, y1, x2, y2 = [int(v) for v in box]
+        cv2.rectangle(image, (x1, y1), (x2, y2), (0, 220, 0), 2)
+        cv2.putText(
+            image,
+            f"{label}:{float(score):.2f}",
+            (x1, max(0, y1 - 6)),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.5,
+            (255, 255, 0),
+            1,
+            cv2.LINE_AA,
+        )
+    return image
 
 
 def has_fn_for_image(gt_boxes, gt_class_names, pred_boxes, pred_class_names, iou_match_threshold):
