@@ -228,6 +228,42 @@ def collect_gradients(target_values, target_layers, preds, logits, objectness, a
     return grad_stats
 
 
+def collect_gradients_per_target(detector, input_tensor, target_values, target_layers, activations):
+    grad_stats = {}
+    for target_value in target_values:
+        detector.zero_grad(set_to_none=True)
+        activations.clear()
+        grad_input = input_tensor.detach().clone().requires_grad_(True)
+        preds, logits, objectness, _features = detector(grad_input)
+        target_scalar = build_target_scalar(target_value, preds, logits, objectness)
+
+        if target_scalar is None:
+            for layer_name in target_layers:
+                grad_stats[f"d{target_value}_d{layer_name}"] = []
+            del grad_input, preds, logits, objectness, _features
+            continue
+
+        fmap_list = [activations.get(layer_name) for layer_name in target_layers]
+        grads = torch.autograd.grad(
+            target_scalar,
+            fmap_list,
+            retain_graph=False,
+            allow_unused=True,
+        )
+
+        for layer_name, grad in zip(target_layers, grads):
+            key = f"d{target_value}_d{layer_name}"
+            if grad is None:
+                grad_stats[key] = []
+            else:
+                grad_stats[key] = get_channel_stats(grad.detach())
+
+        del grad_input, preds, logits, objectness, _features, grads, target_scalar
+
+    activations.clear()
+    return grad_stats
+
+
 def get_channel_stats(grad_tensor):
     # Expect [B, C, H, W] from conv feature maps; reduce over spatial dims per channel.
     if grad_tensor.ndim == 4:
@@ -249,7 +285,7 @@ def get_channel_stats(grad_tensor):
     return stacked.cpu().tolist()
 
 
-def preprocess_with_letterbox(detector, image_tensor, device):
+def preprocess_with_letterbox(detector, image_tensor, device, requires_grad=True):
     image_np = image_tensor.permute(1, 2, 0).cpu().numpy()
     image_np = np.clip(image_np * 255.0, 0, 255).astype(np.uint8)
 
@@ -257,7 +293,7 @@ def preprocess_with_letterbox(detector, image_tensor, device):
     resized = resized.transpose((2, 0, 1))
     resized = np.ascontiguousarray(resized)
     input_tensor = torch.from_numpy(resized).float().unsqueeze(0).to(device) / 255.0
-    input_tensor.requires_grad_(True)
+    input_tensor.requires_grad_(requires_grad)
     return input_tensor, ratio, pad, resized
 
 
