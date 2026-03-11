@@ -121,7 +121,8 @@ class LayerGradBuffer:
         for layer_name in self.target_layers:
             module = resolve_module_by_name(model, layer_name)
             self.handles.append(module.register_forward_hook(self._make_forward_hook(layer_name)))
-            self.handles.append(module.register_full_backward_hook(self._make_backward_hook(layer_name)))
+            # Match ref/DiL behavior: use backward hook for gradient capture.
+            self.handles.append(module.register_backward_hook(self._make_backward_hook(layer_name)))
 
     def _make_forward_hook(self, layer_name):
         def hook(_module, _inputs, output):
@@ -248,6 +249,7 @@ def collect_gradients_per_target(detector, input_tensor, target_values, target_l
                 grad_stats[key] = get_channel_stats(grad.detach())
 
         del grad_input, preds, logits, objectness, _features, target_scalar
+        detector.zero_grad(set_to_none=True)
         layer_buffer.clear()
 
     layer_buffer.clear()
