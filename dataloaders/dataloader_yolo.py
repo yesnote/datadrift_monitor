@@ -44,6 +44,10 @@ def build_dataset(config, split="train"):
         if ann_file:
             ann_path = str(Path(root) / dataset_cfg["annotation_dir"] / ann_file)
         image_dir = str(Path(root) / dataset_cfg["image_dir"] / coco_split)
+        if not Path(image_dir).is_dir():
+            fallback_dir = Path(root) / coco_split
+            if fallback_dir.is_dir():
+                image_dir = str(fallback_dir)
         return COCODataset(
             root=root,
             split=coco_split,

@@ -10,7 +10,9 @@ from modes.utils.predict_utils import (
     get_annotation_path,
     has_fn_for_image,
     load_coco_category_maps,
+    map_boxes_to_letterbox,
     parse_grad_config,
+    preprocess_with_letterbox,
     register_layer_hooks,
 )
 
@@ -27,6 +29,10 @@ def run_predict(config, run_dir):
     annotation_path = get_annotation_path(config, split)
     catid_to_name = load_coco_category_maps(annotation_path)
     dataloader = create_dataloader(config, split=split)
+    if len(dataloader.dataset) == 0:
+        raise ValueError(
+            "Loaded 0 images. Check dataset root/image_dir/split configuration in YAML."
+        )
     detector, device = build_detector(config)
     activations, hook_handles = register_layer_hooks(detector.model, target_layers)
 
@@ -36,8 +42,8 @@ def run_predict(config, run_dir):
             raise ValueError("For predict export, dataloader batch_size must be 1.")
 
         detector.zero_grad(set_to_none=True)
-        images = images.to(device)
-        preds, logits, objectness, _features = detector(images)
+        input_tensor, ratio, pad = preprocess_with_letterbox(detector, images[0], device)
+        preds, logits, objectness, _features = detector(input_tensor)
 
         target = targets[0]
         row = {
@@ -50,7 +56,7 @@ def run_predict(config, run_dir):
             pred_class_names = preds[2][0]
             gt_boxes_tensor = target["boxes"]
             gt_labels_tensor = target["labels"]
-            gt_boxes = gt_boxes_tensor.tolist() if gt_boxes_tensor.numel() else []
+            gt_boxes = map_boxes_to_letterbox(gt_boxes_tensor, ratio, pad)
             gt_class_names = [catid_to_name.get(int(label), "__unknown__") for label in gt_labels_tensor.tolist()]
             row["has_fn"] = has_fn_for_image(
                 gt_boxes=gt_boxes,
