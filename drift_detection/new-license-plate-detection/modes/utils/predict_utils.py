@@ -166,14 +166,14 @@ def build_target_scalar(target_value, preds, logits, objectness):
 
 
 def collect_gradients(target_values, target_layers, preds, logits, objectness, activations):
-    grad_metrics = {}
+    grad_tensors = {}
     for target_value in target_values:
         target_scalar = build_target_scalar(target_value, preds, logits, objectness)
         for layer_name in target_layers:
             key = f"d{target_value}_d{layer_name}"
             fmap = activations.get(layer_name)
             if fmap is None or target_scalar is None:
-                grad_metrics[key] = 0.0
+                grad_tensors[key] = torch.zeros(0, dtype=torch.float32)
                 continue
             grad = torch.autograd.grad(
                 target_scalar,
@@ -182,10 +182,10 @@ def collect_gradients(target_values, target_layers, preds, logits, objectness, a
                 allow_unused=True,
             )[0]
             if grad is None:
-                grad_metrics[key] = 0.0
+                grad_tensors[key] = torch.zeros_like(fmap.detach().cpu())
             else:
-                grad_metrics[key] = float(grad.detach().abs().mean().item())
-    return grad_metrics
+                grad_tensors[key] = grad.detach().cpu()
+    return grad_tensors
 
 
 def has_fn_for_image(gt_boxes, gt_class_names, pred_boxes, pred_class_names, iou_match_threshold):
