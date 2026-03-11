@@ -31,4 +31,7 @@ dataloader:
 predict:
   split: train
   iou_match_threshold: 0.5
+  target_value: [obj, cls]
+  target_layer: [P3, P4, P5]
+  save_grad_tensors: true
   output_csv_name: fn_gt_train.csv
