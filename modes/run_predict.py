@@ -1,0 +1,104 @@
+import csv
+import json
+
+from dataloaders.dataloader_yolo import create_dataloader
+from modes.utils.predict_utils import (
+    build_detector,
+    collect_gradients,
+    get_annotation_path,
+    has_fn_for_image,
+    load_coco_category_maps,
+    parse_grad_config,
+    register_layer_hooks,
+)
+
+
+def run_predict(config, run_dir):
+    predict_cfg = config.get("predict", {})
+    split = predict_cfg.get("split", "val")
+    save_fn = bool(predict_cfg.get("save_fn", True))
+    iou_match_threshold, target_values, target_layers = parse_grad_config(predict_cfg)
+
+    output_csv = run_dir / "predict_results.csv"
+    annotation_path = get_annotation_path(config, split)
+    catid_to_name = load_coco_category_maps(annotation_path)
+    dataloader = create_dataloader(config, split=split)
+    detector, device = build_detector(config)
+    activations, hook_handles = register_layer_hooks(detector.model, target_layers)
+
+    rows = []
+    for images, targets in dataloader:
+        if images.shape[0] != 1:
+            raise ValueError("For predict export, dataloader batch_size must be 1.")
+
+        detector.zero_grad(set_to_none=True)
+        images = images.to(device)
+        preds, logits, objectness, _features = detector(images)
+
+        target = targets[0]
+        row = {
+            "image_id": int(target["image_id"][0].item()),
+            "image_path": target["path"],
+        }
+
+        if save_fn:
+            pred_boxes = preds[0][0]
+            pred_class_names = preds[2][0]
+            gt_boxes_tensor = target["boxes"]
+            gt_labels_tensor = target["labels"]
+            gt_boxes = gt_boxes_tensor.tolist() if gt_boxes_tensor.numel() else []
+            gt_class_names = [catid_to_name.get(int(label), "__unknown__") for label in gt_labels_tensor.tolist()]
+            row["has_fn"] = has_fn_for_image(
+                gt_boxes=gt_boxes,
+                gt_class_names=gt_class_names,
+                pred_boxes=pred_boxes,
+                pred_class_names=pred_class_names,
+                iou_match_threshold=iou_match_threshold,
+            )
+
+        grad_metrics = collect_gradients(
+            target_values=target_values,
+            target_layers=target_layers,
+            preds=preds,
+            logits=logits,
+            objectness=objectness,
+            activations=activations,
+        )
+        row.update(grad_metrics)
+        rows.append(row)
+
+    for handle in hook_handles:
+        handle.remove()
+
+    fieldnames = ["image_id", "image_path"]
+    if save_fn:
+        fieldnames.append("has_fn")
+    for target_value in target_values:
+        for layer_name in target_layers:
+            fieldnames.append(f"d{target_value}_d{layer_name}")
+
+    with open(output_csv, "w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerows(rows)
+
+    summary = {
+        "mode": "predict",
+        "cue": "grad",
+        "split": split,
+        "save_fn": save_fn,
+        "target_values": target_values,
+        "target_layers": target_layers,
+        "total_images": len(rows),
+        "output_csv": str(output_csv),
+    }
+    if save_fn:
+        fn_images = sum(r["has_fn"] for r in rows)
+        summary["fn_images"] = fn_images
+        summary["fn_ratio"] = (fn_images / len(rows)) if rows else 0.0
+
+    with open(run_dir / "summary.json", "w", encoding="utf-8") as f:
+        json.dump(summary, f, ensure_ascii=False, indent=2)
+
+    print(f"Saved results CSV: {output_csv}")
+    print(f"Saved summary: {run_dir / 'summary.json'}")

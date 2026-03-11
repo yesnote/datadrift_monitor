@@ -1,0 +1,206 @@
+import json
+from pathlib import Path
+
+import torch
+
+from models.yolo.models.yolo_v5_object_detector import YOLOV5TorchObjectDetector
+
+
+def box_iou_xyxy(box_a, box_b):
+    ax1, ay1, ax2, ay2 = box_a
+    bx1, by1, bx2, by2 = box_b
+
+    inter_x1 = max(ax1, bx1)
+    inter_y1 = max(ay1, by1)
+    inter_x2 = min(ax2, bx2)
+    inter_y2 = min(ay2, by2)
+
+    inter_w = max(0.0, inter_x2 - inter_x1)
+    inter_h = max(0.0, inter_y2 - inter_y1)
+    inter_area = inter_w * inter_h
+
+    area_a = max(0.0, ax2 - ax1) * max(0.0, ay2 - ay1)
+    area_b = max(0.0, bx2 - bx1) * max(0.0, by2 - by1)
+    union = area_a + area_b - inter_area
+    if union <= 0.0:
+        return 0.0
+    return inter_area / union
+
+
+def normalize_to_list(value):
+    if value is None:
+        return []
+    if isinstance(value, (list, tuple)):
+        return [str(v).strip() for v in value if str(v).strip()]
+    return [v.strip() for v in str(value).split(",") if v.strip()]
+
+
+def get_dataset_cfg(config):
+    dataset_root_cfg = config["dataset"]
+    used_dataset = dataset_root_cfg["used_dataset"]
+    if used_dataset.lower() != "coco":
+        raise ValueError("Predict mode currently supports COCO only.")
+    if used_dataset not in dataset_root_cfg:
+        raise ValueError(f"dataset.{used_dataset} is missing in config.")
+    return dataset_root_cfg[used_dataset]
+
+
+def get_annotation_path(config, split):
+    dataset_cfg = get_dataset_cfg(config)
+    root = Path(dataset_cfg["root"])
+    ann_dir = dataset_cfg["annotation_dir"]
+    ann_name = dataset_cfg[f"{split}_annotation_file"]
+    return root / ann_dir / ann_name
+
+
+def load_coco_category_maps(annotation_path):
+    with open(annotation_path, "r", encoding="utf-8") as f:
+        payload = json.load(f)
+    return {int(c["id"]): c["name"] for c in payload.get("categories", [])}
+
+
+def build_detector(config):
+    model_cfg = config["model"]
+    device_str = model_cfg.get("device", "cuda")
+    if device_str == "cuda" and not torch.cuda.is_available():
+        device_str = "cpu"
+    device = torch.device(device_str)
+
+    confidence = model_cfg.get("confidence_threshold", 0.4)
+    iou_thresh = model_cfg.get("iou_threshold", 0.45)
+
+    detector = YOLOV5TorchObjectDetector(
+        model_weight=model_cfg["weights"],
+        device=device,
+        img_size=(model_cfg["img_size"], model_cfg["img_size"]),
+        names=None,
+        mode="eval",
+        confidence=confidence,
+        iou_thresh=iou_thresh,
+    )
+    detector.eval().to(device)
+    return detector, device
+
+
+def resolve_module_by_name(model, layer_name):
+    node = model
+    for token in layer_name.split("."):
+        if token.isdigit():
+            idx = int(token)
+            if hasattr(node, "__getitem__"):
+                node = node[idx]
+            elif token in node._modules:
+                node = node._modules[token]
+            else:
+                raise ValueError(f"Cannot index '{token}' in layer path '{layer_name}'")
+            continue
+
+        if hasattr(node, token):
+            node = getattr(node, token)
+            continue
+        if hasattr(node, "_modules") and token in node._modules:
+            node = node._modules[token]
+            continue
+        raise ValueError(f"Layer token '{token}' not found in path '{layer_name}'")
+
+    return node
+
+
+def register_layer_hooks(model, target_layers):
+    activations = {}
+    handles = []
+
+    def make_hook(name):
+        def hook(_module, _inputs, output):
+            if isinstance(output, (tuple, list)):
+                output = output[0]
+            activations[name] = output
+        return hook
+
+    for layer_name in target_layers:
+        module = resolve_module_by_name(model, layer_name)
+        handles.append(module.register_forward_hook(make_hook(layer_name)))
+
+    return activations, handles
+
+
+def parse_grad_config(predict_cfg):
+    cue = str(predict_cfg.get("cue", "grad")).lower()
+    if cue != "grad":
+        raise ValueError(f"Unsupported predict.cue='{cue}'. Only 'grad' is supported.")
+
+    grad_cfg = predict_cfg.get("grad", {})
+    iou_match_threshold = float(grad_cfg.get("iou_match_threshold", 0.5))
+
+    target_values = [v.lower() for v in normalize_to_list(grad_cfg.get("target_value", ["obj"]))]
+    valid_values = {"obj", "cls"}
+    invalid_values = [v for v in target_values if v not in valid_values]
+    if invalid_values:
+        raise ValueError(f"Unsupported target_value(s): {invalid_values}. Use {sorted(valid_values)}")
+
+    target_layers = normalize_to_list(grad_cfg.get("target_layer", []))
+    if not target_layers:
+        raise ValueError("predict.grad.target_layer must contain at least one layer name.")
+
+    return iou_match_threshold, target_values, target_layers
+
+
+def build_target_scalar(target_value, preds, logits, objectness):
+    if target_value == "obj":
+        if len(objectness) == 0 or objectness[0].numel() == 0:
+            return None
+        return objectness[0].sum()
+
+    if target_value == "cls":
+        if len(logits) == 0 or logits[0].numel() == 0:
+            return None
+        pred_classes = preds[1][0]
+        if len(pred_classes) == 0:
+            return None
+        cls_idx = torch.tensor(pred_classes, device=logits[0].device, dtype=torch.long)
+        cls_idx = cls_idx.clamp_(0, logits[0].shape[1] - 1)
+        det_idx = torch.arange(cls_idx.shape[0], device=logits[0].device)
+        return logits[0][det_idx, cls_idx].sum()
+
+    raise ValueError(f"Unsupported target_value: {target_value}")
+
+
+def collect_gradients(target_values, target_layers, preds, logits, objectness, activations):
+    grad_metrics = {}
+    for target_value in target_values:
+        target_scalar = build_target_scalar(target_value, preds, logits, objectness)
+        for layer_name in target_layers:
+            key = f"d{target_value}_d{layer_name}"
+            fmap = activations.get(layer_name)
+            if fmap is None or target_scalar is None:
+                grad_metrics[key] = 0.0
+                continue
+            grad = torch.autograd.grad(
+                target_scalar,
+                fmap,
+                retain_graph=True,
+                allow_unused=True,
+            )[0]
+            if grad is None:
+                grad_metrics[key] = 0.0
+            else:
+                grad_metrics[key] = float(grad.detach().abs().mean().item())
+    return grad_metrics
+
+
+def has_fn_for_image(gt_boxes, gt_class_names, pred_boxes, pred_class_names, iou_match_threshold):
+    matched_pred_indices = set()
+    for gt_box, gt_name in zip(gt_boxes, gt_class_names):
+        found_match = False
+        for pred_idx, (pred_box, pred_name) in enumerate(zip(pred_boxes, pred_class_names)):
+            if pred_idx in matched_pred_indices:
+                continue
+            if gt_name != pred_name:
+                continue
+            if box_iou_xyxy(gt_box, pred_box) >= iou_match_threshold:
+                matched_pred_indices.add(pred_idx)
+                found_match = True
+                break
+        if not found_match:
+            return 1
+    return 0
