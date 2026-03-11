@@ -1,6 +1,7 @@
 import json
 from pathlib import Path
 
+import numpy as np
 import torch
 
 from models.yolo.models.yolo_v5_object_detector import YOLOV5TorchObjectDetector
@@ -186,6 +187,28 @@ def collect_gradients(target_values, target_layers, preds, logits, objectness, a
             else:
                 grad_tensors[key] = grad.detach().cpu()
     return grad_tensors
+
+
+def preprocess_with_letterbox(detector, image_tensor, device):
+    image_np = image_tensor.permute(1, 2, 0).cpu().numpy()
+    image_np = np.clip(image_np * 255.0, 0, 255).astype(np.uint8)
+
+    resized, ratio, pad = detector.yolo_resize(image_np, new_shape=detector.img_size)
+    resized = resized.transpose((2, 0, 1))
+    resized = np.ascontiguousarray(resized)
+    input_tensor = torch.from_numpy(resized).float().unsqueeze(0).to(device) / 255.0
+    return input_tensor, ratio, pad
+
+
+def map_boxes_to_letterbox(boxes_tensor, ratio, pad):
+    if boxes_tensor.numel() == 0:
+        return []
+    ratio_w, ratio_h = ratio
+    pad_w, pad_h = pad
+    boxes = boxes_tensor.clone().float()
+    boxes[:, [0, 2]] = boxes[:, [0, 2]] * ratio_w + pad_w
+    boxes[:, [1, 3]] = boxes[:, [1, 3]] * ratio_h + pad_h
+    return boxes.tolist()
 
 
 def has_fn_for_image(gt_boxes, gt_class_names, pred_boxes, pred_class_names, iou_match_threshold):

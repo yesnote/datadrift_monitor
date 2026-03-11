@@ -10,7 +10,6 @@ import torch.nn as nn
 from models.yolo.models.common import Conv
 # from common import Conv
 from models.yolo.utils.downloads import attempt_download
-from models.yolo.models.yolo import Detect, Model
 
 class Sum(nn.Module):
     # Weighted sum of 2 or more layers https://arxiv.org/abs/1911.09070
@@ -91,9 +90,10 @@ def attempt_load(weights, device=None, inplace=True, fuse=True):
     # Compatibility updates
     for m in model.modules():
         t = type(m)
-        if t in (nn.Hardswish, nn.LeakyReLU, nn.ReLU, nn.ReLU6, nn.SiLU, Detect, Model):
+        t_name = t.__name__
+        if t in (nn.Hardswish, nn.LeakyReLU, nn.ReLU, nn.ReLU6, nn.SiLU) or t_name in ("Detect", "Model"):
             m.inplace = inplace  # torch 1.7.0 compatibility
-            if t is Detect and not isinstance(m.anchor_grid, list):
+            if t_name == "Detect" and not isinstance(m.anchor_grid, list):
                 delattr(m, 'anchor_grid')
                 setattr(m, 'anchor_grid', [torch.zeros(1)] * m.nl)
         elif t is Conv:
