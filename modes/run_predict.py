@@ -75,6 +75,7 @@ def run_predict(config, run_dir):
 
             for sample_idx in range(batch_size):
                 detector.zero_grad(set_to_none=True)
+                activations.clear()
                 input_tensor, ratio, pad, resized_chw = preprocess_with_letterbox(
                     detector, images[sample_idx], device
                 )
@@ -136,6 +137,7 @@ def run_predict(config, run_dir):
                 del input_tensor, preds, logits, objectness, _features
                 if compute_grads:
                     del grad_stats
+                activations.clear()
                 if device.type == "cuda":
                     torch.cuda.empty_cache()
     finally:
