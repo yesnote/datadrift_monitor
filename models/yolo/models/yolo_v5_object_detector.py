@@ -19,7 +19,7 @@ class YOLOV5TorchObjectDetector(nn.Module):
                  img_size,
                  names=None,
                  mode='eval',
-                 confidence=0.4,
+                 confidence=0.25,
                  iou_thresh=0.45,
                  agnostic_nms=True,
                  fuse=True):
