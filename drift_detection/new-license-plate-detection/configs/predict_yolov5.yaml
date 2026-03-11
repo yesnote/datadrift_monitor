@@ -1,0 +1,34 @@
+mode: predict
+
+model:
+  type: yolov5
+  weights: yolov5x.pt
+  img_size: 640
+  confidence_threshold: 0.25
+  iou_threshold: 0.45
+  device: cuda
+
+dataset:
+  used_dataset: coco
+  coco:
+    root: datasets/DiL datasets/COCO
+    train_split: train2017
+    val_split: val2017
+    test_split: test2017
+    image_dir: images
+    annotation_dir: annotations
+    train_annotation_file: instances_train2017.json
+    val_annotation_file: instances_val2017.json
+    test_annotation_file: instances_test2017.json
+
+dataloader:
+  batch_size: 1
+  num_workers: 0
+  pin_memory: false
+  shuffle_train: false
+  shuffle_eval: false
+
+predict:
+  split: train
+  iou_match_threshold: 0.5
+  output_csv_name: fn_gt_train.csv
