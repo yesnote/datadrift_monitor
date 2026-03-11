@@ -62,6 +62,7 @@ def load_coco_category_maps(annotation_path):
 
 
 def build_detector(config):
+    torch.backends.cudnn.benchmark = False
     model_cfg = config["model"]
     device_str = model_cfg.get("device", "cuda")
     if device_str == "cuda" and not torch.cuda.is_available():
@@ -110,22 +111,43 @@ def resolve_module_by_name(model, layer_name):
     return node
 
 
-def register_layer_hooks(model, target_layers):
-    activations = {}
-    handles = []
+class LayerGradBuffer:
+    def __init__(self, model, target_layers):
+        self.target_layers = list(target_layers)
+        self.activations = {}
+        self.gradients = {}
+        self.handles = []
 
-    def make_hook(name):
+        for layer_name in self.target_layers:
+            module = resolve_module_by_name(model, layer_name)
+            self.handles.append(module.register_forward_hook(self._make_forward_hook(layer_name)))
+            self.handles.append(module.register_full_backward_hook(self._make_backward_hook(layer_name)))
+
+    def _make_forward_hook(self, layer_name):
         def hook(_module, _inputs, output):
             if isinstance(output, (tuple, list)):
                 output = output[0]
-            activations[name] = output
+            self.activations[layer_name] = output
         return hook
 
-    for layer_name in target_layers:
-        module = resolve_module_by_name(model, layer_name)
-        handles.append(module.register_forward_hook(make_hook(layer_name)))
+    def _make_backward_hook(self, layer_name):
+        def hook(_module, _grad_input, grad_output):
+            grad = grad_output[0] if isinstance(grad_output, (tuple, list)) else grad_output
+            self.gradients[layer_name] = grad
+        return hook
 
-    return activations, handles
+    def clear(self):
+        self.activations.clear()
+        self.gradients.clear()
+
+    def remove(self):
+        for handle in self.handles:
+            handle.remove()
+        self.handles = []
+
+
+def create_layer_grad_buffer(model, target_layers):
+    return LayerGradBuffer(model=model, target_layers=target_layers)
 
 
 def parse_output_config(output_cfg):
@@ -200,39 +222,11 @@ def build_target_scalar(target_value, preds, logits, objectness):
     raise ValueError(f"Unsupported target_value: {target_value}")
 
 
-def collect_gradients(target_values, target_layers, preds, logits, objectness, activations):
-    grad_stats = {}
-    num_targets = len(target_values)
-    for target_idx, target_value in enumerate(target_values):
-        target_scalar = build_target_scalar(target_value, preds, logits, objectness)
-        retain = target_idx < (num_targets - 1)
-        fmap_list = [activations.get(layer_name) for layer_name in target_layers]
-        if target_scalar is None:
-            for layer_name in target_layers:
-                key = f"d{target_value}_d{layer_name}"
-                grad_stats[key] = []
-            continue
-
-        grads = torch.autograd.grad(
-            target_scalar,
-            fmap_list,
-            retain_graph=retain,
-            allow_unused=True,
-        )
-        for layer_name, grad in zip(target_layers, grads):
-            key = f"d{target_value}_d{layer_name}"
-            if grad is None:
-                grad_stats[key] = []
-            else:
-                grad_stats[key] = get_channel_stats(grad.detach())
-    return grad_stats
-
-
-def collect_gradients_per_target(detector, input_tensor, target_values, target_layers, activations):
+def collect_gradients_per_target(detector, input_tensor, target_values, target_layers, layer_buffer):
     grad_stats = {}
     for target_value in target_values:
         detector.zero_grad(set_to_none=True)
-        activations.clear()
+        layer_buffer.clear()
         grad_input = input_tensor.detach().clone().requires_grad_(True)
         preds, logits, objectness, _features = detector(grad_input)
         target_scalar = build_target_scalar(target_value, preds, logits, objectness)
@@ -243,24 +237,20 @@ def collect_gradients_per_target(detector, input_tensor, target_values, target_l
             del grad_input, preds, logits, objectness, _features
             continue
 
-        fmap_list = [activations.get(layer_name) for layer_name in target_layers]
-        grads = torch.autograd.grad(
-            target_scalar,
-            fmap_list,
-            retain_graph=False,
-            allow_unused=True,
-        )
+        target_scalar.backward()
 
-        for layer_name, grad in zip(target_layers, grads):
+        for layer_name in target_layers:
+            grad = layer_buffer.gradients.get(layer_name)
             key = f"d{target_value}_d{layer_name}"
             if grad is None:
                 grad_stats[key] = []
             else:
                 grad_stats[key] = get_channel_stats(grad.detach())
 
-        del grad_input, preds, logits, objectness, _features, grads, target_scalar
+        del grad_input, preds, logits, objectness, _features, target_scalar
+        layer_buffer.clear()
 
-    activations.clear()
+    layer_buffer.clear()
     return grad_stats
 
 
@@ -289,7 +279,8 @@ def preprocess_with_letterbox(detector, image_tensor, device, requires_grad=True
     image_np = image_tensor.permute(1, 2, 0).cpu().numpy()
     image_np = np.clip(image_np * 255.0, 0, 255).astype(np.uint8)
 
-    resized, ratio, pad = detector.yolo_resize(image_np, new_shape=detector.img_size)
+    # Keep input shape fixed across images to reduce CUDA allocator fragmentation.
+    resized, ratio, pad = detector.yolo_resize(image_np, new_shape=detector.img_size, auto=False)
     resized = resized.transpose((2, 0, 1))
     resized = np.ascontiguousarray(resized)
     input_tensor = torch.from_numpy(resized).float().unsqueeze(0).to(device) / 255.0
