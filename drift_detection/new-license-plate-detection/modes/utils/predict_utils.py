@@ -202,20 +202,25 @@ def build_target_scalar(target_value, preds, logits, objectness):
 
 def collect_gradients(target_values, target_layers, preds, logits, objectness, activations):
     grad_stats = {}
-    for target_value in target_values:
+    num_targets = len(target_values)
+    for target_idx, target_value in enumerate(target_values):
         target_scalar = build_target_scalar(target_value, preds, logits, objectness)
-        for layer_name in target_layers:
-            key = f"d{target_value}_d{layer_name}"
-            fmap = activations.get(layer_name)
-            if fmap is None or target_scalar is None:
+        retain = target_idx < (num_targets - 1)
+        fmap_list = [activations.get(layer_name) for layer_name in target_layers]
+        if target_scalar is None:
+            for layer_name in target_layers:
+                key = f"d{target_value}_d{layer_name}"
                 grad_stats[key] = []
-                continue
-            grad = torch.autograd.grad(
-                target_scalar,
-                fmap,
-                retain_graph=True,
-                allow_unused=True,
-            )[0]
+            continue
+
+        grads = torch.autograd.grad(
+            target_scalar,
+            fmap_list,
+            retain_graph=retain,
+            allow_unused=True,
+        )
+        for layer_name, grad in zip(target_layers, grads):
+            key = f"d{target_value}_d{layer_name}"
             if grad is None:
                 grad_stats[key] = []
             else:

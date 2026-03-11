@@ -33,7 +33,7 @@ class YOLOV5TorchObjectDetector(nn.Module):
         self.agnostic = agnostic_nms
         self.model = attempt_load(model_weight, device=device,fuse=fuse)
         print("[INFO] model is loaded")
-        self.model.requires_grad_(True)
+        self.model.requires_grad_(False)
         self.model.to(device)
         if self.mode == 'train':
             self.model.train()
@@ -64,7 +64,8 @@ class YOLOV5TorchObjectDetector(nn.Module):
 
         # preventing cold start
         img = torch.zeros((1, 3, *self.img_size), device=device)
-        self.model(img)
+        with torch.no_grad():
+            self.model(img)
 
     @staticmethod
     def non_max_suppression(prediction, logits, conf_thres=0.6, iou_thres=0.45, classes=None, agnostic=False,
