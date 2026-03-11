@@ -10,6 +10,8 @@ model:
 
 dataset:
   used_dataset: coco
+  split: train
+  
   coco:
     root: D:/DataDrift/datasets/COCO
     train_split: train2017
@@ -28,11 +30,16 @@ dataloader:
   shuffle_train: false
   shuffle_eval: false
 
-predict:
-  split: train
-  save_csv: true
-  cue: grad
-  grad:
-    iou_match_threshold: 0.45
-    target_value: [obj, cls]
-    target_layer: ["model.24.m.0", "model.24.m.1", "model.24.m.2"]
+output:
+  save_csv:
+    enabled: true
+    cue: grad
+    grad:
+      iou_match_threshold: 0.45
+      target_value: [obj, cls]
+      target_layer: ["model.24.m.0", "model.24.m.1", "model.24.m.2"]
+  
+  save_image:
+    enabled: false
+    step: 10
+    num: 10
