@@ -8,7 +8,7 @@ from tqdm import tqdm
 from dataloaders.dataloader_yolo import create_dataloader
 from modes.utils.predict_utils import (
     build_detector,
-    collect_gradients,
+    collect_gradients_per_target,
     draw_predictions,
     get_annotation_path,
     has_fn_for_image,
@@ -76,10 +76,11 @@ def run_predict(config, run_dir):
             for sample_idx in range(batch_size):
                 detector.zero_grad(set_to_none=True)
                 activations.clear()
-                input_tensor, ratio, pad, resized_chw = preprocess_with_letterbox(
-                    detector, images[sample_idx], device
+                infer_tensor, ratio, pad, resized_chw = preprocess_with_letterbox(
+                    detector, images[sample_idx], device, requires_grad=False
                 )
-                preds, logits, objectness, _features = detector(input_tensor)
+                with torch.no_grad():
+                    preds, _logits, _objectness, _features = detector(infer_tensor)
 
                 target = targets[sample_idx]
                 row = {
@@ -108,12 +109,11 @@ def run_predict(config, run_dir):
                 fn_images += int(has_fn)
 
                 if compute_grads:
-                    grad_stats = collect_gradients(
+                    grad_stats = collect_gradients_per_target(
+                        detector=detector,
+                        input_tensor=infer_tensor,
                         target_values=target_values,
                         target_layers=target_layers,
-                        preds=preds,
-                        logits=logits,
-                        objectness=objectness,
                         activations=activations,
                     )
                     for key, stats in grad_stats.items():
@@ -134,7 +134,7 @@ def run_predict(config, run_dir):
 
                 total_images += 1
 
-                del input_tensor, preds, logits, objectness, _features
+                del infer_tensor, preds, _logits, _objectness, _features
                 if compute_grads:
                     del grad_stats
                 activations.clear()
