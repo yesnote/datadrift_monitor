@@ -1,5 +1,4 @@
 import csv
-import gc
 import json
 import os
 
@@ -146,25 +145,25 @@ def run_predict(config, run_dir):
                 base_rows[key] = row
 
         grad_loader = create_dataloader(config, split=split)
+        layer_buffer = create_layer_grad_buffer(detector.model, target_layers)
+        grad_image_count = 0
         with open(output_csv, "w", newline="", encoding="utf-8") as output_file:
             writer = csv.DictWriter(output_file, fieldnames=fieldnames)
             writer.writeheader()
+            try:
+                for images, targets in tqdm(
+                    grad_loader, desc=f"Grad Pass ({split})", total=len(grad_loader)
+                ):
+                    for sample_idx in range(images.shape[0]):
+                        target = targets[sample_idx]
+                        image_id = int(target["image_id"][0].item())
+                        image_path = target["path"]
+                        key = build_row_key(str(image_id), image_path)
+                        base_row = base_rows.get(key)
 
-            for images, targets in tqdm(
-                grad_loader, desc=f"Grad Pass ({split})", total=len(grad_loader)
-            ):
-                for sample_idx in range(images.shape[0]):
-                    target = targets[sample_idx]
-                    image_id = int(target["image_id"][0].item())
-                    image_path = target["path"]
-                    key = build_row_key(str(image_id), image_path)
-                    base_row = base_rows.get(key)
-
-                    infer_tensor, _ratio, _pad, _resized_chw = preprocess_with_letterbox(
-                        detector, images[sample_idx], device, requires_grad=False
-                    )
-                    layer_buffer = create_layer_grad_buffer(detector.model, target_layers)
-                    try:
+                        infer_tensor, _ratio, _pad, _resized_chw = preprocess_with_letterbox(
+                            detector, images[sample_idx], device, requires_grad=False
+                        )
                         grad_stats = collect_gradients_per_target(
                             detector=detector,
                             input_tensor=infer_tensor,
@@ -172,22 +171,22 @@ def run_predict(config, run_dir):
                             target_layers=target_layers,
                             layer_buffer=layer_buffer,
                         )
-                    finally:
-                        layer_buffer.remove()
 
-                    row = {
-                        "image_id": image_id,
-                        "image_path": image_path,
-                        "has_fn": int(base_row["has_fn"]) if base_row is not None else 0,
-                    }
-                    for grad_key, stats in grad_stats.items():
-                        row[grad_key] = json.dumps(stats, separators=(",", ":"))
-                    writer.writerow(row)
+                        row = {
+                            "image_id": image_id,
+                            "image_path": image_path,
+                            "has_fn": int(base_row["has_fn"]) if base_row is not None else 0,
+                        }
+                        for grad_key, stats in grad_stats.items():
+                            row[grad_key] = json.dumps(stats, separators=(",", ":"))
+                        writer.writerow(row)
 
-                    del infer_tensor, grad_stats, layer_buffer
-                    gc.collect()
-                    if device.type == "cuda":
-                        torch.cuda.empty_cache()
+                        del infer_tensor, grad_stats
+                        grad_image_count += 1
+                        if device.type == "cuda" and grad_image_count % 50 == 0:
+                            torch.cuda.empty_cache()
+            finally:
+                layer_buffer.remove()
         if base_csv.exists():
             base_csv.unlink()
     elif save_csv:

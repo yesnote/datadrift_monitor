@@ -225,21 +225,21 @@ def build_target_scalar(target_value, preds, logits, objectness):
 
 def collect_gradients_per_target(detector, input_tensor, target_values, target_layers, layer_buffer):
     grad_stats = {}
-    for target_value in target_values:
-        detector.zero_grad(set_to_none=True)
-        layer_buffer.clear()
-        grad_input = input_tensor.detach().clone().requires_grad_(True)
-        preds, logits, objectness, _features = detector(grad_input)
-        target_scalar = build_target_scalar(target_value, preds, logits, objectness)
+    detector.zero_grad(set_to_none=True)
+    layer_buffer.clear()
+    grad_input = input_tensor.detach().requires_grad_(True)
+    preds, logits, objectness, _features = detector(grad_input)
 
+    for idx, target_value in enumerate(target_values):
+        layer_buffer.gradients.clear()
+        target_scalar = build_target_scalar(target_value, preds, logits, objectness)
         if target_scalar is None:
             for layer_name in target_layers:
                 grad_stats[f"d{target_value}_d{layer_name}"] = []
-            del grad_input, preds, logits, objectness, _features
             continue
 
-        target_scalar.backward()
-
+        retain_graph = idx < (len(target_values) - 1)
+        target_scalar.backward(retain_graph=retain_graph)
         for layer_name in target_layers:
             grad = layer_buffer.gradients.get(layer_name)
             key = f"d{target_value}_d{layer_name}"
@@ -248,10 +248,8 @@ def collect_gradients_per_target(detector, input_tensor, target_values, target_l
             else:
                 grad_stats[key] = get_channel_stats(grad.detach())
 
-        del grad_input, preds, logits, objectness, _features, target_scalar
-        detector.zero_grad(set_to_none=True)
-        layer_buffer.clear()
-
+    del grad_input, preds, logits, objectness, _features
+    detector.zero_grad(set_to_none=True)
     layer_buffer.clear()
     return grad_stats
 
