@@ -1,3 +1,4 @@
 *.pt
+ref/
 runs/
 __pycache__/
