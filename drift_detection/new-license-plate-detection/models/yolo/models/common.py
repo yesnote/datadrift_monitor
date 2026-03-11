@@ -19,7 +19,7 @@ from torch.cuda import amp
 
 # from ..utils.datasets import exif_transpose, letterbox
 
-from models.yolo.utils.datasets import exif_transpose, letterbox
+from dataloaders.utils.yolo_datasets import exif_transpose, letterbox
 # from ..utils.general import (LOGGER, check_requirements, check_suffix, check_version, colorstr, increment_path,
 #                            make_divisible, non_max_suppression, scale_coords, xywh2xyxy, xyxy2xywh)
 from models.yolo.utils.general import (LOGGER, check_requirements, check_suffix, check_version, colorstr, increment_path,
