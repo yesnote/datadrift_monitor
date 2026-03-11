@@ -40,6 +40,6 @@ output:
       target_layer: ["model.24.m.0", "model.24.m.1", "model.24.m.2"]
   
   save_image:
-    enabled: false
+    enabled: true
     step: 10
     num: 10
