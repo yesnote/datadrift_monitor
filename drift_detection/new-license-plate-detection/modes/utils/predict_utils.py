@@ -79,6 +79,8 @@ def build_detector(config):
         confidence=confidence,
         iou_thresh=iou_thresh,
     )
+    # We only need gradients wrt feature maps, not model weights.
+    detector.model.requires_grad_(False)
     detector.eval().to(device)
     return detector, device
 
@@ -167,14 +169,14 @@ def build_target_scalar(target_value, preds, logits, objectness):
 
 
 def collect_gradients(target_values, target_layers, preds, logits, objectness, activations):
-    grad_tensors = {}
+    grad_stats = {}
     for target_value in target_values:
         target_scalar = build_target_scalar(target_value, preds, logits, objectness)
         for layer_name in target_layers:
             key = f"d{target_value}_d{layer_name}"
             fmap = activations.get(layer_name)
             if fmap is None or target_scalar is None:
-                grad_tensors[key] = torch.zeros(0, dtype=torch.float32)
+                grad_stats[key] = []
                 continue
             grad = torch.autograd.grad(
                 target_scalar,
@@ -183,10 +185,31 @@ def collect_gradients(target_values, target_layers, preds, logits, objectness, a
                 allow_unused=True,
             )[0]
             if grad is None:
-                grad_tensors[key] = torch.zeros_like(fmap.detach().cpu())
+                grad_stats[key] = []
             else:
-                grad_tensors[key] = grad.detach().cpu()
-    return grad_tensors
+                grad_stats[key] = get_channel_stats(grad.detach())
+    return grad_stats
+
+
+def get_channel_stats(grad_tensor):
+    # Expect [B, C, H, W] from conv feature maps; reduce over spatial dims per channel.
+    if grad_tensor.ndim == 4:
+        grad_tensor = grad_tensor[0]
+    if grad_tensor.ndim != 3:
+        grad_tensor = grad_tensor.view(grad_tensor.shape[0], -1, 1)
+
+    c = grad_tensor.shape[0]
+    flat = grad_tensor.reshape(c, -1)
+
+    l1 = flat.abs().sum(dim=1)
+    l2 = torch.linalg.vector_norm(flat, ord=2, dim=1)
+    min_v = flat.min(dim=1).values
+    max_v = flat.max(dim=1).values
+    mean_v = flat.mean(dim=1)
+    std_v = flat.std(dim=1, unbiased=False)
+
+    stacked = torch.stack([l1, l2, min_v, max_v, mean_v, std_v], dim=1)
+    return stacked.cpu().tolist()
 
 
 def preprocess_with_letterbox(detector, image_tensor, device):
@@ -197,6 +220,7 @@ def preprocess_with_letterbox(detector, image_tensor, device):
     resized = resized.transpose((2, 0, 1))
     resized = np.ascontiguousarray(resized)
     input_tensor = torch.from_numpy(resized).float().unsqueeze(0).to(device) / 255.0
+    input_tensor.requires_grad_(True)
     return input_tensor, ratio, pad
 
 
