@@ -114,31 +114,21 @@ def resolve_module_by_name(model, layer_name):
 class LayerGradBuffer:
     def __init__(self, model, target_layers):
         self.target_layers = list(target_layers)
-        self.activations = {}
         self.gradients = {}
         self.handles = []
 
         for layer_name in self.target_layers:
             module = resolve_module_by_name(model, layer_name)
-            self.handles.append(module.register_forward_hook(self._make_forward_hook(layer_name)))
             # Use full backward hook to avoid deprecation warning and missing gradients.
             self.handles.append(module.register_full_backward_hook(self._make_backward_hook(layer_name)))
-
-    def _make_forward_hook(self, layer_name):
-        def hook(_module, _inputs, output):
-            if isinstance(output, (tuple, list)):
-                output = output[0]
-            self.activations[layer_name] = output
-        return hook
 
     def _make_backward_hook(self, layer_name):
         def hook(_module, _grad_input, grad_output):
             grad = grad_output[0] if isinstance(grad_output, (tuple, list)) else grad_output
-            self.gradients[layer_name] = grad
+            self.gradients[layer_name] = grad.detach().float().cpu()
         return hook
 
     def clear(self):
-        self.activations.clear()
         self.gradients.clear()
 
     def remove(self):
@@ -254,6 +244,7 @@ def collect_gradients_per_target(detector, input_tensor, target_values, target_l
 
 def get_channel_stats(grad_tensor):
     # Expect [B, C, H, W] from conv feature maps; reduce over spatial dims per channel.
+    grad_tensor = grad_tensor.detach().float().cpu()
     if grad_tensor.ndim == 4:
         grad_tensor = grad_tensor[0]
     if grad_tensor.ndim != 3:
