@@ -13,9 +13,26 @@ def load_config(config_path):
         return yaml.safe_load(f)
 
 
-def build_dataset(config, split="train"):
+def get_mode(config):
+    mode = str(config.get("mode", "train")).lower()
+    valid_modes = {"train", "test", "predict"}
+    if mode not in valid_modes:
+        raise ValueError(f"Unsupported mode: {mode}. Expected one of {sorted(valid_modes)}")
+    return mode
+
+
+def get_active_dataset_cfg(config):
     dataset_cfg = config["dataset"]
-    name = dataset_cfg["name"].lower()
+    used_dataset = str(dataset_cfg["used_dataset"]).lower()
+    if used_dataset not in dataset_cfg:
+        raise ValueError(
+            f"dataset.used_dataset='{used_dataset}' but dataset.{used_dataset} is not defined."
+        )
+    return used_dataset, dataset_cfg[used_dataset]
+
+
+def build_dataset(config, split="train"):
+    name, dataset_cfg = get_active_dataset_cfg(config)
     root = dataset_cfg["root"]
 
     if name == "coco":
@@ -49,6 +66,7 @@ def yolo_collate_fn(batch):
 
 
 def create_dataloader(config, split="train"):
+    _ = get_mode(config)
     dataset = build_dataset(config, split=split)
     dl_cfg = config["dataloader"]
     shuffle = dl_cfg["shuffle_train"] if split == "train" else dl_cfg["shuffle_eval"]
