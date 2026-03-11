@@ -121,8 +121,8 @@ class LayerGradBuffer:
         for layer_name in self.target_layers:
             module = resolve_module_by_name(model, layer_name)
             self.handles.append(module.register_forward_hook(self._make_forward_hook(layer_name)))
-            # Match ref/DiL behavior: use backward hook for gradient capture.
-            self.handles.append(module.register_backward_hook(self._make_backward_hook(layer_name)))
+            # Use full backward hook to avoid deprecation warning and missing gradients.
+            self.handles.append(module.register_full_backward_hook(self._make_backward_hook(layer_name)))
 
     def _make_forward_hook(self, layer_name):
         def hook(_module, _inputs, output):
