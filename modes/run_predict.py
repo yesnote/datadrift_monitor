@@ -1,6 +1,8 @@
 import csv
 import json
 
+import torch
+
 from dataloaders.dataloader_yolo import create_dataloader
 from modes.utils.predict_utils import (
     build_detector,
@@ -19,7 +21,9 @@ def run_predict(config, run_dir):
     save_fn = bool(predict_cfg.get("save_fn", True))
     iou_match_threshold, target_values, target_layers = parse_grad_config(predict_cfg)
 
-    output_csv = run_dir / "predict_results.csv"
+    output_csv = run_dir / "fn_results.csv"
+    grad_dir = run_dir / "grad_tensors"
+    grad_dir.mkdir(parents=True, exist_ok=True)
     annotation_path = get_annotation_path(config, split)
     catid_to_name = load_coco_category_maps(annotation_path)
     dataloader = create_dataloader(config, split=split)
@@ -56,7 +60,7 @@ def run_predict(config, run_dir):
                 iou_match_threshold=iou_match_threshold,
             )
 
-        grad_metrics = collect_gradients(
+        grad_tensors = collect_gradients(
             target_values=target_values,
             target_layers=target_layers,
             preds=preds,
@@ -64,23 +68,23 @@ def run_predict(config, run_dir):
             objectness=objectness,
             activations=activations,
         )
-        row.update(grad_metrics)
+
+        grad_path = grad_dir / f"{row['image_id']}.pt"
+        torch.save(grad_tensors, grad_path)
+
         rows.append(row)
 
     for handle in hook_handles:
         handle.remove()
 
-    fieldnames = ["image_id", "image_path"]
     if save_fn:
-        fieldnames.append("has_fn")
-    for target_value in target_values:
-        for layer_name in target_layers:
-            fieldnames.append(f"d{target_value}_d{layer_name}")
-
-    with open(output_csv, "w", newline="", encoding="utf-8") as f:
-        writer = csv.DictWriter(f, fieldnames=fieldnames)
-        writer.writeheader()
-        writer.writerows(rows)
+        with open(output_csv, "w", newline="", encoding="utf-8") as f:
+            writer = csv.DictWriter(
+                f,
+                fieldnames=["image_id", "image_path", "has_fn"],
+            )
+            writer.writeheader()
+            writer.writerows(rows)
 
     summary = {
         "mode": "predict",
@@ -90,12 +94,13 @@ def run_predict(config, run_dir):
         "target_values": target_values,
         "target_layers": target_layers,
         "total_images": len(rows),
-        "output_csv": str(output_csv),
+        "grad_dir": str(grad_dir),
     }
     if save_fn:
         fn_images = sum(r["has_fn"] for r in rows)
         summary["fn_images"] = fn_images
         summary["fn_ratio"] = (fn_images / len(rows)) if rows else 0.0
+        summary["output_csv"] = str(output_csv)
 
     with open(run_dir / "summary.json", "w", encoding="utf-8") as f:
         json.dump(summary, f, ensure_ascii=False, indent=2)
