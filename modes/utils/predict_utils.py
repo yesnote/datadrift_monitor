@@ -212,13 +212,8 @@ def build_target_scalar(target_value, preds, logits, objectness):
     if target_value == "cls":
         if len(logits) == 0 or logits[0].numel() == 0:
             return None
-        pred_classes = preds[1][0]
-        if len(pred_classes) == 0:
-            return None
-        cls_idx = torch.tensor(pred_classes, device=logits[0].device, dtype=torch.long)
-        cls_idx = cls_idx.clamp_(0, logits[0].shape[1] - 1)
-        det_idx = torch.arange(cls_idx.shape[0], device=logits[0].device)
-        return logits[0][det_idx, cls_idx].sum()
+        # Match DiL behavior: sum of max(class logit) over final detections.
+        return torch.stack([torch.max(logit) for logit in logits[0]]).sum()
 
     raise ValueError(f"Unsupported target_value: {target_value}")
 
@@ -229,16 +224,19 @@ def collect_gradients_per_target(detector, input_tensor, target_values, target_l
     layer_buffer.clear()
     grad_input = input_tensor.detach().requires_grad_(True)
     preds, logits, objectness, _features = detector(grad_input)
+    target_scalars = [build_target_scalar(tv, preds, logits, objectness) for tv in target_values]
+    valid_indices = [i for i, s in enumerate(target_scalars) if s is not None]
+    last_valid_idx = valid_indices[-1] if valid_indices else -1
 
     for idx, target_value in enumerate(target_values):
         layer_buffer.gradients.clear()
-        target_scalar = build_target_scalar(target_value, preds, logits, objectness)
+        target_scalar = target_scalars[idx]
         if target_scalar is None:
             for layer_name in target_layers:
                 grad_stats[f"d{target_value}_d{layer_name}"] = []
             continue
 
-        retain_graph = idx < (len(target_values) - 1)
+        retain_graph = idx < last_valid_idx
         target_scalar.backward(retain_graph=retain_graph)
         for layer_name in target_layers:
             grad = layer_buffer.gradients.get(layer_name)
