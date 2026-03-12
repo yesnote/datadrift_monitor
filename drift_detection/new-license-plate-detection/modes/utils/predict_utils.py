@@ -1,4 +1,5 @@
 import json
+import gc
 from pathlib import Path
 
 import cv2
@@ -114,27 +115,41 @@ def resolve_module_by_name(model, layer_name):
 class LayerGradBuffer:
     def __init__(self, model, target_layers):
         self.target_layers = list(target_layers)
-        self.activations = {}
+        self.activations = {"value": []}
+        self.gradients = {"value": []}
         self.forward_handles = []
+        self.backward_handles = []
 
         for layer_name in self.target_layers:
             module = resolve_module_by_name(model, layer_name)
-            self.forward_handles.append(module.register_forward_hook(self._make_forward_hook(layer_name)))
+            self.forward_handles.append(module.register_forward_hook(self._forward_hook))
+            self.backward_handles.append(module.register_backward_hook(self._backward_hook))
 
-    def _make_forward_hook(self, layer_name):
-        def hook(_module, _inputs, output):
-            out = output[0] if isinstance(output, (tuple, list)) else output
-            self.activations[layer_name] = out
-        return hook
+    def _forward_hook(self, _module, _inputs, output):
+        out = output[0] if isinstance(output, (tuple, list)) else output
+        self.activations["value"].append(out)
+        return None
+
+    def _backward_hook(self, _module, _grad_input, grad_output):
+        if grad_output is None or len(grad_output) == 0:
+            return None
+        grad = grad_output[0]
+        if grad is not None:
+            self.gradients["value"].append(grad)
+        return None
 
     def clear(self):
-        self.activations.clear()
+        self.activations["value"] = []
+        self.gradients["value"] = []
 
     def remove(self):
         self.clear()
         for handle in self.forward_handles:
             handle.remove()
         self.forward_handles = []
+        for handle in self.backward_handles:
+            handle.remove()
+        self.backward_handles = []
 
 
 def create_layer_grad_buffer(model, target_layers):
@@ -210,51 +225,38 @@ def build_target_scalar(target_value, preds, logits, objectness):
 
 def collect_gradients_per_target(detector, input_tensor, target_values, target_layers, layer_buffer):
     grad_stats = {}
-    detector.zero_grad(set_to_none=True)
-    layer_buffer.clear()
-    grad_input = input_tensor.detach().requires_grad_(True)
-    preds, logits, objectness, _features = detector(grad_input)
-    target_scalars = [build_target_scalar(tv, preds, logits, objectness) for tv in target_values]
-    valid_indices = [i for i, s in enumerate(target_scalars) if s is not None]
-    last_valid_idx = valid_indices[-1] if valid_indices else -1
+    for target_value in target_values:
+        detector.zero_grad(set_to_none=True)
+        layer_buffer.clear()
 
-    for idx, target_value in enumerate(target_values):
-        target_scalar = target_scalars[idx]
+        grad_input = input_tensor.detach().clone().requires_grad_(True)
+        preds, logits, objectness, _features = detector(grad_input)
+        target_scalar = build_target_scalar(target_value, preds, logits, objectness)
+
         if target_scalar is None:
             for layer_name in target_layers:
                 grad_stats[f"d{target_value}_d{layer_name}"] = []
+            if grad_input.grad is not None:
+                grad_input.grad = None
+            del grad_input, preds, logits, objectness, _features
+            layer_buffer.clear()
             continue
 
-        retain_graph = idx < last_valid_idx
-        layer_activation_pairs = [
-            (layer_name, layer_buffer.activations.get(layer_name))
-            for layer_name in target_layers
-        ]
-        valid_inputs = [activation for _, activation in layer_activation_pairs if activation is not None]
-        grads = torch.autograd.grad(
-            outputs=target_scalar,
-            inputs=valid_inputs,
-            retain_graph=retain_graph,
-            create_graph=False,
-            allow_unused=True,
-        )
+        target_scalar.backward()
+        grads = list(layer_buffer.gradients["value"])
+        grads.reverse()
 
-        grad_index = 0
-        for layer_name in target_layers:
-            activation = layer_buffer.activations.get(layer_name)
+        for layer_idx, layer_name in enumerate(target_layers):
             key = f"d{target_value}_d{layer_name}"
-            if activation is None:
-                grad_stats[key] = []
-            else:
-                grad = grads[grad_index]
-                grad_index += 1
-                grad_stats[key] = [] if grad is None else get_channel_stats(grad.detach())
+            grad = grads[layer_idx] if layer_idx < len(grads) else None
+            grad_stats[key] = [] if grad is None else get_channel_stats(grad.detach())
 
-    if grad_input.grad is not None:
-        grad_input.grad = None
-    del grad_input, preds, logits, objectness, _features, target_scalars
-    detector.zero_grad(set_to_none=True)
-    layer_buffer.clear()
+        if grad_input.grad is not None:
+            grad_input.grad = None
+        del grad_input, preds, logits, objectness, _features, target_scalar, grads
+        detector.zero_grad(set_to_none=True)
+        layer_buffer.clear()
+        gc.collect()
     return grad_stats
 
 
