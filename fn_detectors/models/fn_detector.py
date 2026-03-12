@@ -10,7 +10,7 @@ except Exception:  # pragma: no cover
     xgb = None
 
 
-def build_estimator(model_name: str, use_gpu: bool) -> Pipeline:
+def build_estimator(model_name: str, device: str) -> Pipeline:
     steps: list[tuple[str, Any]] = [("scaler", StandardScaler())]
 
     if model_name == "logistic":
@@ -24,7 +24,7 @@ def build_estimator(model_name: str, use_gpu: bool) -> Pipeline:
         if xgb is None:
             raise ImportError("xgboost is required for model='gb_classifier'.")
         xgb_kwargs = {}
-        if use_gpu:
+        if str(device).lower().startswith("cuda"):
             xgb_kwargs.update({"tree_method": "gpu_hist", "gpu_id": 0})
         clf = xgb.XGBClassifier(use_label_encoder=False, eval_metric="logloss", **xgb_kwargs)
     else:
@@ -46,4 +46,3 @@ def param_grid(model_name: str) -> dict[str, list[Any]]:
             "clf__reg_lambda": [0.0],
         }
     raise ValueError(f"Unsupported model: {model_name}")
-
