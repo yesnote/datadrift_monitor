@@ -2,7 +2,7 @@ mode: train
 
 model:
   type: yolov5
-  weights: yolov5x.pt
+  weights: object_detectors/models/yolo/weights/yolov5x.pt
   img_size: 640
   confidence_threshold: 0.25
   iou_threshold: 0.45
@@ -11,7 +11,7 @@ model:
 dataset:
   used_dataset: coco
   coco:
-    root: datasets/DiL datasets/COCO
+    root: object_detectors/datasets/COCO
     train_split: train2017
     val_split: val2017
     test_split: test2017
@@ -103,7 +103,7 @@ dataset:
       - hair drier
       - toothbrush
   voc:
-    root: datasets/VOCdevkit/VOC2012
+    root: object_detectors/datasets/VOCdevkit/VOC2012
     train_split: train
     val_split: val
     test_split: test
