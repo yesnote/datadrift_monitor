@@ -140,16 +140,18 @@ class LayerGradBuffer:
         return None
 
     def clear(self):
-        self.gradients["value"].clear()
+        gradients = self.gradients["value"]
+        while gradients:
+            gradients.pop()
 
     def remove(self):
         self.clear()
         for handle in self.forward_handles:
             handle.remove()
-        self.forward_handles = []
+        self.forward_handles.clear()
         for handle in self.backward_handles:
             handle.remove()
-        self.backward_handles = []
+        self.backward_handles.clear()
 
 
 def create_layer_grad_buffer(model, target_layers):
