@@ -1,4 +1,4 @@
 *.pt
-ref/
+code_references/
 object_detectors/runs/
 __pycache__/
