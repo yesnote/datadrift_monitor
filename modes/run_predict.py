@@ -62,7 +62,7 @@ def run_predict_pass(config, run_dir):
     target_layers = parsed["target_layers"]
     save_image = parsed["save_image_enabled"]
     image_step = parsed["image_step"]
-    image_num = parsed["image_num"]
+    image_max_num = parsed["image_max_num"]
     compute_grads = save_csv and bool(target_layers)
 
     output_csv = run_dir / "fn_results.csv"
@@ -137,7 +137,7 @@ def run_predict_pass(config, run_dir):
                 if base_writer is not None:
                     base_writer.writerow(row)
 
-                if should_save_step and sample_idx < image_num:
+                if should_save_step and sample_idx < image_max_num:
                     vis_image = draw_predictions(
                         resized_chw,
                         pred_boxes,

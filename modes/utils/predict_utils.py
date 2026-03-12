@@ -161,40 +161,40 @@ def parse_output_config(output_cfg):
     if isinstance(save_csv_cfg, bool):
         save_csv_enabled = save_csv_cfg
         cue = "grad"
-        grad_cfg = {}
+        feature_grad_cfg = {}
     else:
         save_csv_enabled = bool(save_csv_cfg.get("enabled", True))
         cue = str(save_csv_cfg.get("cue", "grad")).lower()
-        grad_cfg = save_csv_cfg.get("grad", {})
+        feature_grad_cfg = save_csv_cfg.get("feature_grad", {})
 
     if cue != "grad":
         raise ValueError(f"Unsupported output.save_csv.cue='{cue}'. Only 'grad' is supported.")
 
-    iou_match_threshold = float(grad_cfg.get("iou_match_threshold", 0.5))
-    target_values = [v.lower() for v in normalize_to_list(grad_cfg.get("target_value", ["obj"]))]
+    iou_match_threshold = float(feature_grad_cfg.get("iou_match_threshold", 0.5))
+    target_values = [v.lower() for v in normalize_to_list(feature_grad_cfg.get("target_value", ["obj"]))]
     valid_values = {"obj", "cls"}
     invalid_values = [v for v in target_values if v not in valid_values]
     if invalid_values:
         raise ValueError(f"Unsupported target_value(s): {invalid_values}. Use {sorted(valid_values)}")
 
-    target_layers = normalize_to_list(grad_cfg.get("target_layer", []))
+    target_layers = normalize_to_list(feature_grad_cfg.get("target_layer", []))
     if not target_layers and save_csv_enabled:
-        raise ValueError("output.save_csv.grad.target_layer must contain at least one layer name.")
+        raise ValueError("output.save_csv.feature_grad.target_layer must contain at least one layer name.")
 
     save_image_cfg = output_cfg.get("save_image", {})
     if isinstance(save_image_cfg, bool):
         save_image_enabled = save_image_cfg
         image_step = 1
-        image_num = 1
+        image_max_num = 1
     else:
         save_image_enabled = bool(save_image_cfg.get("enabled", False))
         image_step = int(save_image_cfg.get("step", 1))
-        image_num = int(save_image_cfg.get("num", 1))
+        image_max_num = int(save_image_cfg.get("max_num", 1))
 
     if image_step <= 0:
         raise ValueError("output.save_image.step must be >= 1.")
-    if image_num <= 0:
-        raise ValueError("output.save_image.num must be >= 1.")
+    if image_max_num <= 0:
+        raise ValueError("output.save_image.max_num must be >= 1.")
 
     return {
         "save_csv_enabled": save_csv_enabled,
@@ -204,7 +204,7 @@ def parse_output_config(output_cfg):
         "target_layers": target_layers,
         "save_image_enabled": save_image_enabled,
         "image_step": image_step,
-        "image_num": image_num,
+        "image_max_num": image_max_num,
     }
 
 
