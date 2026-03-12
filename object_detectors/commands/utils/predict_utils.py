@@ -285,8 +285,9 @@ def preprocess_with_letterbox(detector, image_tensor, device, requires_grad=True
     image_np = image_tensor.permute(1, 2, 0).cpu().numpy()
     image_np = np.clip(image_np * 255.0, 0, 255).astype(np.uint8)
 
-    # Keep input shape fixed across images to reduce CUDA allocator fragmentation.
-    resized, ratio, pad = detector.yolo_resize(image_np, new_shape=detector.img_size, auto=False)
+    # Match DiL preprocessing: use YOLO letterbox default behavior (auto=True),
+    # which keeps aspect ratio and applies only stride-aligned padding.
+    resized, ratio, pad = detector.yolo_resize(image_np, new_shape=detector.img_size)
     resized = resized.transpose((2, 0, 1))
     resized = np.ascontiguousarray(resized)
     input_tensor = torch.from_numpy(resized).float().unsqueeze(0).to(device) / 255.0
