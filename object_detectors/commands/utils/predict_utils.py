@@ -135,7 +135,7 @@ class LayerGradBuffer:
             return None
         grad = grad_output[0]
         if grad is not None:
-            # Store only per-channel summary stats, not raw tensors.
+            # Store per-channel L1 energy vector, not raw tensors.
             self.gradients["value"].append(get_channel_stats(grad))
         return None
 
@@ -262,25 +262,23 @@ def collect_gradients_per_target(detector, input_tensor, target_values, target_l
 
 
 def get_channel_stats(grad_tensor):
-    # Expect [B, C, H, W] from conv feature maps; reduce over spatial dims per channel.
+    # Expect [B, C, H, W] from conv feature maps and return per-channel
+    # L1 energy: mean(abs(grad)) over spatial dimensions.
     grad_tensor = grad_tensor.detach().float()
     if grad_tensor.ndim == 4:
         grad_tensor = grad_tensor[0]
-    if grad_tensor.ndim != 3:
-        grad_tensor = grad_tensor.view(grad_tensor.shape[0], -1, 1)
+
+    # For tensor-like gradients, treat dim-0 as channel axis and average |grad|
+    # over the remaining dimensions.
+    if grad_tensor.ndim == 0:
+        return [float(grad_tensor.abs().item())]
+    if grad_tensor.ndim == 1:
+        return grad_tensor.abs().detach().cpu().tolist()
 
     c = grad_tensor.shape[0]
     flat = grad_tensor.reshape(c, -1)
-
-    l1 = flat.abs().sum(dim=1)
-    l2 = torch.linalg.vector_norm(flat, ord=2, dim=1)
-    min_v = flat.min(dim=1).values
-    max_v = flat.max(dim=1).values
-    mean_v = flat.mean(dim=1)
-    std_v = flat.std(dim=1, unbiased=False)
-
-    stacked = torch.stack([l1, l2, min_v, max_v, mean_v, std_v], dim=1)
-    return stacked.detach().cpu().tolist()
+    l1_energy = flat.abs().mean(dim=1)
+    return l1_energy.detach().cpu().tolist()
 
 
 def preprocess_with_letterbox(detector, image_tensor, device, requires_grad=True):
