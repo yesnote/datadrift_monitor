@@ -4,8 +4,8 @@ import sys
 from pathlib import Path
 
 from dataloaders.dataloader_yolo import load_config
-from modes.run_predict import run_grad_pass, run_predict_pass, should_run_grad_pass
-from modes.utils.run_utils import create_run_dir, save_used_config
+from commands.run_predict import run_grad_pass, run_predict_pass, should_run_grad_pass
+from commands.utils.run_utils import create_run_dir, save_used_config
 
 
 def run_subprocess_stage(config_path, stage, run_dir):
