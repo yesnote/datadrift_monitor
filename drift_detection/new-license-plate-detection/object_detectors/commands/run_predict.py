@@ -8,7 +8,7 @@ import torch
 from tqdm import tqdm
 
 from dataloaders.dataloader_yolo import create_dataloader
-from modes.utils.predict_utils import (
+from commands.utils.predict_utils import (
     build_detector,
     collect_gradients_per_target,
     create_layer_grad_buffer,
