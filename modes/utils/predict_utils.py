@@ -123,7 +123,10 @@ class LayerGradBuffer:
         for layer_name in self.target_layers:
             module = resolve_module_by_name(model, layer_name)
             self.forward_handles.append(module.register_forward_hook(self._forward_hook))
-            self.backward_handles.append(module.register_backward_hook(self._backward_hook))
+            if hasattr(module, "register_full_backward_hook"):
+                self.backward_handles.append(module.register_full_backward_hook(self._backward_hook))
+            else:
+                self.backward_handles.append(module.register_backward_hook(self._backward_hook))
 
     def _forward_hook(self, _module, _inputs, output):
         out = output[0] if isinstance(output, (tuple, list)) else output
