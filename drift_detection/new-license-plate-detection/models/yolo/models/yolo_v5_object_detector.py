@@ -171,8 +171,8 @@ class YOLOV5TorchObjectDetector(nn.Module):
 
         return letterbox(img, new_shape=new_shape, color=color, auto=auto, scaleFill=scaleFill, scaleup=scaleup)
 
-    def forward(self, img):
-        prediction, logits,x = self.model(img, augment=False)
+    def forward(self, img, return_features=False):
+        prediction, logits, x = self.model(img, augment=False)
         prediction, logits,objectivness = self.non_max_suppression(prediction, logits, self.confidence, self.iou_thresh,
                                                       classes=None,
                                                       agnostic=self.agnostic)
@@ -194,7 +194,8 @@ class YOLOV5TorchObjectDetector(nn.Module):
                         self.class_names[i].append(self.names[cls])
                     else:
                         self.class_names[i].append(cls)
-        return [self.boxes, self.classes, self.class_names, self.confidences], logits,objectivness,x
+        features = x if return_features else None
+        return [self.boxes, self.classes, self.class_names, self.confidences], logits, objectivness, features
 
     def preprocessing(self, img):
         if len(img.shape) != 4:
