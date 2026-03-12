@@ -240,8 +240,9 @@ def run_predict_pass(config, run_dir):
 
                 del infer_tensor, preds, _logits, _objectness, _features
                 if device.type == "cuda":
-                    torch.cuda.empty_cache()
-                    if total_images == 1 or total_images % memory_log_interval == 0:
+                    if memory_log_interval > 0 and (
+                        total_images == 1 or total_images % memory_log_interval == 0
+                    ):
                         _log_cuda_memory(
                             memory_writer,
                             memory_handle,
@@ -394,9 +395,9 @@ def run_grad_pass(config, run_dir):
                     del infer_tensor, grad_stats
                     grad_image_count += 1
                     if device.type == "cuda":
-                        if grad_image_count % 50 == 0:
-                            torch.cuda.empty_cache()
-                        if grad_image_count == 1 or grad_image_count % memory_log_interval == 0:
+                        if memory_log_interval > 0 and (
+                            grad_image_count == 1 or grad_image_count % memory_log_interval == 0
+                        ):
                             _log_cuda_memory(
                                 memory_writer,
                                 memory_handle,
