@@ -114,7 +114,6 @@ def resolve_module_by_name(model, layer_name):
 class LayerGradBuffer:
     def __init__(self, model, target_layers):
         self.target_layers = list(target_layers)
-        self.activations = {"value": []}
         self.gradients = {"value": []}
         self.forward_handles = []
         self.backward_handles = []
@@ -128,8 +127,7 @@ class LayerGradBuffer:
                 self.backward_handles.append(module.register_backward_hook(self._backward_hook))
 
     def _forward_hook(self, _module, _inputs, output):
-        out = output[0] if isinstance(output, (tuple, list)) else output
-        self.activations["value"].append(out)
+        # Keep DiL-style forward hook wiring, but do not retain feature tensors.
         return None
 
     def _backward_hook(self, _module, _grad_input, grad_output):
@@ -137,12 +135,12 @@ class LayerGradBuffer:
             return None
         grad = grad_output[0]
         if grad is not None:
-            self.gradients["value"].append(grad)
+            # Store only per-channel summary stats, not raw tensors.
+            self.gradients["value"].append(get_channel_stats(grad))
         return None
 
     def clear(self):
-        self.activations["value"] = []
-        self.gradients["value"] = []
+        self.gradients["value"].clear()
 
     def remove(self):
         self.clear()
@@ -245,17 +243,16 @@ def collect_gradients_per_target(detector, input_tensor, target_values, target_l
             continue
 
         target_scalar.backward()
-        grads = list(layer_buffer.gradients["value"])
-        grads.reverse()
+        layer_stats = list(layer_buffer.gradients["value"])
+        layer_stats.reverse()
 
         for layer_idx, layer_name in enumerate(target_layers):
             key = f"d{target_value}_d{layer_name}"
-            grad = grads[layer_idx] if layer_idx < len(grads) else None
-            grad_stats[key] = [] if grad is None else get_channel_stats(grad.detach())
+            grad_stats[key] = layer_stats[layer_idx] if layer_idx < len(layer_stats) else []
 
         if grad_input.grad is not None:
             grad_input.grad = None
-        del grad_input, preds, logits, objectness, _features, target_scalar, grads
+        del grad_input, preds, logits, objectness, _features, target_scalar, layer_stats
         detector.zero_grad(set_to_none=True)
         layer_buffer.clear()
     return grad_stats
