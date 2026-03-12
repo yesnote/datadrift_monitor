@@ -140,18 +140,16 @@ class LayerGradBuffer:
         return None
 
     def clear(self):
-        gradients = self.gradients["value"]
-        while gradients:
-            gradients.pop()
+        self.gradients["value"].clear()
 
     def remove(self):
         self.clear()
         for handle in self.forward_handles:
             handle.remove()
-        self.forward_handles.clear()
+        self.forward_handles = []
         for handle in self.backward_handles:
             handle.remove()
-        self.backward_handles.clear()
+        self.backward_handles = []
 
 
 def create_layer_grad_buffer(model, target_layers):
@@ -210,17 +208,18 @@ def parse_output_config(output_cfg):
     }
 
 
-def build_target_scalar(target_value, preds, logits, objectness):
+def build_target_scalar_pre_nms(target_value, raw_prediction, raw_logits):
     if target_value == "obj":
-        if len(objectness) == 0 or objectness[0].numel() == 0:
+        if raw_prediction is None or raw_prediction.numel() == 0:
             return None
-        return objectness[0].sum()
+        # NMS 이전: 모든 후보 bbox의 objectness(sigmoid) 합
+        return raw_prediction[..., 4].sum()
 
     if target_value == "cls":
-        if len(logits) == 0 or logits[0].numel() == 0:
+        if raw_logits is None or raw_logits.numel() == 0:
             return None
-        # Match DiL behavior: sum of max(class logit) over final detections.
-        return torch.stack([torch.max(logit) for logit in logits[0]]).sum()
+        # NMS 이전: 모든 후보 bbox의 max(class logit) 합
+        return raw_logits.max(dim=-1).values.sum()
 
     raise ValueError(f"Unsupported target_value: {target_value}")
 
@@ -232,15 +231,17 @@ def collect_gradients_per_target(detector, input_tensor, target_values, target_l
         layer_buffer.clear()
 
         grad_input = input_tensor.detach().requires_grad_(True)
-        preds, logits, objectness, _features = detector(grad_input)
-        target_scalar = build_target_scalar(target_value, preds, logits, objectness)
+        model_output = detector.model(grad_input, augment=False)
+        raw_prediction = model_output[0] if isinstance(model_output, (tuple, list)) else model_output
+        raw_logits = model_output[1] if isinstance(model_output, (tuple, list)) and len(model_output) > 1 else None
+        target_scalar = build_target_scalar_pre_nms(target_value, raw_prediction, raw_logits)
 
         if target_scalar is None:
             for layer_name in target_layers:
                 grad_stats[f"d{target_value}_d{layer_name}"] = []
             if grad_input.grad is not None:
                 grad_input.grad = None
-            del grad_input, preds, logits, objectness, _features
+            del grad_input, model_output, raw_prediction, raw_logits
             layer_buffer.clear()
             continue
 
@@ -254,7 +255,7 @@ def collect_gradients_per_target(detector, input_tensor, target_values, target_l
 
         if grad_input.grad is not None:
             grad_input.grad = None
-        del grad_input, preds, logits, objectness, _features, target_scalar, layer_stats
+        del grad_input, model_output, raw_prediction, raw_logits, target_scalar, layer_stats
         detector.zero_grad(set_to_none=True)
         layer_buffer.clear()
     return grad_stats
