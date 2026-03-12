@@ -1,0 +1,242 @@
+import json
+import pickle
+from dataclasses import dataclass
+from datetime import datetime
+from pathlib import Path
+from typing import Any
+
+import numpy as np
+import pandas as pd
+from sklearn.decomposition import PCA
+from sklearn.model_selection import GridSearchCV, train_test_split
+
+from fn_detectors.losses.loss import evaluate_classifier
+from fn_detectors.models.fn_detector import build_estimator, param_grid
+
+try:
+    from imblearn.over_sampling import SMOTE
+except Exception:  # pragma: no cover
+    SMOTE = None
+
+try:
+    import joblib
+except Exception:  # pragma: no cover
+    joblib = None
+
+
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+DEFAULT_RESULTS_ROOT = PROJECT_ROOT / "object_detectors" / "runs"
+DEFAULT_OUT_ROOT = PROJECT_ROOT / "fn_detectors" / "runs"
+META_COLUMNS = {"image_id", "image_path", "fn"}
+
+
+@dataclass
+class FeatureSpec:
+    grad_columns: list[str]
+    dim_by_column: dict[str, int]
+
+
+def latest_fn_results_csv(results_root: Path) -> Path:
+    if not results_root.exists():
+        raise FileNotFoundError(f"Runs directory not found: {results_root}")
+
+    candidates: list[Path] = []
+    for run_dir in results_root.iterdir():
+        if not run_dir.is_dir():
+            continue
+        csv_path = run_dir / "fn_results.csv"
+        if csv_path.is_file():
+            candidates.append(csv_path)
+
+    if not candidates:
+        raise FileNotFoundError(f"No fn_results.csv found under: {results_root}")
+    candidates.sort(key=lambda p: p.stat().st_mtime, reverse=True)
+    return candidates[0]
+
+
+def flatten_numeric(obj: Any) -> list[float]:
+    if obj is None:
+        return []
+    if isinstance(obj, (int, float, np.integer, np.floating)):
+        return [float(obj)]
+    if isinstance(obj, str):
+        text = obj.strip()
+        if not text:
+            return []
+        try:
+            return flatten_numeric(json.loads(text))
+        except Exception:
+            return []
+    if isinstance(obj, dict):
+        out: list[float] = []
+        for key in sorted(obj.keys()):
+            out.extend(flatten_numeric(obj[key]))
+        return out
+    if isinstance(obj, (list, tuple)):
+        out: list[float] = []
+        for item in obj:
+            out.extend(flatten_numeric(item))
+        return out
+    return []
+
+
+def infer_feature_spec(df: pd.DataFrame, grad_columns: list[str]) -> FeatureSpec:
+    dim_by_column: dict[str, int] = {}
+    for col in grad_columns:
+        inferred_dim = 0
+        for value in df[col].values:
+            vec = flatten_numeric(value)
+            if vec:
+                inferred_dim = len(vec)
+                break
+        dim_by_column[col] = inferred_dim
+    return FeatureSpec(grad_columns=grad_columns, dim_by_column=dim_by_column)
+
+
+def build_feature_matrix(df: pd.DataFrame, spec: FeatureSpec) -> np.ndarray:
+    rows: list[list[float]] = []
+    for _, row in df.iterrows():
+        feature_row: list[float] = []
+        for col in spec.grad_columns:
+            vec = flatten_numeric(row[col])
+            dim = spec.dim_by_column[col]
+            if dim == 0:
+                continue
+            if len(vec) < dim:
+                vec = vec + [0.0] * (dim - len(vec))
+            elif len(vec) > dim:
+                vec = vec[:dim]
+            feature_row.extend(vec)
+        rows.append(feature_row)
+    return np.asarray(rows, dtype=np.float32)
+
+
+def apply_augmentation(x: np.ndarray, y: np.ndarray, augmentation: str) -> tuple[np.ndarray, np.ndarray]:
+    if augmentation == "none":
+        return x, y
+    if augmentation == "smote":
+        if SMOTE is None:
+            raise ImportError("imblearn is required for augmentation='smote'.")
+        sampler = SMOTE()
+        return sampler.fit_resample(x, y)
+    raise ValueError(f"Unsupported augmentation: {augmentation}")
+
+
+def save_object(obj: Any, path_without_suffix: Path) -> Path:
+    if joblib is not None:
+        out = path_without_suffix.with_suffix(".joblib")
+        joblib.dump(obj, out)
+        return out
+    out = path_without_suffix.with_suffix(".pkl")
+    with open(out, "wb") as f:
+        pickle.dump(obj, f)
+    return out
+
+
+def run_train(config: dict[str, Any]) -> Path:
+    input_cfg = config["input"]
+    train_cfg = config["training"]
+    output_cfg = config["output"]
+
+    csv_path_raw = str(input_cfg.get("csv_path", "")).strip()
+    results_root = Path(input_cfg.get("results_root", DEFAULT_RESULTS_ROOT)).resolve()
+    csv_path = Path(csv_path_raw).resolve() if csv_path_raw else latest_fn_results_csv(results_root)
+
+    timestamp = datetime.now().strftime("%m-%d-%Y_%H;%M;%S")
+    out_root = Path(output_cfg.get("out_root", DEFAULT_OUT_ROOT)).resolve()
+    out_dir = Path(output_cfg.get("out_dir", "")).resolve() if output_cfg.get("out_dir", "") else out_root / timestamp
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    df = pd.read_csv(csv_path)
+    if "fn" not in df.columns:
+        raise ValueError("Input CSV must contain 'fn' column.")
+
+    grad_columns = [c for c in df.columns if c not in META_COLUMNS]
+    if not grad_columns:
+        raise ValueError("No gradient feature columns found.")
+
+    y = df["fn"].astype(int).to_numpy()
+    spec = infer_feature_spec(df, grad_columns)
+    x = build_feature_matrix(df, spec)
+
+    pca_components = int(train_cfg.get("pca_components", 0))
+    pca_obj: PCA | None = None
+    if pca_components > 0:
+        pca_obj = PCA(n_components=pca_components, random_state=int(train_cfg.get("random_seed", 42)))
+        x = pca_obj.fit_transform(x)
+
+    model_name = str(train_cfg.get("model", "gb_classifier"))
+    use_gpu = bool(train_cfg.get("use_gpu", False))
+    estimator = build_estimator(model_name, use_gpu=use_gpu)
+    best_params: dict[str, Any] = {}
+
+    do_search = bool(train_cfg.get("search", False))
+    augmentation = str(train_cfg.get("augmentation", "none"))
+    if do_search:
+        x_search, y_search = apply_augmentation(x, y, augmentation)
+        search = GridSearchCV(
+            estimator=estimator,
+            param_grid=param_grid(model_name),
+            scoring=str(train_cfg.get("search_scoring", "roc_auc")),
+            n_jobs=int(train_cfg.get("n_jobs", 8)),
+            cv=5,
+            verbose=1,
+        )
+        search.fit(x_search, y_search)
+        best_params = dict(search.best_params_)
+        estimator.set_params(**best_params)
+
+    repeats = int(train_cfg.get("repeats", 15))
+    test_size = float(train_cfg.get("test_size", 0.3))
+    random_seed = int(train_cfg.get("random_seed", 42))
+
+    eval_rows: list[dict[str, float]] = []
+    for i in range(repeats):
+        x_train, x_test, y_train, y_test = train_test_split(
+            x,
+            y,
+            test_size=test_size,
+            random_state=random_seed + i,
+            stratify=y,
+        )
+        x_train, y_train = apply_augmentation(x_train, y_train, augmentation)
+
+        estimator.fit(x_train, y_train)
+        y_pred = estimator.predict_proba(x_test)[:, 1]
+
+        acc, auroc = evaluate_classifier(y_test, y_pred)
+        eval_rows.append({"accuracy": float(acc), "auroc": float(auroc)})
+
+        pd.DataFrame({"y_test": y_test, "y_pred": y_pred}).to_csv(out_dir / f"eval_data_{i}.csv", index=False)
+        save_object(estimator, out_dir / f"model_{i}")
+
+    eval_df = pd.DataFrame(eval_rows)
+    eval_df.loc["mean"] = eval_df.mean(numeric_only=True)
+    eval_df.loc["std"] = eval_df.std(numeric_only=True)
+    eval_df.to_csv(out_dir / "evaluation_results.csv", index=True)
+
+    metadata = {
+        "input_csv": str(csv_path),
+        "model": model_name,
+        "augmentation": augmentation,
+        "pca_components": pca_components,
+        "feature_dimension": int(x.shape[1]),
+        "num_rows": int(len(df)),
+        "num_positive_fn": int(np.sum(y)),
+        "grad_columns": grad_columns,
+        "dim_by_column": spec.dim_by_column,
+        "best_params": best_params,
+        "repeats": repeats,
+        "test_size": test_size,
+        "random_seed": random_seed,
+        "search": do_search,
+    }
+    with open(out_dir / "metadata.json", "w", encoding="utf-8") as f:
+        json.dump(metadata, f, ensure_ascii=False, indent=2)
+
+    if pca_obj is not None:
+        save_object(pca_obj, out_dir / "pca")
+
+    print(f"Saved outputs to: {out_dir}")
+    print(eval_df)
+    return out_dir
