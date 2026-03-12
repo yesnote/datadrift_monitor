@@ -2,10 +2,12 @@ import shutil
 from datetime import datetime
 from pathlib import Path
 
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+
 
 def create_run_dir():
     run_name = datetime.now().strftime("%m-%d-%Y_%H;%M")
-    run_dir = Path("runs") / run_name
+    run_dir = PROJECT_ROOT / "runs" / run_name
     run_dir.mkdir(parents=True, exist_ok=True)
     return run_dir
 
