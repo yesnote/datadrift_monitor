@@ -7,6 +7,8 @@ import torch
 
 from models.yolo.models.yolo_v5_object_detector import YOLOV5TorchObjectDetector
 
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+
 
 def box_iou_xyxy(box_a, box_b):
     ax1, ay1, ax2, ay2 = box_a
@@ -50,6 +52,8 @@ def get_dataset_cfg(config):
 def get_annotation_path(config, split):
     dataset_cfg = get_dataset_cfg(config)
     root = Path(dataset_cfg["root"])
+    if not root.is_absolute():
+        root = (PROJECT_ROOT / root).resolve()
     ann_dir = dataset_cfg["annotation_dir"]
     ann_name = dataset_cfg[f"{split}_annotation_file"]
     return root / ann_dir / ann_name
@@ -72,8 +76,12 @@ def build_detector(config):
     confidence = model_cfg.get("confidence_threshold", 0.4)
     iou_thresh = model_cfg.get("iou_threshold", 0.45)
 
+    weight_path = Path(model_cfg["weights"])
+    if not weight_path.is_absolute():
+        weight_path = (PROJECT_ROOT / weight_path).resolve()
+
     detector = YOLOV5TorchObjectDetector(
-        model_weight=model_cfg["weights"],
+        model_weight=str(weight_path),
         device=device,
         img_size=(model_cfg["img_size"], model_cfg["img_size"]),
         names=None,

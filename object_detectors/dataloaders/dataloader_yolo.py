@@ -7,6 +7,8 @@ import yaml
 from dataloaders.datasets.coco import COCODataset
 from dataloaders.datasets.voc import VOCDataset
 
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+
 
 def load_config(config_path):
     with open(config_path, "r", encoding="utf-8") as f:
@@ -33,7 +35,10 @@ def get_active_dataset_cfg(config):
 
 def build_dataset(config, split="train"):
     name, dataset_cfg = get_active_dataset_cfg(config)
-    root = dataset_cfg["root"]
+    root_path = Path(dataset_cfg["root"])
+    if not root_path.is_absolute():
+        root_path = (PROJECT_ROOT / root_path).resolve()
+    root = str(root_path)
 
     if name == "coco":
         split_key = f"{split}_split"

@@ -7,6 +7,48 @@ from dataloaders.dataloader_yolo import load_config
 from commands.run_predict import run_grad_pass, run_predict_pass, should_run_grad_pass
 from commands.utils.run_utils import create_run_dir, save_used_config
 
+PROJECT_ROOT = Path(__file__).resolve().parent
+
+
+def _resolve_config_path(raw_path):
+    path = Path(raw_path)
+    if path.is_absolute():
+        return path.resolve()
+
+    cwd_candidate = (Path.cwd() / path).resolve()
+    if cwd_candidate.is_file():
+        return cwd_candidate
+
+    return (PROJECT_ROOT / path).resolve()
+
+
+def _resolve_run_dir(raw_path):
+    path = Path(raw_path)
+    if path.is_absolute():
+        return path.resolve()
+    return (PROJECT_ROOT / path).resolve()
+
+
+def _normalize_config_paths(config):
+    model_cfg = config.get("model", {})
+    weight_path = model_cfg.get("weights")
+    if isinstance(weight_path, str) and weight_path:
+        p = Path(weight_path)
+        if not p.is_absolute():
+            model_cfg["weights"] = str((PROJECT_ROOT / p).resolve())
+
+    dataset_cfg = config.get("dataset", {})
+    used_dataset = dataset_cfg.get("used_dataset")
+    if isinstance(used_dataset, str) and used_dataset in dataset_cfg:
+        active_cfg = dataset_cfg[used_dataset]
+        root = active_cfg.get("root")
+        if isinstance(root, str) and root:
+            p = Path(root)
+            if not p.is_absolute():
+                active_cfg["root"] = str((PROJECT_ROOT / p).resolve())
+
+    return config
+
 
 def run_subprocess_stage(config_path, stage, run_dir):
     cmd = [
@@ -34,17 +76,17 @@ def main():
     parser.add_argument("--run-dir", type=str, default="")
     args = parser.parse_args()
 
-    config_path = Path(args.config).resolve()
+    config_path = _resolve_config_path(args.config)
     if not config_path.is_file():
         raise FileNotFoundError(f"Config not found: {config_path}")
 
-    config = load_config(str(config_path))
+    config = _normalize_config_paths(load_config(str(config_path)))
     mode = str(config.get("mode", "")).lower()
     if mode != "predict":
         raise ValueError(f"Unsupported mode: {mode}. Only 'predict' is implemented.")
 
     if args.stage == "all":
-        run_dir = Path(args.run_dir).resolve() if args.run_dir else create_run_dir().resolve()
+        run_dir = _resolve_run_dir(args.run_dir) if args.run_dir else create_run_dir().resolve()
         run_dir.mkdir(parents=True, exist_ok=True)
         save_used_config(config_path, run_dir)
 
@@ -56,7 +98,7 @@ def main():
     if not args.run_dir:
         raise ValueError("--run-dir is required when --stage is 'predict_pass' or 'grad_pass'.")
 
-    run_dir = Path(args.run_dir).resolve()
+    run_dir = _resolve_run_dir(args.run_dir)
     run_dir.mkdir(parents=True, exist_ok=True)
 
     if args.stage == "predict_pass":
