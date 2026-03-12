@@ -31,7 +31,6 @@ dataloader:
   shuffle_eval: false
 
 output:
-  memory_log_interval: 50
   save_csv:
     enabled: true
     cue: grad
