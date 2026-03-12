@@ -8,34 +8,35 @@ from commands.run_predict import run_grad_pass, run_predict_pass, should_run_gra
 from commands.utils.run_utils import create_run_dir, save_used_config
 
 PROJECT_ROOT = Path(__file__).resolve().parent
+REPO_ROOT = PROJECT_ROOT.parent
+
+
+def _resolve_path_value(raw_path):
+    p = Path(raw_path)
+    if p.is_absolute():
+        return p.resolve()
+    return (REPO_ROOT / p).resolve()
 
 
 def _resolve_config_path(raw_path):
     path = Path(raw_path)
     if path.is_absolute():
         return path.resolve()
-
-    cwd_candidate = (Path.cwd() / path).resolve()
-    if cwd_candidate.is_file():
-        return cwd_candidate
-
-    return (PROJECT_ROOT / path).resolve()
+    return (REPO_ROOT / path).resolve()
 
 
 def _resolve_run_dir(raw_path):
     path = Path(raw_path)
     if path.is_absolute():
         return path.resolve()
-    return (PROJECT_ROOT / path).resolve()
+    return (REPO_ROOT / path).resolve()
 
 
 def _normalize_config_paths(config):
     model_cfg = config.get("model", {})
     weight_path = model_cfg.get("weights")
     if isinstance(weight_path, str) and weight_path:
-        p = Path(weight_path)
-        if not p.is_absolute():
-            model_cfg["weights"] = str((PROJECT_ROOT / p).resolve())
+        model_cfg["weights"] = str(_resolve_path_value(weight_path))
 
     dataset_cfg = config.get("dataset", {})
     used_dataset = dataset_cfg.get("used_dataset")
@@ -43,9 +44,7 @@ def _normalize_config_paths(config):
         active_cfg = dataset_cfg[used_dataset]
         root = active_cfg.get("root")
         if isinstance(root, str) and root:
-            p = Path(root)
-            if not p.is_absolute():
-                active_cfg["root"] = str((PROJECT_ROOT / p).resolve())
+            active_cfg["root"] = str(_resolve_path_value(root))
 
     return config
 
@@ -66,7 +65,7 @@ def run_subprocess_stage(config_path, stage, run_dir):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--config", type=str, default="configs/predict_yolov5.yaml")
+    parser.add_argument("--config", type=str, default="object_detectors/configs/predict_yolov5.yaml")
     parser.add_argument(
         "--stage",
         type=str,

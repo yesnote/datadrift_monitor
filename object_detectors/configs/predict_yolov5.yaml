@@ -2,7 +2,7 @@ mode: predict
 
 model:
   type: yolov5
-  weights: models/yolo/weights/yolov5x.pt
+  weights: object_detectors/models/yolo/weights/yolov5x.pt
   img_size: 640
   confidence_threshold: 0.25
   iou_threshold: 0.45
@@ -13,7 +13,7 @@ dataset:
   split: val
   
   coco:
-    root: D:/DataDrift/datasets/COCO
+    root: object_detectors/datasets/COCO
     train_split: train2017
     val_split: val2017
     test_split: test2017
