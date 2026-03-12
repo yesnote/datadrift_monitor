@@ -1,6 +1,7 @@
 import csv
 import json
 import os
+from pathlib import Path
 
 import cv2
 import torch
@@ -9,8 +10,8 @@ from tqdm import tqdm
 from dataloaders.dataloader_yolo import create_dataloader
 from modes.utils.predict_utils import (
     build_detector,
-    create_layer_grad_buffer,
     collect_gradients_per_target,
+    create_layer_grad_buffer,
     draw_predictions,
     get_annotation_path,
     has_fn_for_image,
@@ -25,11 +26,43 @@ def build_row_key(image_id, image_path):
     return f"{image_id}|{image_path}"
 
 
-def run_predict(config, run_dir):
+def should_run_grad_pass(config):
+    parsed = parse_output_config(config.get("output", {}))
+    return parsed["save_csv_enabled"] and bool(parsed["target_layers"])
+
+
+def _build_fieldnames(target_values, target_layers, compute_grads):
+    fieldnames = ["image_id", "image_path", "has_fn"]
+    if compute_grads:
+        for target_value in target_values:
+            for layer_name in target_layers:
+                fieldnames.append(f"d{target_value}_d{layer_name}")
+    return fieldnames
+
+
+def _build_predict_stats(parsed, split, total_images, fn_images, output_csv):
+    return {
+        "mode": "predict",
+        "cue": parsed["cue"],
+        "split": split,
+        "save_csv": parsed["save_csv_enabled"],
+        "save_image": parsed["save_image_enabled"],
+        "save_image_step": parsed["image_step"],
+        "save_image_num": parsed["image_num"],
+        "target_values": parsed["target_values"],
+        "target_layers": parsed["target_layers"],
+        "total_images": total_images,
+        "fn_images": fn_images,
+        "fn_ratio": (fn_images / total_images) if total_images else 0.0,
+        "output_csv": str(output_csv) if parsed["save_csv_enabled"] else "",
+    }
+
+
+def run_predict_pass(config, run_dir):
+    run_dir = Path(run_dir)
     dataset_cfg = config.get("dataset", {})
     split = dataset_cfg.get("split", "val")
-    output_cfg = config.get("output", {})
-    parsed = parse_output_config(output_cfg)
+    parsed = parse_output_config(config.get("output", {}))
 
     save_csv = parsed["save_csv_enabled"]
     iou_match_threshold = parsed["iou_match_threshold"]
@@ -42,6 +75,9 @@ def run_predict(config, run_dir):
 
     output_csv = run_dir / "fn_results.csv"
     base_csv = run_dir / "fn_base_rows.csv"
+    stats_json = run_dir / "predict_pass_stats.json"
+    summary_json = run_dir / "summary.json"
+
     annotation_path = get_annotation_path(config, split)
     catid_to_name = load_coco_category_maps(annotation_path)
     dataloader = create_dataloader(config, split=split)
@@ -52,15 +88,8 @@ def run_predict(config, run_dir):
 
     detector, device = build_detector(config)
 
-    fieldnames = ["image_id", "image_path", "has_fn"]
-    if compute_grads:
-        for target_value in target_values:
-            for layer_name in target_layers:
-                fieldnames.append(f"d{target_value}_d{layer_name}")
-
     total_images = 0
     fn_images = 0
-
     base_writer = None
     base_file_handle = None
     if save_csv:
@@ -136,81 +165,145 @@ def run_predict(config, run_dir):
         if base_file_handle is not None:
             base_file_handle.close()
 
-    if save_csv and compute_grads:
-        base_rows = {}
-        with open(base_csv, "r", encoding="utf-8") as f:
-            reader = csv.DictReader(f)
-            for row in reader:
-                key = build_row_key(row["image_id"], row["image_path"])
-                base_rows[key] = row
+    del detector
+    if device.type == "cuda":
+        torch.cuda.empty_cache()
 
-        grad_loader = create_dataloader(config, split=split)
-        layer_buffer = create_layer_grad_buffer(detector.model, target_layers)
-        grad_image_count = 0
-        with open(output_csv, "w", newline="", encoding="utf-8") as output_file:
-            writer = csv.DictWriter(output_file, fieldnames=fieldnames)
-            writer.writeheader()
-            try:
-                for images, targets in tqdm(
-                    grad_loader, desc=f"Grad Pass ({split})", total=len(grad_loader)
-                ):
-                    for sample_idx in range(images.shape[0]):
-                        target = targets[sample_idx]
-                        image_id = int(target["image_id"][0].item())
-                        image_path = target["path"]
-                        key = build_row_key(str(image_id), image_path)
-                        base_row = base_rows.get(key)
+    stats = _build_predict_stats(parsed, split, total_images, fn_images, output_csv)
+    with open(stats_json, "w", encoding="utf-8") as f:
+        json.dump(stats, f, ensure_ascii=False, indent=2)
 
-                        infer_tensor, _ratio, _pad, _resized_chw = preprocess_with_letterbox(
-                            detector, images[sample_idx], device, requires_grad=False
-                        )
-                        grad_stats = collect_gradients_per_target(
-                            detector=detector,
-                            input_tensor=infer_tensor,
-                            target_values=target_values,
-                            target_layers=target_layers,
-                            layer_buffer=layer_buffer,
-                        )
-
-                        row = {
-                            "image_id": image_id,
-                            "image_path": image_path,
-                            "has_fn": int(base_row["has_fn"]) if base_row is not None else 0,
-                        }
-                        for grad_key, stats in grad_stats.items():
-                            row[grad_key] = json.dumps(stats, separators=(",", ":"))
-                        writer.writerow(row)
-
-                        del infer_tensor, grad_stats
-                        grad_image_count += 1
-                        if device.type == "cuda" and grad_image_count % 50 == 0:
-                            torch.cuda.empty_cache()
-            finally:
-                layer_buffer.remove()
-        if base_csv.exists():
-            base_csv.unlink()
-    elif save_csv:
+    if save_csv and not compute_grads:
         os.replace(base_csv, output_csv)
-
-    summary = {
-        "mode": "predict",
-        "cue": parsed["cue"],
-        "split": split,
-        "save_csv": save_csv,
-        "save_image": save_image,
-        "save_image_step": image_step,
-        "save_image_num": image_num,
-        "target_values": target_values,
-        "target_layers": target_layers,
-        "total_images": total_images,
-        "fn_images": fn_images,
-        "fn_ratio": (fn_images / total_images) if total_images else 0.0,
-        "output_csv": str(output_csv) if save_csv else "",
-    }
-
-    with open(run_dir / "summary.json", "w", encoding="utf-8") as f:
-        json.dump(summary, f, ensure_ascii=False, indent=2)
-
-    if save_csv:
+        with open(summary_json, "w", encoding="utf-8") as f:
+            json.dump(stats, f, ensure_ascii=False, indent=2)
         print(f"Saved results CSV: {output_csv}")
-    print(f"Saved summary: {run_dir / 'summary.json'}")
+        print(f"Saved summary: {summary_json}")
+        return
+
+    if not save_csv:
+        with open(summary_json, "w", encoding="utf-8") as f:
+            json.dump(stats, f, ensure_ascii=False, indent=2)
+        print(f"Saved summary: {summary_json}")
+        return
+
+    print(f"Saved intermediate base CSV: {base_csv}")
+
+
+def run_grad_pass(config, run_dir):
+    run_dir = Path(run_dir)
+    dataset_cfg = config.get("dataset", {})
+    split = dataset_cfg.get("split", "val")
+    parsed = parse_output_config(config.get("output", {}))
+
+    save_csv = parsed["save_csv_enabled"]
+    target_values = parsed["target_values"]
+    target_layers = parsed["target_layers"]
+    compute_grads = save_csv and bool(target_layers)
+    output_csv = run_dir / "fn_results.csv"
+    base_csv = run_dir / "fn_base_rows.csv"
+    stats_json = run_dir / "predict_pass_stats.json"
+    summary_json = run_dir / "summary.json"
+
+    if not save_csv:
+        if stats_json.exists():
+            with open(stats_json, "r", encoding="utf-8") as f:
+                stats = json.load(f)
+            with open(summary_json, "w", encoding="utf-8") as f:
+                json.dump(stats, f, ensure_ascii=False, indent=2)
+        return
+
+    if not compute_grads:
+        if base_csv.exists() and not output_csv.exists():
+            os.replace(base_csv, output_csv)
+        if stats_json.exists():
+            with open(stats_json, "r", encoding="utf-8") as f:
+                stats = json.load(f)
+            with open(summary_json, "w", encoding="utf-8") as f:
+                json.dump(stats, f, ensure_ascii=False, indent=2)
+        return
+
+    if not base_csv.exists():
+        raise FileNotFoundError(
+            f"Base CSV not found for Grad Pass: {base_csv}. Run Predict Pass first."
+        )
+
+    stats = {}
+    if stats_json.exists():
+        with open(stats_json, "r", encoding="utf-8") as f:
+            stats = json.load(f)
+
+    fieldnames = _build_fieldnames(target_values, target_layers, compute_grads=True)
+
+    base_rows = {}
+    with open(base_csv, "r", encoding="utf-8") as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            base_rows[build_row_key(row["image_id"], row["image_path"])] = row
+
+    grad_loader = create_dataloader(config, split=split)
+    detector, device = build_detector(config)
+    layer_buffer = create_layer_grad_buffer(detector.model, target_layers)
+    grad_image_count = 0
+
+    with open(output_csv, "w", newline="", encoding="utf-8") as output_file:
+        writer = csv.DictWriter(output_file, fieldnames=fieldnames)
+        writer.writeheader()
+        try:
+            for images, targets in tqdm(
+                grad_loader, desc=f"Grad Pass ({split})", total=len(grad_loader)
+            ):
+                for sample_idx in range(images.shape[0]):
+                    target = targets[sample_idx]
+                    image_id = int(target["image_id"][0].item())
+                    image_path = target["path"]
+                    key = build_row_key(str(image_id), image_path)
+                    base_row = base_rows.get(key)
+
+                    infer_tensor, _ratio, _pad, _resized_chw = preprocess_with_letterbox(
+                        detector, images[sample_idx], device, requires_grad=False
+                    )
+                    grad_stats = collect_gradients_per_target(
+                        detector=detector,
+                        input_tensor=infer_tensor,
+                        target_values=target_values,
+                        target_layers=target_layers,
+                        layer_buffer=layer_buffer,
+                    )
+
+                    row = {
+                        "image_id": image_id,
+                        "image_path": image_path,
+                        "has_fn": int(base_row["has_fn"]) if base_row is not None else 0,
+                    }
+                    for grad_key, grad_value in grad_stats.items():
+                        row[grad_key] = json.dumps(grad_value, separators=(",", ":"))
+                    writer.writerow(row)
+
+                    del infer_tensor, grad_stats
+                    grad_image_count += 1
+                    if device.type == "cuda" and grad_image_count % 50 == 0:
+                        torch.cuda.empty_cache()
+        finally:
+            layer_buffer.remove()
+
+    del detector
+    if device.type == "cuda":
+        torch.cuda.empty_cache()
+
+    if base_csv.exists():
+        base_csv.unlink()
+
+    if stats:
+        stats["output_csv"] = str(output_csv)
+        with open(summary_json, "w", encoding="utf-8") as f:
+            json.dump(stats, f, ensure_ascii=False, indent=2)
+
+    print(f"Saved results CSV: {output_csv}")
+    print(f"Saved summary: {summary_json}")
+
+
+def run_predict(config, run_dir):
+    run_predict_pass(config, run_dir)
+    if should_run_grad_pass(config):
+        run_grad_pass(config, run_dir)
