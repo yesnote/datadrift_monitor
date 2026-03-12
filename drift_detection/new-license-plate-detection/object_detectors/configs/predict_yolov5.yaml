@@ -10,7 +10,7 @@ model:
 
 dataset:
   used_dataset: coco
-  split: train
+  split: val
   
   coco:
     root: D:/DataDrift/datasets/COCO
