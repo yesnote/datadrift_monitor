@@ -238,7 +238,7 @@ def collect_gradients_per_target(detector, input_tensor, target_values, target_l
 
         if target_scalar is None:
             for layer_name in target_layers:
-                grad_stats[f"d{target_value}_d{layer_name}"] = []
+                grad_stats[f"{target_value}_{layer_name}"] = []
             if grad_input.grad is not None:
                 grad_input.grad = None
             del grad_input, model_output, raw_prediction, raw_logits
@@ -250,7 +250,7 @@ def collect_gradients_per_target(detector, input_tensor, target_values, target_l
         layer_stats.reverse()
 
         for layer_idx, layer_name in enumerate(target_layers):
-            key = f"d{target_value}_d{layer_name}"
+            key = f"{target_value}_{layer_name}"
             grad_stats[key] = layer_stats[layer_idx] if layer_idx < len(layer_stats) else []
 
         if grad_input.grad is not None:

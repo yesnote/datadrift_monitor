@@ -32,11 +32,11 @@ def should_run_grad_pass(config):
 
 
 def _build_fieldnames(target_values, target_layers, compute_grads):
-    fieldnames = ["image_id", "image_path", "has_fn"]
+    fieldnames = ["image_id", "image_path", "fn"]
     if compute_grads:
         for target_value in target_values:
             for layer_name in target_layers:
-                fieldnames.append(f"d{target_value}_d{layer_name}")
+                fieldnames.append(f"{target_value}_{layer_name}")
     return fieldnames
 
 
@@ -86,7 +86,7 @@ def run_predict_pass(config, run_dir):
     if save_csv:
         base_file_handle = open(base_csv, "w", newline="", encoding="utf-8")
         base_writer = csv.DictWriter(
-            base_file_handle, fieldnames=["image_id", "image_path", "has_fn"]
+            base_file_handle, fieldnames=["image_id", "image_path", "fn"]
         )
         base_writer.writeheader()
 
@@ -124,15 +124,15 @@ def run_predict_pass(config, run_dir):
                     catid_to_name.get(int(label), "__unknown__")
                     for label in gt_labels_tensor.tolist()
                 ]
-                has_fn = has_fn_for_image(
+                fn = has_fn_for_image(
                     gt_boxes=gt_boxes,
                     gt_class_names=gt_class_names,
                     pred_boxes=pred_boxes,
                     pred_class_names=pred_class_names,
                     iou_match_threshold=iou_match_threshold,
                 )
-                row["has_fn"] = has_fn
-                fn_images += int(has_fn)
+                row["fn"] = fn
+                fn_images += int(fn)
 
                 if base_writer is not None:
                     base_writer.writerow(row)
@@ -252,7 +252,7 @@ def run_grad_pass(config, run_dir):
                     row = {
                         "image_id": image_id,
                         "image_path": image_path,
-                        "has_fn": int(base_row["has_fn"]) if base_row is not None else 0,
+                        "fn": int(base_row["fn"]) if base_row is not None else 0,
                     }
                     for grad_key, grad_value in grad_stats.items():
                         row[grad_key] = json.dumps(grad_value, separators=(",", ":"))
