@@ -114,27 +114,27 @@ def resolve_module_by_name(model, layer_name):
 class LayerGradBuffer:
     def __init__(self, model, target_layers):
         self.target_layers = list(target_layers)
-        self.gradients = {}
-        self.handles = []
+        self.activations = {}
+        self.forward_handles = []
 
         for layer_name in self.target_layers:
             module = resolve_module_by_name(model, layer_name)
-            # Use full backward hook to avoid deprecation warning and missing gradients.
-            self.handles.append(module.register_full_backward_hook(self._make_backward_hook(layer_name)))
+            self.forward_handles.append(module.register_forward_hook(self._make_forward_hook(layer_name)))
 
-    def _make_backward_hook(self, layer_name):
-        def hook(_module, _grad_input, grad_output):
-            grad = grad_output[0] if isinstance(grad_output, (tuple, list)) else grad_output
-            self.gradients[layer_name] = grad.detach().float().cpu()
+    def _make_forward_hook(self, layer_name):
+        def hook(_module, _inputs, output):
+            out = output[0] if isinstance(output, (tuple, list)) else output
+            self.activations[layer_name] = out
         return hook
 
     def clear(self):
-        self.gradients.clear()
+        self.activations.clear()
 
     def remove(self):
-        for handle in self.handles:
+        self.clear()
+        for handle in self.forward_handles:
             handle.remove()
-        self.handles = []
+        self.forward_handles = []
 
 
 def create_layer_grad_buffer(model, target_layers):
@@ -219,7 +219,6 @@ def collect_gradients_per_target(detector, input_tensor, target_values, target_l
     last_valid_idx = valid_indices[-1] if valid_indices else -1
 
     for idx, target_value in enumerate(target_values):
-        layer_buffer.gradients.clear()
         target_scalar = target_scalars[idx]
         if target_scalar is None:
             for layer_name in target_layers:
@@ -227,16 +226,33 @@ def collect_gradients_per_target(detector, input_tensor, target_values, target_l
             continue
 
         retain_graph = idx < last_valid_idx
-        target_scalar.backward(retain_graph=retain_graph)
+        layer_activation_pairs = [
+            (layer_name, layer_buffer.activations.get(layer_name))
+            for layer_name in target_layers
+        ]
+        valid_inputs = [activation for _, activation in layer_activation_pairs if activation is not None]
+        grads = torch.autograd.grad(
+            outputs=target_scalar,
+            inputs=valid_inputs,
+            retain_graph=retain_graph,
+            create_graph=False,
+            allow_unused=True,
+        )
+
+        grad_index = 0
         for layer_name in target_layers:
-            grad = layer_buffer.gradients.get(layer_name)
+            activation = layer_buffer.activations.get(layer_name)
             key = f"d{target_value}_d{layer_name}"
-            if grad is None:
+            if activation is None:
                 grad_stats[key] = []
             else:
-                grad_stats[key] = get_channel_stats(grad.detach())
+                grad = grads[grad_index]
+                grad_index += 1
+                grad_stats[key] = [] if grad is None else get_channel_stats(grad.detach())
 
-    del grad_input, preds, logits, objectness, _features
+    if grad_input.grad is not None:
+        grad_input.grad = None
+    del grad_input, preds, logits, objectness, _features, target_scalars
     detector.zero_grad(set_to_none=True)
     layer_buffer.clear()
     return grad_stats
