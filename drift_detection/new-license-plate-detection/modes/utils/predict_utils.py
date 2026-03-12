@@ -1,5 +1,4 @@
 import json
-import gc
 from pathlib import Path
 
 import cv2
@@ -232,7 +231,7 @@ def collect_gradients_per_target(detector, input_tensor, target_values, target_l
         detector.zero_grad(set_to_none=True)
         layer_buffer.clear()
 
-        grad_input = input_tensor.detach().clone().requires_grad_(True)
+        grad_input = input_tensor.detach().requires_grad_(True)
         preds, logits, objectness, _features = detector(grad_input)
         target_scalar = build_target_scalar(target_value, preds, logits, objectness)
 
@@ -259,13 +258,12 @@ def collect_gradients_per_target(detector, input_tensor, target_values, target_l
         del grad_input, preds, logits, objectness, _features, target_scalar, grads
         detector.zero_grad(set_to_none=True)
         layer_buffer.clear()
-        gc.collect()
     return grad_stats
 
 
 def get_channel_stats(grad_tensor):
     # Expect [B, C, H, W] from conv feature maps; reduce over spatial dims per channel.
-    grad_tensor = grad_tensor.detach().float().cpu()
+    grad_tensor = grad_tensor.detach().float()
     if grad_tensor.ndim == 4:
         grad_tensor = grad_tensor[0]
     if grad_tensor.ndim != 3:
@@ -282,7 +280,7 @@ def get_channel_stats(grad_tensor):
     std_v = flat.std(dim=1, unbiased=False)
 
     stacked = torch.stack([l1, l2, min_v, max_v, mean_v, std_v], dim=1)
-    return stacked.cpu().tolist()
+    return stacked.detach().cpu().tolist()
 
 
 def preprocess_with_letterbox(detector, image_tensor, device, requires_grad=True):
