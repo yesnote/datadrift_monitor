@@ -7,7 +7,6 @@ from typing import Any
 
 import numpy as np
 import pandas as pd
-from sklearn.decomposition import PCA
 from sklearn.model_selection import GridSearchCV, train_test_split
 
 from fn_detectors.losses.loss import evaluate_classifier
@@ -159,15 +158,9 @@ def run_train(config: dict[str, Any]) -> Path:
     spec = infer_feature_spec(df, grad_columns)
     x = build_feature_matrix(df, spec)
 
-    pca_components = int(train_cfg.get("pca_components", 0))
-    pca_obj: PCA | None = None
-    if pca_components > 0:
-        pca_obj = PCA(n_components=pca_components, random_state=int(train_cfg.get("random_seed", 42)))
-        x = pca_obj.fit_transform(x)
-
     model_name = str(train_cfg.get("model", "gb_classifier"))
-    use_gpu = bool(train_cfg.get("use_gpu", False))
-    estimator = build_estimator(model_name, use_gpu=use_gpu)
+    device = str(train_cfg.get("device", "cpu"))
+    estimator = build_estimator(model_name, device=device)
     best_params: dict[str, Any] = {}
 
     do_search = bool(train_cfg.get("search", False))
@@ -218,8 +211,8 @@ def run_train(config: dict[str, Any]) -> Path:
     metadata = {
         "input_csv": str(csv_path),
         "model": model_name,
+        "device": device,
         "augmentation": augmentation,
-        "pca_components": pca_components,
         "feature_dimension": int(x.shape[1]),
         "num_rows": int(len(df)),
         "num_positive_fn": int(np.sum(y)),
@@ -233,9 +226,6 @@ def run_train(config: dict[str, Any]) -> Path:
     }
     with open(out_dir / "metadata.json", "w", encoding="utf-8") as f:
         json.dump(metadata, f, ensure_ascii=False, indent=2)
-
-    if pca_obj is not None:
-        save_object(pca_obj, out_dir / "pca")
 
     print(f"Saved outputs to: {out_dir}")
     print(eval_df)
