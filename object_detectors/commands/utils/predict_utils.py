@@ -172,12 +172,14 @@ def parse_output_config(output_cfg):
         fn_cfg = {}
         tp_cfg = {}
         feature_grad_cfg = {}
+        unit = "image"
     else:
         save_csv_enabled = bool(save_csv_cfg.get("enabled", True))
         cue = str(save_csv_cfg.get("cue", "fn")).lower()
         fn_cfg = save_csv_cfg.get("fn", {})
         tp_cfg = save_csv_cfg.get("tp", {})
         feature_grad_cfg = save_csv_cfg.get("feature_grad", {})
+        unit = str(save_csv_cfg.get("unit", "image")).lower()
 
     if cue not in {"fn", "tp", "feature_grad"}:
         raise ValueError(f"Unsupported output.save_csv.cue='{cue}'. Use 'fn', 'tp' or 'feature_grad'.")
@@ -187,6 +189,8 @@ def parse_output_config(output_cfg):
     target_values = []
     target_layers = []
     if cue == "feature_grad":
+        if unit not in {"image", "bbox"}:
+            raise ValueError("output.save_csv.unit must be 'image' or 'bbox' when cue is 'feature_grad'.")
         target_values = [v.lower() for v in normalize_to_list(feature_grad_cfg.get("target_value", ["obj"]))]
         valid_values = {"obj", "cls"}
         invalid_values = [v for v in target_values if v not in valid_values]
@@ -215,6 +219,7 @@ def parse_output_config(output_cfg):
     return {
         "save_csv_enabled": save_csv_enabled,
         "cue": cue,
+        "unit": unit,
         "iou_match_threshold": iou_match_threshold,
         "tp_iou_match_threshold": tp_iou_match_threshold,
         "target_values": target_values,
@@ -237,6 +242,20 @@ def build_target_scalar_pre_nms(target_value, raw_prediction, raw_logits):
             return None
         # NMS 이전: 모든 후보 bbox의 max(class logit) 합
         return raw_logits.max(dim=-1).values.sum()
+
+    raise ValueError(f"Unsupported target_value: {target_value}")
+
+
+def build_target_scalar_post_nms(target_value, bbox_idx, selected_logits, selected_objectness):
+    if target_value == "obj":
+        if selected_objectness is None or selected_objectness.numel() == 0:
+            return None
+        return selected_objectness[bbox_idx]
+
+    if target_value == "cls":
+        if selected_logits is None or selected_logits.numel() == 0:
+            return None
+        return selected_logits[bbox_idx].max()
 
     raise ValueError(f"Unsupported target_value: {target_value}")
 
@@ -276,6 +295,84 @@ def collect_gradients_per_target(detector, input_tensor, target_values, target_l
         detector.zero_grad(set_to_none=True)
         layer_buffer.clear()
     return grad_stats
+
+
+def collect_bbox_gradients_per_target(
+    detector,
+    input_tensor,
+    target_values,
+    target_layers,
+    layer_buffer,
+):
+    detector.zero_grad(set_to_none=True)
+    grad_input = input_tensor.detach().requires_grad_(True)
+    model_output = detector.model(grad_input, augment=False)
+    raw_prediction = model_output[0] if isinstance(model_output, (tuple, list)) else model_output
+    raw_logits = model_output[1] if isinstance(model_output, (tuple, list)) and len(model_output) > 1 else None
+
+    selected_preds, selected_logits, selected_objectness = detector.non_max_suppression(
+        raw_prediction,
+        raw_logits,
+        detector.confidence,
+        detector.iou_thresh,
+        classes=None,
+        agnostic=detector.agnostic,
+    )
+
+    det = selected_preds[0] if selected_preds else torch.zeros((0, 6), device=grad_input.device)
+    det_logits = selected_logits[0] if selected_logits else torch.zeros((0, 0), device=grad_input.device)
+    det_objectness = selected_objectness[0] if selected_objectness else torch.zeros((0,), device=grad_input.device)
+
+    rows = []
+    num_boxes = int(det.shape[0])
+    for bbox_idx in range(num_boxes):
+        grad_stats = {}
+        for target_value in target_values:
+            detector.zero_grad(set_to_none=True)
+            layer_buffer.clear()
+
+            target_scalar = build_target_scalar_post_nms(
+                target_value=target_value,
+                bbox_idx=bbox_idx,
+                selected_logits=det_logits,
+                selected_objectness=det_objectness,
+            )
+            if target_scalar is None:
+                for layer_name in target_layers:
+                    grad_stats[f"{target_value}_{layer_name}"] = []
+                layer_buffer.clear()
+                continue
+
+            target_scalar.backward(retain_graph=True)
+            layer_stats = list(layer_buffer.gradients["value"])
+            layer_stats.reverse()
+
+            for layer_idx, layer_name in enumerate(target_layers):
+                key = f"{target_value}_{layer_name}"
+                grad_stats[key] = layer_stats[layer_idx] if layer_idx < len(layer_stats) else []
+
+            layer_buffer.clear()
+
+        cls_idx = int(det[bbox_idx, 5].detach().cpu().item())
+        rows.append(
+            {
+                "pred_idx": bbox_idx,
+                "xmin": float(det[bbox_idx, 0].detach().cpu().item()),
+                "ymin": float(det[bbox_idx, 1].detach().cpu().item()),
+                "xmax": float(det[bbox_idx, 2].detach().cpu().item()),
+                "ymax": float(det[bbox_idx, 3].detach().cpu().item()),
+                "score": float(det[bbox_idx, 4].detach().cpu().item()),
+                "pred_class": detector.names[cls_idx] if detector.names is not None else cls_idx,
+                "grad_stats": grad_stats,
+            }
+        )
+
+    if grad_input.grad is not None:
+        grad_input.grad = None
+    del grad_input, model_output, raw_prediction, raw_logits, selected_preds, selected_logits, selected_objectness
+    detector.zero_grad(set_to_none=True)
+    layer_buffer.clear()
+    return rows
 
 
 def get_channel_stats(grad_tensor):

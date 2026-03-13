@@ -34,6 +34,7 @@ output:
   save_csv:
     enabled: true
     cue: feature_grad
+    unit: image   # image | bbox
     
     fn:
       iou_match_threshold: 0.45
