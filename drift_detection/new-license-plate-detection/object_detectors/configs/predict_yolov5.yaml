@@ -34,8 +34,9 @@ output:
   save_csv:
     enabled: true
     cue: grad
-    feature_grad:
+    fn:
       iou_match_threshold: 0.45
+    feature_grad:
       target_value: [obj, cls]
       target_layer: ["model.24.m.0", "model.24.m.1", "model.24.m.2"]
   
