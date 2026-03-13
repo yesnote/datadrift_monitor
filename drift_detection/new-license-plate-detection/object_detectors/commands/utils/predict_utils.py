@@ -257,20 +257,6 @@ def build_target_scalar_pre_nms(target_value, raw_prediction, raw_logits):
     raise ValueError(f"Unsupported target_value: {target_value}")
 
 
-def build_target_scalar_post_nms(target_value, bbox_idx, selected_logits, selected_objectness):
-    if target_value == "obj":
-        if selected_objectness is None or selected_objectness.numel() == 0:
-            return None
-        return selected_objectness[bbox_idx]
-
-    if target_value == "cls":
-        if selected_logits is None or selected_logits.numel() == 0:
-            return None
-        return selected_logits[bbox_idx].max()
-
-    raise ValueError(f"Unsupported target_value: {target_value}")
-
-
 def collect_gradients_per_target(detector, input_tensor, target_values, target_layers, layer_buffer):
     grad_stats = {}
     for target_value in target_values:
@@ -315,46 +301,60 @@ def collect_bbox_gradients_per_target(
     target_layers,
     layer_buffer,
 ):
-    detector.zero_grad(set_to_none=True)
-    grad_input = input_tensor.detach().requires_grad_(True)
-    model_output = detector.model(grad_input, augment=False)
-    raw_prediction = model_output[0] if isinstance(model_output, (tuple, list)) else model_output
-    raw_logits = model_output[1] if isinstance(model_output, (tuple, list)) and len(model_output) > 1 else None
+    # Step 1) compute final NMS boxes and their raw indices without building autograd graph.
+    with torch.no_grad():
+        model_output = detector.model(input_tensor.detach(), augment=False)
+        raw_prediction = model_output[0] if isinstance(model_output, (tuple, list)) else model_output
+        raw_logits = model_output[1] if isinstance(model_output, (tuple, list)) and len(model_output) > 1 else None
+        selected_preds, _selected_logits, _selected_objectness, selected_indices = detector.non_max_suppression(
+            raw_prediction,
+            raw_logits,
+            detector.confidence,
+            detector.iou_thresh,
+            classes=None,
+            agnostic=detector.agnostic,
+            return_indices=True,
+        )
 
-    selected_preds, selected_logits, selected_objectness = detector.non_max_suppression(
-        raw_prediction,
-        raw_logits,
-        detector.confidence,
-        detector.iou_thresh,
-        classes=None,
-        agnostic=detector.agnostic,
-    )
-
-    det = selected_preds[0] if selected_preds else torch.zeros((0, 6), device=grad_input.device)
-    det_logits = selected_logits[0] if selected_logits else torch.zeros((0, 0), device=grad_input.device)
-    det_objectness = selected_objectness[0] if selected_objectness else torch.zeros((0,), device=grad_input.device)
+    det = selected_preds[0] if selected_preds else torch.zeros((0, 6), device=input_tensor.device)
+    raw_keep_indices = selected_indices[0] if selected_indices else torch.zeros((0,), dtype=torch.long, device=input_tensor.device)
 
     rows = []
     num_boxes = int(det.shape[0])
     for bbox_idx in range(num_boxes):
+        raw_idx = int(raw_keep_indices[bbox_idx].detach().cpu().item())
         grad_stats = {}
         for target_value in target_values:
             detector.zero_grad(set_to_none=True)
             layer_buffer.clear()
 
-            target_scalar = build_target_scalar_post_nms(
-                target_value=target_value,
-                bbox_idx=bbox_idx,
-                selected_logits=det_logits,
-                selected_objectness=det_objectness,
-            )
+            # Step 2) re-run forward and build scalar only from selected raw prediction index.
+            grad_input = input_tensor.detach().requires_grad_(True)
+            model_output = detector.model(grad_input, augment=False)
+            raw_prediction = model_output[0] if isinstance(model_output, (tuple, list)) else model_output
+            raw_logits = model_output[1] if isinstance(model_output, (tuple, list)) and len(model_output) > 1 else None
+            pred_img = raw_prediction[0]
+            logit_img = raw_logits[0] if raw_logits is not None else pred_img[:, 5:]
+
+            target_scalar = None
+            if raw_idx < pred_img.shape[0]:
+                if target_value == "obj":
+                    target_scalar = pred_img[raw_idx, 4]
+                elif target_value == "cls":
+                    target_scalar = logit_img[raw_idx].max()
+                else:
+                    raise ValueError(f"Unsupported target_value: {target_value}")
+
             if target_scalar is None:
                 for layer_name in target_layers:
                     grad_stats[f"{target_value}_{layer_name}"] = []
+                if grad_input.grad is not None:
+                    grad_input.grad = None
+                del grad_input, model_output, raw_prediction, raw_logits, pred_img, logit_img
                 layer_buffer.clear()
                 continue
 
-            target_scalar.backward(retain_graph=True)
+            target_scalar.backward()
             layer_stats = list(layer_buffer.gradients["value"])
             layer_stats.reverse()
 
@@ -362,12 +362,16 @@ def collect_bbox_gradients_per_target(
                 key = f"{target_value}_{layer_name}"
                 grad_stats[key] = layer_stats[layer_idx] if layer_idx < len(layer_stats) else []
 
+            if grad_input.grad is not None:
+                grad_input.grad = None
+            del grad_input, model_output, raw_prediction, raw_logits, pred_img, logit_img, target_scalar
             layer_buffer.clear()
 
         cls_idx = int(det[bbox_idx, 5].detach().cpu().item())
         rows.append(
             {
                 "pred_idx": bbox_idx,
+                "raw_pred_idx": raw_idx,
                 "xmin": float(det[bbox_idx, 0].detach().cpu().item()),
                 "ymin": float(det[bbox_idx, 1].detach().cpu().item()),
                 "xmax": float(det[bbox_idx, 2].detach().cpu().item()),
@@ -378,9 +382,7 @@ def collect_bbox_gradients_per_target(
             }
         )
 
-    if grad_input.grad is not None:
-        grad_input.grad = None
-    del grad_input, model_output, raw_prediction, raw_logits, selected_preds, selected_logits, selected_objectness
+    del selected_preds, selected_indices, det, raw_keep_indices
     detector.zero_grad(set_to_none=True)
     layer_buffer.clear()
     return rows
