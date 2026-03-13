@@ -51,6 +51,7 @@ def _build_summary(total_images, fn_images, output_csv):
 
 def run_predict_pass(config, run_dir):
     run_dir = Path(run_dir)
+    mode = str(config.get("mode", "predict"))
     dataset_cfg = config.get("dataset", {})
     split = dataset_cfg.get("split", "val")
     output_cfg = config.get("output", {})
@@ -92,7 +93,7 @@ def run_predict_pass(config, run_dir):
 
     try:
         for step_idx, (images, targets) in enumerate(
-            tqdm(dataloader, desc=f"Predict Pass ({split})", total=len(dataloader))
+            tqdm(dataloader, desc=f"Object Detector ({mode})", total=len(dataloader))
         ):
             batch_size = images.shape[0]
             should_save_step = save_image and (step_idx % image_step == 0)
@@ -181,6 +182,7 @@ def run_predict_pass(config, run_dir):
 
 def run_grad_pass(config, run_dir):
     run_dir = Path(run_dir)
+    mode = str(config.get("mode", "predict"))
     dataset_cfg = config.get("dataset", {})
     split = dataset_cfg.get("split", "val")
     output_cfg = config.get("output", {})
@@ -229,7 +231,7 @@ def run_grad_pass(config, run_dir):
         writer.writeheader()
         try:
             for images, targets in tqdm(
-                grad_loader, desc=f"Grad Pass ({split})", total=len(grad_loader)
+                grad_loader, desc=f"Object Detector ({mode} - Grad)", total=len(grad_loader)
             ):
                 for sample_idx in range(images.shape[0]):
                     target = targets[sample_idx]

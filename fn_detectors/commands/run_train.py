@@ -122,6 +122,7 @@ def save_object(obj: Any, path_without_suffix: Path) -> Path:
 
 
 def run_train(config: dict[str, Any], run_dir: Path) -> Path:
+    mode = str(config.get("mode", "train"))
     dataset_cfg = config["dataset"]
     model_cfg = config["model"]
     train_cfg = config["train"]
@@ -175,7 +176,7 @@ def run_train(config: dict[str, Any], run_dir: Path) -> Path:
     random_seed = int(train_cfg.get("random_seed", 42))
 
     eval_rows: list[dict[str, float]] = []
-    split_iter = tqdm(range(repeats), desc="FN training", unit="split")
+    split_iter = tqdm(range(repeats), desc=f"FN Detector ({mode})", unit="split")
     for i in split_iter:
         x_train, x_test, y_train, y_test = train_test_split(
             x,
