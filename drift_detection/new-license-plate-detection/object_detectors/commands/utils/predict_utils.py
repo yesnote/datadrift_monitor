@@ -1,4 +1,5 @@
 import json
+import warnings
 from pathlib import Path
 
 import cv2
@@ -200,6 +201,16 @@ def parse_output_config(output_cfg):
         target_layers = normalize_to_list(feature_grad_cfg.get("target_layer", []))
         if not target_layers and save_csv_enabled:
             raise ValueError("output.save_csv.feature_grad.target_layer must contain at least one layer name.")
+    elif cue == "fn":
+        if unit != "image":
+            msg = "Invalid config: output.save_csv.cue='fn' requires output.save_csv.unit='image'."
+            warnings.warn(msg)
+            raise ValueError(msg)
+    elif cue == "tp":
+        if unit != "bbox":
+            msg = "Invalid config: output.save_csv.cue='tp' requires output.save_csv.unit='bbox'."
+            warnings.warn(msg)
+            raise ValueError(msg)
 
     save_image_cfg = output_cfg.get("save_image", {})
     if isinstance(save_image_cfg, bool):
