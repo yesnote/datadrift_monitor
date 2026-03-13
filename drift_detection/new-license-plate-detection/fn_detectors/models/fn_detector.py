@@ -28,7 +28,7 @@ def build_estimator(model_name: str, device: str) -> Pipeline:
         xgb_kwargs = {}
         if str(device).lower().startswith("cuda"):
             xgb_kwargs.update({"tree_method": "gpu_hist", "gpu_id": 0})
-        clf = xgb.XGBClassifier(use_label_encoder=False, eval_metric="logloss", **xgb_kwargs)
+        clf = xgb.XGBClassifier(eval_metric="logloss", **xgb_kwargs)
     else:
         raise ValueError(f"Unsupported model: {model_name}")
 
