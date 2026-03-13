@@ -7,8 +7,9 @@ model:
   search_scoring: roc_auc
 
 dataset:
-  # object_detectors/runs/{time}
-  root: object_detectors/runs/03-12-2026_18;34
+  # object_detectors/runs/{fn_detectors|tp_classifiers}/{time}_{cue}
+  input_root: object_detectors/runs/fn_detectors/03-12-2026_18;34_feature_grad
+  gt_root: object_detectors/runs/fn_detectors/03-12-2026_18;34_fn
 
 train:
   augmentation: none           # none | smote
