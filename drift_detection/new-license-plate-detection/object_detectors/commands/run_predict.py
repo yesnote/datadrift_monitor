@@ -10,6 +10,7 @@ from dataloaders.dataloader_yolo import create_dataloader
 from commands.utils.predict_utils import (
     assign_tp_to_predictions,
     build_detector,
+    collect_bbox_gradients_per_target,
     collect_gradients_per_target,
     create_layer_grad_buffer,
     draw_predictions,
@@ -143,6 +144,7 @@ def run_feature_grad_csv(config, run_dir):
     parsed = parse_output_config(config.get("output", {}))
 
     save_csv = parsed["save_csv_enabled"]
+    unit = parsed["unit"]
     target_values = parsed["target_values"]
     target_layers = parsed["target_layers"]
 
@@ -151,6 +153,8 @@ def run_feature_grad_csv(config, run_dir):
 
     output_csv = run_dir / "feature_grad.csv"
     fieldnames = ["image_id", "image_path"]
+    if unit == "bbox":
+        fieldnames.extend(["pred_idx", "xmin", "ymin", "xmax", "ymax", "score", "pred_class"])
     for target_value in target_values:
         for layer_name in target_layers:
             fieldnames.append(f"{target_value}_{layer_name}")
@@ -177,19 +181,44 @@ def run_feature_grad_csv(config, run_dir):
                     infer_tensor, _ratio, _pad, _resized_chw = preprocess_with_letterbox(
                         detector, images[sample_idx], device, requires_grad=False
                     )
-                    grad_stats = collect_gradients_per_target(
-                        detector=detector,
-                        input_tensor=infer_tensor,
-                        target_values=target_values,
-                        target_layers=target_layers,
-                        layer_buffer=layer_buffer,
-                    )
+                    if unit == "bbox":
+                        bbox_rows = collect_bbox_gradients_per_target(
+                            detector=detector,
+                            input_tensor=infer_tensor,
+                            target_values=target_values,
+                            target_layers=target_layers,
+                            layer_buffer=layer_buffer,
+                        )
+                        for bbox_row in bbox_rows:
+                            row = {
+                                "image_id": image_id,
+                                "image_path": image_path,
+                                "pred_idx": bbox_row["pred_idx"],
+                                "xmin": bbox_row["xmin"],
+                                "ymin": bbox_row["ymin"],
+                                "xmax": bbox_row["xmax"],
+                                "ymax": bbox_row["ymax"],
+                                "score": bbox_row["score"],
+                                "pred_class": bbox_row["pred_class"],
+                            }
+                            for grad_key, grad_value in bbox_row["grad_stats"].items():
+                                row[grad_key] = json.dumps(grad_value, separators=(",", ":"))
+                            writer.writerow(row)
+                        del infer_tensor, bbox_rows
+                    else:
+                        grad_stats = collect_gradients_per_target(
+                            detector=detector,
+                            input_tensor=infer_tensor,
+                            target_values=target_values,
+                            target_layers=target_layers,
+                            layer_buffer=layer_buffer,
+                        )
 
-                    row = {"image_id": image_id, "image_path": image_path}
-                    for grad_key, grad_value in grad_stats.items():
-                        row[grad_key] = json.dumps(grad_value, separators=(",", ":"))
-                    writer.writerow(row)
-                    del infer_tensor, grad_stats
+                        row = {"image_id": image_id, "image_path": image_path}
+                        for grad_key, grad_value in grad_stats.items():
+                            row[grad_key] = json.dumps(grad_value, separators=(",", ":"))
+                        writer.writerow(row)
+                        del infer_tensor, grad_stats
         finally:
             layer_buffer.remove()
 
