@@ -11,6 +11,7 @@ from commands.utils.predict_utils import (
     assign_tp_to_predictions,
     build_detector,
     collect_bbox_gradients_per_target,
+    collect_bbox_layer_grads_per_target,
     collect_gradients_per_target,
     create_layer_grad_buffer,
     draw_predictions,
@@ -331,6 +332,83 @@ def run_tp_csv(config, run_dir):
     print(f"Saved results CSV: {output_csv}")
 
 
+def run_layer_grad_csv(config, run_dir):
+    run_dir = Path(run_dir)
+    mode = str(config.get("mode", "predict"))
+    cue = "layer_grad"
+
+    dataset_cfg = config.get("dataset", {})
+    split = dataset_cfg.get("split", "val")
+    parsed = parse_output_config(config.get("output", {}))
+    save_csv = parsed["save_csv_enabled"]
+    target_values = parsed["layer_target_values"]
+    target_layers = parsed["layer_target_layers"]
+
+    if not save_csv:
+        return
+
+    output_csv = run_dir / "layer_grad.csv"
+    fieldnames = ["image_id", "image_path", "pred_idx", "raw_pred_idx", "xmin", "ymin", "xmax", "ymax", "score", "pred_class"]
+    for target_value in target_values:
+        for layer_name in target_layers:
+            fieldnames.append(f"{target_value}_{layer_name}")
+
+    dataloader = create_dataloader(config, split=split)
+    if len(dataloader.dataset) == 0:
+        raise ValueError("Loaded 0 images. Check dataset root/image_dir/split configuration in YAML.")
+
+    detector, device = build_detector(config)
+    layer_buffer = create_layer_grad_buffer(detector.model, target_layers)
+
+    with open(output_csv, "w", newline="", encoding="utf-8") as output_file:
+        writer = csv.DictWriter(output_file, fieldnames=fieldnames)
+        writer.writeheader()
+        try:
+            for images, targets in tqdm(
+                dataloader, desc=f"Object Detector ({mode} - {cue})", total=len(dataloader)
+            ):
+                for sample_idx in range(images.shape[0]):
+                    target = targets[sample_idx]
+                    image_id = int(target["image_id"][0].item())
+                    image_path = target["path"]
+
+                    infer_tensor, _ratio, _pad, _resized_chw = preprocess_with_letterbox(
+                        detector, images[sample_idx], device, requires_grad=False
+                    )
+                    bbox_rows = collect_bbox_layer_grads_per_target(
+                        detector=detector,
+                        input_tensor=infer_tensor,
+                        target_values=target_values,
+                        target_layers=target_layers,
+                        layer_buffer=layer_buffer,
+                    )
+                    for bbox_row in bbox_rows:
+                        row = {
+                            "image_id": image_id,
+                            "image_path": image_path,
+                            "pred_idx": bbox_row["pred_idx"],
+                            "raw_pred_idx": bbox_row["raw_pred_idx"],
+                            "xmin": bbox_row["xmin"],
+                            "ymin": bbox_row["ymin"],
+                            "xmax": bbox_row["xmax"],
+                            "ymax": bbox_row["ymax"],
+                            "score": bbox_row["score"],
+                            "pred_class": bbox_row["pred_class"],
+                        }
+                        for grad_key, grad_value in bbox_row["grad_stats"].items():
+                            row[grad_key] = json.dumps(grad_value, separators=(",", ":"))
+                        writer.writerow(row)
+                    del infer_tensor, bbox_rows
+        finally:
+            layer_buffer.remove()
+
+    del detector
+    if device.type == "cuda":
+        torch.cuda.empty_cache()
+
+    print(f"Saved results CSV: {output_csv}")
+
+
 def run_predict(config, run_dir):
     parsed = parse_output_config(config.get("output", {}))
     cue = parsed["cue"]
@@ -343,5 +421,8 @@ def run_predict(config, run_dir):
         return
     if cue == "feature_grad":
         run_feature_grad_csv(config, run_dir)
+        return
+    if cue == "layer_grad":
+        run_layer_grad_csv(config, run_dir)
         return
     raise ValueError(f"Unsupported cue: {cue}")

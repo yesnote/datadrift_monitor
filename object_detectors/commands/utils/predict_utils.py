@@ -5,6 +5,7 @@ from pathlib import Path
 import cv2
 import numpy as np
 import torch
+import torch.nn.functional as F
 
 from models.yolo.models.yolo_v5_object_detector import YOLOV5TorchObjectDetector
 
@@ -173,6 +174,7 @@ def parse_output_config(output_cfg):
         fn_cfg = {}
         tp_cfg = {}
         feature_grad_cfg = {}
+        layer_grad_cfg = {}
         unit = "image"
     else:
         save_csv_enabled = bool(save_csv_cfg.get("enabled", True))
@@ -180,15 +182,18 @@ def parse_output_config(output_cfg):
         fn_cfg = save_csv_cfg.get("fn", {})
         tp_cfg = save_csv_cfg.get("tp", {})
         feature_grad_cfg = save_csv_cfg.get("feature_grad", {})
+        layer_grad_cfg = save_csv_cfg.get("layer_grad", {})
         unit = str(save_csv_cfg.get("unit", "image")).lower()
 
-    if cue not in {"fn", "tp", "feature_grad"}:
-        raise ValueError(f"Unsupported output.save_csv.cue='{cue}'. Use 'fn', 'tp' or 'feature_grad'.")
+    if cue not in {"fn", "tp", "feature_grad", "layer_grad"}:
+        raise ValueError(f"Unsupported output.save_csv.cue='{cue}'. Use 'fn', 'tp', 'feature_grad' or 'layer_grad'.")
 
     iou_match_threshold = float(fn_cfg.get("iou_match_threshold", 0.5))
     tp_iou_match_threshold = float(tp_cfg.get("iou_match_threshold", 0.5))
     target_values = []
     target_layers = []
+    layer_target_values = []
+    layer_target_layers = []
     if cue == "feature_grad":
         if unit not in {"image", "bbox"}:
             raise ValueError("output.save_csv.unit must be 'image' or 'bbox' when cue is 'feature_grad'.")
@@ -201,6 +206,19 @@ def parse_output_config(output_cfg):
         target_layers = normalize_to_list(feature_grad_cfg.get("target_layer", []))
         if not target_layers and save_csv_enabled:
             raise ValueError("output.save_csv.feature_grad.target_layer must contain at least one layer name.")
+    elif cue == "layer_grad":
+        if unit != "bbox":
+            msg = "Invalid config: output.save_csv.cue='layer_grad' requires output.save_csv.unit='bbox'."
+            warnings.warn(msg)
+            raise ValueError(msg)
+        layer_target_values = [v.lower() for v in normalize_to_list(layer_grad_cfg.get("target_value", ["loss"]))]
+        valid_values = {"loss", "obj_loss", "cls_loss"}
+        invalid_values = [v for v in layer_target_values if v not in valid_values]
+        if invalid_values:
+            raise ValueError(f"Unsupported layer_grad target_value(s): {invalid_values}. Use {sorted(valid_values)}")
+        layer_target_layers = normalize_to_list(layer_grad_cfg.get("target_layer", []))
+        if not layer_target_layers and save_csv_enabled:
+            raise ValueError("output.save_csv.layer_grad.target_layer must contain at least one layer name.")
     elif cue == "fn":
         if unit != "image":
             msg = "Invalid config: output.save_csv.cue='fn' requires output.save_csv.unit='image'."
@@ -235,6 +253,8 @@ def parse_output_config(output_cfg):
         "tp_iou_match_threshold": tp_iou_match_threshold,
         "target_values": target_values,
         "target_layers": target_layers,
+        "layer_target_values": layer_target_values,
+        "layer_target_layers": layer_target_layers,
         "save_image_enabled": save_image_enabled,
         "image_step": image_step,
         "image_max_num": image_max_num,
@@ -365,6 +385,109 @@ def collect_bbox_gradients_per_target(
             if grad_input.grad is not None:
                 grad_input.grad = None
             del grad_input, model_output, raw_prediction, raw_logits, pred_img, logit_img, target_scalar
+            layer_buffer.clear()
+
+        cls_idx = int(det[bbox_idx, 5].detach().cpu().item())
+        rows.append(
+            {
+                "pred_idx": bbox_idx,
+                "raw_pred_idx": raw_idx,
+                "xmin": float(det[bbox_idx, 0].detach().cpu().item()),
+                "ymin": float(det[bbox_idx, 1].detach().cpu().item()),
+                "xmax": float(det[bbox_idx, 2].detach().cpu().item()),
+                "ymax": float(det[bbox_idx, 3].detach().cpu().item()),
+                "score": float(det[bbox_idx, 4].detach().cpu().item()),
+                "pred_class": detector.names[cls_idx] if detector.names is not None else cls_idx,
+                "grad_stats": grad_stats,
+            }
+        )
+
+    del selected_preds, selected_indices, det, raw_keep_indices
+    detector.zero_grad(set_to_none=True)
+    layer_buffer.clear()
+    return rows
+
+
+def build_pseudo_label_losses(pred_row: torch.Tensor) -> dict[str, torch.Tensor]:
+    eps = 1e-6
+    obj_prob = pred_row[4].clamp(eps, 1.0 - eps)
+    cls_prob = pred_row[5:].clamp(eps, 1.0 - eps)
+    cls_idx = int(torch.argmax(cls_prob.detach()).item())
+    cls_target = torch.zeros_like(cls_prob)
+    cls_target[cls_idx] = 1.0
+
+    obj_loss = F.binary_cross_entropy(obj_prob, torch.ones_like(obj_prob))
+    cls_loss = F.binary_cross_entropy(cls_prob, cls_target)
+    return {
+        "obj_loss": obj_loss,
+        "cls_loss": cls_loss,
+        "loss": obj_loss + cls_loss,
+    }
+
+
+def collect_bbox_layer_grads_per_target(
+    detector,
+    input_tensor,
+    target_values,
+    target_layers,
+    layer_buffer,
+):
+    with torch.no_grad():
+        model_output = detector.model(input_tensor.detach(), augment=False)
+        raw_prediction = model_output[0] if isinstance(model_output, (tuple, list)) else model_output
+        raw_logits = model_output[1] if isinstance(model_output, (tuple, list)) and len(model_output) > 1 else None
+        selected_preds, _selected_logits, _selected_objectness, selected_indices = detector.non_max_suppression(
+            raw_prediction,
+            raw_logits,
+            detector.confidence,
+            detector.iou_thresh,
+            classes=None,
+            agnostic=detector.agnostic,
+            return_indices=True,
+        )
+
+    det = selected_preds[0] if selected_preds else torch.zeros((0, 6), device=input_tensor.device)
+    raw_keep_indices = selected_indices[0] if selected_indices else torch.zeros((0,), dtype=torch.long, device=input_tensor.device)
+
+    rows = []
+    num_boxes = int(det.shape[0])
+    for bbox_idx in range(num_boxes):
+        raw_idx = int(raw_keep_indices[bbox_idx].detach().cpu().item())
+        grad_stats = {}
+        for target_value in target_values:
+            detector.zero_grad(set_to_none=True)
+            layer_buffer.clear()
+
+            grad_input = input_tensor.detach().requires_grad_(True)
+            model_output = detector.model(grad_input, augment=False)
+            raw_prediction = model_output[0] if isinstance(model_output, (tuple, list)) else model_output
+            pred_img = raw_prediction[0]
+
+            target_scalar = None
+            if raw_idx < pred_img.shape[0]:
+                losses = build_pseudo_label_losses(pred_img[raw_idx])
+                target_scalar = losses[target_value]
+
+            if target_scalar is None:
+                for layer_name in target_layers:
+                    grad_stats[f"{target_value}_{layer_name}"] = []
+                if grad_input.grad is not None:
+                    grad_input.grad = None
+                del grad_input, model_output, raw_prediction, pred_img
+                layer_buffer.clear()
+                continue
+
+            target_scalar.backward()
+            layer_stats = list(layer_buffer.gradients["value"])
+            layer_stats.reverse()
+
+            for layer_idx, layer_name in enumerate(target_layers):
+                key = f"{target_value}_{layer_name}"
+                grad_stats[key] = layer_stats[layer_idx] if layer_idx < len(layer_stats) else []
+
+            if grad_input.grad is not None:
+                grad_input.grad = None
+            del grad_input, model_output, raw_prediction, pred_img, target_scalar
             layer_buffer.clear()
 
         cls_idx = int(det[bbox_idx, 5].detach().cpu().item())
