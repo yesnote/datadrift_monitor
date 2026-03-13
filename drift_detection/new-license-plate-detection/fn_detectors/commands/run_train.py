@@ -9,6 +9,7 @@ from typing import Any
 import numpy as np
 import pandas as pd
 from sklearn.model_selection import GridSearchCV, train_test_split
+from tqdm import tqdm
 
 from fn_detectors.losses.loss import evaluate_classifier
 from fn_detectors.models.fn_detector import build_estimator, param_grid
@@ -174,7 +175,8 @@ def run_train(config: dict[str, Any], run_dir: Path) -> Path:
     random_seed = int(train_cfg.get("random_seed", 42))
 
     eval_rows: list[dict[str, float]] = []
-    for i in range(repeats):
+    split_iter = tqdm(range(repeats), desc="FN training", unit="split")
+    for i in split_iter:
         x_train, x_test, y_train, y_test = train_test_split(
             x,
             y,
