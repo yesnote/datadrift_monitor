@@ -4,7 +4,7 @@ from pathlib import Path
 from dataloaders.dataloader_yolo import load_config
 from commands.run_predict import run_predict
 from commands.utils.predict_utils import parse_output_config
-from commands.utils.run_utils import create_run_dir, save_used_config
+from commands.utils.run_utils import create_run_dir, save_run_summary, save_used_config
 
 PROJECT_ROOT = Path(__file__).resolve().parent
 REPO_ROOT = PROJECT_ROOT.parent
@@ -62,15 +62,16 @@ def main():
     mode = str(config.get("mode", "")).lower()
     if mode != "predict":
         raise ValueError(f"Unsupported mode: {mode}. Only 'predict' is implemented.")
+    parsed_output = parse_output_config(config.get("output", {}))
 
     if args.run_dir:
         run_dir = _resolve_run_dir(args.run_dir)
     else:
-        parsed_output = parse_output_config(config.get("output", {}))
         run_dir = create_run_dir(cue=parsed_output.get("cue"), unit=parsed_output.get("unit")).resolve()
     run_dir.mkdir(parents=True, exist_ok=True)
     save_used_config(config_path, run_dir)
     run_predict(config, run_dir)
+    save_run_summary(run_dir, cue=parsed_output.get("cue", ""), unit=parsed_output.get("unit", ""))
 
 
 if __name__ == "__main__":
