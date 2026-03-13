@@ -121,6 +121,17 @@ def resolve_module_by_name(model, layer_name):
     return node
 
 
+def resolve_layer_parameter(model, layer_name):
+    module = resolve_module_by_name(model, layer_name)
+    if hasattr(module, "weight") and isinstance(module.weight, torch.Tensor):
+        return module.weight
+
+    for param in module.parameters():
+        if isinstance(param, torch.Tensor):
+            return param
+    raise ValueError(f"Layer '{layer_name}' has no parameters.")
+
+
 class LayerGradBuffer:
     def __init__(self, model, target_layers):
         self.target_layers = list(target_layers)
@@ -212,10 +223,20 @@ def parse_output_config(output_cfg):
             warnings.warn(msg)
             raise ValueError(msg)
         layer_target_values = [v.lower() for v in normalize_to_list(layer_grad_cfg.get("target_value", ["loss"]))]
-        valid_values = {"loss", "obj_loss", "cls_loss"}
+        valid_values = {"loss", "obj_loss", "cls_loss", "bbox_loss"}
         invalid_values = [v for v in layer_target_values if v not in valid_values]
         if invalid_values:
             raise ValueError(f"Unsupported layer_grad target_value(s): {invalid_values}. Use {sorted(valid_values)}")
+        # 'loss' means all pseudo-label loss components.
+        if "loss" in layer_target_values:
+            expanded = []
+            for v in layer_target_values:
+                if v == "loss":
+                    expanded.extend(["obj_loss", "cls_loss", "bbox_loss"])
+                else:
+                    expanded.append(v)
+            # keep order while removing duplicates
+            layer_target_values = list(dict.fromkeys(expanded))
         layer_target_layers = normalize_to_list(layer_grad_cfg.get("target_layer", []))
         if not layer_target_layers and save_csv_enabled:
             raise ValueError("output.save_csv.layer_grad.target_layer must contain at least one layer name.")
@@ -408,7 +429,18 @@ def collect_bbox_gradients_per_target(
     return rows
 
 
-def build_pseudo_label_losses(pred_row: torch.Tensor) -> dict[str, torch.Tensor]:
+def map_grad_tensor_to_numbers(v):
+    return {
+        "1-norm": float(torch.norm(v, p=1).detach().cpu().item()),
+        "2-norm": float(torch.norm(v, p=2).detach().cpu().item()),
+        "min": float(v.min().detach().cpu().item()),
+        "max": float(v.max().detach().cpu().item()),
+        "mean": float(torch.mean(v).detach().cpu().item()),
+        "std": float(torch.std(v).detach().cpu().item()),
+    }
+
+
+def build_pseudo_label_losses(pred_row):
     eps = 1e-6
     obj_prob = pred_row[4].clamp(eps, 1.0 - eps)
     cls_prob = pred_row[5:].clamp(eps, 1.0 - eps)
@@ -425,13 +457,80 @@ def build_pseudo_label_losses(pred_row: torch.Tensor) -> dict[str, torch.Tensor]
     }
 
 
+def _xywh_to_xyxy_tensor(xywh: torch.Tensor) -> torch.Tensor:
+    out = xywh.clone()
+    out[:, 0] = xywh[:, 0] - xywh[:, 2] / 2.0
+    out[:, 1] = xywh[:, 1] - xywh[:, 3] / 2.0
+    out[:, 2] = xywh[:, 0] + xywh[:, 2] / 2.0
+    out[:, 3] = xywh[:, 1] + xywh[:, 3] / 2.0
+    return out
+
+
+def _box_iou_tensor(boxes1: torch.Tensor, boxes2: torch.Tensor) -> torch.Tensor:
+    area1 = (boxes1[:, 2] - boxes1[:, 0]).clamp(min=0) * (boxes1[:, 3] - boxes1[:, 1]).clamp(min=0)
+    area2 = (boxes2[:, 2] - boxes2[:, 0]).clamp(min=0) * (boxes2[:, 3] - boxes2[:, 1]).clamp(min=0)
+
+    lt = torch.max(boxes1[:, None, :2], boxes2[:, :2])
+    rb = torch.min(boxes1[:, None, 2:], boxes2[:, 2:])
+    wh = (rb - lt).clamp(min=0)
+    inter = wh[:, :, 0] * wh[:, :, 1]
+    union = area1[:, None] + area2 - inter
+    return inter / union.clamp(min=1e-6)
+
+
+def build_pseudo_label_losses_for_candidates(
+    pred_img: torch.Tensor,
+    raw_idx: int,
+    iou_threshold: float,
+):
+    if raw_idx >= pred_img.shape[0]:
+        return None
+
+    eps = 1e-6
+    with torch.no_grad():
+        pseudo_row = pred_img[raw_idx].detach()
+        pseudo_cls = int(torch.argmax(pseudo_row[5:]).item())
+        pred_boxes_xyxy = _xywh_to_xyxy_tensor(pred_img[:, :4].detach())
+        pseudo_box_xyxy = _xywh_to_xyxy_tensor(pseudo_row[:4].view(1, 4))
+        ious = _box_iou_tensor(pred_boxes_xyxy, pseudo_box_xyxy).squeeze(1)
+        pred_cls = torch.argmax(pred_img[:, 5:].detach(), dim=1)
+        candidate_mask = (ious >= float(iou_threshold)) & (pred_cls == pseudo_cls)
+        if not bool(candidate_mask.any()):
+            candidate_mask = torch.zeros_like(pred_cls, dtype=torch.bool)
+            candidate_mask[raw_idx] = True
+
+    candidate_pred = pred_img[candidate_mask]
+    pseudo_box_target = pseudo_row[:4].view(1, 4).expand(candidate_pred.shape[0], -1)
+    bbox_loss = F.smooth_l1_loss(candidate_pred[:, :4], pseudo_box_target, reduction="sum")
+
+    obj_prob = candidate_pred[:, 4].clamp(eps, 1.0 - eps)
+    obj_target = torch.ones_like(obj_prob)
+    obj_loss = F.binary_cross_entropy(obj_prob, obj_target, reduction="sum")
+
+    cls_prob = candidate_pred[:, 5:].clamp(eps, 1.0 - eps)
+    cls_target = torch.zeros_like(cls_prob)
+    cls_target[:, pseudo_cls] = 1.0
+    cls_loss = F.binary_cross_entropy(cls_prob, cls_target, reduction="sum")
+
+    return {
+        "bbox_loss": bbox_loss,
+        "obj_loss": obj_loss,
+        "cls_loss": cls_loss,
+        "loss": bbox_loss + obj_loss + cls_loss,
+    }
+
+
 def collect_bbox_layer_grads_per_target(
     detector,
     input_tensor,
     target_values,
     target_layers,
-    layer_buffer,
 ):
+    layer_params = [resolve_layer_parameter(detector.model, layer_name) for layer_name in target_layers]
+    original_requires_grad = [bool(p.requires_grad) for p in layer_params]
+    for param in layer_params:
+        param.requires_grad_(True)
+
     with torch.no_grad():
         model_output = detector.model(input_tensor.detach(), augment=False)
         raw_prediction = model_output[0] if isinstance(model_output, (tuple, list)) else model_output
@@ -451,63 +550,66 @@ def collect_bbox_layer_grads_per_target(
 
     rows = []
     num_boxes = int(det.shape[0])
-    for bbox_idx in range(num_boxes):
-        raw_idx = int(raw_keep_indices[bbox_idx].detach().cpu().item())
-        grad_stats = {}
-        for target_value in target_values:
-            detector.zero_grad(set_to_none=True)
-            layer_buffer.clear()
+    iou_threshold = float(getattr(detector, "iou_thresh", 0.45))
+    try:
+        for bbox_idx in range(num_boxes):
+            raw_idx = int(raw_keep_indices[bbox_idx].detach().cpu().item())
+            grad_stats = {}
+            for target_value in target_values:
+                detector.zero_grad(set_to_none=True)
 
-            grad_input = input_tensor.detach().requires_grad_(True)
-            model_output = detector.model(grad_input, augment=False)
-            raw_prediction = model_output[0] if isinstance(model_output, (tuple, list)) else model_output
-            pred_img = raw_prediction[0]
+                model_output = detector.model(input_tensor.detach(), augment=False)
+                raw_prediction = model_output[0] if isinstance(model_output, (tuple, list)) else model_output
+                pred_img = raw_prediction[0]
 
-            target_scalar = None
-            if raw_idx < pred_img.shape[0]:
-                losses = build_pseudo_label_losses(pred_img[raw_idx])
-                target_scalar = losses[target_value]
+                target_scalar = None
+                losses = build_pseudo_label_losses_for_candidates(
+                    pred_img=pred_img,
+                    raw_idx=raw_idx,
+                    iou_threshold=iou_threshold,
+                )
+                if losses is not None and target_value in losses:
+                    target_scalar = losses[target_value]
 
-            if target_scalar is None:
-                for layer_name in target_layers:
-                    grad_stats[f"{target_value}_{layer_name}"] = []
-                if grad_input.grad is not None:
-                    grad_input.grad = None
-                del grad_input, model_output, raw_prediction, pred_img
-                layer_buffer.clear()
-                continue
+                if target_scalar is None:
+                    for layer_name in target_layers:
+                        grad_stats[f"{target_value}_{layer_name}"] = []
+                    del model_output, raw_prediction, pred_img, losses
+                    continue
 
-            target_scalar.backward()
-            layer_stats = list(layer_buffer.gradients["value"])
-            layer_stats.reverse()
+                grads = torch.autograd.grad(
+                    target_scalar,
+                    layer_params,
+                    retain_graph=False,
+                    allow_unused=True,
+                )
+                for layer_idx, layer_name in enumerate(target_layers):
+                    key = f"{target_value}_{layer_name}"
+                    grad_tensor = grads[layer_idx]
+                    grad_stats[key] = [] if grad_tensor is None else map_grad_tensor_to_numbers(grad_tensor)
 
-            for layer_idx, layer_name in enumerate(target_layers):
-                key = f"{target_value}_{layer_name}"
-                grad_stats[key] = layer_stats[layer_idx] if layer_idx < len(layer_stats) else []
+                del model_output, raw_prediction, pred_img, target_scalar, losses, grads
 
-            if grad_input.grad is not None:
-                grad_input.grad = None
-            del grad_input, model_output, raw_prediction, pred_img, target_scalar
-            layer_buffer.clear()
-
-        cls_idx = int(det[bbox_idx, 5].detach().cpu().item())
-        rows.append(
-            {
-                "pred_idx": bbox_idx,
-                "raw_pred_idx": raw_idx,
-                "xmin": float(det[bbox_idx, 0].detach().cpu().item()),
-                "ymin": float(det[bbox_idx, 1].detach().cpu().item()),
-                "xmax": float(det[bbox_idx, 2].detach().cpu().item()),
-                "ymax": float(det[bbox_idx, 3].detach().cpu().item()),
-                "score": float(det[bbox_idx, 4].detach().cpu().item()),
-                "pred_class": detector.names[cls_idx] if detector.names is not None else cls_idx,
-                "grad_stats": grad_stats,
-            }
-        )
+            cls_idx = int(det[bbox_idx, 5].detach().cpu().item())
+            rows.append(
+                {
+                    "pred_idx": bbox_idx,
+                    "raw_pred_idx": raw_idx,
+                    "xmin": float(det[bbox_idx, 0].detach().cpu().item()),
+                    "ymin": float(det[bbox_idx, 1].detach().cpu().item()),
+                    "xmax": float(det[bbox_idx, 2].detach().cpu().item()),
+                    "ymax": float(det[bbox_idx, 3].detach().cpu().item()),
+                    "score": float(det[bbox_idx, 4].detach().cpu().item()),
+                    "pred_class": detector.names[cls_idx] if detector.names is not None else cls_idx,
+                    "grad_stats": grad_stats,
+                }
+            )
+    finally:
+        for param, req_grad in zip(layer_params, original_requires_grad):
+            param.requires_grad_(req_grad)
+        detector.zero_grad(set_to_none=True)
 
     del selected_preds, selected_indices, det, raw_keep_indices
-    detector.zero_grad(set_to_none=True)
-    layer_buffer.clear()
     return rows
 
 
