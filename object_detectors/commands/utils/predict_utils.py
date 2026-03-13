@@ -177,13 +177,13 @@ def parse_output_config(output_cfg):
         fn_cfg = save_csv_cfg.get("fn", {})
         feature_grad_cfg = save_csv_cfg.get("feature_grad", {})
 
-    if cue not in {"fn", "grad"}:
-        raise ValueError(f"Unsupported output.save_csv.cue='{cue}'. Use 'fn' or 'grad'.")
+    if cue not in {"fn", "feature_grad"}:
+        raise ValueError(f"Unsupported output.save_csv.cue='{cue}'. Use 'fn' or 'feature_grad'.")
 
     iou_match_threshold = float(fn_cfg.get("iou_match_threshold", 0.5))
     target_values = []
     target_layers = []
-    if cue == "grad":
+    if cue == "feature_grad":
         target_values = [v.lower() for v in normalize_to_list(feature_grad_cfg.get("target_value", ["obj"]))]
         valid_values = {"obj", "cls"}
         invalid_values = [v for v in target_values if v not in valid_values]
