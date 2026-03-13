@@ -36,10 +36,10 @@ output:
     unit: image   # image | bbox
     cue: feature_grad
     
-    fn:
+    fn: # per image
       iou_match_threshold: 0.45
 
-    tp:
+    tp: # per bbox
       iou_match_threshold: 0.45
     
     feature_grad:
