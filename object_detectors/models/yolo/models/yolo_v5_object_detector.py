@@ -69,7 +69,7 @@ class YOLOV5TorchObjectDetector(nn.Module):
 
     @staticmethod
     def non_max_suppression(prediction, logits, conf_thres=0.6, iou_thres=0.45, classes=None, agnostic=False,
-                            multi_label=False, labels=(), max_det=300):
+                            multi_label=False, labels=(), max_det=300, return_indices=False):
         """Runs Non-Maximum Suppression (NMS) on inference and logits results
 
         Returns:
@@ -95,11 +95,14 @@ class YOLOV5TorchObjectDetector(nn.Module):
         output = [torch.zeros((0, 6), device=prediction.device)] * prediction.shape[0]
         logits_output = [torch.zeros((0, 80), device=logits.device)] * logits.shape[0]
         objectivness_output = [torch.zeros((0, 1), device=prediction.device)]
+        index_output = [torch.zeros((0,), dtype=torch.long, device=prediction.device)] * prediction.shape[0]
         for xi, (x, log_) in enumerate(zip(prediction, logits)):  # image index, image inference
             # Apply constraints
             # x[((x[..., 2:4] < min_wh) | (x[..., 2:4] > max_wh)).any(1), 4] = 0  # width-height
-            x = x[xc[xi]]  # confidence
-            log_ = log_[xc[xi]]
+            candidate_mask = xc[xi]
+            candidate_indices = torch.arange(prediction.shape[1], device=prediction.device)[candidate_mask]
+            x = x[candidate_mask]  # confidence
+            log_ = log_[candidate_mask]
             # Cat apriori labels if autolabelling
             if labels and len(labels[xi]):
                 l = labels[xi]
@@ -129,18 +132,27 @@ class YOLOV5TorchObjectDetector(nn.Module):
             else:  # best class only
                 conf, j = x[:, 5:].max(1, keepdim=True)
                 # log_ = x[:, 5:]
-                x = torch.cat((box, conf, j.float()), 1)[conf.view(-1) > conf_thres]
-                log_ = log_[conf.view(-1) > conf_thres]
+                conf_mask = conf.view(-1) > conf_thres
+                x = torch.cat((box, conf, j.float()), 1)[conf_mask]
+                log_ = log_[conf_mask]
+                candidate_indices = candidate_indices[conf_mask]
             # Filter by class
             if classes is not None:
-                x = x[(x[:, 5:6] == torch.tensor(classes, device=x.device)).any(1)]
+                class_mask = (x[:, 5:6] == torch.tensor(classes, device=x.device)).any(1)
+                x = x[class_mask]
+                log_ = log_[class_mask]
+                candidate_indices = candidate_indices[class_mask]
 
             # Check shape
             n = x.shape[0]  # number of boxes
             if not n:  # no boxes
                 continue
             elif n > max_nms:  # excess boxes
-                x = x[x[:, 4].argsort(descending=True)[:max_nms]]  # sort by confidence
+                sorted_idx = x[:, 4].argsort(descending=True)[:max_nms]
+                x = x[sorted_idx]  # sort by confidence
+                log_ = log_[sorted_idx]
+                objectivness = objectivness[sorted_idx]
+                candidate_indices = candidate_indices[sorted_idx]
 
             # Batched NMS
             c = x[:, 5:6] * (0 if agnostic else max_wh)  # classes
@@ -159,11 +171,14 @@ class YOLOV5TorchObjectDetector(nn.Module):
             output[xi] = x[i]
             logits_output[xi] = log_[i]
             objectivness_output[xi] = objectivness[i]
+            index_output[xi] = candidate_indices[i]
             assert log_[i].shape[0] == x[i].shape[0]
             if (time.time() - t) > time_limit:
                 print(f'WARNING: NMS time limit {time_limit}s exceeded')
                 break  # time limit exceeded
 
+        if return_indices:
+            return output, logits_output, objectivness_output, index_output
         return output, logits_output,objectivness_output
 
     @staticmethod

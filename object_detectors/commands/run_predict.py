@@ -154,7 +154,7 @@ def run_feature_grad_csv(config, run_dir):
     output_csv = run_dir / "feature_grad.csv"
     fieldnames = ["image_id", "image_path"]
     if unit == "bbox":
-        fieldnames.extend(["pred_idx", "xmin", "ymin", "xmax", "ymax", "score", "pred_class"])
+        fieldnames.extend(["pred_idx", "raw_pred_idx", "xmin", "ymin", "xmax", "ymax", "score", "pred_class"])
     for target_value in target_values:
         for layer_name in target_layers:
             fieldnames.append(f"{target_value}_{layer_name}")
@@ -194,6 +194,7 @@ def run_feature_grad_csv(config, run_dir):
                                 "image_id": image_id,
                                 "image_path": image_path,
                                 "pred_idx": bbox_row["pred_idx"],
+                                "raw_pred_idx": bbox_row["raw_pred_idx"],
                                 "xmin": bbox_row["xmin"],
                                 "ymin": bbox_row["ymin"],
                                 "xmax": bbox_row["xmax"],
