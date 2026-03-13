@@ -168,26 +168,31 @@ def parse_output_config(output_cfg):
     save_csv_cfg = output_cfg.get("save_csv", {})
     if isinstance(save_csv_cfg, bool):
         save_csv_enabled = save_csv_cfg
-        cue = "grad"
+        cue = "fn"
+        fn_cfg = {}
         feature_grad_cfg = {}
     else:
         save_csv_enabled = bool(save_csv_cfg.get("enabled", True))
-        cue = str(save_csv_cfg.get("cue", "grad")).lower()
+        cue = str(save_csv_cfg.get("cue", "fn")).lower()
+        fn_cfg = save_csv_cfg.get("fn", {})
         feature_grad_cfg = save_csv_cfg.get("feature_grad", {})
 
-    if cue != "grad":
-        raise ValueError(f"Unsupported output.save_csv.cue='{cue}'. Only 'grad' is supported.")
+    if cue not in {"fn", "grad"}:
+        raise ValueError(f"Unsupported output.save_csv.cue='{cue}'. Use 'fn' or 'grad'.")
 
-    iou_match_threshold = float(feature_grad_cfg.get("iou_match_threshold", 0.5))
-    target_values = [v.lower() for v in normalize_to_list(feature_grad_cfg.get("target_value", ["obj"]))]
-    valid_values = {"obj", "cls"}
-    invalid_values = [v for v in target_values if v not in valid_values]
-    if invalid_values:
-        raise ValueError(f"Unsupported target_value(s): {invalid_values}. Use {sorted(valid_values)}")
+    iou_match_threshold = float(fn_cfg.get("iou_match_threshold", 0.5))
+    target_values = []
+    target_layers = []
+    if cue == "grad":
+        target_values = [v.lower() for v in normalize_to_list(feature_grad_cfg.get("target_value", ["obj"]))]
+        valid_values = {"obj", "cls"}
+        invalid_values = [v for v in target_values if v not in valid_values]
+        if invalid_values:
+            raise ValueError(f"Unsupported target_value(s): {invalid_values}. Use {sorted(valid_values)}")
 
-    target_layers = normalize_to_list(feature_grad_cfg.get("target_layer", []))
-    if not target_layers and save_csv_enabled:
-        raise ValueError("output.save_csv.feature_grad.target_layer must contain at least one layer name.")
+        target_layers = normalize_to_list(feature_grad_cfg.get("target_layer", []))
+        if not target_layers and save_csv_enabled:
+            raise ValueError("output.save_csv.feature_grad.target_layer must contain at least one layer name.")
 
     save_image_cfg = output_cfg.get("save_image", {})
     if isinstance(save_image_cfg, bool):
