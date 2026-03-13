@@ -1,7 +1,6 @@
 import json
 import pickle
 from dataclasses import dataclass
-from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -25,7 +24,6 @@ except Exception:  # pragma: no cover
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_RESULTS_ROOT = PROJECT_ROOT / "object_detectors" / "runs"
-DEFAULT_OUT_ROOT = PROJECT_ROOT / "fn_detectors" / "runs"
 META_COLUMNS = {"image_id", "image_path", "fn"}
 
 
@@ -51,6 +49,13 @@ def latest_fn_results_csv(results_root: Path) -> Path:
         raise FileNotFoundError(f"No fn_results.csv found under: {results_root}")
     candidates.sort(key=lambda p: p.stat().st_mtime, reverse=True)
     return candidates[0]
+
+
+def resolve_path_value(raw_path: str) -> Path:
+    path = Path(raw_path)
+    if path.is_absolute():
+        return path.resolve()
+    return (PROJECT_ROOT / path).resolve()
 
 
 def flatten_numeric(obj: Any) -> list[float]:
@@ -132,18 +137,16 @@ def save_object(obj: Any, path_without_suffix: Path) -> Path:
     return out
 
 
-def run_train(config: dict[str, Any]) -> Path:
-    input_cfg = config["input"]
-    train_cfg = config["training"]
-    output_cfg = config["output"]
+def run_train(config: dict[str, Any], run_dir: Path) -> Path:
+    dataset_cfg = config["dataset"]
+    model_cfg = config["model"]
+    train_cfg = config["train"]
 
-    csv_path_raw = str(input_cfg.get("csv_path", "")).strip()
-    results_root = Path(input_cfg.get("results_root", DEFAULT_RESULTS_ROOT)).resolve()
-    csv_path = Path(csv_path_raw).resolve() if csv_path_raw else latest_fn_results_csv(results_root)
+    csv_path_raw = str(dataset_cfg.get("csv_path", "")).strip()
+    results_root = resolve_path_value(str(dataset_cfg.get("results_root", DEFAULT_RESULTS_ROOT)))
+    csv_path = resolve_path_value(csv_path_raw) if csv_path_raw else latest_fn_results_csv(results_root)
 
-    timestamp = datetime.now().strftime("%m-%d-%Y_%H;%M;%S")
-    out_root = Path(output_cfg.get("out_root", DEFAULT_OUT_ROOT)).resolve()
-    out_dir = Path(output_cfg.get("out_dir", "")).resolve() if output_cfg.get("out_dir", "") else out_root / timestamp
+    out_dir = run_dir.resolve()
     out_dir.mkdir(parents=True, exist_ok=True)
 
     df = pd.read_csv(csv_path)
@@ -158,19 +161,19 @@ def run_train(config: dict[str, Any]) -> Path:
     spec = infer_feature_spec(df, grad_columns)
     x = build_feature_matrix(df, spec)
 
-    model_name = str(train_cfg.get("model", "gb_classifier"))
-    device = str(train_cfg.get("device", "cpu"))
+    model_name = str(model_cfg.get("type", "gb_classifier"))
+    device = str(model_cfg.get("device", "cpu"))
     estimator = build_estimator(model_name, device=device)
     best_params: dict[str, Any] = {}
 
-    do_search = bool(train_cfg.get("search", False))
+    do_search = bool(model_cfg.get("search", False))
     augmentation = str(train_cfg.get("augmentation", "none"))
     if do_search:
         x_search, y_search = apply_augmentation(x, y, augmentation)
         search = GridSearchCV(
             estimator=estimator,
             param_grid=param_grid(model_name),
-            scoring=str(train_cfg.get("search_scoring", "roc_auc")),
+            scoring=str(model_cfg.get("search_scoring", "roc_auc")),
             n_jobs=int(train_cfg.get("n_jobs", 8)),
             cv=5,
             verbose=1,
@@ -212,6 +215,7 @@ def run_train(config: dict[str, Any]) -> Path:
         "input_csv": str(csv_path),
         "model": model_name,
         "device": device,
+        "search_scoring": str(model_cfg.get("search_scoring", "roc_auc")),
         "augmentation": augmentation,
         "feature_dimension": int(x.shape[1]),
         "num_rows": int(len(df)),

@@ -4,19 +4,18 @@ from pathlib import Path
 import yaml
 
 from fn_detectors.commands.run_train import run_train
+from fn_detectors.commands.utils.run_utils import create_run_dir, save_used_config
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent
+REPO_ROOT = PROJECT_ROOT.parent
 
 
 def resolve_config_path(raw_path: str) -> Path:
     path = Path(raw_path)
     if path.is_absolute():
         return path.resolve()
-    cwd_candidate = (Path.cwd() / path).resolve()
-    if cwd_candidate.is_file():
-        return cwd_candidate
-    return (PROJECT_ROOT / path).resolve()
+    return (REPO_ROOT / path).resolve()
 
 
 def load_config(path: Path) -> dict:
@@ -26,7 +25,7 @@ def load_config(path: Path) -> dict:
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--config", type=str, default="configs/train_fn_detector.yaml")
+    parser.add_argument("--config", type=str, default="fn_detectors/configs/train_fn_detector.yaml")
     args = parser.parse_args()
 
     config_path = resolve_config_path(args.config)
@@ -38,9 +37,10 @@ def main() -> None:
     if mode != "train":
         raise ValueError(f"Unsupported mode: {mode}. Only 'train' is supported.")
 
-    run_train(config)
+    run_dir = create_run_dir().resolve()
+    save_used_config(config_path, run_dir)
+    run_train(config, run_dir)
 
 
 if __name__ == "__main__":
     main()
-
