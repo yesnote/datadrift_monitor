@@ -7,9 +7,8 @@ model:
   search_scoring: roc_auc
 
 dataset:
-  # If empty, use the latest object_detectors/runs/*/fn_results.csv
-  csv_path: ""
-  results_root: object_detectors/runs
+  # object_detectors/runs/{time}
+  root: object_detectors/runs/03-13-2026_18;00
 
 train:
   augmentation: none           # none | smote

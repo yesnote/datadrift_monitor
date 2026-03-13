@@ -23,7 +23,6 @@ except Exception:  # pragma: no cover
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
-DEFAULT_RESULTS_ROOT = PROJECT_ROOT / "object_detectors" / "runs"
 META_COLUMNS = {"image_id", "image_path", "fn"}
 
 
@@ -31,24 +30,6 @@ META_COLUMNS = {"image_id", "image_path", "fn"}
 class FeatureSpec:
     grad_columns: list[str]
     dim_by_column: dict[str, int]
-
-
-def latest_fn_results_csv(results_root: Path) -> Path:
-    if not results_root.exists():
-        raise FileNotFoundError(f"Runs directory not found: {results_root}")
-
-    candidates: list[Path] = []
-    for run_dir in results_root.iterdir():
-        if not run_dir.is_dir():
-            continue
-        csv_path = run_dir / "fn_results.csv"
-        if csv_path.is_file():
-            candidates.append(csv_path)
-
-    if not candidates:
-        raise FileNotFoundError(f"No fn_results.csv found under: {results_root}")
-    candidates.sort(key=lambda p: p.stat().st_mtime, reverse=True)
-    return candidates[0]
 
 
 def resolve_path_value(raw_path: str) -> Path:
@@ -142,9 +123,13 @@ def run_train(config: dict[str, Any], run_dir: Path) -> Path:
     model_cfg = config["model"]
     train_cfg = config["train"]
 
-    csv_path_raw = str(dataset_cfg.get("csv_path", "")).strip()
-    results_root = resolve_path_value(str(dataset_cfg.get("results_root", DEFAULT_RESULTS_ROOT)))
-    csv_path = resolve_path_value(csv_path_raw) if csv_path_raw else latest_fn_results_csv(results_root)
+    dataset_root_raw = str(dataset_cfg.get("root", "")).strip()
+    if not dataset_root_raw:
+        raise ValueError("dataset.root is required. It must point to object_detectors/runs/{time}.")
+    dataset_root = resolve_path_value(dataset_root_raw)
+    csv_path = dataset_root / "fn_results.csv"
+    if not csv_path.is_file():
+        raise FileNotFoundError(f"fn_results.csv not found: {csv_path}")
 
     out_dir = run_dir.resolve()
     out_dir.mkdir(parents=True, exist_ok=True)
