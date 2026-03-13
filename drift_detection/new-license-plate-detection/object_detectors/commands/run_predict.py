@@ -135,7 +135,7 @@ def run_fn_csv(config, run_dir):
 def run_feature_grad_csv(config, run_dir):
     run_dir = Path(run_dir)
     mode = str(config.get("mode", "predict"))
-    cue = "grad"
+    cue = "feature_grad"
 
     dataset_cfg = config.get("dataset", {})
     split = dataset_cfg.get("split", "val")
@@ -206,7 +206,7 @@ def run_predict(config, run_dir):
     if cue == "fn":
         run_fn_csv(config, run_dir)
         return
-    if cue == "grad":
+    if cue == "feature_grad":
         run_feature_grad_csv(config, run_dir)
         return
     raise ValueError(f"Unsupported cue: {cue}")
