@@ -148,10 +148,11 @@ def load_training_dataframe(dataset_cfg: dict[str, Any]) -> tuple[pd.DataFrame, 
         warnings.warn(msg)
         raise ValueError(msg)
 
-    feature_csv = input_root / "feature_grad.csv"
-    if not feature_csv.is_file():
-        raise FileNotFoundError(f"feature_grad.csv not found: {feature_csv}")
-    feature_df = pd.read_csv(feature_csv)
+    input_csv_name = "layer_grad.csv" if input_cue == "layer_grad" else "feature_grad.csv"
+    input_csv = input_root / input_csv_name
+    if not input_csv.is_file():
+        raise FileNotFoundError(f"{input_csv_name} not found: {input_csv}")
+    feature_df = pd.read_csv(input_csv)
 
     if input_group == "fn_detectors":
         gt_csv = gt_root / "fn.csv"
