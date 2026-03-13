@@ -9,8 +9,8 @@ REPO_ROOT = PROJECT_ROOT.parent
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from fn_detectors.commands.run_train import run_train
-from fn_detectors.commands.utils.run_utils import create_run_dir, save_used_config
+from error_detectors.commands.run_train import run_train
+from error_detectors.commands.utils.run_utils import create_run_dir, save_used_config
 
 
 def resolve_config_path(raw_path: str) -> Path:
@@ -27,7 +27,7 @@ def load_config(path: Path) -> dict:
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--config", type=str, default="fn_detectors/configs/train_fn_detector.yaml")
+    parser.add_argument("--config", type=str, default="error_detectors/configs/train_error_detector.yaml")
     args = parser.parse_args()
 
     config_path = resolve_config_path(args.config)

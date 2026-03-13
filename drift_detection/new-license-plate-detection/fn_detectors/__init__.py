@@ -1,2 +1,0 @@
-# fn_detectors package
-
