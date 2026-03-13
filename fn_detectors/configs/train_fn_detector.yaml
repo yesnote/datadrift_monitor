@@ -8,7 +8,7 @@ model:
 
 dataset:
   # object_detectors/runs/{time}
-  root: object_detectors/runs/03-13-2026_18;00
+  root: object_detectors/runs/03-12-2026_18;34
 
 train:
   augmentation: none           # none | smote

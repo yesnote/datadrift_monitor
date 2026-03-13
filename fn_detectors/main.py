@@ -1,14 +1,16 @@
 import argparse
+import sys
 from pathlib import Path
 
 import yaml
 
-from fn_detectors.commands.run_train import run_train
-from fn_detectors.commands.utils.run_utils import create_run_dir, save_used_config
-
-
 PROJECT_ROOT = Path(__file__).resolve().parent
 REPO_ROOT = PROJECT_ROOT.parent
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from fn_detectors.commands.run_train import run_train
+from fn_detectors.commands.utils.run_utils import create_run_dir, save_used_config
 
 
 def resolve_config_path(raw_path: str) -> Path:
