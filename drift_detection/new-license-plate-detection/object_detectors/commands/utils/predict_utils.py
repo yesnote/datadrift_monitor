@@ -170,17 +170,20 @@ def parse_output_config(output_cfg):
         save_csv_enabled = save_csv_cfg
         cue = "fn"
         fn_cfg = {}
+        tp_cfg = {}
         feature_grad_cfg = {}
     else:
         save_csv_enabled = bool(save_csv_cfg.get("enabled", True))
         cue = str(save_csv_cfg.get("cue", "fn")).lower()
         fn_cfg = save_csv_cfg.get("fn", {})
+        tp_cfg = save_csv_cfg.get("tp", {})
         feature_grad_cfg = save_csv_cfg.get("feature_grad", {})
 
-    if cue not in {"fn", "feature_grad"}:
-        raise ValueError(f"Unsupported output.save_csv.cue='{cue}'. Use 'fn' or 'feature_grad'.")
+    if cue not in {"fn", "tp", "feature_grad"}:
+        raise ValueError(f"Unsupported output.save_csv.cue='{cue}'. Use 'fn', 'tp' or 'feature_grad'.")
 
     iou_match_threshold = float(fn_cfg.get("iou_match_threshold", 0.5))
+    tp_iou_match_threshold = float(tp_cfg.get("iou_match_threshold", 0.5))
     target_values = []
     target_layers = []
     if cue == "feature_grad":
@@ -213,6 +216,7 @@ def parse_output_config(output_cfg):
         "save_csv_enabled": save_csv_enabled,
         "cue": cue,
         "iou_match_threshold": iou_match_threshold,
+        "tp_iou_match_threshold": tp_iou_match_threshold,
         "target_values": target_values,
         "target_layers": target_layers,
         "save_image_enabled": save_image_enabled,
@@ -354,3 +358,44 @@ def has_fn_for_image(gt_boxes, gt_class_names, pred_boxes, pred_class_names, iou
         if not found_match:
             return 1
     return 0
+
+
+def assign_tp_to_predictions(
+    gt_boxes,
+    gt_class_names,
+    pred_boxes,
+    pred_class_names,
+    pred_scores,
+    iou_match_threshold,
+):
+    n_pred = len(pred_boxes)
+    matched_gt_indices = set()
+    tp_flags = [0] * n_pred
+    best_ious = [0.0] * n_pred
+
+    sorted_indices = list(range(n_pred))
+    if pred_scores is not None:
+        sorted_indices.sort(key=lambda i: float(pred_scores[i]), reverse=True)
+
+    for pred_idx in sorted_indices:
+        pred_box = pred_boxes[pred_idx]
+        pred_name = pred_class_names[pred_idx]
+
+        best_gt_idx = -1
+        best_iou = 0.0
+        for gt_idx, (gt_box, gt_name) in enumerate(zip(gt_boxes, gt_class_names)):
+            if gt_idx in matched_gt_indices:
+                continue
+            if gt_name != pred_name:
+                continue
+            iou = box_iou_xyxy(gt_box, pred_box)
+            if iou > best_iou:
+                best_iou = iou
+                best_gt_idx = gt_idx
+
+        best_ious[pred_idx] = float(best_iou)
+        if best_gt_idx >= 0 and best_iou >= iou_match_threshold:
+            tp_flags[pred_idx] = 1
+            matched_gt_indices.add(best_gt_idx)
+
+    return tp_flags, best_ious

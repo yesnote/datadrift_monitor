@@ -37,6 +37,9 @@ output:
     
     fn:
       iou_match_threshold: 0.45
+
+    tp:
+      iou_match_threshold: 0.45
     
     feature_grad:
       target_value: [obj, cls]
