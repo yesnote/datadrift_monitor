@@ -1,0 +1,31 @@
+{
+  "input_csv": "C:\\Users\\Yeseongjin\\Documents\\GitHub\\FND\\object_detectors\\runs\\03-12-2026_18;34\\fn_results.csv",
+  "model": "gb_classifier",
+  "device": "cpu",
+  "search_scoring": "roc_auc",
+  "augmentation": "none",
+  "feature_dimension": 1530,
+  "num_rows": 5000,
+  "num_positive_fn": 3499,
+  "grad_columns": [
+    "obj_model.24.m.0",
+    "obj_model.24.m.1",
+    "obj_model.24.m.2",
+    "cls_model.24.m.0",
+    "cls_model.24.m.1",
+    "cls_model.24.m.2"
+  ],
+  "dim_by_column": {
+    "obj_model.24.m.0": 255,
+    "obj_model.24.m.1": 255,
+    "obj_model.24.m.2": 255,
+    "cls_model.24.m.0": 255,
+    "cls_model.24.m.1": 255,
+    "cls_model.24.m.2": 255
+  },
+  "best_params": {},
+  "repeats": 15,
+  "test_size": 0.3,
+  "random_seed": 42,
+  "search": false
+}
