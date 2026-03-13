@@ -1,5 +1,5 @@
 *.pt
 code_references/
 object_detectors/runs/
-fn_detectors/runs/
+error_detectors/runs/
 __pycache__/
