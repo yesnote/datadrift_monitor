@@ -48,7 +48,7 @@ output:
 
     layer_grad:
       target_value: [loss]  # loss(=obj_loss+cls_loss+bbox_loss) | obj_loss | cls_loss | bbox_loss
-      target_layer: ["model.17.cv3.conv, model.20.cv3.conv, model.23.cv3.conv, model.24.m.0", "model.24.m.1", "model.24.m.2"]
+      target_layer: ["model.17.cv3.conv", "model.20.cv3.conv", "model.23.cv3.conv", "model.24.m.0", "model.24.m.1", "model.24.m.2"]
   
   save_image:
     enabled: true
