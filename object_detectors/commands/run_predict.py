@@ -8,6 +8,7 @@ from tqdm import tqdm
 
 from dataloaders.dataloader_yolo import create_dataloader
 from commands.utils.predict_utils import (
+    assign_tp_to_predictions,
     build_detector,
     collect_gradients_per_target,
     create_layer_grad_buffer,
@@ -199,12 +200,116 @@ def run_feature_grad_csv(config, run_dir):
     print(f"Saved results CSV: {output_csv}")
 
 
+def run_tp_csv(config, run_dir):
+    run_dir = Path(run_dir)
+    mode = str(config.get("mode", "predict"))
+    cue = "tp"
+
+    dataset_cfg = config.get("dataset", {})
+    split = dataset_cfg.get("split", "val")
+    parsed = parse_output_config(config.get("output", {}))
+    save_csv = parsed["save_csv_enabled"]
+    iou_match_threshold = parsed["tp_iou_match_threshold"]
+
+    if not save_csv:
+        return
+
+    output_csv = run_dir / "tp.csv"
+    fieldnames = [
+        "image_id",
+        "image_path",
+        "pred_idx",
+        "xmin",
+        "ymin",
+        "xmax",
+        "ymax",
+        "score",
+        "pred_class",
+        "max_iou",
+        "tp",
+    ]
+
+    annotation_path = get_annotation_path(config, split)
+    catid_to_name = load_coco_category_maps(annotation_path)
+    dataloader = create_dataloader(config, split=split)
+    if len(dataloader.dataset) == 0:
+        raise ValueError("Loaded 0 images. Check dataset root/image_dir/split configuration in YAML.")
+
+    detector, device = build_detector(config)
+
+    with open(output_csv, "w", newline="", encoding="utf-8") as output_file:
+        writer = csv.DictWriter(output_file, fieldnames=fieldnames)
+        writer.writeheader()
+
+        for images, targets in tqdm(
+            dataloader, desc=f"Object Detector ({mode} - {cue})", total=len(dataloader)
+        ):
+            for sample_idx in range(images.shape[0]):
+                detector.zero_grad(set_to_none=True)
+                infer_tensor, ratio, pad, _resized_chw = preprocess_with_letterbox(
+                    detector, images[sample_idx], device, requires_grad=False
+                )
+                with torch.no_grad():
+                    preds, _logits, _objectness, _features = detector(infer_tensor)
+
+                target = targets[sample_idx]
+                image_id = int(target["image_id"][0].item())
+                image_path = target["path"]
+
+                pred_boxes = preds[0][0]
+                pred_class_names = preds[2][0]
+                pred_scores = preds[3][0]
+                gt_boxes_tensor = target["boxes"]
+                gt_labels_tensor = target["labels"]
+                gt_boxes = map_boxes_to_letterbox(gt_boxes_tensor, ratio, pad)
+                gt_class_names = [catid_to_name.get(int(label), "__unknown__") for label in gt_labels_tensor.tolist()]
+
+                tp_flags, best_ious = assign_tp_to_predictions(
+                    gt_boxes=gt_boxes,
+                    gt_class_names=gt_class_names,
+                    pred_boxes=pred_boxes,
+                    pred_class_names=pred_class_names,
+                    pred_scores=pred_scores,
+                    iou_match_threshold=iou_match_threshold,
+                )
+
+                for pred_idx, (box, score, pred_class) in enumerate(
+                    zip(pred_boxes, pred_scores, pred_class_names)
+                ):
+                    writer.writerow(
+                        {
+                            "image_id": image_id,
+                            "image_path": image_path,
+                            "pred_idx": pred_idx,
+                            "xmin": float(box[0]),
+                            "ymin": float(box[1]),
+                            "xmax": float(box[2]),
+                            "ymax": float(box[3]),
+                            "score": float(score),
+                            "pred_class": pred_class,
+                            "max_iou": float(best_ious[pred_idx]),
+                            "tp": int(tp_flags[pred_idx]),
+                        }
+                    )
+
+                del infer_tensor, preds, _logits, _objectness, _features
+
+    del detector
+    if device.type == "cuda":
+        torch.cuda.empty_cache()
+
+    print(f"Saved results CSV: {output_csv}")
+
+
 def run_predict(config, run_dir):
     parsed = parse_output_config(config.get("output", {}))
     cue = parsed["cue"]
 
     if cue == "fn":
         run_fn_csv(config, run_dir)
+        return
+    if cue == "tp":
+        run_tp_csv(config, run_dir)
         return
     if cue == "feature_grad":
         run_feature_grad_csv(config, run_dir)
