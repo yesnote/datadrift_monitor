@@ -45,6 +45,10 @@ output:
     feature_grad:
       target_value: [obj, cls]
       target_layer: ["model.24.m.0", "model.24.m.1", "model.24.m.2"]
+
+    layer_grad:
+      target_value: [loss]  # loss | obj_loss | cls_loss
+      target_layer: ["model.24.m.0", "model.24.m.1", "model.24.m.2"]
   
   save_image:
     enabled: true
