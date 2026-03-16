@@ -224,10 +224,18 @@ def parse_output_config(output_cfg):
         if unit not in {"image", "bbox"}:
             raise ValueError("output.save_csv.unit must be 'image' or 'bbox' when cue is 'feature_grad'.")
         target_values = [v.lower() for v in normalize_to_list(feature_grad_cfg.get("target_value", ["obj"]))]
-        valid_values = {"obj", "cls", "loss"}
+        valid_values = {"obj", "cls", "loss", "obj_loss", "cls_loss", "bbox_loss"}
         invalid_values = [v for v in target_values if v not in valid_values]
         if invalid_values:
             raise ValueError(f"Unsupported target_value(s): {invalid_values}. Use {sorted(valid_values)}")
+        if "loss" in target_values:
+            expanded = []
+            for v in target_values:
+                if v == "loss":
+                    expanded.extend(["obj_loss", "cls_loss", "bbox_loss"])
+                else:
+                    expanded.append(v)
+            target_values = list(dict.fromkeys(expanded))
 
         target_layers = normalize_to_list(feature_grad_cfg.get("target_layer", []))
         if not target_layers and save_csv_enabled:
@@ -337,7 +345,8 @@ def collect_gradients_per_target(detector, input_tensor, target_values, target_l
         target_scalar = None
         if target_value in {"obj", "cls"}:
             target_scalar = build_target_scalar_pre_nms(target_value, raw_prediction, raw_logits)
-        elif target_value == "loss":
+        else:
+            # unit=image + *loss: mean over final NMS predictions
             with torch.no_grad():
                 _selected_preds, _selected_logits, _selected_objectness, selected_indices = detector.non_max_suppression(
                     raw_prediction.detach(),
@@ -364,10 +373,9 @@ def collect_gradients_per_target(detector, input_tensor, target_values, target_l
                     raw_idx=raw_idx,
                     iou_threshold=iou_threshold,
                 )
-                if losses is not None and "bbox_loss" in losses:
-                    loss_terms.append(losses["bbox_loss"])
+                if losses is not None and target_value in losses:
+                    loss_terms.append(losses[target_value])
             if loss_terms:
-                # unit=image feature loss: average bbox-loss over final predictions
                 target_scalar = torch.stack(loss_terms).mean()
 
         if target_scalar is None:
@@ -442,17 +450,14 @@ def collect_bbox_gradients_per_target(
                     target_scalar = pred_img[raw_idx, 4]
                 elif target_value == "cls":
                     target_scalar = logit_img[raw_idx].max()
-                elif target_value == "loss":
+                else:
                     losses = build_pseudo_label_losses_for_candidates(
                         pred_img=pred_img,
                         raw_idx=raw_idx,
                         iou_threshold=iou_threshold,
                     )
-                    if losses is not None and "bbox_loss" in losses:
-                        # unit=bbox feature loss: bbox-loss for selected final bbox
-                        target_scalar = losses["bbox_loss"]
-                else:
-                    raise ValueError(f"Unsupported target_value: {target_value}")
+                    if losses is not None and target_value in losses:
+                        target_scalar = losses[target_value]
 
             if target_scalar is None:
                 for layer_name in target_layers:
