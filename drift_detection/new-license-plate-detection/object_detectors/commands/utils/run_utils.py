@@ -18,7 +18,7 @@ def create_run_dir(cue=None, unit=None):
     else:
         base_dir = PROJECT_ROOT / "runs"
 
-    run_dir = base_dir / f"{run_name}_{cue_name}"
+    run_dir = base_dir / cue_name / run_name
     run_dir.mkdir(parents=True, exist_ok=True)
     return run_dir
 
