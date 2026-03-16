@@ -1,5 +1,4 @@
 import argparse
-import re
 import sys
 import warnings
 from pathlib import Path
@@ -35,11 +34,24 @@ def resolve_path_value(raw_path: str) -> Path:
 
 
 def parse_root_info(root_path: Path) -> tuple[str, str]:
-    model_group = root_path.parent.name
-    run_name = root_path.name
-    match = re.match(r"^\d{2}-\d{2}-\d{4}_\d{2};\d{2}_(.+)$", run_name)
-    cue = match.group(1) if match else run_name.split("_", 2)[-1]
-    return model_group, cue
+    # New format: .../runs/{model_group}/{cue}/{time}
+    # Backward-compatible old format: .../runs/{model_group}/{time}_{cue}
+    parent = root_path.parent
+    if parent.name in {"fn_detectors", "tp_classifiers"}:
+        model_group = parent.name
+        run_name = root_path.name
+        cue = run_name.split("_", 2)[-1] if "_" in run_name else run_name
+        return model_group, cue
+
+    if parent.parent.name in {"fn_detectors", "tp_classifiers"}:
+        model_group = parent.parent.name
+        cue = parent.name
+        return model_group, cue
+
+    raise ValueError(
+        "dataset root must follow object_detectors/runs/{fn_detectors|tp_classifiers}/{cue}/{time} "
+        "or legacy object_detectors/runs/{fn_detectors|tp_classifiers}/{time}_{cue}."
+    )
 
 
 def main() -> None:
