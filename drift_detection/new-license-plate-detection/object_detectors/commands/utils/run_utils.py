@@ -6,10 +6,11 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 
-def create_run_dir(cue=None, unit=None):
+def create_run_dir(cue=None, unit=None, target_value=None):
     run_name = datetime.now().strftime("%m-%d-%Y_%H;%M")
     cue_name = str(cue or "predict").lower()
     unit_name = str(unit or "").lower()
+    target_name = str(target_value or "").strip().lower()
 
     if unit_name == "image":
         base_dir = PROJECT_ROOT / "runs" / "fn_detectors"
@@ -18,7 +19,8 @@ def create_run_dir(cue=None, unit=None):
     else:
         base_dir = PROJECT_ROOT / "runs"
 
-    run_dir = base_dir / cue_name / run_name
+    dir_name = f"{run_name}_{cue_name}" if not target_name else f"{run_name}_{cue_name}_{target_name}"
+    run_dir = base_dir / dir_name
     run_dir.mkdir(parents=True, exist_ok=True)
     return run_dir
 

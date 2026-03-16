@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import pickle
+import re
 import warnings
 from dataclasses import dataclass
 from pathlib import Path
@@ -121,24 +122,32 @@ def save_object(obj: Any, path_without_suffix: Path) -> Path:
     return out
 
 
-def parse_root_info(root_path: Path) -> tuple[str, str]:
-    # New format: .../runs/{model_group}/{cue}/{time}
-    # Backward-compatible old format: .../runs/{model_group}/{time}_{cue}
+def parse_root_info(root_path: Path) -> tuple[str, str, str]:
+    # Current format: .../runs/{model_group}/{time}_{cue}_{target?}
+    # Legacy format:  .../runs/{model_group}/{cue}/{time}
+    # Legacy format:  .../runs/{model_group}/{time}_{cue}
     parent = root_path.parent
     if parent.name in {"fn_detectors", "tp_classifiers"}:
         model_group = parent.name
         run_name = root_path.name
-        cue = run_name.split("_", 2)[-1] if "_" in run_name else run_name
-        return model_group, cue
+        match = re.match(r"^\d{2}-\d{2}-\d{4}_\d{2};\d{2}_(.+)$", run_name)
+        tail = match.group(1) if match else run_name
+        for cue_name in ("feature_grad", "layer_grad", "fn", "tp"):
+            if tail == cue_name:
+                return model_group, cue_name, ""
+            prefix = f"{cue_name}_"
+            if tail.startswith(prefix):
+                return model_group, cue_name, tail[len(prefix):]
+        return model_group, tail, ""
 
     if parent.parent.name in {"fn_detectors", "tp_classifiers"}:
         model_group = parent.parent.name
         cue = parent.name
-        return model_group, cue
+        return model_group, cue, ""
 
     raise ValueError(
-        "dataset root must follow object_detectors/runs/{fn_detectors|tp_classifiers}/{cue}/{time} "
-        "or legacy object_detectors/runs/{fn_detectors|tp_classifiers}/{time}_{cue}."
+        "dataset root must follow object_detectors/runs/{fn_detectors|tp_classifiers}/{time}_{cue}_{target?} "
+        "or legacy formats."
     )
 
 
@@ -150,8 +159,8 @@ def load_training_dataframe(dataset_cfg: dict[str, Any]) -> tuple[pd.DataFrame, 
 
     input_root = resolve_path_value(input_root_raw)
     gt_root = resolve_path_value(gt_root_raw)
-    input_group, input_cue = parse_root_info(input_root)
-    gt_group, gt_cue = parse_root_info(gt_root)
+    input_group, input_cue, input_target = parse_root_info(input_root)
+    gt_group, gt_cue, gt_target = parse_root_info(gt_root)
     if input_group != gt_group:
         msg = (
             "dataset.input_root and dataset.gt_root must have the same model group "
@@ -245,7 +254,9 @@ def load_training_dataframe(dataset_cfg: dict[str, Any]) -> tuple[pd.DataFrame, 
         "gt_root": str(gt_root),
         "model_group": input_group,
         "input_cue": input_cue,
+        "input_target": input_target,
         "gt_cue": gt_cue,
+        "gt_target": gt_target,
     }
     return merged, label_col, grad_columns, root_info
 
@@ -320,7 +331,9 @@ def run_train(config: dict[str, Any], run_dir: Path) -> Path:
         "gt_root": root_info["gt_root"],
         "model_group": root_info["model_group"],
         "input_cue": root_info["input_cue"],
+        "input_target": root_info.get("input_target", ""),
         "gt_cue": root_info["gt_cue"],
+        "gt_target": root_info.get("gt_target", ""),
         "label_column": label_col,
         "model": model_name,
         "device": device,

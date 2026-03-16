@@ -63,11 +63,23 @@ def main():
     if mode != "predict":
         raise ValueError(f"Unsupported mode: {mode}. Only 'predict' is implemented.")
     parsed_output = parse_output_config(config.get("output", {}))
+    cue = str(parsed_output.get("cue", ""))
+    target_tag = ""
+    if cue == "feature_grad":
+        vals = parsed_output.get("target_values", [])
+        target_tag = "-".join([str(v).strip().lower() for v in vals if str(v).strip()])
+    elif cue == "layer_grad":
+        vals = parsed_output.get("layer_target_values", [])
+        target_tag = "-".join([str(v).strip().lower() for v in vals if str(v).strip()])
 
     if args.run_dir:
         run_dir = _resolve_run_dir(args.run_dir)
     else:
-        run_dir = create_run_dir(cue=parsed_output.get("cue"), unit=parsed_output.get("unit")).resolve()
+        run_dir = create_run_dir(
+            cue=parsed_output.get("cue"),
+            unit=parsed_output.get("unit"),
+            target_value=target_tag,
+        ).resolve()
     run_dir.mkdir(parents=True, exist_ok=True)
     save_used_config(config_path, run_dir)
     run_predict(config, run_dir)
