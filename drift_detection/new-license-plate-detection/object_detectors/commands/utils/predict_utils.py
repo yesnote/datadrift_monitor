@@ -205,6 +205,7 @@ def parse_output_config(output_cfg):
     target_layers = []
     layer_target_values = []
     layer_target_layers = []
+    layer_reduction = True
     if cue == "feature_grad":
         if unit not in {"image", "bbox"}:
             raise ValueError("output.save_csv.unit must be 'image' or 'bbox' when cue is 'feature_grad'.")
@@ -240,6 +241,7 @@ def parse_output_config(output_cfg):
         layer_target_layers = normalize_to_list(layer_grad_cfg.get("target_layer", []))
         if not layer_target_layers and save_csv_enabled:
             raise ValueError("output.save_csv.layer_grad.target_layer must contain at least one layer name.")
+        layer_reduction = bool(layer_grad_cfg.get("reduction", True))
     elif cue == "fn":
         if unit != "image":
             msg = "Invalid config: output.save_csv.cue='fn' requires output.save_csv.unit='image'."
@@ -276,6 +278,7 @@ def parse_output_config(output_cfg):
         "target_layers": target_layers,
         "layer_target_values": layer_target_values,
         "layer_target_layers": layer_target_layers,
+        "layer_reduction": layer_reduction,
         "save_image_enabled": save_image_enabled,
         "image_step": image_step,
         "image_max_num": image_max_num,
@@ -440,6 +443,15 @@ def map_grad_tensor_to_numbers(v):
     }
 
 
+def format_gradient_output(grad_tensor, reduction):
+    if grad_tensor is None:
+        return []
+    grad_tensor = grad_tensor.detach().float()
+    if reduction:
+        return map_grad_tensor_to_numbers(grad_tensor)
+    return grad_tensor.reshape(-1).detach().cpu().tolist()
+
+
 def zero_grad_numbers():
     return {
         "1-norm": 0.0,
@@ -536,6 +548,7 @@ def collect_bbox_layer_grads_per_target(
     input_tensor,
     target_values,
     target_layers,
+    reduction=True,
 ):
     layer_params = [resolve_layer_parameter(detector.model, layer_name) for layer_name in target_layers]
     original_requires_grad = [bool(p.requires_grad) for p in layer_params]
@@ -597,7 +610,7 @@ def collect_bbox_layer_grads_per_target(
                 for layer_idx, layer_name in enumerate(target_layers):
                     key = f"{target_value}_{layer_name}"
                     grad_tensor = grads[layer_idx]
-                    grad_stats[key] = [] if grad_tensor is None else map_grad_tensor_to_numbers(grad_tensor)
+                    grad_stats[key] = format_gradient_output(grad_tensor, reduction=reduction)
 
                 del model_output, raw_prediction, pred_img, target_scalar, losses, grads
 
@@ -629,6 +642,7 @@ def collect_image_layer_grads_per_target(
     input_tensor,
     target_values,
     target_layers,
+    reduction=True,
 ):
     layer_params = [resolve_layer_parameter(detector.model, layer_name) for layer_name in target_layers]
     original_requires_grad = [bool(p.requires_grad) for p in layer_params]
@@ -672,7 +686,7 @@ def collect_image_layer_grads_per_target(
 
             if not loss_terms:
                 for layer_name in target_layers:
-                    grad_stats[f"{target_value}_{layer_name}"] = zero_grad_numbers()
+                    grad_stats[f"{target_value}_{layer_name}"] = zero_grad_numbers() if reduction else []
                 del model_output, raw_prediction, pred_img, loss_terms
                 continue
 
@@ -686,7 +700,10 @@ def collect_image_layer_grads_per_target(
             for layer_idx, layer_name in enumerate(target_layers):
                 key = f"{target_value}_{layer_name}"
                 grad_tensor = grads[layer_idx]
-                grad_stats[key] = zero_grad_numbers() if grad_tensor is None else map_grad_tensor_to_numbers(grad_tensor)
+                if grad_tensor is None:
+                    grad_stats[key] = zero_grad_numbers() if reduction else []
+                else:
+                    grad_stats[key] = format_gradient_output(grad_tensor, reduction=reduction)
 
             del model_output, raw_prediction, pred_img, loss_terms, target_scalar, grads
     finally:
