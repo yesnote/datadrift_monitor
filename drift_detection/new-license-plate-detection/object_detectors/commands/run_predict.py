@@ -149,6 +149,7 @@ def run_feature_grad_csv(config, run_dir):
     unit = parsed["unit"]
     target_values = parsed["target_values"]
     target_layers = parsed["target_layers"]
+    feature_reduction = parsed["feature_reduction"]
 
     if not save_csv:
         return
@@ -166,7 +167,7 @@ def run_feature_grad_csv(config, run_dir):
         raise ValueError("Loaded 0 images. Check dataset root/image_dir/split configuration in YAML.")
 
     detector, device = build_detector(config)
-    layer_buffer = create_layer_grad_buffer(detector.model, target_layers)
+    layer_buffer = create_layer_grad_buffer(detector.model, target_layers, reduction=feature_reduction)
 
     with open(output_csv, "w", newline="", encoding="utf-8") as output_file:
         writer = csv.DictWriter(output_file, fieldnames=fieldnames)
