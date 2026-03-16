@@ -364,6 +364,7 @@ def run_layer_grad_csv(config, run_dir):
         raise ValueError("Loaded 0 images. Check dataset root/image_dir/split configuration in YAML.")
 
     detector, device = build_detector(config)
+    debug_printed = False
 
     with open(output_csv, "w", newline="", encoding="utf-8") as output_file:
         writer = csv.DictWriter(output_file, fieldnames=fieldnames)
@@ -388,6 +389,20 @@ def run_layer_grad_csv(config, run_dir):
                         reduction=layer_reduction,
                     )
                     for bbox_row in bbox_rows:
+                        if not debug_printed:
+                            print("[Debug] layer_grad value counts per layer:")
+                            for target_value in target_values:
+                                for layer_name in target_layers:
+                                    key = f"{target_value}_{layer_name}"
+                                    value = bbox_row["grad_stats"].get(key, [])
+                                    if isinstance(value, dict):
+                                        count = len(value)
+                                    elif isinstance(value, list):
+                                        count = len(value)
+                                    else:
+                                        count = 1
+                                    print(f"  {key}: {count}")
+                            debug_printed = True
                         row = {
                             "image_id": image_id,
                             "image_path": image_path,
@@ -412,6 +427,20 @@ def run_layer_grad_csv(config, run_dir):
                         target_layers=target_layers,
                         reduction=layer_reduction,
                     )
+                    if not debug_printed:
+                        print("[Debug] layer_grad value counts per layer:")
+                        for target_value in target_values:
+                            for layer_name in target_layers:
+                                key = f"{target_value}_{layer_name}"
+                                value = grad_stats.get(key, [])
+                                if isinstance(value, dict):
+                                    count = len(value)
+                                elif isinstance(value, list):
+                                    count = len(value)
+                                else:
+                                    count = 1
+                                print(f"  {key}: {count}")
+                        debug_printed = True
                     row = {
                         "image_id": image_id,
                         "image_path": image_path,
