@@ -1,4 +1,5 @@
 import argparse
+import re
 import sys
 import warnings
 from pathlib import Path
@@ -33,24 +34,32 @@ def resolve_path_value(raw_path: str) -> Path:
     return (REPO_ROOT / path).resolve()
 
 
-def parse_root_info(root_path: Path) -> tuple[str, str]:
-    # New format: .../runs/{model_group}/{cue}/{time}
-    # Backward-compatible old format: .../runs/{model_group}/{time}_{cue}
+def parse_root_info(root_path: Path) -> tuple[str, str, str]:
+    # Current format: .../runs/{model_group}/{time}_{cue}_{target?}
+    # Legacy format:  .../runs/{model_group}/{cue}/{time}
+    # Legacy format:  .../runs/{model_group}/{time}_{cue}
     parent = root_path.parent
     if parent.name in {"fn_detectors", "tp_classifiers"}:
         model_group = parent.name
         run_name = root_path.name
-        cue = run_name.split("_", 2)[-1] if "_" in run_name else run_name
-        return model_group, cue
+        match = re.match(r"^\d{2}-\d{2}-\d{4}_\d{2};\d{2}_(.+)$", run_name)
+        tail = match.group(1) if match else run_name
+        for cue_name in ("feature_grad", "layer_grad", "fn", "tp"):
+            if tail == cue_name:
+                return model_group, cue_name, ""
+            prefix = f"{cue_name}_"
+            if tail.startswith(prefix):
+                return model_group, cue_name, tail[len(prefix):]
+        return model_group, tail, ""
 
     if parent.parent.name in {"fn_detectors", "tp_classifiers"}:
         model_group = parent.parent.name
         cue = parent.name
-        return model_group, cue
+        return model_group, cue, ""
 
     raise ValueError(
-        "dataset root must follow object_detectors/runs/{fn_detectors|tp_classifiers}/{cue}/{time} "
-        "or legacy object_detectors/runs/{fn_detectors|tp_classifiers}/{time}_{cue}."
+        "dataset root must follow object_detectors/runs/{fn_detectors|tp_classifiers}/{time}_{cue}_{target?} "
+        "or legacy formats."
     )
 
 
@@ -76,8 +85,8 @@ def main() -> None:
 
     input_root = resolve_path_value(input_root_raw)
     gt_root = resolve_path_value(gt_root_raw)
-    input_group, input_cue = parse_root_info(input_root)
-    gt_group, _gt_cue = parse_root_info(gt_root)
+    input_group, input_cue, input_target = parse_root_info(input_root)
+    gt_group, _gt_cue, _gt_target = parse_root_info(gt_root)
     if input_group != gt_group:
         msg = (
             "dataset.input_root and dataset.gt_root must have the same model group "
@@ -86,7 +95,7 @@ def main() -> None:
         warnings.warn(msg)
         raise ValueError(msg)
 
-    run_dir = create_run_dir(model_group=input_group, cue=input_cue).resolve()
+    run_dir = create_run_dir(model_group=input_group, cue=input_cue, target_value=input_target).resolve()
     save_used_config(config_path, run_dir)
     run_train(config, run_dir)
 

@@ -5,11 +5,13 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 
-def create_run_dir(model_group: str, cue: str) -> Path:
+def create_run_dir(model_group: str, cue: str, target_value: str = "") -> Path:
     run_name = datetime.now().strftime("%m-%d-%Y_%H;%M")
     group = str(model_group).strip().lower()
     cue_name = str(cue).strip().lower()
-    run_dir = PROJECT_ROOT / "runs" / group / cue_name / run_name
+    target_name = str(target_value).strip().lower()
+    dir_name = f"{run_name}_{cue_name}" if not target_name else f"{run_name}_{cue_name}_{target_name}"
+    run_dir = PROJECT_ROOT / "runs" / group / dir_name
     run_dir.mkdir(parents=True, exist_ok=True)
     return run_dir
 
