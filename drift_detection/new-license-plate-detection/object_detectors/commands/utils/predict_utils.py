@@ -698,23 +698,27 @@ def collect_image_layer_grads_per_target(
 
 
 def get_channel_stats(grad_tensor):
-    # Expect [B, C, H, W] from conv feature maps and return per-channel
-    # L1 energy: mean(abs(grad)) over spatial dimensions.
+    # Expect [B, C, H, W] from conv feature maps.
+    # 1) Build channel vector D by L1 energy over spatial dims.
+    # 2) Summarize D with 6 scalar stats to match layer_grad format.
     grad_tensor = grad_tensor.detach().float()
     if grad_tensor.ndim == 4:
         grad_tensor = grad_tensor[0]
 
-    # For tensor-like gradients, treat dim-0 as channel axis and average |grad|
-    # over the remaining dimensions.
-    if grad_tensor.ndim == 0:
-        return [float(grad_tensor.abs().item())]
-    if grad_tensor.ndim == 1:
-        return grad_tensor.abs().detach().cpu().tolist()
+    if grad_tensor.numel() == 0:
+        return zero_grad_numbers()
 
-    c = grad_tensor.shape[0]
-    flat = grad_tensor.reshape(c, -1)
-    l1_energy = flat.abs().mean(dim=1)
-    return l1_energy.detach().cpu().tolist()
+    if grad_tensor.ndim == 0:
+        vec = grad_tensor.abs().reshape(1)
+        return map_grad_tensor_to_numbers(vec)
+    if grad_tensor.ndim == 1:
+        vec = grad_tensor.abs()
+    else:
+        c = grad_tensor.shape[0]
+        flat = grad_tensor.reshape(c, -1)
+        vec = flat.abs().mean(dim=1)
+
+    return map_grad_tensor_to_numbers(vec)
 
 
 def preprocess_with_letterbox(detector, image_tensor, device, requires_grad=True):
