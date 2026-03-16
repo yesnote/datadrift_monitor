@@ -133,8 +133,9 @@ def resolve_layer_parameter(model, layer_name):
 
 
 class LayerGradBuffer:
-    def __init__(self, model, target_layers):
+    def __init__(self, model, target_layers, reduction=True):
         self.target_layers = list(target_layers)
+        self.reduction = bool(reduction)
         self.gradients = {"value": []}
         self.forward_handles = []
         self.backward_handles = []
@@ -156,8 +157,7 @@ class LayerGradBuffer:
             return None
         grad = grad_output[0]
         if grad is not None:
-            # Store per-channel L1 energy vector, not raw tensors.
-            self.gradients["value"].append(get_channel_stats(grad))
+            self.gradients["value"].append(get_feature_grad_stats(grad, reduction=self.reduction))
         return None
 
     def clear(self):
@@ -173,8 +173,8 @@ class LayerGradBuffer:
         self.backward_handles = []
 
 
-def create_layer_grad_buffer(model, target_layers):
-    return LayerGradBuffer(model=model, target_layers=target_layers)
+def create_layer_grad_buffer(model, target_layers, reduction=True):
+    return LayerGradBuffer(model=model, target_layers=target_layers, reduction=reduction)
 
 
 def parse_output_config(output_cfg):
@@ -203,6 +203,7 @@ def parse_output_config(output_cfg):
     tp_iou_match_threshold = float(tp_cfg.get("iou_match_threshold", 0.5))
     target_values = []
     target_layers = []
+    feature_reduction = True
     layer_target_values = []
     layer_target_layers = []
     layer_reduction = True
@@ -218,6 +219,7 @@ def parse_output_config(output_cfg):
         target_layers = normalize_to_list(feature_grad_cfg.get("target_layer", []))
         if not target_layers and save_csv_enabled:
             raise ValueError("output.save_csv.feature_grad.target_layer must contain at least one layer name.")
+        feature_reduction = bool(feature_grad_cfg.get("reduction", True))
     elif cue == "layer_grad":
         if unit not in {"image", "bbox"}:
             msg = "Invalid config: output.save_csv.cue='layer_grad' requires output.save_csv.unit in {'image','bbox'}."
@@ -276,6 +278,7 @@ def parse_output_config(output_cfg):
         "tp_iou_match_threshold": tp_iou_match_threshold,
         "target_values": target_values,
         "target_layers": target_layers,
+        "feature_reduction": feature_reduction,
         "layer_target_values": layer_target_values,
         "layer_target_layers": layer_target_layers,
         "layer_reduction": layer_reduction,
@@ -714,16 +717,17 @@ def collect_image_layer_grads_per_target(
     return grad_stats
 
 
-def get_channel_stats(grad_tensor):
+def get_feature_grad_stats(grad_tensor, reduction=True):
     # Expect [B, C, H, W] from conv feature maps.
-    # 1) Build channel vector D by L1 energy over spatial dims.
-    # 2) Summarize D with 6 scalar stats to match layer_grad format.
     grad_tensor = grad_tensor.detach().float()
-    if grad_tensor.ndim == 4:
+    if grad_tensor.ndim >= 1 and grad_tensor.shape[0] == 1:
         grad_tensor = grad_tensor[0]
 
     if grad_tensor.numel() == 0:
-        return zero_grad_numbers()
+        return zero_grad_numbers() if reduction else []
+
+    if not reduction:
+        return grad_tensor.reshape(-1).detach().cpu().tolist()
 
     if grad_tensor.ndim == 0:
         vec = grad_tensor.abs().reshape(1)
