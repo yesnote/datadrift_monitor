@@ -218,8 +218,8 @@ def parse_output_config(output_cfg):
         if not target_layers and save_csv_enabled:
             raise ValueError("output.save_csv.feature_grad.target_layer must contain at least one layer name.")
     elif cue == "layer_grad":
-        if unit != "bbox":
-            msg = "Invalid config: output.save_csv.cue='layer_grad' requires output.save_csv.unit='bbox'."
+        if unit not in {"image", "bbox"}:
+            msg = "Invalid config: output.save_csv.cue='layer_grad' requires output.save_csv.unit in {'image','bbox'}."
             warnings.warn(msg)
             raise ValueError(msg)
         layer_target_values = [v.lower() for v in normalize_to_list(layer_grad_cfg.get("target_value", ["loss"]))]
@@ -440,6 +440,17 @@ def map_grad_tensor_to_numbers(v):
     }
 
 
+def zero_grad_numbers():
+    return {
+        "1-norm": 0.0,
+        "2-norm": 0.0,
+        "min": 0.0,
+        "max": 0.0,
+        "mean": 0.0,
+        "std": 0.0,
+    }
+
+
 def build_pseudo_label_losses(pred_row):
     eps = 1e-6
     obj_prob = pred_row[4].clamp(eps, 1.0 - eps)
@@ -611,6 +622,79 @@ def collect_bbox_layer_grads_per_target(
 
     del selected_preds, selected_indices, det, raw_keep_indices
     return rows
+
+
+def collect_image_layer_grads_per_target(
+    detector,
+    input_tensor,
+    target_values,
+    target_layers,
+):
+    layer_params = [resolve_layer_parameter(detector.model, layer_name) for layer_name in target_layers]
+    original_requires_grad = [bool(p.requires_grad) for p in layer_params]
+    for param in layer_params:
+        param.requires_grad_(True)
+
+    with torch.no_grad():
+        model_output = detector.model(input_tensor.detach(), augment=False)
+        raw_prediction = model_output[0] if isinstance(model_output, (tuple, list)) else model_output
+        raw_logits = model_output[1] if isinstance(model_output, (tuple, list)) and len(model_output) > 1 else None
+        _selected_preds, _selected_logits, _selected_objectness, selected_indices = detector.non_max_suppression(
+            raw_prediction,
+            raw_logits,
+            detector.confidence,
+            detector.iou_thresh,
+            classes=None,
+            agnostic=detector.agnostic,
+            return_indices=True,
+        )
+        raw_keep_indices = selected_indices[0] if selected_indices else torch.zeros((0,), dtype=torch.long, device=input_tensor.device)
+
+    iou_threshold = float(getattr(detector, "iou_thresh", 0.45))
+    grad_stats = {}
+    try:
+        for target_value in target_values:
+            detector.zero_grad(set_to_none=True)
+            model_output = detector.model(input_tensor.detach(), augment=False)
+            raw_prediction = model_output[0] if isinstance(model_output, (tuple, list)) else model_output
+            pred_img = raw_prediction[0]
+
+            loss_terms = []
+            for bbox_idx in range(int(raw_keep_indices.shape[0])):
+                raw_idx = int(raw_keep_indices[bbox_idx].detach().cpu().item())
+                losses = build_pseudo_label_losses_for_candidates(
+                    pred_img=pred_img,
+                    raw_idx=raw_idx,
+                    iou_threshold=iou_threshold,
+                )
+                if losses is not None and target_value in losses:
+                    loss_terms.append(losses[target_value])
+
+            if not loss_terms:
+                for layer_name in target_layers:
+                    grad_stats[f"{target_value}_{layer_name}"] = zero_grad_numbers()
+                del model_output, raw_prediction, pred_img, loss_terms
+                continue
+
+            target_scalar = torch.stack(loss_terms).mean()
+            grads = torch.autograd.grad(
+                target_scalar,
+                layer_params,
+                retain_graph=False,
+                allow_unused=True,
+            )
+            for layer_idx, layer_name in enumerate(target_layers):
+                key = f"{target_value}_{layer_name}"
+                grad_tensor = grads[layer_idx]
+                grad_stats[key] = zero_grad_numbers() if grad_tensor is None else map_grad_tensor_to_numbers(grad_tensor)
+
+            del model_output, raw_prediction, pred_img, loss_terms, target_scalar, grads
+    finally:
+        for param, req_grad in zip(layer_params, original_requires_grad):
+            param.requires_grad_(req_grad)
+        detector.zero_grad(set_to_none=True)
+
+    return grad_stats
 
 
 def get_channel_stats(grad_tensor):
