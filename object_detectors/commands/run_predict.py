@@ -352,7 +352,7 @@ def run_layer_grad_csv(config, run_dir):
     unit = parsed["unit"]
     target_values = parsed["layer_target_values"]
     target_layers = parsed["layer_target_layers"]
-    layer_reduction = parsed["layer_reduction"]
+    layer_vector_reduction = parsed["layer_vector_reduction"]
 
     if not save_csv:
         return
@@ -392,7 +392,7 @@ def run_layer_grad_csv(config, run_dir):
                         input_tensor=infer_tensor,
                         target_values=target_values,
                         target_layers=target_layers,
-                        reduction=layer_reduction,
+                        vector_reduction=layer_vector_reduction,
                     )
                     for bbox_row in bbox_rows:
                         if not debug_printed:
@@ -431,7 +431,7 @@ def run_layer_grad_csv(config, run_dir):
                         input_tensor=infer_tensor,
                         target_values=target_values,
                         target_layers=target_layers,
-                        reduction=layer_reduction,
+                        vector_reduction=layer_vector_reduction,
                     )
                     if not debug_printed:
                         print("[Debug] layer_grad value counts per layer:")
