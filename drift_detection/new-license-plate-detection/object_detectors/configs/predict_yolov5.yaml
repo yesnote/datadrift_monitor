@@ -51,7 +51,7 @@ output:
     layer_grad:
       target_value: [loss]  # loss(=obj_loss+cls_loss+bbox_loss) | obj_loss | cls_loss | bbox_loss
       target_layer: ["model.24.m.0", "model.24.m.1", "model.24.m.2"]  # "model.17.cv3.conv", "model.20.cv3.conv", "model.23.cv3.conv"
-      reduction: true  # true: save 6 stats | false: save raw flattened gradients
+      vector_reduction: [L1, L2, min, max, mean, std]  # empty list [] means save raw flattened gradients
   
   save_image:
     enabled: true
