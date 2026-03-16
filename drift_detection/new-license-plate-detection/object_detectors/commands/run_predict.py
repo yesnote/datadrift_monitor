@@ -13,6 +13,7 @@ from commands.utils.predict_utils import (
     collect_bbox_gradients_per_target,
     collect_bbox_layer_grads_per_target,
     collect_gradients_per_target,
+    collect_image_layer_grads_per_target,
     create_layer_grad_buffer,
     draw_predictions,
     get_annotation_path,
@@ -341,6 +342,7 @@ def run_layer_grad_csv(config, run_dir):
     split = dataset_cfg.get("split", "val")
     parsed = parse_output_config(config.get("output", {}))
     save_csv = parsed["save_csv_enabled"]
+    unit = parsed["unit"]
     target_values = parsed["layer_target_values"]
     target_layers = parsed["layer_target_layers"]
 
@@ -348,7 +350,9 @@ def run_layer_grad_csv(config, run_dir):
         return
 
     output_csv = run_dir / "layer_grad.csv"
-    fieldnames = ["image_id", "image_path", "pred_idx", "raw_pred_idx", "xmin", "ymin", "xmax", "ymax", "score", "pred_class"]
+    fieldnames = ["image_id", "image_path"]
+    if unit == "bbox":
+        fieldnames.extend(["pred_idx", "raw_pred_idx", "xmin", "ymin", "xmax", "ymax", "score", "pred_class"])
     for target_value in target_values:
         for layer_name in target_layers:
             fieldnames.append(f"{target_value}_{layer_name}")
@@ -373,29 +377,46 @@ def run_layer_grad_csv(config, run_dir):
                 infer_tensor, _ratio, _pad, _resized_chw = preprocess_with_letterbox(
                     detector, images[sample_idx], device, requires_grad=False
                 )
-                bbox_rows = collect_bbox_layer_grads_per_target(
-                    detector=detector,
-                    input_tensor=infer_tensor,
-                    target_values=target_values,
-                    target_layers=target_layers,
-                )
-                for bbox_row in bbox_rows:
+                if unit == "bbox":
+                    bbox_rows = collect_bbox_layer_grads_per_target(
+                        detector=detector,
+                        input_tensor=infer_tensor,
+                        target_values=target_values,
+                        target_layers=target_layers,
+                    )
+                    for bbox_row in bbox_rows:
+                        row = {
+                            "image_id": image_id,
+                            "image_path": image_path,
+                            "pred_idx": bbox_row["pred_idx"],
+                            "raw_pred_idx": bbox_row["raw_pred_idx"],
+                            "xmin": bbox_row["xmin"],
+                            "ymin": bbox_row["ymin"],
+                            "xmax": bbox_row["xmax"],
+                            "ymax": bbox_row["ymax"],
+                            "score": bbox_row["score"],
+                            "pred_class": bbox_row["pred_class"],
+                        }
+                        for grad_key, grad_value in bbox_row["grad_stats"].items():
+                            row[grad_key] = json.dumps(grad_value, separators=(",", ":"))
+                        writer.writerow(row)
+                    del bbox_rows
+                else:
+                    grad_stats = collect_image_layer_grads_per_target(
+                        detector=detector,
+                        input_tensor=infer_tensor,
+                        target_values=target_values,
+                        target_layers=target_layers,
+                    )
                     row = {
                         "image_id": image_id,
                         "image_path": image_path,
-                        "pred_idx": bbox_row["pred_idx"],
-                        "raw_pred_idx": bbox_row["raw_pred_idx"],
-                        "xmin": bbox_row["xmin"],
-                        "ymin": bbox_row["ymin"],
-                        "xmax": bbox_row["xmax"],
-                        "ymax": bbox_row["ymax"],
-                        "score": bbox_row["score"],
-                        "pred_class": bbox_row["pred_class"],
                     }
-                    for grad_key, grad_value in bbox_row["grad_stats"].items():
+                    for grad_key, grad_value in grad_stats.items():
                         row[grad_key] = json.dumps(grad_value, separators=(",", ":"))
                     writer.writerow(row)
-                del infer_tensor, bbox_rows
+                    del grad_stats
+                del infer_tensor
 
     del detector
     if device.type == "cuda":
