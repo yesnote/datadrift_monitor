@@ -292,8 +292,8 @@ def run_train(config: dict[str, Any], run_dir: Path) -> Path:
         estimator.fit(x_train, y_train)
         y_pred = estimator.predict_proba(x_test)[:, 1]
 
-        acc, auroc = evaluate_classifier(y_test, y_pred)
-        eval_rows.append({"accuracy": float(acc), "auroc": float(auroc)})
+        auroc, ap = evaluate_classifier(y_test, y_pred)
+        eval_rows.append({"auroc": float(auroc), "ap": float(ap)})
 
         pd.DataFrame({"y_test": y_test, "y_pred": y_pred}).to_csv(out_dir / f"eval_data_{i}.csv", index=False)
         save_object(estimator, out_dir / f"model_{i}")
