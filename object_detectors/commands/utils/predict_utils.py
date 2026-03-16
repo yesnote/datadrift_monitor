@@ -244,7 +244,7 @@ def parse_output_config(output_cfg):
             warnings.warn(msg)
             raise ValueError(msg)
         layer_target_values = [v.lower() for v in normalize_to_list(layer_grad_cfg.get("target_value", ["loss"]))]
-        valid_values = {"loss", "obj_loss", "cls_loss", "bbox_loss"}
+        valid_values = {"loss", "obj_loss", "cls_loss", "bbox_loss", "obj", "cls"}
         invalid_values = [v for v in layer_target_values if v not in valid_values]
         if invalid_values:
             raise ValueError(f"Unsupported layer_grad target_value(s): {invalid_values}. Use {sorted(valid_values)}")
@@ -598,6 +598,39 @@ def build_pseudo_label_losses_for_candidates(
     }
 
 
+def build_layer_target_scalar_image(target_value, raw_prediction, raw_logits):
+    if raw_prediction is None or raw_prediction.numel() == 0:
+        return None
+    if target_value == "obj":
+        return raw_prediction[..., 4].sum()
+    if target_value == "cls":
+        logits = raw_logits if raw_logits is not None else raw_prediction[..., 5:]
+        if logits is None or logits.numel() == 0:
+            return None
+        return logits.max(dim=-1).values.sum()
+    return None
+
+
+def build_layer_target_scalar_bbox(target_value, pred_img, logit_img, raw_idx, iou_threshold):
+    if target_value == "obj":
+        if raw_idx >= pred_img.shape[0]:
+            return None
+        return pred_img[raw_idx, 4]
+    if target_value == "cls":
+        if raw_idx >= logit_img.shape[0]:
+            return None
+        return logit_img[raw_idx].max()
+
+    losses = build_pseudo_label_losses_for_candidates(
+        pred_img=pred_img,
+        raw_idx=raw_idx,
+        iou_threshold=iou_threshold,
+    )
+    if losses is not None and target_value in losses:
+        return losses[target_value]
+    return None
+
+
 def collect_bbox_layer_grads_per_target(
     detector,
     input_tensor,
@@ -639,21 +672,22 @@ def collect_bbox_layer_grads_per_target(
 
                 model_output = detector.model(input_tensor.detach(), augment=False)
                 raw_prediction = model_output[0] if isinstance(model_output, (tuple, list)) else model_output
+                raw_logits = model_output[1] if isinstance(model_output, (tuple, list)) and len(model_output) > 1 else None
                 pred_img = raw_prediction[0]
+                logit_img = raw_logits[0] if raw_logits is not None else pred_img[:, 5:]
 
-                target_scalar = None
-                losses = build_pseudo_label_losses_for_candidates(
+                target_scalar = build_layer_target_scalar_bbox(
+                    target_value=target_value,
                     pred_img=pred_img,
+                    logit_img=logit_img,
                     raw_idx=raw_idx,
                     iou_threshold=iou_threshold,
                 )
-                if losses is not None and target_value in losses:
-                    target_scalar = losses[target_value]
 
                 if target_scalar is None:
                     for layer_name in target_layers:
                         grad_stats[f"{target_value}_{layer_name}"] = []
-                    del model_output, raw_prediction, pred_img, losses
+                    del model_output, raw_prediction, raw_logits, pred_img, logit_img
                     continue
 
                 grads = torch.autograd.grad(
@@ -667,7 +701,7 @@ def collect_bbox_layer_grads_per_target(
                     grad_tensor = grads[layer_idx]
                     grad_stats[key] = format_gradient_output(grad_tensor, vector_reduction=vector_reduction)
 
-                del model_output, raw_prediction, pred_img, target_scalar, losses, grads
+                del model_output, raw_prediction, raw_logits, pred_img, logit_img, target_scalar, grads
 
             cls_idx = int(det[bbox_idx, 5].detach().cpu().item())
             rows.append(
@@ -726,26 +760,35 @@ def collect_image_layer_grads_per_target(
             detector.zero_grad(set_to_none=True)
             model_output = detector.model(input_tensor.detach(), augment=False)
             raw_prediction = model_output[0] if isinstance(model_output, (tuple, list)) else model_output
+            raw_logits = model_output[1] if isinstance(model_output, (tuple, list)) and len(model_output) > 1 else None
             pred_img = raw_prediction[0]
+            logit_img = raw_logits[0] if raw_logits is not None else pred_img[:, 5:]
 
-            loss_terms = []
-            for bbox_idx in range(int(raw_keep_indices.shape[0])):
-                raw_idx = int(raw_keep_indices[bbox_idx].detach().cpu().item())
-                losses = build_pseudo_label_losses_for_candidates(
-                    pred_img=pred_img,
-                    raw_idx=raw_idx,
-                    iou_threshold=iou_threshold,
-                )
-                if losses is not None and target_value in losses:
-                    loss_terms.append(losses[target_value])
+            target_scalar = None
+            if target_value in {"obj", "cls"}:
+                target_scalar = build_layer_target_scalar_image(target_value, raw_prediction, raw_logits)
+            else:
+                loss_terms = []
+                for bbox_idx in range(int(raw_keep_indices.shape[0])):
+                    raw_idx = int(raw_keep_indices[bbox_idx].detach().cpu().item())
+                    scalar = build_layer_target_scalar_bbox(
+                        target_value=target_value,
+                        pred_img=pred_img,
+                        logit_img=logit_img,
+                        raw_idx=raw_idx,
+                        iou_threshold=iou_threshold,
+                    )
+                    if scalar is not None:
+                        loss_terms.append(scalar)
+                if loss_terms:
+                    target_scalar = torch.stack(loss_terms).mean()
 
-            if not loss_terms:
+            if target_scalar is None:
                 for layer_name in target_layers:
                     grad_stats[f"{target_value}_{layer_name}"] = zero_grad_numbers() if vector_reduction else []
-                del model_output, raw_prediction, pred_img, loss_terms
+                del model_output, raw_prediction, raw_logits, pred_img, logit_img
                 continue
 
-            target_scalar = torch.stack(loss_terms).mean()
             grads = torch.autograd.grad(
                 target_scalar,
                 layer_params,
@@ -760,7 +803,7 @@ def collect_image_layer_grads_per_target(
                 else:
                     grad_stats[key] = format_gradient_output(grad_tensor, vector_reduction=vector_reduction)
 
-            del model_output, raw_prediction, pred_img, loss_terms, target_scalar, grads
+            del model_output, raw_prediction, raw_logits, pred_img, logit_img, target_scalar, grads
     finally:
         for param, req_grad in zip(layer_params, original_requires_grad):
             param.requires_grad_(req_grad)
