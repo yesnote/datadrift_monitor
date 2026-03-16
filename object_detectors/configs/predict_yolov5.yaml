@@ -45,7 +45,8 @@ output:
     feature_grad:
       target_value: [obj, cls]
       target_layer: ["model.24.m.0", "model.24.m.1", "model.24.m.2"]
-      reduction: true  # true: save 6 stats | false: save raw flattened gradients
+      map_reduction: energy
+      vector_reduction: [L1, L2, min, max, mean, std]  # empty list [] means save raw D vector
 
     layer_grad:
       target_value: [loss]  # loss(=obj_loss+cls_loss+bbox_loss) | obj_loss | cls_loss | bbox_loss

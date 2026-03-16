@@ -133,9 +133,10 @@ def resolve_layer_parameter(model, layer_name):
 
 
 class LayerGradBuffer:
-    def __init__(self, model, target_layers, reduction=True):
+    def __init__(self, model, target_layers, map_reduction="energy", vector_reduction=None):
         self.target_layers = list(target_layers)
-        self.reduction = bool(reduction)
+        self.map_reduction = str(map_reduction).lower()
+        self.vector_reduction = list(vector_reduction or [])
         self.gradients = {"value": []}
         self.forward_handles = []
         self.backward_handles = []
@@ -157,7 +158,13 @@ class LayerGradBuffer:
             return None
         grad = grad_output[0]
         if grad is not None:
-            self.gradients["value"].append(get_feature_grad_stats(grad, reduction=self.reduction))
+            self.gradients["value"].append(
+                get_feature_grad_stats(
+                    grad,
+                    map_reduction=self.map_reduction,
+                    vector_reduction=self.vector_reduction,
+                )
+            )
         return None
 
     def clear(self):
@@ -173,8 +180,13 @@ class LayerGradBuffer:
         self.backward_handles = []
 
 
-def create_layer_grad_buffer(model, target_layers, reduction=True):
-    return LayerGradBuffer(model=model, target_layers=target_layers, reduction=reduction)
+def create_layer_grad_buffer(model, target_layers, map_reduction="energy", vector_reduction=None):
+    return LayerGradBuffer(
+        model=model,
+        target_layers=target_layers,
+        map_reduction=map_reduction,
+        vector_reduction=vector_reduction,
+    )
 
 
 def parse_output_config(output_cfg):
@@ -203,7 +215,8 @@ def parse_output_config(output_cfg):
     tp_iou_match_threshold = float(tp_cfg.get("iou_match_threshold", 0.5))
     target_values = []
     target_layers = []
-    feature_reduction = True
+    feature_map_reduction = "energy"
+    feature_vector_reduction = ["1-norm", "2-norm", "min", "max", "mean", "std"]
     layer_target_values = []
     layer_target_layers = []
     layer_reduction = True
@@ -219,7 +232,12 @@ def parse_output_config(output_cfg):
         target_layers = normalize_to_list(feature_grad_cfg.get("target_layer", []))
         if not target_layers and save_csv_enabled:
             raise ValueError("output.save_csv.feature_grad.target_layer must contain at least one layer name.")
-        feature_reduction = bool(feature_grad_cfg.get("reduction", True))
+        feature_map_reduction = str(feature_grad_cfg.get("map_reduction", "energy")).strip().lower()
+        if feature_map_reduction != "energy":
+            raise ValueError("output.save_csv.feature_grad.map_reduction currently supports only 'energy'.")
+        feature_vector_reduction = normalize_vector_reduction(
+            feature_grad_cfg.get("vector_reduction", ["L1", "L2", "min", "max", "mean", "std"])
+        )
     elif cue == "layer_grad":
         if unit not in {"image", "bbox"}:
             msg = "Invalid config: output.save_csv.cue='layer_grad' requires output.save_csv.unit in {'image','bbox'}."
@@ -278,7 +296,8 @@ def parse_output_config(output_cfg):
         "tp_iou_match_threshold": tp_iou_match_threshold,
         "target_values": target_values,
         "target_layers": target_layers,
-        "feature_reduction": feature_reduction,
+        "feature_map_reduction": feature_map_reduction,
+        "feature_vector_reduction": feature_vector_reduction,
         "layer_target_values": layer_target_values,
         "layer_target_layers": layer_target_layers,
         "layer_reduction": layer_reduction,
@@ -444,6 +463,36 @@ def map_grad_tensor_to_numbers(v):
         "mean": float(torch.mean(v).detach().cpu().item()),
         "std": float(torch.std(v).detach().cpu().item()),
     }
+
+
+def normalize_vector_reduction(value):
+    items = [v.strip().lower() for v in normalize_to_list(value)]
+    if not items:
+        return []
+
+    alias = {
+        "l1": "1-norm",
+        "1": "1-norm",
+        "1-norm": "1-norm",
+        "l2": "2-norm",
+        "2": "2-norm",
+        "2-norm": "2-norm",
+        "min": "min",
+        "max": "max",
+        "mean": "mean",
+        "std": "std",
+    }
+    normalized = []
+    for item in items:
+        if item not in alias:
+            raise ValueError(
+                "Unsupported output.save_csv.feature_grad.vector_reduction value: "
+                f"'{item}'. Use L1, L2, min, max, mean, std."
+            )
+        key = alias[item]
+        if key not in normalized:
+            normalized.append(key)
+    return normalized
 
 
 def format_gradient_output(grad_tensor, reduction):
@@ -717,29 +766,32 @@ def collect_image_layer_grads_per_target(
     return grad_stats
 
 
-def get_feature_grad_stats(grad_tensor, reduction=True):
+def get_feature_grad_stats(grad_tensor, map_reduction="energy", vector_reduction=None):
     # Expect [B, C, H, W] from conv feature maps.
     grad_tensor = grad_tensor.detach().float()
     if grad_tensor.ndim >= 1 and grad_tensor.shape[0] == 1:
         grad_tensor = grad_tensor[0]
 
-    if grad_tensor.numel() == 0:
-        return zero_grad_numbers() if reduction else []
+    if str(map_reduction).lower() != "energy":
+        raise ValueError("feature_grad.map_reduction currently supports only 'energy'.")
 
-    if not reduction:
-        return grad_tensor.reshape(-1).detach().cpu().tolist()
+    if grad_tensor.numel() == 0:
+        return zero_grad_numbers() if vector_reduction else []
 
     if grad_tensor.ndim == 0:
         vec = grad_tensor.abs().reshape(1)
-        return map_grad_tensor_to_numbers(vec)
-    if grad_tensor.ndim == 1:
+    elif grad_tensor.ndim == 1:
         vec = grad_tensor.abs()
     else:
         c = grad_tensor.shape[0]
         flat = grad_tensor.reshape(c, -1)
         vec = flat.abs().mean(dim=1)
 
-    return map_grad_tensor_to_numbers(vec)
+    if not vector_reduction:
+        return vec.detach().cpu().tolist()
+
+    stats = map_grad_tensor_to_numbers(vec)
+    return {k: stats[k] for k in vector_reduction}
 
 
 def preprocess_with_letterbox(detector, image_tensor, device, requires_grad=True):
