@@ -65,12 +65,23 @@ def main():
     parsed_output = parse_output_config(config.get("output", {}))
     cue = str(parsed_output.get("cue", ""))
     target_tag = ""
+    save_csv_cfg = config.get("output", {}).get("save_csv", {})
     if cue == "feature_grad":
-        vals = parsed_output.get("target_values", [])
-        target_tag = "-".join([str(v).strip().lower() for v in vals if str(v).strip()])
+        raw_vals = save_csv_cfg.get("feature_grad", {}).get("target_value", [])
+        raw_list = [str(v).strip().lower() for v in (raw_vals if isinstance(raw_vals, list) else [raw_vals]) if str(v).strip()]
+        if raw_list == ["loss"]:
+            target_tag = "loss"
+        else:
+            vals = parsed_output.get("target_values", [])
+            target_tag = "-".join([str(v).strip().lower() for v in vals if str(v).strip()])
     elif cue == "layer_grad":
-        vals = parsed_output.get("layer_target_values", [])
-        target_tag = "-".join([str(v).strip().lower() for v in vals if str(v).strip()])
+        raw_vals = save_csv_cfg.get("layer_grad", {}).get("target_value", [])
+        raw_list = [str(v).strip().lower() for v in (raw_vals if isinstance(raw_vals, list) else [raw_vals]) if str(v).strip()]
+        if raw_list == ["loss"]:
+            target_tag = "loss"
+        else:
+            vals = parsed_output.get("layer_target_values", [])
+            target_tag = "-".join([str(v).strip().lower() for v in vals if str(v).strip()])
 
     if args.run_dir:
         run_dir = _resolve_run_dir(args.run_dir)
