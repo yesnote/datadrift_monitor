@@ -551,7 +551,7 @@ def map_grad_tensor_to_numbers(v):
         "min": float(v.min().detach().cpu().item()),
         "max": float(v.max().detach().cpu().item()),
         "mean": float(torch.mean(v).detach().cpu().item()),
-        "std": float(torch.std(v).detach().cpu().item()),
+        "std": float(torch.std(v, unbiased=False).detach().cpu().item()),
     }
 
 
