@@ -579,11 +579,12 @@ def run_energy_csv(config, run_dir):
     parsed = parse_output_config(config.get("output", {}))
     save_csv = parsed["save_csv_enabled"]
     unit = parsed["unit"]
+    energy_vector_reduction = parsed["energy_vector_reduction"]
 
     if not save_csv:
         return
-    if unit != "bbox":
-        raise ValueError("output.save_csv.uncertainty='energy' requires output.save_csv.unit='bbox'.")
+    if unit not in {"image", "bbox"}:
+        raise ValueError("output.save_csv.uncertainty='energy' requires output.save_csv.unit in {'image','bbox'}.")
 
     dataloader = create_dataloader(config, split=split)
     if len(dataloader.dataset) == 0:
@@ -592,18 +593,23 @@ def run_energy_csv(config, run_dir):
     detector, device = build_detector(config)
     num_classes = len(detector.names) if detector.names is not None else 80
     output_csv = run_dir / "energy.csv"
-    fieldnames = [
-        "image_id",
-        "image_path",
-        "pred_idx",
-        "xmin",
-        "ymin",
-        "xmax",
-        "ymax",
-        "score",
-        "pred_class",
-        "energy",
-    ]
+    fieldnames = ["image_id", "image_path"]
+    if unit == "bbox":
+        fieldnames.extend(
+            [
+                "pred_idx",
+                "xmin",
+                "ymin",
+                "xmax",
+                "ymax",
+                "score",
+                "pred_class",
+                "energy",
+            ]
+        )
+    else:
+        fieldnames.extend(energy_vector_reduction)
+        fieldnames.append("num_preds")
 
     with open(output_csv, "w", newline="", encoding="utf-8") as output_file:
         writer = csv.DictWriter(output_file, fieldnames=fieldnames)
@@ -632,28 +638,46 @@ def run_energy_csv(config, run_dir):
                 else:
                     pred_energy = torch.zeros((0,), device=device)
 
-                for pred_idx, (box, score, pred_class) in enumerate(
-                    zip(pred_boxes, pred_scores, pred_class_names)
-                ):
-                    energy_val = (
-                        float(pred_energy[pred_idx].detach().cpu().item())
-                        if pred_idx < pred_energy.shape[0]
-                        else 0.0
-                    )
-                    writer.writerow(
-                        {
-                            "image_id": image_id,
-                            "image_path": image_path,
-                            "pred_idx": pred_idx,
-                            "xmin": float(box[0]),
-                            "ymin": float(box[1]),
-                            "xmax": float(box[2]),
-                            "ymax": float(box[3]),
-                            "score": float(score),
-                            "pred_class": pred_class,
-                            "energy": energy_val,
+                if unit == "bbox":
+                    for pred_idx, (box, score, pred_class) in enumerate(
+                        zip(pred_boxes, pred_scores, pred_class_names)
+                    ):
+                        energy_val = (
+                            float(pred_energy[pred_idx].detach().cpu().item())
+                            if pred_idx < pred_energy.shape[0]
+                            else 0.0
+                        )
+                        writer.writerow(
+                            {
+                                "image_id": image_id,
+                                "image_path": image_path,
+                                "pred_idx": pred_idx,
+                                "xmin": float(box[0]),
+                                "ymin": float(box[1]),
+                                "xmax": float(box[2]),
+                                "ymax": float(box[3]),
+                                "score": float(score),
+                                "pred_class": pred_class,
+                                "energy": energy_val,
+                            }
+                        )
+                else:
+                    num_preds = int(pred_energy.shape[0])
+                    if num_preds == 0:
+                        stat_all = {
+                            "1-norm": 0.0,
+                            "2-norm": 0.0,
+                            "min": 0.0,
+                            "max": 0.0,
+                            "mean": 0.0,
+                            "std": 0.0,
                         }
-                    )
+                    else:
+                        stat_all = map_grad_tensor_to_numbers(pred_energy.detach().float().reshape(-1))
+                    row = {"image_id": image_id, "image_path": image_path, "num_preds": num_preds}
+                    for metric_name in energy_vector_reduction:
+                        row[metric_name] = float(stat_all[metric_name])
+                    writer.writerow(row)
 
                 del infer_tensor, preds, logits, _objectness, _features
 
