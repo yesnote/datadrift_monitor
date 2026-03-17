@@ -34,12 +34,9 @@ output:
   save_csv:
     enabled: true
     unit: image   # image | bbox
-    uncertainty: feature_grad  # fn | tp | score | entropy | full_softmax | feature_grad | layer_grad
+    uncertainty: feature_grad  # gt | score | entropy | full_softmax | feature_grad | layer_grad
     
-    fn: # per image
-      iou_match_threshold: 0.45
-
-    tp: # per bbox
+    gt: # unit:image -> fn.csv, unit:bbox -> tp.csv
       iou_match_threshold: 0.45
 
     score:
