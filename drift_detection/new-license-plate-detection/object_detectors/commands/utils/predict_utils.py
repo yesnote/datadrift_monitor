@@ -201,7 +201,7 @@ def parse_output_config(output_cfg):
         unit = "image"
     else:
         save_csv_enabled = bool(save_csv_cfg.get("enabled", True))
-        uncertainty = str(save_csv_cfg.get("uncertainty", save_csv_cfg.get("cue", "fn"))).lower()
+        uncertainty = str(save_csv_cfg.get("uncertainty", "fn")).lower()
         fn_cfg = save_csv_cfg.get("fn", {})
         tp_cfg = save_csv_cfg.get("tp", {})
         feature_grad_cfg = save_csv_cfg.get("feature_grad", {})
@@ -225,7 +225,7 @@ def parse_output_config(output_cfg):
     layer_vector_reduction = ["1-norm", "2-norm", "min", "max", "mean", "std"]
     if uncertainty == "feature_grad":
         if unit not in {"image", "bbox"}:
-            raise ValueError("output.save_csv.unit must be 'image' or 'bbox' when cue is 'feature_grad'.")
+            raise ValueError("output.save_csv.unit must be 'image' or 'bbox' when uncertainty is 'feature_grad'.")
         target_values = [v.lower() for v in normalize_to_list(feature_grad_cfg.get("target_value", ["obj"]))]
         valid_values = {"obj", "cls", "loss", "obj_loss", "cls_loss", "bbox_loss"}
         invalid_values = [v for v in target_values if v not in valid_values]
