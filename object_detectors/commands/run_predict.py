@@ -5,9 +5,10 @@ from pathlib import Path
 import cv2
 import numpy as np
 import torch
+from torch.utils.data import DataLoader
 from tqdm import tqdm
 
-from dataloaders.dataloader_yolo import create_dataloader
+from dataloaders.dataloader_yolo import create_dataloader, build_dataset
 from commands.utils.predict_utils import (
     assign_tp_to_predictions,
     build_detector,
@@ -35,6 +36,25 @@ def _xywh_to_xyxy_tensor(xywh: torch.Tensor) -> torch.Tensor:
     out[..., 2] = xywh[..., 0] + xywh[..., 2] / 2.0
     out[..., 3] = xywh[..., 1] + xywh[..., 3] / 2.0
     return out
+
+
+def _list_collate_fn(batch):
+    images, targets = zip(*batch)
+    return list(images), list(targets)
+
+
+def _create_unstacked_dataloader(config, split="train"):
+    dataset = build_dataset(config, split=split)
+    dl_cfg = config["dataloader"]
+    shuffle = dl_cfg["shuffle_train"] if split == "train" else dl_cfg["shuffle_eval"]
+    return DataLoader(
+        dataset,
+        batch_size=dl_cfg["batch_size"],
+        shuffle=shuffle,
+        num_workers=dl_cfg["num_workers"],
+        pin_memory=dl_cfg["pin_memory"],
+        collate_fn=_list_collate_fn,
+    )
 
 
 def _build_summary(total_images, fn_images, output_csv):
@@ -65,7 +85,7 @@ def run_fn_csv(config, run_dir):
 
     annotation_path = get_annotation_path(config, split)
     catid_to_name = load_coco_category_maps(annotation_path)
-    dataloader = create_dataloader(config, split=split)
+    dataloader = _create_unstacked_dataloader(config, split=split)
     if len(dataloader.dataset) == 0:
         raise ValueError("Loaded 0 images. Check dataset root/image_dir/split configuration in YAML.")
 
@@ -861,7 +881,7 @@ def run_mc_dropout_csv(config, run_dir):
         for images, targets in tqdm(
             dataloader, desc=f"Object Detector ({mode} - {uncertainty})", total=len(dataloader)
         ):
-            batch_size = images.shape[0]
+            batch_size = len(images)
             batch_tensors = []
             image_ids = []
             image_paths = []
