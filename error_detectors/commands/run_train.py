@@ -246,6 +246,8 @@ def load_training_dataframe(dataset_cfg: dict[str, Any]) -> tuple[pd.DataFrame, 
             "max_iou",
             label_col,
         }
+        if input_cue == "score":
+            meta_columns.discard("score")
     else:
         raise ValueError(
             "Unsupported model group from dataset roots: "
@@ -260,7 +262,7 @@ def load_training_dataframe(dataset_cfg: dict[str, Any]) -> tuple[pd.DataFrame, 
 
     grad_columns = [c for c in merged.columns if c not in meta_columns]
     if not grad_columns:
-        raise ValueError("No gradient feature columns found after merge.")
+        raise ValueError("No input feature columns found after merge.")
 
     root_info = {
         "input_root": str(input_root),
