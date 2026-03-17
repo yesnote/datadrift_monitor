@@ -37,7 +37,7 @@ def _build_summary(total_images, fn_images, output_csv):
 def run_fn_csv(config, run_dir):
     run_dir = Path(run_dir)
     mode = str(config.get("mode", "predict"))
-    cue = "fn"
+    uncertainty = "fn"
 
     dataset_cfg = config.get("dataset", {})
     split = dataset_cfg.get("split", "val")
@@ -70,7 +70,7 @@ def run_fn_csv(config, run_dir):
 
     try:
         for step_idx, (images, targets) in enumerate(
-            tqdm(dataloader, desc=f"Object Detector ({mode} - {cue})", total=len(dataloader))
+            tqdm(dataloader, desc=f"Object Detector ({mode} - {uncertainty})", total=len(dataloader))
         ):
             batch_size = images.shape[0]
             should_save_step = save_image and (step_idx % image_step == 0)
@@ -139,7 +139,7 @@ def run_fn_csv(config, run_dir):
 def run_feature_grad_csv(config, run_dir):
     run_dir = Path(run_dir)
     mode = str(config.get("mode", "predict"))
-    cue = "feature_grad"
+    uncertainty = "feature_grad"
 
     dataset_cfg = config.get("dataset", {})
     split = dataset_cfg.get("split", "val")
@@ -180,7 +180,7 @@ def run_feature_grad_csv(config, run_dir):
         writer.writeheader()
         try:
             for images, targets in tqdm(
-                dataloader, desc=f"Object Detector ({mode} - {cue})", total=len(dataloader)
+                dataloader, desc=f"Object Detector ({mode} - {uncertainty})", total=len(dataloader)
             ):
                 for sample_idx in range(images.shape[0]):
                     target = targets[sample_idx]
@@ -242,7 +242,7 @@ def run_feature_grad_csv(config, run_dir):
 def run_tp_csv(config, run_dir):
     run_dir = Path(run_dir)
     mode = str(config.get("mode", "predict"))
-    cue = "tp"
+    uncertainty = "tp"
 
     dataset_cfg = config.get("dataset", {})
     split = dataset_cfg.get("split", "val")
@@ -281,7 +281,7 @@ def run_tp_csv(config, run_dir):
         writer.writeheader()
 
         for images, targets in tqdm(
-            dataloader, desc=f"Object Detector ({mode} - {cue})", total=len(dataloader)
+            dataloader, desc=f"Object Detector ({mode} - {uncertainty})", total=len(dataloader)
         ):
             for sample_idx in range(images.shape[0]):
                 detector.zero_grad(set_to_none=True)
@@ -343,7 +343,7 @@ def run_tp_csv(config, run_dir):
 def run_layer_grad_csv(config, run_dir):
     run_dir = Path(run_dir)
     mode = str(config.get("mode", "predict"))
-    cue = "layer_grad"
+    uncertainty = "layer_grad"
 
     dataset_cfg = config.get("dataset", {})
     split = dataset_cfg.get("split", "val")
@@ -375,7 +375,7 @@ def run_layer_grad_csv(config, run_dir):
         writer = csv.DictWriter(output_file, fieldnames=fieldnames)
         writer.writeheader()
         for images, targets in tqdm(
-            dataloader, desc=f"Object Detector ({mode} - {cue})", total=len(dataloader)
+            dataloader, desc=f"Object Detector ({mode} - {uncertainty})", total=len(dataloader)
         ):
             for sample_idx in range(images.shape[0]):
                 target = targets[sample_idx]
@@ -437,18 +437,18 @@ def run_layer_grad_csv(config, run_dir):
 
 def run_predict(config, run_dir):
     parsed = parse_output_config(config.get("output", {}))
-    cue = parsed["cue"]
+    uncertainty = parsed["uncertainty"]
 
-    if cue == "fn":
+    if uncertainty == "fn":
         run_fn_csv(config, run_dir)
         return
-    if cue == "tp":
+    if uncertainty == "tp":
         run_tp_csv(config, run_dir)
         return
-    if cue == "feature_grad":
+    if uncertainty == "feature_grad":
         run_feature_grad_csv(config, run_dir)
         return
-    if cue == "layer_grad":
+    if uncertainty == "layer_grad":
         run_layer_grad_csv(config, run_dir)
         return
-    raise ValueError(f"Unsupported cue: {cue}")
+    raise ValueError(f"Unsupported uncertainty: {uncertainty}")
