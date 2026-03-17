@@ -218,6 +218,7 @@ def parse_output_config(output_cfg):
 
     iou_match_threshold = float(fn_cfg.get("iou_match_threshold", 0.5))
     tp_iou_match_threshold = float(tp_cfg.get("iou_match_threshold", 0.5))
+    score_vector_reduction = ["1-norm", "2-norm", "min", "max", "mean", "std"]
     target_values = []
     target_layers = []
     feature_map_reduction = "energy"
@@ -288,10 +289,13 @@ def parse_output_config(output_cfg):
             warnings.warn(msg)
             raise ValueError(msg)
     elif uncertainty == "score":
-        if unit != "bbox":
-            msg = "Invalid config: output.save_csv.uncertainty='score' requires output.save_csv.unit='bbox'."
+        if unit not in {"image", "bbox"}:
+            msg = "Invalid config: output.save_csv.uncertainty='score' requires output.save_csv.unit in {'image','bbox'}."
             warnings.warn(msg)
             raise ValueError(msg)
+        score_vector_reduction = normalize_vector_reduction(
+            score_cfg.get("vector_reduction", ["L1", "L2", "min", "max", "mean", "std"])
+        )
 
     save_image_cfg = output_cfg.get("save_image", {})
     if isinstance(save_image_cfg, bool):
@@ -314,6 +318,7 @@ def parse_output_config(output_cfg):
         "unit": unit,
         "iou_match_threshold": iou_match_threshold,
         "tp_iou_match_threshold": tp_iou_match_threshold,
+        "score_vector_reduction": score_vector_reduction,
         "target_values": target_values,
         "target_layers": target_layers,
         "feature_map_reduction": feature_map_reduction,
