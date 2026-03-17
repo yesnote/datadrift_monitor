@@ -222,6 +222,7 @@ def parse_output_config(output_cfg):
 
     gt_iou_match_threshold = float(gt_cfg.get("iou_match_threshold", 0.5))
     score_vector_reduction = ["1-norm", "2-norm", "min", "max", "mean", "std"]
+    energy_vector_reduction = ["1-norm", "2-norm", "min", "max", "mean", "std"]
     entropy_vector_reduction = ["1-norm", "2-norm", "min", "max", "mean", "std"]
     full_softmax_vector_reduction = ["1-norm", "2-norm", "min", "max", "mean", "std"]
     target_values = []
@@ -297,10 +298,13 @@ def parse_output_config(output_cfg):
             score_cfg.get("vector_reduction", ["L1", "L2", "min", "max", "mean", "std"])
         )
     elif uncertainty == "energy":
-        if unit != "bbox":
-            msg = "Invalid config: output.save_csv.uncertainty='energy' requires output.save_csv.unit='bbox'."
+        if unit not in {"image", "bbox"}:
+            msg = "Invalid config: output.save_csv.uncertainty='energy' requires output.save_csv.unit in {'image','bbox'}."
             warnings.warn(msg)
             raise ValueError(msg)
+        energy_vector_reduction = normalize_vector_reduction(
+            energy_cfg.get("vector_reduction", ["L1", "L2", "min", "max", "mean", "std"])
+        )
     elif uncertainty == "entropy":
         if unit not in {"image", "bbox"}:
             msg = "Invalid config: output.save_csv.uncertainty='entropy' requires output.save_csv.unit in {'image','bbox'}."
@@ -339,6 +343,7 @@ def parse_output_config(output_cfg):
         "unit": unit,
         "gt_iou_match_threshold": gt_iou_match_threshold,
         "score_vector_reduction": score_vector_reduction,
+        "energy_vector_reduction": energy_vector_reduction,
         "entropy_vector_reduction": entropy_vector_reduction,
         "full_softmax_vector_reduction": full_softmax_vector_reduction,
         "target_values": target_values,
