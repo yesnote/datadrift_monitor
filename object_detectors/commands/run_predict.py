@@ -3,6 +3,7 @@ import json
 from pathlib import Path
 
 import cv2
+import numpy as np
 import torch
 from tqdm import tqdm
 
@@ -456,11 +457,12 @@ def run_full_softmax_csv(config, run_dir):
     parsed = parse_output_config(config.get("output", {}))
     save_csv = parsed["save_csv_enabled"]
     unit = parsed["unit"]
+    vector_reduction = parsed["full_softmax_vector_reduction"]
 
     if not save_csv:
         return
-    if unit != "bbox":
-        raise ValueError("output.save_csv.uncertainty='full_softmax' requires output.save_csv.unit='bbox'.")
+    if unit not in {"image", "bbox"}:
+        raise ValueError("output.save_csv.uncertainty='full_softmax' requires output.save_csv.unit in {'image','bbox'}.")
 
     dataloader = create_dataloader(config, split=split)
     if len(dataloader.dataset) == 0:
@@ -469,17 +471,20 @@ def run_full_softmax_csv(config, run_dir):
     detector, device = build_detector(config)
     num_classes = len(detector.names) if detector.names is not None else 80
     output_csv = run_dir / "full_softmax.csv"
-    fieldnames = [
-        "image_id",
-        "image_path",
-        "pred_idx",
-        "xmin",
-        "ymin",
-        "xmax",
-        "ymax",
-        "score",
-        "pred_class",
-    ] + [f"prob_{i}" for i in range(num_classes)]
+    if unit == "bbox":
+        fieldnames = [
+            "image_id",
+            "image_path",
+            "pred_idx",
+            "xmin",
+            "ymin",
+            "xmax",
+            "ymax",
+            "score",
+            "pred_class",
+        ] + [f"prob_{i}" for i in range(num_classes)]
+    else:
+        fieldnames = ["image_id", "image_path"] + [f"{k}_vector" for k in vector_reduction] + ["num_preds"]
 
     with open(output_csv, "w", newline="", encoding="utf-8") as output_file:
         writer = csv.DictWriter(output_file, fieldnames=fieldnames)
@@ -505,26 +510,54 @@ def run_full_softmax_csv(config, run_dir):
                 pred_logits = logits[0] if logits else torch.zeros((0, num_classes), device=device)
                 pred_probs = torch.softmax(pred_logits, dim=-1) if pred_logits.numel() else pred_logits
 
-                for pred_idx, (box, score, pred_class) in enumerate(
-                    zip(pred_boxes, pred_scores, pred_class_names)
-                ):
+                if unit == "bbox":
+                    for pred_idx, (box, score, pred_class) in enumerate(
+                        zip(pred_boxes, pred_scores, pred_class_names)
+                    ):
+                        row = {
+                            "image_id": image_id,
+                            "image_path": image_path,
+                            "pred_idx": pred_idx,
+                            "xmin": float(box[0]),
+                            "ymin": float(box[1]),
+                            "xmax": float(box[2]),
+                            "ymax": float(box[3]),
+                            "score": float(score),
+                            "pred_class": pred_class,
+                        }
+                        if pred_idx < pred_probs.shape[0]:
+                            probs = pred_probs[pred_idx].detach().cpu().tolist()
+                        else:
+                            probs = [0.0] * num_classes
+                        for class_idx in range(num_classes):
+                            row[f"prob_{class_idx}"] = float(probs[class_idx]) if class_idx < len(probs) else 0.0
+                        writer.writerow(row)
+                else:
+                    probs_np = pred_probs.detach().cpu().numpy() if pred_probs.numel() else None
+                    num_preds = int(pred_probs.shape[0])
                     row = {
                         "image_id": image_id,
                         "image_path": image_path,
-                        "pred_idx": pred_idx,
-                        "xmin": float(box[0]),
-                        "ymin": float(box[1]),
-                        "xmax": float(box[2]),
-                        "ymax": float(box[3]),
-                        "score": float(score),
-                        "pred_class": pred_class,
+                        "num_preds": num_preds,
                     }
-                    if pred_idx < pred_probs.shape[0]:
-                        probs = pred_probs[pred_idx].detach().cpu().tolist()
-                    else:
-                        probs = [0.0] * num_classes
-                    for class_idx in range(num_classes):
-                        row[f"prob_{class_idx}"] = float(probs[class_idx]) if class_idx < len(probs) else 0.0
+                    for metric_name in vector_reduction:
+                        if probs_np is None or num_preds == 0:
+                            vec = [0.0] * num_classes
+                        elif metric_name == "1-norm":
+                            vec = np.sum(np.abs(probs_np), axis=0).astype(float).tolist()
+                        elif metric_name == "2-norm":
+                            vec = np.sqrt(np.sum(np.square(probs_np), axis=0)).astype(float).tolist()
+                        elif metric_name == "min":
+                            vec = np.min(probs_np, axis=0).astype(float).tolist()
+                        elif metric_name == "max":
+                            vec = np.max(probs_np, axis=0).astype(float).tolist()
+                        elif metric_name == "mean":
+                            vec = np.mean(probs_np, axis=0).astype(float).tolist()
+                        elif metric_name == "std":
+                            vec = np.std(probs_np, axis=0).astype(float).tolist()
+                        else:
+                            vec = [0.0] * num_classes
+                        row[f"{metric_name}_vector"] = json.dumps(vec, separators=(",", ":"))
                     writer.writerow(row)
 
                 del infer_tensor, preds, logits, _objectness, _features
