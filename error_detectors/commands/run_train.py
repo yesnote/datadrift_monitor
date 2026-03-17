@@ -132,7 +132,7 @@ def parse_root_info(root_path: Path) -> tuple[str, str, str]:
         run_name = root_path.name
         match = re.match(r"^\d{2}-\d{2}-\d{4}_\d{2};\d{2}_(.+)$", run_name)
         tail = match.group(1) if match else run_name
-        for cue_name in ("feature_grad", "layer_grad", "fn", "tp"):
+        for cue_name in ("feature_grad", "layer_grad", "full_softmax", "entropy", "energy", "score", "gt", "fn", "tp"):
             if tail == cue_name:
                 return model_group, cue_name, ""
             prefix = f"{cue_name}_"
@@ -169,7 +169,20 @@ def load_training_dataframe(dataset_cfg: dict[str, Any]) -> tuple[pd.DataFrame, 
         warnings.warn(msg)
         raise ValueError(msg)
 
-    input_csv_name = "layer_grad.csv" if input_cue == "layer_grad" else "feature_grad.csv"
+    cue_to_csv = {
+        "layer_grad": "layer_grad.csv",
+        "feature_grad": "feature_grad.csv",
+        "score": "score.csv",
+        "full_softmax": "full_softmax.csv",
+        "entropy": "entropy.csv",
+        "energy": "energy.csv",
+    }
+    input_csv_name = cue_to_csv.get(input_cue)
+    if input_csv_name is None:
+        raise ValueError(
+            f"Unsupported input cue '{input_cue}'. "
+            "Supported cues: layer_grad, feature_grad, score, full_softmax, entropy, energy."
+        )
     input_csv = input_root / input_csv_name
     if not input_csv.is_file():
         raise FileNotFoundError(f"{input_csv_name} not found: {input_csv}")
@@ -215,7 +228,7 @@ def load_training_dataframe(dataset_cfg: dict[str, Any]) -> tuple[pd.DataFrame, 
         }.issubset(gt_df.columns):
             merge_keys = ["image_id", "image_path", "xmin", "ymin", "xmax", "ymax"]
         else:
-            raise ValueError("Cannot match feature_grad.csv and tp.csv. Missing join keys.")
+            raise ValueError(f"Cannot match {input_csv_name} and tp.csv. Missing join keys.")
 
         keep_cols = list(dict.fromkeys(merge_keys + [label_col]))
         gt_df = gt_df[keep_cols]
