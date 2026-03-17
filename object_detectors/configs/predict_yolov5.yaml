@@ -42,9 +42,9 @@ output:
     tp: # per bbox
       iou_match_threshold: 0.45
 
-    score: # per bbox
+    score:
       enabled: true
-      vector_reduction: [L1, L2, min, max, mean, std]  # unit:image 일 때 사용
+      vector_reduction: [L1, L2, min, max, mean, std]  # only for unit: image
     
     feature_grad:
       target_value: [obj, cls]  # loss | obj_loss | cls_loss | bbox_loss | obj | cls
