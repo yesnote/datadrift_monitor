@@ -20,6 +20,7 @@ from commands.utils.predict_utils import (
     has_fn_for_image,
     load_coco_category_maps,
     map_boxes_to_letterbox,
+    map_grad_tensor_to_numbers,
     parse_output_config,
     preprocess_with_letterbox,
 )
@@ -349,22 +350,29 @@ def run_score_csv(config, run_dir):
     split = dataset_cfg.get("split", "val")
     parsed = parse_output_config(config.get("output", {}))
     save_csv = parsed["save_csv_enabled"]
+    unit = parsed["unit"]
+    score_vector_reduction = parsed["score_vector_reduction"]
 
     if not save_csv:
         return
 
     output_csv = run_dir / "score.csv"
-    fieldnames = [
-        "image_id",
-        "image_path",
-        "pred_idx",
-        "xmin",
-        "ymin",
-        "xmax",
-        "ymax",
-        "score",
-        "pred_class",
-    ]
+    fieldnames = ["image_id", "image_path"]
+    if unit == "bbox":
+        fieldnames.extend(
+            [
+                "pred_idx",
+                "xmin",
+                "ymin",
+                "xmax",
+                "ymax",
+                "score",
+                "pred_class",
+            ]
+        )
+    else:
+        fieldnames.extend(score_vector_reduction)
+        fieldnames.append("num_preds")
 
     dataloader = create_dataloader(config, split=split)
     if len(dataloader.dataset) == 0:
@@ -394,22 +402,40 @@ def run_score_csv(config, run_dir):
                 pred_class_names = preds[2][0]
                 pred_scores = preds[3][0]
 
-                for pred_idx, (box, score, pred_class) in enumerate(
-                    zip(pred_boxes, pred_scores, pred_class_names)
-                ):
-                    writer.writerow(
-                        {
-                            "image_id": image_id,
-                            "image_path": image_path,
-                            "pred_idx": pred_idx,
-                            "xmin": float(box[0]),
-                            "ymin": float(box[1]),
-                            "xmax": float(box[2]),
-                            "ymax": float(box[3]),
-                            "score": float(score),
-                            "pred_class": pred_class,
+                if unit == "bbox":
+                    for pred_idx, (box, score, pred_class) in enumerate(
+                        zip(pred_boxes, pred_scores, pred_class_names)
+                    ):
+                        writer.writerow(
+                            {
+                                "image_id": image_id,
+                                "image_path": image_path,
+                                "pred_idx": pred_idx,
+                                "xmin": float(box[0]),
+                                "ymin": float(box[1]),
+                                "xmax": float(box[2]),
+                                "ymax": float(box[3]),
+                                "score": float(score),
+                                "pred_class": pred_class,
+                            }
+                        )
+                else:
+                    num_preds = int(pred_scores.shape[0])
+                    if num_preds == 0:
+                        stat_all = {
+                            "1-norm": 0.0,
+                            "2-norm": 0.0,
+                            "min": 0.0,
+                            "max": 0.0,
+                            "mean": 0.0,
+                            "std": 0.0,
                         }
-                    )
+                    else:
+                        stat_all = map_grad_tensor_to_numbers(pred_scores.detach().float().reshape(-1))
+                    row = {"image_id": image_id, "image_path": image_path, "num_preds": num_preds}
+                    for metric_name in score_vector_reduction:
+                        row[metric_name] = float(stat_all[metric_name])
+                    writer.writerow(row)
 
                 del infer_tensor, preds, _logits, _objectness, _features
 
