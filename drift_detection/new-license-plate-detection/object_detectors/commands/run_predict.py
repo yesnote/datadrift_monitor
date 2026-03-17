@@ -634,8 +634,16 @@ def run_energy_csv(config, run_dir):
                 pred_class_names = preds[2][0]
                 pred_scores = preds[3][0]
                 pred_logits = logits[0] if logits else torch.zeros((0, num_classes), device=device)
-                if pred_logits.numel():
-                    pred_energy = -100.0 * torch.logsumexp(pred_logits / 100.0, dim=-1)
+                pred_probs = torch.softmax(pred_logits, dim=-1) if pred_logits.numel() else pred_logits
+                if pred_probs.numel():
+                    probs_clipped = pred_probs.clamp(min=1e-8, max=1.0 - 1e-8)
+                    pseudo_logits = torch.log(probs_clipped / (1.0 - probs_clipped))
+                    pred_energy = -100.0 * torch.log(
+                        torch.clamp(
+                            torch.sum(torch.exp(pseudo_logits / 100.0), dim=-1),
+                            min=1e-8,
+                        )
+                    )
                 else:
                     pred_energy = torch.zeros((0,), device=device)
 
