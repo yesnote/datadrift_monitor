@@ -193,9 +193,8 @@ def parse_output_config(output_cfg):
     save_csv_cfg = output_cfg.get("save_csv", {})
     if isinstance(save_csv_cfg, bool):
         save_csv_enabled = save_csv_cfg
-        uncertainty = "fn"
-        fn_cfg = {}
-        tp_cfg = {}
+        uncertainty = "gt"
+        gt_cfg = {}
         score_cfg = {}
         entropy_cfg = {}
         full_softmax_cfg = {}
@@ -204,9 +203,8 @@ def parse_output_config(output_cfg):
         unit = "image"
     else:
         save_csv_enabled = bool(save_csv_cfg.get("enabled", True))
-        uncertainty = str(save_csv_cfg.get("uncertainty", "fn")).lower()
-        fn_cfg = save_csv_cfg.get("fn", {})
-        tp_cfg = save_csv_cfg.get("tp", {})
+        uncertainty = str(save_csv_cfg.get("uncertainty", "gt")).lower()
+        gt_cfg = save_csv_cfg.get("gt", {})
         score_cfg = save_csv_cfg.get("score", {})
         entropy_cfg = save_csv_cfg.get("entropy", {})
         full_softmax_cfg = save_csv_cfg.get("full_softmax", {})
@@ -214,14 +212,13 @@ def parse_output_config(output_cfg):
         layer_grad_cfg = save_csv_cfg.get("layer_grad", {})
         unit = str(save_csv_cfg.get("unit", "image")).lower()
 
-    if uncertainty not in {"fn", "tp", "score", "entropy", "full_softmax", "feature_grad", "layer_grad"}:
+    if uncertainty not in {"gt", "score", "entropy", "full_softmax", "feature_grad", "layer_grad"}:
         raise ValueError(
             f"Unsupported output.save_csv.uncertainty='{uncertainty}'. "
-            "Use 'fn', 'tp', 'score', 'entropy', 'full_softmax', 'feature_grad' or 'layer_grad'."
+            "Use 'gt', 'score', 'entropy', 'full_softmax', 'feature_grad' or 'layer_grad'."
         )
 
-    iou_match_threshold = float(fn_cfg.get("iou_match_threshold", 0.5))
-    tp_iou_match_threshold = float(tp_cfg.get("iou_match_threshold", 0.5))
+    gt_iou_match_threshold = float(gt_cfg.get("iou_match_threshold", 0.5))
     score_vector_reduction = ["1-norm", "2-norm", "min", "max", "mean", "std"]
     entropy_vector_reduction = ["1-norm", "2-norm", "min", "max", "mean", "std"]
     full_softmax_vector_reduction = ["1-norm", "2-norm", "min", "max", "mean", "std"]
@@ -284,14 +281,9 @@ def parse_output_config(output_cfg):
         layer_vector_reduction = normalize_vector_reduction(
             layer_grad_cfg.get("vector_reduction", ["L1", "L2", "min", "max", "mean", "std"])
         )
-    elif uncertainty == "fn":
-        if unit != "image":
-            msg = "Invalid config: output.save_csv.uncertainty='fn' requires output.save_csv.unit='image'."
-            warnings.warn(msg)
-            raise ValueError(msg)
-    elif uncertainty == "tp":
-        if unit != "bbox":
-            msg = "Invalid config: output.save_csv.uncertainty='tp' requires output.save_csv.unit='bbox'."
+    elif uncertainty == "gt":
+        if unit not in {"image", "bbox"}:
+            msg = "Invalid config: output.save_csv.uncertainty='gt' requires output.save_csv.unit in {'image','bbox'}."
             warnings.warn(msg)
             raise ValueError(msg)
     elif uncertainty == "score":
@@ -338,8 +330,7 @@ def parse_output_config(output_cfg):
         "save_csv_enabled": save_csv_enabled,
         "uncertainty": uncertainty,
         "unit": unit,
-        "iou_match_threshold": iou_match_threshold,
-        "tp_iou_match_threshold": tp_iou_match_threshold,
+        "gt_iou_match_threshold": gt_iou_match_threshold,
         "score_vector_reduction": score_vector_reduction,
         "entropy_vector_reduction": entropy_vector_reduction,
         "full_softmax_vector_reduction": full_softmax_vector_reduction,

@@ -39,13 +39,13 @@ def _build_summary(total_images, fn_images, output_csv):
 def run_fn_csv(config, run_dir):
     run_dir = Path(run_dir)
     mode = str(config.get("mode", "predict"))
-    uncertainty = "fn"
+    uncertainty = "gt"
 
     dataset_cfg = config.get("dataset", {})
     split = dataset_cfg.get("split", "val")
     parsed = parse_output_config(config.get("output", {}))
     save_csv = parsed["save_csv_enabled"]
-    iou_match_threshold = parsed["iou_match_threshold"]
+    iou_match_threshold = parsed["gt_iou_match_threshold"]
     save_image = parsed["save_image_enabled"]
     image_step = parsed["image_step"]
     image_max_num = parsed["image_max_num"]
@@ -244,13 +244,13 @@ def run_feature_grad_csv(config, run_dir):
 def run_tp_csv(config, run_dir):
     run_dir = Path(run_dir)
     mode = str(config.get("mode", "predict"))
-    uncertainty = "tp"
+    uncertainty = "gt"
 
     dataset_cfg = config.get("dataset", {})
     split = dataset_cfg.get("split", "val")
     parsed = parse_output_config(config.get("output", {}))
     save_csv = parsed["save_csv_enabled"]
-    iou_match_threshold = parsed["tp_iou_match_threshold"]
+    iou_match_threshold = parsed["gt_iou_match_threshold"]
 
     if not save_csv:
         return
@@ -787,13 +787,16 @@ def run_layer_grad_csv(config, run_dir):
 def run_predict(config, run_dir):
     parsed = parse_output_config(config.get("output", {}))
     uncertainty = parsed["uncertainty"]
+    unit = parsed["unit"]
 
-    if uncertainty == "fn":
-        run_fn_csv(config, run_dir)
-        return
-    if uncertainty == "tp":
-        run_tp_csv(config, run_dir)
-        return
+    if uncertainty == "gt":
+        if unit == "image":
+            run_fn_csv(config, run_dir)
+            return
+        if unit == "bbox":
+            run_tp_csv(config, run_dir)
+            return
+        raise ValueError("output.save_csv.uncertainty='gt' requires output.save_csv.unit in {'image','bbox'}.")
     if uncertainty == "score":
         run_score_csv(config, run_dir)
         return
