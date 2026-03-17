@@ -34,13 +34,16 @@ output:
   save_csv:
     enabled: true
     unit: image   # image | bbox
-    uncertainty: feature_grad
+    uncertainty: feature_grad  # fn | tp | score | feature_grad | layer_grad
     
     fn: # per image
       iou_match_threshold: 0.45
 
     tp: # per bbox
       iou_match_threshold: 0.45
+
+    score: # per bbox
+      enabled: true
     
     feature_grad:
       target_value: [obj, cls]  # loss | obj_loss | cls_loss | bbox_loss | obj | cls
