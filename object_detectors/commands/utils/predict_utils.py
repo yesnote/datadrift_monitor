@@ -583,6 +583,36 @@ def configure_mc_dropout(model: torch.nn.Module, dropout_rate: float) -> int:
     return count
 
 
+def enable_forced_mc_dropout_on_yolov5_head(model: torch.nn.Module, dropout_rate: float):
+    # DiL-style behavior for YOLO: apply dropout in inference path explicitly.
+    detect_module = None
+    for module in model.modules():
+        if hasattr(module, "m") and hasattr(module, "nc") and hasattr(module, "na"):
+            try:
+                if isinstance(module.m, nn.ModuleList) and len(module.m) > 0 and isinstance(module.m[0], nn.Conv2d):
+                    detect_module = module
+            except Exception:
+                continue
+
+    if detect_module is None:
+        return []
+
+    handles = []
+    p = float(dropout_rate)
+    for conv in detect_module.m:
+        def _pre_hook(_module, inputs, p_drop=p):
+            if not inputs:
+                return inputs
+            x = inputs[0]
+            x = F.dropout(x, p=p_drop, training=True)
+            if len(inputs) == 1:
+                return (x,)
+            return (x,) + tuple(inputs[1:])
+
+        handles.append(conv.register_forward_pre_hook(_pre_hook))
+    return handles
+
+
 def normalize_vector_reduction(value):
     items = [v.strip().lower() for v in normalize_to_list(value)]
     if not items:
