@@ -6,6 +6,7 @@ import cv2
 import numpy as np
 import torch
 import torch.nn.functional as F
+import torch.nn as nn
 
 from models.yolo.models.yolo_v5_object_detector import YOLOV5TorchObjectDetector
 
@@ -196,6 +197,7 @@ def parse_output_config(output_cfg):
         uncertainty = "gt"
         gt_cfg = {}
         score_cfg = {}
+        mc_dropout_cfg = {}
         energy_cfg = {}
         entropy_cfg = {}
         full_softmax_cfg = {}
@@ -207,6 +209,7 @@ def parse_output_config(output_cfg):
         uncertainty = str(save_csv_cfg.get("uncertainty", "gt")).lower()
         gt_cfg = save_csv_cfg.get("gt", {})
         score_cfg = save_csv_cfg.get("score", {})
+        mc_dropout_cfg = save_csv_cfg.get("mc_dropout", {})
         energy_cfg = save_csv_cfg.get("energy", {})
         entropy_cfg = save_csv_cfg.get("entropy", {})
         full_softmax_cfg = save_csv_cfg.get("full_softmax", {})
@@ -214,13 +217,15 @@ def parse_output_config(output_cfg):
         layer_grad_cfg = save_csv_cfg.get("layer_grad", {})
         unit = str(save_csv_cfg.get("unit", "image")).lower()
 
-    if uncertainty not in {"gt", "score", "energy", "entropy", "full_softmax", "feature_grad", "layer_grad"}:
+    if uncertainty not in {"gt", "score", "mc_dropout", "energy", "entropy", "full_softmax", "feature_grad", "layer_grad"}:
         raise ValueError(
             f"Unsupported output.save_csv.uncertainty='{uncertainty}'. "
-            "Use 'gt', 'score', 'energy', 'entropy', 'full_softmax', 'feature_grad' or 'layer_grad'."
+            "Use 'gt', 'score', 'mc_dropout', 'energy', 'entropy', 'full_softmax', 'feature_grad' or 'layer_grad'."
         )
 
     gt_iou_match_threshold = float(gt_cfg.get("iou_match_threshold", 0.5))
+    mc_num_runs = int(mc_dropout_cfg.get("num_runs", 30))
+    mc_dropout_rate = float(mc_dropout_cfg.get("dropout_rate", 0.5))
     score_vector_reduction = ["1-norm", "2-norm", "min", "max", "mean", "std"]
     energy_vector_reduction = ["1-norm", "2-norm", "min", "max", "mean", "std"]
     entropy_vector_reduction = ["1-norm", "2-norm", "min", "max", "mean", "std"]
@@ -297,6 +302,15 @@ def parse_output_config(output_cfg):
         score_vector_reduction = normalize_vector_reduction(
             score_cfg.get("vector_reduction", ["L1", "L2", "min", "max", "mean", "std"])
         )
+    elif uncertainty == "mc_dropout":
+        if unit != "bbox":
+            msg = "Invalid config: output.save_csv.uncertainty='mc_dropout' requires output.save_csv.unit='bbox'."
+            warnings.warn(msg)
+            raise ValueError(msg)
+        if mc_num_runs < 1:
+            raise ValueError("output.save_csv.mc_dropout.num_runs must be >= 1.")
+        if not (0.0 <= mc_dropout_rate < 1.0):
+            raise ValueError("output.save_csv.mc_dropout.dropout_rate must be in [0,1).")
     elif uncertainty == "energy":
         if unit not in {"image", "bbox"}:
             msg = "Invalid config: output.save_csv.uncertainty='energy' requires output.save_csv.unit in {'image','bbox'}."
@@ -342,6 +356,8 @@ def parse_output_config(output_cfg):
         "uncertainty": uncertainty,
         "unit": unit,
         "gt_iou_match_threshold": gt_iou_match_threshold,
+        "mc_num_runs": mc_num_runs,
+        "mc_dropout_rate": mc_dropout_rate,
         "score_vector_reduction": score_vector_reduction,
         "energy_vector_reduction": energy_vector_reduction,
         "entropy_vector_reduction": entropy_vector_reduction,
@@ -553,6 +569,18 @@ def map_grad_tensor_to_numbers(v):
         "mean": float(torch.mean(v).detach().cpu().item()),
         "std": float(torch.std(v, unbiased=False).detach().cpu().item()),
     }
+
+
+def configure_mc_dropout(model: torch.nn.Module, dropout_rate: float) -> int:
+    model.eval()
+    count = 0
+    dropout_types = (nn.Dropout, nn.Dropout1d, nn.Dropout2d, nn.Dropout3d, nn.AlphaDropout, nn.FeatureAlphaDropout)
+    for module in model.modules():
+        if isinstance(module, dropout_types):
+            module.p = float(dropout_rate)
+            module.train()
+            count += 1
+    return count
 
 
 def normalize_vector_reduction(value):
