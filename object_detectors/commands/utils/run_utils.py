@@ -86,6 +86,9 @@ def save_run_summary(run_dir: Path, uncertainty: str, unit: str) -> Path:
     grad_rows = _count_rows(run_dir / "feature_grad.csv")
     if grad_rows is not None:
         summary["feature_grad_rows"] = grad_rows
+    score_rows = _count_rows(run_dir / "score.csv")
+    if score_rows is not None:
+        summary["score_rows"] = score_rows
 
     out_path = run_dir / "run_summary.json"
     with open(out_path, "w", encoding="utf-8") as f:

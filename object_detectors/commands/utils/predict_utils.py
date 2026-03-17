@@ -196,6 +196,7 @@ def parse_output_config(output_cfg):
         uncertainty = "fn"
         fn_cfg = {}
         tp_cfg = {}
+        score_cfg = {}
         feature_grad_cfg = {}
         layer_grad_cfg = {}
         unit = "image"
@@ -204,14 +205,15 @@ def parse_output_config(output_cfg):
         uncertainty = str(save_csv_cfg.get("uncertainty", "fn")).lower()
         fn_cfg = save_csv_cfg.get("fn", {})
         tp_cfg = save_csv_cfg.get("tp", {})
+        score_cfg = save_csv_cfg.get("score", {})
         feature_grad_cfg = save_csv_cfg.get("feature_grad", {})
         layer_grad_cfg = save_csv_cfg.get("layer_grad", {})
         unit = str(save_csv_cfg.get("unit", "image")).lower()
 
-    if uncertainty not in {"fn", "tp", "feature_grad", "layer_grad"}:
+    if uncertainty not in {"fn", "tp", "score", "feature_grad", "layer_grad"}:
         raise ValueError(
             f"Unsupported output.save_csv.uncertainty='{uncertainty}'. "
-            "Use 'fn', 'tp', 'feature_grad' or 'layer_grad'."
+            "Use 'fn', 'tp', 'score', 'feature_grad' or 'layer_grad'."
         )
 
     iou_match_threshold = float(fn_cfg.get("iou_match_threshold", 0.5))
@@ -283,6 +285,11 @@ def parse_output_config(output_cfg):
     elif uncertainty == "tp":
         if unit != "bbox":
             msg = "Invalid config: output.save_csv.uncertainty='tp' requires output.save_csv.unit='bbox'."
+            warnings.warn(msg)
+            raise ValueError(msg)
+    elif uncertainty == "score":
+        if unit != "bbox":
+            msg = "Invalid config: output.save_csv.uncertainty='score' requires output.save_csv.unit='bbox'."
             warnings.warn(msg)
             raise ValueError(msg)
 
