@@ -48,6 +48,7 @@ output:
 
     full_softmax:
       enabled: true
+      vector_reduction: [L1, L2, min, max, mean, std]  # only for unit: image
     
     feature_grad:
       target_value: [obj, cls]  # loss | obj_loss | cls_loss | bbox_loss | obj | cls
