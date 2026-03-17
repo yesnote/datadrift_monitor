@@ -986,13 +986,13 @@ def get_feature_grad_stats(grad_tensor, map_reduction="energy", vector_reduction
     return {k: stats[k] for k in vector_reduction}
 
 
-def preprocess_with_letterbox(detector, image_tensor, device, requires_grad=True):
+def preprocess_with_letterbox(detector, image_tensor, device, requires_grad=True, auto=True):
     image_np = image_tensor.permute(1, 2, 0).cpu().numpy()
     image_np = np.clip(image_np * 255.0, 0, 255).astype(np.uint8)
 
-    # Match DiL preprocessing: use YOLO letterbox default behavior (auto=True),
-    # which keeps aspect ratio and applies only stride-aligned padding.
-    resized, ratio, pad = detector.yolo_resize(image_np, new_shape=detector.img_size)
+    # For most modes we keep YOLO letterbox default behavior (auto=True).
+    # MC-dropout batched path can set auto=False to force fixed-size tensors.
+    resized, ratio, pad = detector.yolo_resize(image_np, new_shape=detector.img_size, auto=auto)
     resized = resized.transpose((2, 0, 1))
     resized = np.ascontiguousarray(resized)
     input_tensor = torch.from_numpy(resized).float().unsqueeze(0).to(device) / 255.0

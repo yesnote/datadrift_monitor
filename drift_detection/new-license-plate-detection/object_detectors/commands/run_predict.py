@@ -421,7 +421,7 @@ def run_score_csv(config, run_dir):
             for sample_idx in range(images.shape[0]):
                 detector.zero_grad(set_to_none=True)
                 infer_tensor, _ratio, _pad, _resized_chw = preprocess_with_letterbox(
-                    detector, images[sample_idx], device, requires_grad=False
+                    detector, images[sample_idx], device, requires_grad=False, auto=False
                 )
                 with torch.no_grad():
                     preds, _logits, _objectness, _features = detector(infer_tensor)
