@@ -421,7 +421,7 @@ def run_score_csv(config, run_dir):
                             }
                         )
                 else:
-                    num_preds = int(pred_scores.shape[0])
+                    num_preds = len(pred_scores)
                     if num_preds == 0:
                         stat_all = {
                             "1-norm": 0.0,
@@ -432,7 +432,8 @@ def run_score_csv(config, run_dir):
                             "std": 0.0,
                         }
                     else:
-                        stat_all = map_grad_tensor_to_numbers(pred_scores.detach().float().reshape(-1))
+                        score_tensor = torch.as_tensor(pred_scores, dtype=torch.float32, device=device)
+                        stat_all = map_grad_tensor_to_numbers(score_tensor.reshape(-1))
                     row = {"image_id": image_id, "image_path": image_path, "num_preds": num_preds}
                     for metric_name in score_vector_reduction:
                         row[metric_name] = float(stat_all[metric_name])
