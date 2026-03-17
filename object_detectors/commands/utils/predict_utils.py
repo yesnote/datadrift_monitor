@@ -196,6 +196,7 @@ def parse_output_config(output_cfg):
         uncertainty = "gt"
         gt_cfg = {}
         score_cfg = {}
+        energy_cfg = {}
         entropy_cfg = {}
         full_softmax_cfg = {}
         feature_grad_cfg = {}
@@ -206,16 +207,17 @@ def parse_output_config(output_cfg):
         uncertainty = str(save_csv_cfg.get("uncertainty", "gt")).lower()
         gt_cfg = save_csv_cfg.get("gt", {})
         score_cfg = save_csv_cfg.get("score", {})
+        energy_cfg = save_csv_cfg.get("energy", {})
         entropy_cfg = save_csv_cfg.get("entropy", {})
         full_softmax_cfg = save_csv_cfg.get("full_softmax", {})
         feature_grad_cfg = save_csv_cfg.get("feature_grad", {})
         layer_grad_cfg = save_csv_cfg.get("layer_grad", {})
         unit = str(save_csv_cfg.get("unit", "image")).lower()
 
-    if uncertainty not in {"gt", "score", "entropy", "full_softmax", "feature_grad", "layer_grad"}:
+    if uncertainty not in {"gt", "score", "energy", "entropy", "full_softmax", "feature_grad", "layer_grad"}:
         raise ValueError(
             f"Unsupported output.save_csv.uncertainty='{uncertainty}'. "
-            "Use 'gt', 'score', 'entropy', 'full_softmax', 'feature_grad' or 'layer_grad'."
+            "Use 'gt', 'score', 'energy', 'entropy', 'full_softmax', 'feature_grad' or 'layer_grad'."
         )
 
     gt_iou_match_threshold = float(gt_cfg.get("iou_match_threshold", 0.5))
@@ -294,6 +296,11 @@ def parse_output_config(output_cfg):
         score_vector_reduction = normalize_vector_reduction(
             score_cfg.get("vector_reduction", ["L1", "L2", "min", "max", "mean", "std"])
         )
+    elif uncertainty == "energy":
+        if unit != "bbox":
+            msg = "Invalid config: output.save_csv.uncertainty='energy' requires output.save_csv.unit='bbox'."
+            warnings.warn(msg)
+            raise ValueError(msg)
     elif uncertainty == "entropy":
         if unit not in {"image", "bbox"}:
             msg = "Invalid config: output.save_csv.uncertainty='entropy' requires output.save_csv.unit in {'image','bbox'}."

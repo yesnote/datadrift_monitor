@@ -34,7 +34,7 @@ output:
   save_csv:
     enabled: true
     unit: image   # image | bbox
-    uncertainty: feature_grad  # gt | score | entropy | full_softmax | feature_grad | layer_grad
+    uncertainty: feature_grad  # gt | score | energy | entropy | full_softmax | feature_grad | layer_grad
     
     gt: # unit:image -> fn | unit:bbox -> tp
       iou_match_threshold: 0.45
@@ -42,6 +42,9 @@ output:
     score:
       enabled: true
       vector_reduction: [L1, L2, min, max, mean, std]  # only for unit: image
+
+    energy:
+      enabled: true
 
     full_softmax:
       enabled: true
