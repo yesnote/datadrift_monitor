@@ -11,6 +11,7 @@ from dataloaders.dataloader_yolo import create_dataloader
 from commands.utils.predict_utils import (
     assign_tp_to_predictions,
     build_detector,
+    configure_mc_dropout,
     collect_bbox_gradients_per_target,
     collect_bbox_layer_grads_per_target,
     collect_gradients_per_target,
@@ -25,6 +26,15 @@ from commands.utils.predict_utils import (
     parse_output_config,
     preprocess_with_letterbox,
 )
+
+
+def _xywh_to_xyxy_tensor(xywh: torch.Tensor) -> torch.Tensor:
+    out = xywh.clone()
+    out[:, 0] = xywh[:, 0] - xywh[:, 2] / 2.0
+    out[:, 1] = xywh[:, 1] - xywh[:, 3] / 2.0
+    out[:, 2] = xywh[:, 0] + xywh[:, 2] / 2.0
+    out[:, 3] = xywh[:, 1] + xywh[:, 3] / 2.0
+    return out
 
 
 def _build_summary(total_images, fn_images, output_csv):
@@ -817,6 +827,168 @@ def run_entropy_csv(config, run_dir):
     print(f"Saved results CSV: {output_csv}")
 
 
+def run_mc_dropout_csv(config, run_dir):
+    run_dir = Path(run_dir)
+    mode = str(config.get("mode", "predict"))
+    uncertainty = "mc_dropout"
+
+    dataset_cfg = config.get("dataset", {})
+    split = dataset_cfg.get("split", "val")
+    parsed = parse_output_config(config.get("output", {}))
+    save_csv = parsed["save_csv_enabled"]
+    unit = parsed["unit"]
+    num_runs = int(parsed["mc_num_runs"])
+    dropout_rate = float(parsed["mc_dropout_rate"])
+
+    if not save_csv:
+        return
+    if unit != "bbox":
+        raise ValueError("output.save_csv.uncertainty='mc_dropout' requires output.save_csv.unit='bbox'.")
+
+    dataloader = create_dataloader(config, split=split)
+    if len(dataloader.dataset) == 0:
+        raise ValueError("Loaded 0 images. Check dataset root/image_dir/split configuration in YAML.")
+
+    detector, device = build_detector(config)
+    num_dropout_modules = configure_mc_dropout(detector.model, dropout_rate)
+    if num_dropout_modules == 0:
+        print("[WARN] No Dropout modules found in YOLOv5 model. MC-dropout variability may be near zero.")
+
+    output_csv = run_dir / "mc_dropout.csv"
+
+    with open(output_csv, "w", newline="", encoding="utf-8") as output_file:
+        writer = None
+        for images, targets in tqdm(
+            dataloader, desc=f"Object Detector ({mode} - {uncertainty})", total=len(dataloader)
+        ):
+            for sample_idx in range(images.shape[0]):
+                target = targets[sample_idx]
+                image_id = int(target["image_id"][0].item())
+                image_path = target["path"]
+                infer_tensor, _ratio, _pad, _resized_chw = preprocess_with_letterbox(
+                    detector, images[sample_idx], device, requires_grad=False
+                )
+
+                bbox_mean = None
+                bbox_m2 = None
+                score_mean = None
+                score_m2 = None
+                prob_mean = None
+                prob_m2 = None
+                n_candidates = None
+                n_classes = None
+                run_count = 0
+
+                with torch.no_grad():
+                    for _ in range(num_runs):
+                        detector.zero_grad(set_to_none=True)
+                        model_output = detector.model(infer_tensor, augment=False)
+                        raw_prediction = model_output[0] if isinstance(model_output, (tuple, list)) else model_output
+                        raw_logits = (
+                            model_output[1]
+                            if isinstance(model_output, (tuple, list)) and len(model_output) > 1
+                            else None
+                        )
+                        pred_img = raw_prediction[0].detach().float()
+                        logits_img = (
+                            raw_logits[0].detach().float()
+                            if raw_logits is not None
+                            else pred_img[:, 5:].detach().float()
+                        )
+                        bbox_xyxy = _xywh_to_xyxy_tensor(pred_img[:, :4])
+                        score_vec = pred_img[:, 4].reshape(-1, 1)
+                        prob_mat = pred_img[:, 5:]
+                        if prob_mat.numel() == 0 and logits_img.numel() > 0:
+                            prob_mat = torch.sigmoid(logits_img)
+
+                        if n_candidates is None:
+                            n_candidates = int(pred_img.shape[0])
+                            n_classes = int(prob_mat.shape[1]) if prob_mat.ndim == 2 else int(logits_img.shape[1])
+                            bbox_mean = torch.zeros((n_candidates, 4), device=device)
+                            bbox_m2 = torch.zeros((n_candidates, 4), device=device)
+                            score_mean = torch.zeros((n_candidates, 1), device=device)
+                            score_m2 = torch.zeros((n_candidates, 1), device=device)
+                            prob_mean = torch.zeros((n_candidates, n_classes), device=device)
+                            prob_m2 = torch.zeros((n_candidates, n_classes), device=device)
+
+                        if int(pred_img.shape[0]) != n_candidates:
+                            raise ValueError("Raw candidate count changed across MC runs; expected fixed pre-NMS candidates.")
+
+                        run_count += 1
+                        delta_bbox = bbox_xyxy - bbox_mean
+                        bbox_mean = bbox_mean + delta_bbox / run_count
+                        bbox_m2 = bbox_m2 + delta_bbox * (bbox_xyxy - bbox_mean)
+
+                        delta_score = score_vec - score_mean
+                        score_mean = score_mean + delta_score / run_count
+                        score_m2 = score_m2 + delta_score * (score_vec - score_mean)
+
+                        delta_prob = prob_mat - prob_mean
+                        prob_mean = prob_mean + delta_prob / run_count
+                        prob_m2 = prob_m2 + delta_prob * (prob_mat - prob_mean)
+
+                if n_candidates is None:
+                    del infer_tensor
+                    continue
+
+                bbox_std = torch.sqrt(torch.clamp(bbox_m2 / max(run_count, 1), min=0.0))
+                score_std = torch.sqrt(torch.clamp(score_m2 / max(run_count, 1), min=0.0))
+                prob_std = torch.sqrt(torch.clamp(prob_m2 / max(run_count, 1), min=0.0))
+                pred_class_idx = torch.argmax(prob_mean, dim=1)
+
+                if writer is None:
+                    fieldnames = [
+                        "image_id",
+                        "image_path",
+                        "candidate_idx",
+                        "xmin_mean",
+                        "ymin_mean",
+                        "xmax_mean",
+                        "ymax_mean",
+                        "xmin_std",
+                        "ymin_std",
+                        "xmax_std",
+                        "ymax_std",
+                        "score_mean",
+                        "score_std",
+                    ]
+                    fieldnames.extend([f"prob_{i}_mean" for i in range(n_classes)])
+                    fieldnames.extend([f"prob_{i}_std" for i in range(n_classes)])
+                    fieldnames.append("pred_class_mean")
+                    writer = csv.DictWriter(output_file, fieldnames=fieldnames)
+                    writer.writeheader()
+
+                for cand_idx in range(n_candidates):
+                    row = {
+                        "image_id": image_id,
+                        "image_path": image_path,
+                        "candidate_idx": cand_idx,
+                        "xmin_mean": float(bbox_mean[cand_idx, 0].detach().cpu().item()),
+                        "ymin_mean": float(bbox_mean[cand_idx, 1].detach().cpu().item()),
+                        "xmax_mean": float(bbox_mean[cand_idx, 2].detach().cpu().item()),
+                        "ymax_mean": float(bbox_mean[cand_idx, 3].detach().cpu().item()),
+                        "xmin_std": float(bbox_std[cand_idx, 0].detach().cpu().item()),
+                        "ymin_std": float(bbox_std[cand_idx, 1].detach().cpu().item()),
+                        "xmax_std": float(bbox_std[cand_idx, 2].detach().cpu().item()),
+                        "ymax_std": float(bbox_std[cand_idx, 3].detach().cpu().item()),
+                        "score_mean": float(score_mean[cand_idx, 0].detach().cpu().item()),
+                        "score_std": float(score_std[cand_idx, 0].detach().cpu().item()),
+                        "pred_class_mean": int(pred_class_idx[cand_idx].detach().cpu().item()),
+                    }
+                    for class_idx in range(n_classes):
+                        row[f"prob_{class_idx}_mean"] = float(prob_mean[cand_idx, class_idx].detach().cpu().item())
+                        row[f"prob_{class_idx}_std"] = float(prob_std[cand_idx, class_idx].detach().cpu().item())
+                    writer.writerow(row)
+
+                del infer_tensor
+
+    del detector
+    if device.type == "cuda":
+        torch.cuda.empty_cache()
+
+    print(f"Saved results CSV: {output_csv}")
+
+
 def run_layer_grad_csv(config, run_dir):
     run_dir = Path(run_dir)
     mode = str(config.get("mode", "predict"))
@@ -927,6 +1099,9 @@ def run_predict(config, run_dir):
         raise ValueError("output.save_csv.uncertainty='gt' requires output.save_csv.unit in {'image','bbox'}.")
     if uncertainty == "score":
         run_score_csv(config, run_dir)
+        return
+    if uncertainty == "mc_dropout":
+        run_mc_dropout_csv(config, run_dir)
         return
     if uncertainty == "full_softmax":
         run_full_softmax_csv(config, run_dir)
