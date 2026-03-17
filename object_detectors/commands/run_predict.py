@@ -30,10 +30,10 @@ from commands.utils.predict_utils import (
 
 def _xywh_to_xyxy_tensor(xywh: torch.Tensor) -> torch.Tensor:
     out = xywh.clone()
-    out[:, 0] = xywh[:, 0] - xywh[:, 2] / 2.0
-    out[:, 1] = xywh[:, 1] - xywh[:, 3] / 2.0
-    out[:, 2] = xywh[:, 0] + xywh[:, 2] / 2.0
-    out[:, 3] = xywh[:, 1] + xywh[:, 3] / 2.0
+    out[..., 0] = xywh[..., 0] - xywh[..., 2] / 2.0
+    out[..., 1] = xywh[..., 1] - xywh[..., 3] / 2.0
+    out[..., 2] = xywh[..., 0] + xywh[..., 2] / 2.0
+    out[..., 3] = xywh[..., 1] + xywh[..., 3] / 2.0
     return out
 
 
@@ -861,126 +861,134 @@ def run_mc_dropout_csv(config, run_dir):
         for images, targets in tqdm(
             dataloader, desc=f"Object Detector ({mode} - {uncertainty})", total=len(dataloader)
         ):
-            for sample_idx in range(images.shape[0]):
+            batch_size = images.shape[0]
+            batch_tensors = []
+            image_ids = []
+            image_paths = []
+            for sample_idx in range(batch_size):
                 target = targets[sample_idx]
-                image_id = int(target["image_id"][0].item())
-                image_path = target["path"]
+                image_ids.append(int(target["image_id"][0].item()))
+                image_paths.append(target["path"])
                 infer_tensor, _ratio, _pad, _resized_chw = preprocess_with_letterbox(
                     detector, images[sample_idx], device, requires_grad=False
                 )
+                batch_tensors.append(infer_tensor)
 
-                bbox_mean = None
-                bbox_m2 = None
-                score_mean = None
-                score_m2 = None
-                prob_mean = None
-                prob_m2 = None
-                n_candidates = None
-                n_classes = None
-                run_count = 0
+            infer_batch = torch.cat(batch_tensors, dim=0)
+            del batch_tensors
 
-                with torch.no_grad():
-                    for _ in range(num_runs):
-                        detector.zero_grad(set_to_none=True)
-                        model_output = detector.model(infer_tensor, augment=False)
-                        raw_prediction = model_output[0] if isinstance(model_output, (tuple, list)) else model_output
-                        raw_logits = (
-                            model_output[1]
-                            if isinstance(model_output, (tuple, list)) and len(model_output) > 1
-                            else None
-                        )
-                        pred_img = raw_prediction[0].detach().float()
-                        logits_img = (
-                            raw_logits[0].detach().float()
-                            if raw_logits is not None
-                            else pred_img[:, 5:].detach().float()
-                        )
-                        bbox_xyxy = _xywh_to_xyxy_tensor(pred_img[:, :4])
-                        score_vec = pred_img[:, 4].reshape(-1, 1)
-                        prob_mat = pred_img[:, 5:]
-                        if prob_mat.numel() == 0 and logits_img.numel() > 0:
-                            prob_mat = torch.sigmoid(logits_img)
+            bbox_mean = None
+            bbox_m2 = None
+            score_mean = None
+            score_m2 = None
+            prob_mean = None
+            prob_m2 = None
+            n_candidates = None
+            n_classes = None
+            run_count = 0
 
-                        if n_candidates is None:
-                            n_candidates = int(pred_img.shape[0])
-                            n_classes = int(prob_mat.shape[1]) if prob_mat.ndim == 2 else int(logits_img.shape[1])
-                            bbox_mean = torch.zeros((n_candidates, 4), device=device)
-                            bbox_m2 = torch.zeros((n_candidates, 4), device=device)
-                            score_mean = torch.zeros((n_candidates, 1), device=device)
-                            score_m2 = torch.zeros((n_candidates, 1), device=device)
-                            prob_mean = torch.zeros((n_candidates, n_classes), device=device)
-                            prob_m2 = torch.zeros((n_candidates, n_classes), device=device)
+            with torch.no_grad():
+                for _ in range(num_runs):
+                    detector.zero_grad(set_to_none=True)
+                    model_output = detector.model(infer_batch, augment=False)
+                    raw_prediction = model_output[0] if isinstance(model_output, (tuple, list)) else model_output
+                    raw_logits = (
+                        model_output[1]
+                        if isinstance(model_output, (tuple, list)) and len(model_output) > 1
+                        else None
+                    )
 
-                        if int(pred_img.shape[0]) != n_candidates:
-                            raise ValueError("Raw candidate count changed across MC runs; expected fixed pre-NMS candidates.")
+                    pred_batch = raw_prediction.detach().float()
+                    logits_batch = raw_logits.detach().float() if raw_logits is not None else pred_batch[..., 5:]
+                    bbox_xyxy = _xywh_to_xyxy_tensor(pred_batch[..., :4])
+                    score_vec = pred_batch[..., 4].unsqueeze(-1)
+                    prob_mat = pred_batch[..., 5:]
+                    if prob_mat.numel() == 0 and logits_batch.numel() > 0:
+                        prob_mat = torch.sigmoid(logits_batch)
 
-                        run_count += 1
-                        delta_bbox = bbox_xyxy - bbox_mean
-                        bbox_mean = bbox_mean + delta_bbox / run_count
-                        bbox_m2 = bbox_m2 + delta_bbox * (bbox_xyxy - bbox_mean)
+                    if n_candidates is None:
+                        n_candidates = int(pred_batch.shape[1])
+                        n_classes = int(prob_mat.shape[2]) if prob_mat.ndim == 3 else int(logits_batch.shape[2])
+                        bbox_mean = torch.zeros((batch_size, n_candidates, 4), device=device)
+                        bbox_m2 = torch.zeros((batch_size, n_candidates, 4), device=device)
+                        score_mean = torch.zeros((batch_size, n_candidates, 1), device=device)
+                        score_m2 = torch.zeros((batch_size, n_candidates, 1), device=device)
+                        prob_mean = torch.zeros((batch_size, n_candidates, n_classes), device=device)
+                        prob_m2 = torch.zeros((batch_size, n_candidates, n_classes), device=device)
 
-                        delta_score = score_vec - score_mean
-                        score_mean = score_mean + delta_score / run_count
-                        score_m2 = score_m2 + delta_score * (score_vec - score_mean)
+                    if int(pred_batch.shape[1]) != n_candidates:
+                        raise ValueError("Raw candidate count changed across MC runs; expected fixed pre-NMS candidates.")
 
-                        delta_prob = prob_mat - prob_mean
-                        prob_mean = prob_mean + delta_prob / run_count
-                        prob_m2 = prob_m2 + delta_prob * (prob_mat - prob_mean)
+                    run_count += 1
+                    delta_bbox = bbox_xyxy - bbox_mean
+                    bbox_mean = bbox_mean + delta_bbox / run_count
+                    bbox_m2 = bbox_m2 + delta_bbox * (bbox_xyxy - bbox_mean)
 
-                if n_candidates is None:
-                    del infer_tensor
-                    continue
+                    delta_score = score_vec - score_mean
+                    score_mean = score_mean + delta_score / run_count
+                    score_m2 = score_m2 + delta_score * (score_vec - score_mean)
 
-                bbox_std = torch.sqrt(torch.clamp(bbox_m2 / max(run_count, 1), min=0.0))
-                score_std = torch.sqrt(torch.clamp(score_m2 / max(run_count, 1), min=0.0))
-                prob_std = torch.sqrt(torch.clamp(prob_m2 / max(run_count, 1), min=0.0))
-                pred_class_idx = torch.argmax(prob_mean, dim=1)
+                    delta_prob = prob_mat - prob_mean
+                    prob_mean = prob_mean + delta_prob / run_count
+                    prob_m2 = prob_m2 + delta_prob * (prob_mat - prob_mean)
 
-                if writer is None:
-                    fieldnames = [
-                        "image_id",
-                        "image_path",
-                        "candidate_idx",
-                        "xmin_mean",
-                        "ymin_mean",
-                        "xmax_mean",
-                        "ymax_mean",
-                        "xmin_std",
-                        "ymin_std",
-                        "xmax_std",
-                        "ymax_std",
-                        "score_mean",
-                        "score_std",
-                    ]
-                    fieldnames.extend([f"prob_{i}_mean" for i in range(n_classes)])
-                    fieldnames.extend([f"prob_{i}_std" for i in range(n_classes)])
-                    fieldnames.append("pred_class_mean")
-                    writer = csv.DictWriter(output_file, fieldnames=fieldnames)
-                    writer.writeheader()
+            if n_candidates is None:
+                del infer_batch
+                continue
 
+            bbox_std = torch.sqrt(torch.clamp(bbox_m2 / max(run_count, 1), min=0.0))
+            score_std = torch.sqrt(torch.clamp(score_m2 / max(run_count, 1), min=0.0))
+            prob_std = torch.sqrt(torch.clamp(prob_m2 / max(run_count, 1), min=0.0))
+            pred_class_idx = torch.argmax(prob_mean, dim=2)
+
+            if writer is None:
+                fieldnames = [
+                    "image_id",
+                    "image_path",
+                    "candidate_idx",
+                    "xmin_mean",
+                    "ymin_mean",
+                    "xmax_mean",
+                    "ymax_mean",
+                    "xmin_std",
+                    "ymin_std",
+                    "xmax_std",
+                    "ymax_std",
+                    "score_mean",
+                    "score_std",
+                ]
+                fieldnames.extend([f"prob_{i}_mean" for i in range(n_classes)])
+                fieldnames.extend([f"prob_{i}_std" for i in range(n_classes)])
+                fieldnames.append("pred_class_mean")
+                writer = csv.DictWriter(output_file, fieldnames=fieldnames)
+                writer.writeheader()
+
+            for b in range(batch_size):
+                image_id = image_ids[b]
+                image_path = image_paths[b]
                 for cand_idx in range(n_candidates):
                     row = {
                         "image_id": image_id,
                         "image_path": image_path,
                         "candidate_idx": cand_idx,
-                        "xmin_mean": float(bbox_mean[cand_idx, 0].detach().cpu().item()),
-                        "ymin_mean": float(bbox_mean[cand_idx, 1].detach().cpu().item()),
-                        "xmax_mean": float(bbox_mean[cand_idx, 2].detach().cpu().item()),
-                        "ymax_mean": float(bbox_mean[cand_idx, 3].detach().cpu().item()),
-                        "xmin_std": float(bbox_std[cand_idx, 0].detach().cpu().item()),
-                        "ymin_std": float(bbox_std[cand_idx, 1].detach().cpu().item()),
-                        "xmax_std": float(bbox_std[cand_idx, 2].detach().cpu().item()),
-                        "ymax_std": float(bbox_std[cand_idx, 3].detach().cpu().item()),
-                        "score_mean": float(score_mean[cand_idx, 0].detach().cpu().item()),
-                        "score_std": float(score_std[cand_idx, 0].detach().cpu().item()),
-                        "pred_class_mean": int(pred_class_idx[cand_idx].detach().cpu().item()),
+                        "xmin_mean": float(bbox_mean[b, cand_idx, 0].detach().cpu().item()),
+                        "ymin_mean": float(bbox_mean[b, cand_idx, 1].detach().cpu().item()),
+                        "xmax_mean": float(bbox_mean[b, cand_idx, 2].detach().cpu().item()),
+                        "ymax_mean": float(bbox_mean[b, cand_idx, 3].detach().cpu().item()),
+                        "xmin_std": float(bbox_std[b, cand_idx, 0].detach().cpu().item()),
+                        "ymin_std": float(bbox_std[b, cand_idx, 1].detach().cpu().item()),
+                        "xmax_std": float(bbox_std[b, cand_idx, 2].detach().cpu().item()),
+                        "ymax_std": float(bbox_std[b, cand_idx, 3].detach().cpu().item()),
+                        "score_mean": float(score_mean[b, cand_idx, 0].detach().cpu().item()),
+                        "score_std": float(score_std[b, cand_idx, 0].detach().cpu().item()),
+                        "pred_class_mean": int(pred_class_idx[b, cand_idx].detach().cpu().item()),
                     }
                     for class_idx in range(n_classes):
-                        row[f"prob_{class_idx}_mean"] = float(prob_mean[cand_idx, class_idx].detach().cpu().item())
-                        row[f"prob_{class_idx}_std"] = float(prob_std[cand_idx, class_idx].detach().cpu().item())
+                        row[f"prob_{class_idx}_mean"] = float(prob_mean[b, cand_idx, class_idx].detach().cpu().item())
+                        row[f"prob_{class_idx}_std"] = float(prob_std[b, cand_idx, class_idx].detach().cpu().item())
                     writer.writerow(row)
 
-                del infer_tensor
+            del infer_batch
 
     for h in mc_handles:
         h.remove()
