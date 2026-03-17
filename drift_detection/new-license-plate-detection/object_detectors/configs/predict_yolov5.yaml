@@ -40,23 +40,18 @@ output:
       iou_match_threshold: 0.45
 
     score:
-      enabled: true
       vector_reduction: [L1, L2, min, max, mean, std]  # only for unit: image
 
     full_softmax:
-      enabled: true
       vector_reduction: [L1, L2, min, max, mean, std]  # only for unit: image
     
     entropy:
-      enabled: true
       vector_reduction: [L1, L2, min, max, mean, std]  # only for unit: image
 
     energy:
-      enabled: true
       vector_reduction: [L1, L2, min, max, mean, std]  # only for unit: image
 
     mc_dropout:
-      enabled: true
       num_runs: 30
       dropout_rate: 0.5
 
