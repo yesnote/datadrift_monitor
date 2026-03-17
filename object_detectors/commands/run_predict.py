@@ -195,7 +195,7 @@ def run_feature_grad_csv(config, run_dir):
         for layer_name in target_layers:
             fieldnames.append(f"{target_value}_{layer_name}")
 
-    dataloader = _create_unstacked_dataloader(config, split=split)
+    dataloader = create_dataloader(config, split=split)
     if len(dataloader.dataset) == 0:
         raise ValueError("Loaded 0 images. Check dataset root/image_dir/split configuration in YAML.")
 
@@ -302,7 +302,7 @@ def run_tp_csv(config, run_dir):
 
     annotation_path = get_annotation_path(config, split)
     catid_to_name = load_coco_category_maps(annotation_path)
-    dataloader = create_dataloader(config, split=split)
+    dataloader = _create_unstacked_dataloader(config, split=split)
     if len(dataloader.dataset) == 0:
         raise ValueError("Loaded 0 images. Check dataset root/image_dir/split configuration in YAML.")
 
@@ -865,7 +865,7 @@ def run_mc_dropout_csv(config, run_dir):
     if unit != "bbox":
         raise ValueError("output.save_csv.uncertainty='mc_dropout' requires output.save_csv.unit='bbox'.")
 
-    dataloader = create_dataloader(config, split=split)
+    dataloader = _create_unstacked_dataloader(config, split=split)
     if len(dataloader.dataset) == 0:
         raise ValueError("Loaded 0 images. Check dataset root/image_dir/split configuration in YAML.")
 
