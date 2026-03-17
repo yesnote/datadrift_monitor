@@ -223,6 +223,7 @@ def parse_output_config(output_cfg):
     iou_match_threshold = float(fn_cfg.get("iou_match_threshold", 0.5))
     tp_iou_match_threshold = float(tp_cfg.get("iou_match_threshold", 0.5))
     score_vector_reduction = ["1-norm", "2-norm", "min", "max", "mean", "std"]
+    entropy_vector_reduction = ["1-norm", "2-norm", "min", "max", "mean", "std"]
     full_softmax_vector_reduction = ["1-norm", "2-norm", "min", "max", "mean", "std"]
     target_values = []
     target_layers = []
@@ -302,10 +303,13 @@ def parse_output_config(output_cfg):
             score_cfg.get("vector_reduction", ["L1", "L2", "min", "max", "mean", "std"])
         )
     elif uncertainty == "entropy":
-        if unit != "bbox":
-            msg = "Invalid config: output.save_csv.uncertainty='entropy' requires output.save_csv.unit='bbox'."
+        if unit not in {"image", "bbox"}:
+            msg = "Invalid config: output.save_csv.uncertainty='entropy' requires output.save_csv.unit in {'image','bbox'}."
             warnings.warn(msg)
             raise ValueError(msg)
+        entropy_vector_reduction = normalize_vector_reduction(
+            entropy_cfg.get("vector_reduction", ["L1", "L2", "min", "max", "mean", "std"])
+        )
     elif uncertainty == "full_softmax":
         if unit not in {"image", "bbox"}:
             msg = "Invalid config: output.save_csv.uncertainty='full_softmax' requires output.save_csv.unit in {'image','bbox'}."
@@ -337,6 +341,7 @@ def parse_output_config(output_cfg):
         "iou_match_threshold": iou_match_threshold,
         "tp_iou_match_threshold": tp_iou_match_threshold,
         "score_vector_reduction": score_vector_reduction,
+        "entropy_vector_reduction": entropy_vector_reduction,
         "full_softmax_vector_reduction": full_softmax_vector_reduction,
         "target_values": target_values,
         "target_layers": target_layers,

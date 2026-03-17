@@ -48,6 +48,7 @@ output:
 
     entropy:
       enabled: true
+      vector_reduction: [L1, L2, min, max, mean, std]  # only for unit: image
 
     full_softmax:
       enabled: true
