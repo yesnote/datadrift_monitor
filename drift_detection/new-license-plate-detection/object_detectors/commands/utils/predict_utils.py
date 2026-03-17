@@ -193,7 +193,7 @@ def parse_output_config(output_cfg):
     save_csv_cfg = output_cfg.get("save_csv", {})
     if isinstance(save_csv_cfg, bool):
         save_csv_enabled = save_csv_cfg
-        cue = "fn"
+        uncertainty = "fn"
         fn_cfg = {}
         tp_cfg = {}
         feature_grad_cfg = {}
@@ -201,15 +201,18 @@ def parse_output_config(output_cfg):
         unit = "image"
     else:
         save_csv_enabled = bool(save_csv_cfg.get("enabled", True))
-        cue = str(save_csv_cfg.get("cue", "fn")).lower()
+        uncertainty = str(save_csv_cfg.get("uncertainty", save_csv_cfg.get("cue", "fn"))).lower()
         fn_cfg = save_csv_cfg.get("fn", {})
         tp_cfg = save_csv_cfg.get("tp", {})
         feature_grad_cfg = save_csv_cfg.get("feature_grad", {})
         layer_grad_cfg = save_csv_cfg.get("layer_grad", {})
         unit = str(save_csv_cfg.get("unit", "image")).lower()
 
-    if cue not in {"fn", "tp", "feature_grad", "layer_grad"}:
-        raise ValueError(f"Unsupported output.save_csv.cue='{cue}'. Use 'fn', 'tp', 'feature_grad' or 'layer_grad'.")
+    if uncertainty not in {"fn", "tp", "feature_grad", "layer_grad"}:
+        raise ValueError(
+            f"Unsupported output.save_csv.uncertainty='{uncertainty}'. "
+            "Use 'fn', 'tp', 'feature_grad' or 'layer_grad'."
+        )
 
     iou_match_threshold = float(fn_cfg.get("iou_match_threshold", 0.5))
     tp_iou_match_threshold = float(tp_cfg.get("iou_match_threshold", 0.5))
@@ -220,7 +223,7 @@ def parse_output_config(output_cfg):
     layer_target_values = []
     layer_target_layers = []
     layer_vector_reduction = ["1-norm", "2-norm", "min", "max", "mean", "std"]
-    if cue == "feature_grad":
+    if uncertainty == "feature_grad":
         if unit not in {"image", "bbox"}:
             raise ValueError("output.save_csv.unit must be 'image' or 'bbox' when cue is 'feature_grad'.")
         target_values = [v.lower() for v in normalize_to_list(feature_grad_cfg.get("target_value", ["obj"]))]
@@ -246,9 +249,9 @@ def parse_output_config(output_cfg):
         feature_vector_reduction = normalize_vector_reduction(
             feature_grad_cfg.get("vector_reduction", ["L1", "L2", "min", "max", "mean", "std"])
         )
-    elif cue == "layer_grad":
+    elif uncertainty == "layer_grad":
         if unit not in {"image", "bbox"}:
-            msg = "Invalid config: output.save_csv.cue='layer_grad' requires output.save_csv.unit in {'image','bbox'}."
+            msg = "Invalid config: output.save_csv.uncertainty='layer_grad' requires output.save_csv.unit in {'image','bbox'}."
             warnings.warn(msg)
             raise ValueError(msg)
         layer_target_values = [v.lower() for v in normalize_to_list(layer_grad_cfg.get("target_value", ["loss"]))]
@@ -272,14 +275,14 @@ def parse_output_config(output_cfg):
         layer_vector_reduction = normalize_vector_reduction(
             layer_grad_cfg.get("vector_reduction", ["L1", "L2", "min", "max", "mean", "std"])
         )
-    elif cue == "fn":
+    elif uncertainty == "fn":
         if unit != "image":
-            msg = "Invalid config: output.save_csv.cue='fn' requires output.save_csv.unit='image'."
+            msg = "Invalid config: output.save_csv.uncertainty='fn' requires output.save_csv.unit='image'."
             warnings.warn(msg)
             raise ValueError(msg)
-    elif cue == "tp":
+    elif uncertainty == "tp":
         if unit != "bbox":
-            msg = "Invalid config: output.save_csv.cue='tp' requires output.save_csv.unit='bbox'."
+            msg = "Invalid config: output.save_csv.uncertainty='tp' requires output.save_csv.unit='bbox'."
             warnings.warn(msg)
             raise ValueError(msg)
 
@@ -300,7 +303,7 @@ def parse_output_config(output_cfg):
 
     return {
         "save_csv_enabled": save_csv_enabled,
-        "cue": cue,
+        "uncertainty": uncertainty,
         "unit": unit,
         "iou_match_threshold": iou_match_threshold,
         "tp_iou_match_threshold": tp_iou_match_threshold,

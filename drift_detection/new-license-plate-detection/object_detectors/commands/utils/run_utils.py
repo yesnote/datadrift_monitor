@@ -6,9 +6,9 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 
-def create_run_dir(cue=None, unit=None, target_value=None):
+def create_run_dir(uncertainty=None, unit=None, target_value=None):
     run_name = datetime.now().strftime("%m-%d-%Y_%H;%M")
-    cue_name = str(cue or "predict").lower()
+    uncertainty_name = str(uncertainty or "predict").lower()
     unit_name = str(unit or "").lower()
     target_name = str(target_value or "").strip().lower()
 
@@ -19,7 +19,11 @@ def create_run_dir(cue=None, unit=None, target_value=None):
     else:
         base_dir = PROJECT_ROOT / "runs"
 
-    dir_name = f"{run_name}_{cue_name}" if not target_name else f"{run_name}_{cue_name}_{target_name}"
+    dir_name = (
+        f"{run_name}_{uncertainty_name}"
+        if not target_name
+        else f"{run_name}_{uncertainty_name}_{target_name}"
+    )
     run_dir = base_dir / dir_name
     run_dir.mkdir(parents=True, exist_ok=True)
     return run_dir
@@ -58,10 +62,10 @@ def _count_rows(csv_path: Path) -> int | None:
         return sum(1 for _ in reader)
 
 
-def save_run_summary(run_dir: Path, cue: str, unit: str) -> Path:
+def save_run_summary(run_dir: Path, uncertainty: str, unit: str) -> Path:
     run_dir = Path(run_dir)
     summary = {
-        "cue": str(cue),
+        "uncertainty": str(uncertainty),
         "unit": str(unit),
     }
 
