@@ -210,10 +210,10 @@ def parse_output_config(output_cfg):
         layer_grad_cfg = save_csv_cfg.get("layer_grad", {})
         unit = str(save_csv_cfg.get("unit", "image")).lower()
 
-    if uncertainty not in {"fn", "tp", "score", "feature_grad", "layer_grad"}:
+    if uncertainty not in {"fn", "tp", "score", "full_softmax", "feature_grad", "layer_grad"}:
         raise ValueError(
             f"Unsupported output.save_csv.uncertainty='{uncertainty}'. "
-            "Use 'fn', 'tp', 'score', 'feature_grad' or 'layer_grad'."
+            "Use 'fn', 'tp', 'score', 'full_softmax', 'feature_grad' or 'layer_grad'."
         )
 
     iou_match_threshold = float(fn_cfg.get("iou_match_threshold", 0.5))
@@ -296,6 +296,11 @@ def parse_output_config(output_cfg):
         score_vector_reduction = normalize_vector_reduction(
             score_cfg.get("vector_reduction", ["L1", "L2", "min", "max", "mean", "std"])
         )
+    elif uncertainty == "full_softmax":
+        if unit != "bbox":
+            msg = "Invalid config: output.save_csv.uncertainty='full_softmax' requires output.save_csv.unit='bbox'."
+            warnings.warn(msg)
+            raise ValueError(msg)
 
     save_image_cfg = output_cfg.get("save_image", {})
     if isinstance(save_image_cfg, bool):
