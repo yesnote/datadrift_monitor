@@ -446,6 +446,96 @@ def run_score_csv(config, run_dir):
     print(f"Saved results CSV: {output_csv}")
 
 
+def run_full_softmax_csv(config, run_dir):
+    run_dir = Path(run_dir)
+    mode = str(config.get("mode", "predict"))
+    uncertainty = "full_softmax"
+
+    dataset_cfg = config.get("dataset", {})
+    split = dataset_cfg.get("split", "val")
+    parsed = parse_output_config(config.get("output", {}))
+    save_csv = parsed["save_csv_enabled"]
+    unit = parsed["unit"]
+
+    if not save_csv:
+        return
+    if unit != "bbox":
+        raise ValueError("output.save_csv.uncertainty='full_softmax' requires output.save_csv.unit='bbox'.")
+
+    dataloader = create_dataloader(config, split=split)
+    if len(dataloader.dataset) == 0:
+        raise ValueError("Loaded 0 images. Check dataset root/image_dir/split configuration in YAML.")
+
+    detector, device = build_detector(config)
+    num_classes = len(detector.names) if detector.names is not None else 80
+    output_csv = run_dir / "full_softmax.csv"
+    fieldnames = [
+        "image_id",
+        "image_path",
+        "pred_idx",
+        "xmin",
+        "ymin",
+        "xmax",
+        "ymax",
+        "score",
+        "pred_class",
+    ] + [f"prob_{i}" for i in range(num_classes)]
+
+    with open(output_csv, "w", newline="", encoding="utf-8") as output_file:
+        writer = csv.DictWriter(output_file, fieldnames=fieldnames)
+        writer.writeheader()
+
+        for images, targets in tqdm(
+            dataloader, desc=f"Object Detector ({mode} - {uncertainty})", total=len(dataloader)
+        ):
+            for sample_idx in range(images.shape[0]):
+                detector.zero_grad(set_to_none=True)
+                infer_tensor, _ratio, _pad, _resized_chw = preprocess_with_letterbox(
+                    detector, images[sample_idx], device, requires_grad=False
+                )
+                with torch.no_grad():
+                    preds, logits, _objectness, _features = detector(infer_tensor)
+
+                target = targets[sample_idx]
+                image_id = int(target["image_id"][0].item())
+                image_path = target["path"]
+                pred_boxes = preds[0][0]
+                pred_class_names = preds[2][0]
+                pred_scores = preds[3][0]
+                pred_logits = logits[0] if logits else torch.zeros((0, num_classes), device=device)
+                pred_probs = torch.softmax(pred_logits, dim=-1) if pred_logits.numel() else pred_logits
+
+                for pred_idx, (box, score, pred_class) in enumerate(
+                    zip(pred_boxes, pred_scores, pred_class_names)
+                ):
+                    row = {
+                        "image_id": image_id,
+                        "image_path": image_path,
+                        "pred_idx": pred_idx,
+                        "xmin": float(box[0]),
+                        "ymin": float(box[1]),
+                        "xmax": float(box[2]),
+                        "ymax": float(box[3]),
+                        "score": float(score),
+                        "pred_class": pred_class,
+                    }
+                    if pred_idx < pred_probs.shape[0]:
+                        probs = pred_probs[pred_idx].detach().cpu().tolist()
+                    else:
+                        probs = [0.0] * num_classes
+                    for class_idx in range(num_classes):
+                        row[f"prob_{class_idx}"] = float(probs[class_idx]) if class_idx < len(probs) else 0.0
+                    writer.writerow(row)
+
+                del infer_tensor, preds, logits, _objectness, _features
+
+    del detector
+    if device.type == "cuda":
+        torch.cuda.empty_cache()
+
+    print(f"Saved results CSV: {output_csv}")
+
+
 def run_layer_grad_csv(config, run_dir):
     run_dir = Path(run_dir)
     mode = str(config.get("mode", "predict"))
@@ -553,6 +643,9 @@ def run_predict(config, run_dir):
         return
     if uncertainty == "score":
         run_score_csv(config, run_dir)
+        return
+    if uncertainty == "full_softmax":
+        run_full_softmax_csv(config, run_dir)
         return
     if uncertainty == "feature_grad":
         run_feature_grad_csv(config, run_dir)
