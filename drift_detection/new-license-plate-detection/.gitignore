@@ -3,3 +3,4 @@ code_references/
 object_detectors/runs/
 error_detectors/runs/
 __pycache__/
+*.xlsx
