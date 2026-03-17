@@ -11,7 +11,7 @@ from dataloaders.dataloader_yolo import create_dataloader
 from commands.utils.predict_utils import (
     assign_tp_to_predictions,
     build_detector,
-    configure_mc_dropout,
+    enable_forced_mc_dropout_on_yolov5_head,
     collect_bbox_gradients_per_target,
     collect_bbox_layer_grads_per_target,
     collect_gradients_per_target,
@@ -850,9 +850,9 @@ def run_mc_dropout_csv(config, run_dir):
         raise ValueError("Loaded 0 images. Check dataset root/image_dir/split configuration in YAML.")
 
     detector, device = build_detector(config)
-    num_dropout_modules = configure_mc_dropout(detector.model, dropout_rate)
-    if num_dropout_modules == 0:
-        print("[WARN] No Dropout modules found in YOLOv5 model. MC-dropout variability may be near zero.")
+    mc_handles = enable_forced_mc_dropout_on_yolov5_head(detector.model, dropout_rate)
+    if len(mc_handles) == 0:
+        print("[WARN] YOLOv5 detect head not found for forced MC-dropout hooks.")
 
     output_csv = run_dir / "mc_dropout.csv"
 
@@ -982,6 +982,8 @@ def run_mc_dropout_csv(config, run_dir):
 
                 del infer_tensor
 
+    for h in mc_handles:
+        h.remove()
     del detector
     if device.type == "cuda":
         torch.cuda.empty_cache()
