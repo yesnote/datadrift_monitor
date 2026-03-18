@@ -860,6 +860,7 @@ def run_mc_dropout_csv(config, run_dir):
     unit = parsed["unit"]
     num_runs = int(parsed["mc_num_runs"])
     dropout_rate = float(parsed["mc_dropout_rate"])
+    chunk_size = int(parsed["mc_chunk_size"])
 
     if not save_csv:
         return
@@ -878,7 +879,6 @@ def run_mc_dropout_csv(config, run_dir):
     output_csv = run_dir / "mc_dropout.csv"
     if output_csv.exists():
         output_csv.unlink()
-    chunk_size = 50000
     rows_chunk = []
     header_written = False
 
