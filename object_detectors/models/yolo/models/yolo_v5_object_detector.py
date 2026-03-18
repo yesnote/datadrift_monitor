@@ -94,7 +94,7 @@ class YOLOV5TorchObjectDetector(nn.Module):
         t = time.time()
         output = [torch.zeros((0, 6), device=prediction.device)] * prediction.shape[0]
         logits_output = [torch.zeros((0, 80), device=logits.device)] * logits.shape[0]
-        objectivness_output = [torch.zeros((0, 1), device=prediction.device)]
+        objectivness_output = [torch.zeros((0, 1), device=prediction.device)] * prediction.shape[0]
         index_output = [torch.zeros((0,), dtype=torch.long, device=prediction.device)] * prediction.shape[0]
         for xi, (x, log_) in enumerate(zip(prediction, logits)):  # image index, image inference
             # Apply constraints
