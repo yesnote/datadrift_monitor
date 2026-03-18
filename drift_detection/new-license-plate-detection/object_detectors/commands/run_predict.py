@@ -886,9 +886,6 @@ def run_mc_dropout_csv(config, run_dir):
         raise ValueError("Loaded 0 images. Check dataset root/image_dir/split configuration in YAML.")
 
     detector, device = build_detector(config)
-    mc_handles = enable_forced_mc_dropout_on_yolov5_head(detector.model, dropout_rate)
-    if len(mc_handles) == 0:
-        print("[WARN] YOLOv5 detect head not found for forced MC-dropout hooks.")
 
     output_csv = run_dir / "mc_dropout.csv"
     metric_alias = {
@@ -903,18 +900,19 @@ def run_mc_dropout_csv(config, run_dir):
     fieldnames = [
         "image_id",
         "image_path",
-        "candidate_idx",
+        "pred_idx",
+        "raw_pred_idx",
+        "xmin",
+        "ymin",
+        "xmax",
+        "ymax",
+        "score",
+        "pred_class",
         "xmin_mean",
         "ymin_mean",
         "xmax_mean",
         "ymax_mean",
         "score_mean",
-        "class_logit_l1_mean",
-        "class_logit_l2_mean",
-        "class_logit_min_mean",
-        "class_logit_max_mean",
-        "class_logit_mean_mean",
-        "class_logit_std_mean",
         "xmin_std",
         "ymin_std",
         "xmax_std",
@@ -925,6 +923,13 @@ def run_mc_dropout_csv(config, run_dir):
         fieldnames.append(f"class_logit_{metric}_mean")
     for metric in selected_suffixes:
         fieldnames.append(f"class_logit_{metric}_std")
+
+    # Probe once to notify if forced-dropout hooks are unavailable on this model.
+    probe_handles = enable_forced_mc_dropout_on_yolov5_head(detector.model, dropout_rate)
+    if len(probe_handles) == 0:
+        print("[WARN] YOLOv5 detect head not found for forced MC-dropout hooks.")
+    for h in probe_handles:
+        h.remove()
 
     mp_ctx = mp.get_context("spawn")
     write_queue = mp_ctx.Queue(maxsize=queue_maxsize)
@@ -956,69 +961,89 @@ def run_mc_dropout_csv(config, run_dir):
             infer_batch = torch.cat(batch_tensors, dim=0)
             del batch_tensors
 
+            # 1) Deterministic forward once: get final NMS predictions and raw pre-NMS indices.
+            with torch.no_grad():
+                det_output = detector.model(infer_batch, augment=False)
+                det_raw_pred = det_output[0] if isinstance(det_output, (tuple, list)) else det_output
+                det_raw_logits = det_output[1] if isinstance(det_output, (tuple, list)) and len(det_output) > 1 else None
+                selected_preds, _selected_logits, _selected_objectness, selected_indices = detector.non_max_suppression(
+                    det_raw_pred,
+                    det_raw_logits,
+                    detector.confidence,
+                    detector.iou_thresh,
+                    classes=None,
+                    agnostic=detector.agnostic,
+                    return_indices=True,
+                )
+
             feat_mean = None
             feat_m2 = None
             n_candidates = None
             run_count = 0
             metric_count = len(vector_reduction)
+            mc_handles = enable_forced_mc_dropout_on_yolov5_head(detector.model, dropout_rate)
 
-            with torch.no_grad():
-                for _ in range(num_runs):
-                    detector.zero_grad(set_to_none=True)
-                    model_output = detector.model(infer_batch, augment=False)
-                    raw_prediction = model_output[0] if isinstance(model_output, (tuple, list)) else model_output
-                    raw_logits = (
-                        model_output[1]
-                        if isinstance(model_output, (tuple, list)) and len(model_output) > 1
-                        else None
-                    )
+            try:
+                with torch.no_grad():
+                    for _ in range(num_runs):
+                        detector.zero_grad(set_to_none=True)
+                        model_output = detector.model(infer_batch, augment=False)
+                        raw_prediction = model_output[0] if isinstance(model_output, (tuple, list)) else model_output
+                        raw_logits = (
+                            model_output[1]
+                            if isinstance(model_output, (tuple, list)) and len(model_output) > 1
+                            else None
+                        )
 
-                    pred_batch = raw_prediction.detach().float()
-                    bbox_xyxy = _xywh_to_xyxy_tensor(pred_batch[..., :4])
-                    score_vec = pred_batch[..., 4].unsqueeze(-1)
-                    if raw_logits is not None:
-                        cls_logits = raw_logits.detach().float()
-                    else:
-                        cls_prob = pred_batch[..., 5:].detach().float()
-                        if cls_prob.numel() == 0:
-                            cls_logits = torch.zeros(
-                                (pred_batch.shape[0], pred_batch.shape[1], 1), device=pred_batch.device
-                            )
+                        pred_batch = raw_prediction.detach().float()
+                        bbox_xyxy = _xywh_to_xyxy_tensor(pred_batch[..., :4])
+                        score_vec = pred_batch[..., 4].unsqueeze(-1)
+                        if raw_logits is not None:
+                            cls_logits = raw_logits.detach().float()
                         else:
-                            cls_logits = torch.logit(torch.clamp(cls_prob, min=1e-6, max=1.0 - 1e-6))
+                            cls_prob = pred_batch[..., 5:].detach().float()
+                            if cls_prob.numel() == 0:
+                                cls_logits = torch.zeros(
+                                    (pred_batch.shape[0], pred_batch.shape[1], 1), device=pred_batch.device
+                                )
+                            else:
+                                cls_logits = torch.logit(torch.clamp(cls_prob, min=1e-6, max=1.0 - 1e-6))
 
-                    cls_metric_tensors = []
-                    if "1-norm" in vector_reduction:
-                        cls_metric_tensors.append(torch.norm(cls_logits, p=1, dim=2, keepdim=True))
-                    if "2-norm" in vector_reduction:
-                        cls_metric_tensors.append(torch.norm(cls_logits, p=2, dim=2, keepdim=True))
-                    if "min" in vector_reduction:
-                        cls_metric_tensors.append(torch.min(cls_logits, dim=2, keepdim=True).values)
-                    if "max" in vector_reduction:
-                        cls_metric_tensors.append(torch.max(cls_logits, dim=2, keepdim=True).values)
-                    if "mean" in vector_reduction:
-                        cls_metric_tensors.append(torch.mean(cls_logits, dim=2, keepdim=True))
-                    if "std" in vector_reduction:
-                        cls_metric_tensors.append(torch.std(cls_logits, dim=2, keepdim=True, unbiased=False))
-                    if cls_metric_tensors:
-                        cls_metrics = torch.cat(cls_metric_tensors, dim=2)
-                    else:
-                        cls_metrics = torch.empty((pred_batch.shape[0], pred_batch.shape[1], 0), device=device)
-                    run_features = torch.cat([bbox_xyxy, score_vec, cls_metrics], dim=2)
+                        cls_metric_tensors = []
+                        if "1-norm" in vector_reduction:
+                            cls_metric_tensors.append(torch.norm(cls_logits, p=1, dim=2, keepdim=True))
+                        if "2-norm" in vector_reduction:
+                            cls_metric_tensors.append(torch.norm(cls_logits, p=2, dim=2, keepdim=True))
+                        if "min" in vector_reduction:
+                            cls_metric_tensors.append(torch.min(cls_logits, dim=2, keepdim=True).values)
+                        if "max" in vector_reduction:
+                            cls_metric_tensors.append(torch.max(cls_logits, dim=2, keepdim=True).values)
+                        if "mean" in vector_reduction:
+                            cls_metric_tensors.append(torch.mean(cls_logits, dim=2, keepdim=True))
+                        if "std" in vector_reduction:
+                            cls_metric_tensors.append(torch.std(cls_logits, dim=2, keepdim=True, unbiased=False))
+                        if cls_metric_tensors:
+                            cls_metrics = torch.cat(cls_metric_tensors, dim=2)
+                        else:
+                            cls_metrics = torch.empty((pred_batch.shape[0], pred_batch.shape[1], 0), device=device)
+                        run_features = torch.cat([bbox_xyxy, score_vec, cls_metrics], dim=2)
 
-                    if n_candidates is None:
-                        n_candidates = int(run_features.shape[1])
-                        feat_dim = 5 + metric_count
-                        feat_mean = torch.zeros((batch_size, n_candidates, feat_dim), device=device)
-                        feat_m2 = torch.zeros((batch_size, n_candidates, feat_dim), device=device)
+                        if n_candidates is None:
+                            n_candidates = int(run_features.shape[1])
+                            feat_dim = 5 + metric_count
+                            feat_mean = torch.zeros((batch_size, n_candidates, feat_dim), device=device)
+                            feat_m2 = torch.zeros((batch_size, n_candidates, feat_dim), device=device)
 
-                    if int(run_features.shape[1]) != n_candidates:
-                        raise ValueError("Raw candidate count changed across MC runs; expected fixed pre-NMS candidates.")
+                        if int(run_features.shape[1]) != n_candidates:
+                            raise ValueError("Raw candidate count changed across MC runs; expected fixed pre-NMS candidates.")
 
-                    run_count += 1
-                    delta = run_features - feat_mean
-                    feat_mean = feat_mean + delta / run_count
-                    feat_m2 = feat_m2 + delta * (run_features - feat_mean)
+                        run_count += 1
+                        delta = run_features - feat_mean
+                        feat_mean = feat_mean + delta / run_count
+                        feat_m2 = feat_m2 + delta * (run_features - feat_mean)
+            finally:
+                for h in mc_handles:
+                    h.remove()
 
             if n_candidates is None:
                 del infer_batch
@@ -1030,32 +1055,51 @@ def run_mc_dropout_csv(config, run_dir):
             for b in range(batch_size):
                 image_id = image_ids[b]
                 image_path = image_paths[b]
+                det_b = selected_preds[b] if selected_preds and b < len(selected_preds) else torch.zeros((0, 6), device=device)
+                raw_keep_b = (
+                    selected_indices[b]
+                    if selected_indices and b < len(selected_indices)
+                    else torch.zeros((0,), dtype=torch.long, device=device)
+                )
                 feat_mean_np = feat_mean[b].detach().cpu().numpy()
                 feat_std_np = feat_std[b].detach().cpu().numpy()
-                for cand_idx in range(n_candidates):
+                num_final = int(det_b.shape[0])
+                for pred_idx in range(num_final):
+                    raw_idx = int(raw_keep_b[pred_idx].detach().cpu().item())
+                    if raw_idx < 0 or raw_idx >= n_candidates:
+                        continue
+                    cls_idx = int(det_b[pred_idx, 5].detach().cpu().item()) if det_b.shape[1] > 5 else -1
                     row = {
                         "image_id": image_id,
                         "image_path": image_path,
-                        "candidate_idx": cand_idx,
-                        "xmin_mean": float(feat_mean_np[cand_idx, 0]),
-                        "ymin_mean": float(feat_mean_np[cand_idx, 1]),
-                        "xmax_mean": float(feat_mean_np[cand_idx, 2]),
-                        "ymax_mean": float(feat_mean_np[cand_idx, 3]),
-                        "score_mean": float(feat_mean_np[cand_idx, 4]),
-                        "xmin_std": float(feat_std_np[cand_idx, 0]),
-                        "ymin_std": float(feat_std_np[cand_idx, 1]),
-                        "xmax_std": float(feat_std_np[cand_idx, 2]),
-                        "ymax_std": float(feat_std_np[cand_idx, 3]),
-                        "score_std": float(feat_std_np[cand_idx, 4]),
+                        "pred_idx": pred_idx,
+                        "raw_pred_idx": raw_idx,
+                        "xmin": float(det_b[pred_idx, 0].detach().cpu().item()),
+                        "ymin": float(det_b[pred_idx, 1].detach().cpu().item()),
+                        "xmax": float(det_b[pred_idx, 2].detach().cpu().item()),
+                        "ymax": float(det_b[pred_idx, 3].detach().cpu().item()),
+                        "score": float(det_b[pred_idx, 4].detach().cpu().item()) if det_b.shape[1] > 4 else 0.0,
+                        "pred_class": detector.names[cls_idx] if (detector.names is not None and cls_idx >= 0) else cls_idx,
+                        "xmin_mean": float(feat_mean_np[raw_idx, 0]),
+                        "ymin_mean": float(feat_mean_np[raw_idx, 1]),
+                        "xmax_mean": float(feat_mean_np[raw_idx, 2]),
+                        "ymax_mean": float(feat_mean_np[raw_idx, 3]),
+                        "score_mean": float(feat_mean_np[raw_idx, 4]),
+                        "xmin_std": float(feat_std_np[raw_idx, 0]),
+                        "ymin_std": float(feat_std_np[raw_idx, 1]),
+                        "xmax_std": float(feat_std_np[raw_idx, 2]),
+                        "ymax_std": float(feat_std_np[raw_idx, 3]),
+                        "score_std": float(feat_std_np[raw_idx, 4]),
                     }
                     for metric_idx, metric_name in enumerate(selected_suffixes):
-                        row[f"class_logit_{metric_name}_mean"] = float(feat_mean_np[cand_idx, 5 + metric_idx])
+                        row[f"class_logit_{metric_name}_mean"] = float(feat_mean_np[raw_idx, 5 + metric_idx])
                     for metric_idx, metric_name in enumerate(selected_suffixes):
-                        row[f"class_logit_{metric_name}_std"] = float(feat_std_np[cand_idx, 5 + metric_idx])
+                        row[f"class_logit_{metric_name}_std"] = float(feat_std_np[raw_idx, 5 + metric_idx])
                     batch_rows.append(row)
 
             write_queue.put(batch_rows)
 
+            del selected_preds, selected_indices
             del infer_batch
     except Exception:
         had_error = True
