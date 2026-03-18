@@ -860,7 +860,6 @@ def run_mc_dropout_csv(config, run_dir):
     unit = parsed["unit"]
     num_runs = int(parsed["mc_num_runs"])
     dropout_rate = float(parsed["mc_dropout_rate"])
-    chunk_size = int(parsed["mc_chunk_size"])
 
     if not save_csv:
         return
@@ -876,20 +875,8 @@ def run_mc_dropout_csv(config, run_dir):
     if len(mc_handles) == 0:
         print("[WARN] YOLOv5 detect head not found for forced MC-dropout hooks.")
 
-    output_csv = run_dir / "mc_dropout.csv"
-    if output_csv.exists():
-        output_csv.unlink()
-    rows_chunk = []
-    header_written = False
-
-    def flush_chunk():
-        nonlocal rows_chunk, header_written
-        if not rows_chunk:
-            return
-        df_chunk = pd.DataFrame(rows_chunk)
-        df_chunk.to_csv(output_csv, mode="a", index=False, header=not header_written)
-        header_written = True
-        rows_chunk = []
+    output_dir = run_dir / "mc_dropout" / "csv"
+    output_dir.mkdir(parents=True, exist_ok=True)
 
     for images, targets in tqdm(
         dataloader, desc=f"Object Detector ({mode} - {uncertainty})", total=len(dataloader)
@@ -984,6 +971,7 @@ def run_mc_dropout_csv(config, run_dir):
             prob_mean_np = prob_mean[b].detach().cpu().numpy()
             prob_std_np = prob_std[b].detach().cpu().numpy()
             pred_class_np = pred_class_idx[b].detach().cpu().numpy()
+            rows = []
 
             for cand_idx in range(n_candidates):
                 row = {
@@ -1005,14 +993,13 @@ def run_mc_dropout_csv(config, run_dir):
                 for class_idx in range(n_classes):
                     row[f"prob_{class_idx}_mean"] = float(prob_mean_np[cand_idx, class_idx])
                     row[f"prob_{class_idx}_std"] = float(prob_std_np[cand_idx, class_idx])
-                rows_chunk.append(row)
+                rows.append(row)
 
-            if len(rows_chunk) >= chunk_size:
-                flush_chunk()
+            image_stem = Path(str(image_path)).stem
+            image_csv = output_dir / f"{image_id}_{image_stem}_mc.csv"
+            pd.DataFrame(rows).to_csv(image_csv, index=False)
 
         del infer_batch
-
-    flush_chunk()
 
     for h in mc_handles:
         h.remove()
@@ -1020,7 +1007,7 @@ def run_mc_dropout_csv(config, run_dir):
     if device.type == "cuda":
         torch.cuda.empty_cache()
 
-    print(f"Saved results CSV: {output_csv}")
+    print(f"Saved results CSV dir: {output_dir}")
 
 
 def run_layer_grad_csv(config, run_dir):
