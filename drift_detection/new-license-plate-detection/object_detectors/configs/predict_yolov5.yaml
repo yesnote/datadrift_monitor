@@ -55,7 +55,7 @@ output:
       num_runs: 30
       dropout_rate: 0.5
       queue_maxsize: 8
-      vector_reduction: [L1, L2, min, max, mean, std]
+      vector_reduction: [L1, L2, min, max, mean, std]  # for reduction of class logits
 
     feature_grad:
       target_value: [obj, cls]  # loss | obj_loss | cls_loss | bbox_loss | obj | cls
