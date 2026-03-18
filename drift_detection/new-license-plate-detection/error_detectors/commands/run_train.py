@@ -196,7 +196,7 @@ def load_training_dataframe(dataset_cfg: dict[str, Any]) -> tuple[pd.DataFrame, 
             raise FileNotFoundError(f"fn.csv not found: {gt_csv}")
         gt_df = pd.read_csv(gt_csv)[["image_id", "image_path", label_col]]
         merge_keys = ["image_id", "image_path"]
-        meta_columns = {"image_id", "image_path", label_col}
+        meta_columns = {"image_id", "image_path", "num_preds", label_col}
     elif input_group == "tp_classifiers":
         gt_csv = gt_root / "tp.csv"
         label_col = "tp"
