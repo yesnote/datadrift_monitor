@@ -226,6 +226,8 @@ def parse_output_config(output_cfg):
     gt_iou_match_threshold = float(gt_cfg.get("iou_match_threshold", 0.5))
     mc_num_runs = int(mc_dropout_cfg.get("num_runs", 30))
     mc_dropout_rate = float(mc_dropout_cfg.get("dropout_rate", 0.5))
+    mc_num_writer = int(mc_dropout_cfg.get("num_writer", 2))
+    mc_queue_maxsize = int(mc_dropout_cfg.get("queue_maxsize", 8))
     score_vector_reduction = ["1-norm", "2-norm", "min", "max", "mean", "std"]
     energy_vector_reduction = ["1-norm", "2-norm", "min", "max", "mean", "std"]
     entropy_vector_reduction = ["1-norm", "2-norm", "min", "max", "mean", "std"]
@@ -311,6 +313,10 @@ def parse_output_config(output_cfg):
             raise ValueError("output.save_csv.mc_dropout.num_runs must be >= 1.")
         if not (0.0 <= mc_dropout_rate < 1.0):
             raise ValueError("output.save_csv.mc_dropout.dropout_rate must be in [0,1).")
+        if mc_num_writer < 1:
+            raise ValueError("output.save_csv.mc_dropout.num_writer must be >= 1.")
+        if mc_queue_maxsize < 1:
+            raise ValueError("output.save_csv.mc_dropout.queue_maxsize must be >= 1.")
     elif uncertainty == "energy":
         if unit not in {"image", "bbox"}:
             msg = "Invalid config: output.save_csv.uncertainty='energy' requires output.save_csv.unit in {'image','bbox'}."
@@ -358,6 +364,8 @@ def parse_output_config(output_cfg):
         "gt_iou_match_threshold": gt_iou_match_threshold,
         "mc_num_runs": mc_num_runs,
         "mc_dropout_rate": mc_dropout_rate,
+        "mc_num_writer": mc_num_writer,
+        "mc_queue_maxsize": mc_queue_maxsize,
         "score_vector_reduction": score_vector_reduction,
         "energy_vector_reduction": energy_vector_reduction,
         "entropy_vector_reduction": entropy_vector_reduction,
