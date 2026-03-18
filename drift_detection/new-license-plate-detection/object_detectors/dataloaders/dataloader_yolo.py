@@ -1,6 +1,5 @@
 from pathlib import Path
 
-import torch
 from torch.utils.data import DataLoader
 import yaml
 
@@ -71,7 +70,7 @@ def build_dataset(config, split="train"):
 
 def yolo_collate_fn(batch):
     images, targets = zip(*batch)
-    return torch.stack(images, dim=0), list(targets)
+    return list(images), list(targets)
 
 
 def create_dataloader(config, split="train"):
