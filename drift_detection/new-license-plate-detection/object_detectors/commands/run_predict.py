@@ -68,15 +68,16 @@ def _build_summary(total_images, fn_images, output_csv):
     }
 
 
-def _mc_dropout_writer_worker(write_queue):
-    while True:
-        payload = write_queue.get()
-        if payload is None:
-            break
-        for csv_path, rows in payload:
-            if not rows:
-                continue
-            pd.DataFrame(rows).to_csv(csv_path, index=False)
+def _mc_dropout_single_csv_writer(write_queue, output_csv, fieldnames):
+    with open(output_csv, "w", newline="", encoding="utf-8") as output_file:
+        writer = csv.DictWriter(output_file, fieldnames=fieldnames)
+        writer.writeheader()
+        while True:
+            batch_rows = write_queue.get()
+            if batch_rows is None:
+                break
+            if batch_rows:
+                writer.writerows(batch_rows)
 
 
 def run_fn_csv(config, run_dir):
@@ -872,8 +873,8 @@ def run_mc_dropout_csv(config, run_dir):
     unit = parsed["unit"]
     num_runs = int(parsed["mc_num_runs"])
     dropout_rate = float(parsed["mc_dropout_rate"])
-    num_writer = int(parsed["mc_num_writer"])
     queue_maxsize = int(parsed["mc_queue_maxsize"])
+    vector_reduction = parsed["mc_vector_reduction"]
 
     if not save_csv:
         return
@@ -889,16 +890,50 @@ def run_mc_dropout_csv(config, run_dir):
     if len(mc_handles) == 0:
         print("[WARN] YOLOv5 detect head not found for forced MC-dropout hooks.")
 
-    output_dir = run_dir / "mc_dropout" / "csv"
-    output_dir.mkdir(parents=True, exist_ok=True)
+    output_csv = run_dir / "mc_dropout.csv"
+    metric_alias = {
+        "1-norm": "l1",
+        "2-norm": "l2",
+        "min": "min",
+        "max": "max",
+        "mean": "mean",
+        "std": "std",
+    }
+    selected_suffixes = [metric_alias[m] for m in vector_reduction]
+    fieldnames = [
+        "image_id",
+        "image_path",
+        "candidate_idx",
+        "xmin_mean",
+        "ymin_mean",
+        "xmax_mean",
+        "ymax_mean",
+        "score_mean",
+        "class_logit_l1_mean",
+        "class_logit_l2_mean",
+        "class_logit_min_mean",
+        "class_logit_max_mean",
+        "class_logit_mean_mean",
+        "class_logit_std_mean",
+        "xmin_std",
+        "ymin_std",
+        "xmax_std",
+        "ymax_std",
+        "score_std",
+    ]
+    for metric in selected_suffixes:
+        fieldnames.append(f"class_logit_{metric}_mean")
+    for metric in selected_suffixes:
+        fieldnames.append(f"class_logit_{metric}_std")
+
     mp_ctx = mp.get_context("spawn")
     write_queue = mp_ctx.Queue(maxsize=queue_maxsize)
-    writers = [
-        mp_ctx.Process(target=_mc_dropout_writer_worker, args=(write_queue,), daemon=True)
-        for _ in range(num_writer)
-    ]
-    for p in writers:
-        p.start()
+    writer_proc = mp_ctx.Process(
+        target=_mc_dropout_single_csv_writer,
+        args=(write_queue, str(output_csv), fieldnames),
+        daemon=True,
+    )
+    writer_proc.start()
 
     had_error = False
     try:
@@ -921,15 +956,11 @@ def run_mc_dropout_csv(config, run_dir):
             infer_batch = torch.cat(batch_tensors, dim=0)
             del batch_tensors
 
-            bbox_mean = None
-            bbox_m2 = None
-            score_mean = None
-            score_m2 = None
-            prob_mean = None
-            prob_m2 = None
+            feat_mean = None
+            feat_m2 = None
             n_candidates = None
-            n_classes = None
             run_count = 0
+            metric_count = len(vector_reduction)
 
             with torch.no_grad():
                 for _ in range(num_runs):
@@ -943,102 +974,100 @@ def run_mc_dropout_csv(config, run_dir):
                     )
 
                     pred_batch = raw_prediction.detach().float()
-                    logits_batch = raw_logits.detach().float() if raw_logits is not None else pred_batch[..., 5:]
                     bbox_xyxy = _xywh_to_xyxy_tensor(pred_batch[..., :4])
                     score_vec = pred_batch[..., 4].unsqueeze(-1)
-                    prob_mat = pred_batch[..., 5:]
-                    if prob_mat.numel() == 0 and logits_batch.numel() > 0:
-                        prob_mat = torch.sigmoid(logits_batch)
+                    if raw_logits is not None:
+                        cls_logits = raw_logits.detach().float()
+                    else:
+                        cls_prob = pred_batch[..., 5:].detach().float()
+                        if cls_prob.numel() == 0:
+                            cls_logits = torch.zeros(
+                                (pred_batch.shape[0], pred_batch.shape[1], 1), device=pred_batch.device
+                            )
+                        else:
+                            cls_logits = torch.logit(torch.clamp(cls_prob, min=1e-6, max=1.0 - 1e-6))
+
+                    cls_metric_tensors = []
+                    if "1-norm" in vector_reduction:
+                        cls_metric_tensors.append(torch.norm(cls_logits, p=1, dim=2, keepdim=True))
+                    if "2-norm" in vector_reduction:
+                        cls_metric_tensors.append(torch.norm(cls_logits, p=2, dim=2, keepdim=True))
+                    if "min" in vector_reduction:
+                        cls_metric_tensors.append(torch.min(cls_logits, dim=2, keepdim=True).values)
+                    if "max" in vector_reduction:
+                        cls_metric_tensors.append(torch.max(cls_logits, dim=2, keepdim=True).values)
+                    if "mean" in vector_reduction:
+                        cls_metric_tensors.append(torch.mean(cls_logits, dim=2, keepdim=True))
+                    if "std" in vector_reduction:
+                        cls_metric_tensors.append(torch.std(cls_logits, dim=2, keepdim=True, unbiased=False))
+                    if cls_metric_tensors:
+                        cls_metrics = torch.cat(cls_metric_tensors, dim=2)
+                    else:
+                        cls_metrics = torch.empty((pred_batch.shape[0], pred_batch.shape[1], 0), device=device)
+                    run_features = torch.cat([bbox_xyxy, score_vec, cls_metrics], dim=2)
 
                     if n_candidates is None:
-                        n_candidates = int(pred_batch.shape[1])
-                        n_classes = int(prob_mat.shape[2]) if prob_mat.ndim == 3 else int(logits_batch.shape[2])
-                        bbox_mean = torch.zeros((batch_size, n_candidates, 4), device=device)
-                        bbox_m2 = torch.zeros((batch_size, n_candidates, 4), device=device)
-                        score_mean = torch.zeros((batch_size, n_candidates, 1), device=device)
-                        score_m2 = torch.zeros((batch_size, n_candidates, 1), device=device)
-                        prob_mean = torch.zeros((batch_size, n_candidates, n_classes), device=device)
-                        prob_m2 = torch.zeros((batch_size, n_candidates, n_classes), device=device)
+                        n_candidates = int(run_features.shape[1])
+                        feat_dim = 5 + metric_count
+                        feat_mean = torch.zeros((batch_size, n_candidates, feat_dim), device=device)
+                        feat_m2 = torch.zeros((batch_size, n_candidates, feat_dim), device=device)
 
-                    if int(pred_batch.shape[1]) != n_candidates:
+                    if int(run_features.shape[1]) != n_candidates:
                         raise ValueError("Raw candidate count changed across MC runs; expected fixed pre-NMS candidates.")
 
                     run_count += 1
-                    delta_bbox = bbox_xyxy - bbox_mean
-                    bbox_mean = bbox_mean + delta_bbox / run_count
-                    bbox_m2 = bbox_m2 + delta_bbox * (bbox_xyxy - bbox_mean)
-
-                    delta_score = score_vec - score_mean
-                    score_mean = score_mean + delta_score / run_count
-                    score_m2 = score_m2 + delta_score * (score_vec - score_mean)
-
-                    delta_prob = prob_mat - prob_mean
-                    prob_mean = prob_mean + delta_prob / run_count
-                    prob_m2 = prob_m2 + delta_prob * (prob_mat - prob_mean)
+                    delta = run_features - feat_mean
+                    feat_mean = feat_mean + delta / run_count
+                    feat_m2 = feat_m2 + delta * (run_features - feat_mean)
 
             if n_candidates is None:
                 del infer_batch
                 continue
 
-            bbox_std = torch.sqrt(torch.clamp(bbox_m2 / max(run_count, 1), min=0.0))
-            score_std = torch.sqrt(torch.clamp(score_m2 / max(run_count, 1), min=0.0))
-            prob_std = torch.sqrt(torch.clamp(prob_m2 / max(run_count, 1), min=0.0))
-            pred_class_idx = torch.argmax(prob_mean, dim=2)
-            batch_payload = []
+            feat_std = torch.sqrt(torch.clamp(feat_m2 / max(run_count, 1), min=0.0))
+            batch_rows = []
 
             for b in range(batch_size):
                 image_id = image_ids[b]
                 image_path = image_paths[b]
-                bbox_mean_np = bbox_mean[b].detach().cpu().numpy()
-                bbox_std_np = bbox_std[b].detach().cpu().numpy()
-                score_mean_np = score_mean[b, :, 0].detach().cpu().numpy()
-                score_std_np = score_std[b, :, 0].detach().cpu().numpy()
-                prob_mean_np = prob_mean[b].detach().cpu().numpy()
-                prob_std_np = prob_std[b].detach().cpu().numpy()
-                pred_class_np = pred_class_idx[b].detach().cpu().numpy()
-                rows = []
-
+                feat_mean_np = feat_mean[b].detach().cpu().numpy()
+                feat_std_np = feat_std[b].detach().cpu().numpy()
                 for cand_idx in range(n_candidates):
                     row = {
                         "image_id": image_id,
                         "image_path": image_path,
                         "candidate_idx": cand_idx,
-                        "xmin_mean": float(bbox_mean_np[cand_idx, 0]),
-                        "ymin_mean": float(bbox_mean_np[cand_idx, 1]),
-                        "xmax_mean": float(bbox_mean_np[cand_idx, 2]),
-                        "ymax_mean": float(bbox_mean_np[cand_idx, 3]),
-                        "xmin_std": float(bbox_std_np[cand_idx, 0]),
-                        "ymin_std": float(bbox_std_np[cand_idx, 1]),
-                        "xmax_std": float(bbox_std_np[cand_idx, 2]),
-                        "ymax_std": float(bbox_std_np[cand_idx, 3]),
-                        "score_mean": float(score_mean_np[cand_idx]),
-                        "score_std": float(score_std_np[cand_idx]),
-                        "pred_class_mean": int(pred_class_np[cand_idx]),
+                        "xmin_mean": float(feat_mean_np[cand_idx, 0]),
+                        "ymin_mean": float(feat_mean_np[cand_idx, 1]),
+                        "xmax_mean": float(feat_mean_np[cand_idx, 2]),
+                        "ymax_mean": float(feat_mean_np[cand_idx, 3]),
+                        "score_mean": float(feat_mean_np[cand_idx, 4]),
+                        "xmin_std": float(feat_std_np[cand_idx, 0]),
+                        "ymin_std": float(feat_std_np[cand_idx, 1]),
+                        "xmax_std": float(feat_std_np[cand_idx, 2]),
+                        "ymax_std": float(feat_std_np[cand_idx, 3]),
+                        "score_std": float(feat_std_np[cand_idx, 4]),
                     }
-                    for class_idx in range(n_classes):
-                        row[f"prob_{class_idx}_mean"] = float(prob_mean_np[cand_idx, class_idx])
-                        row[f"prob_{class_idx}_std"] = float(prob_std_np[cand_idx, class_idx])
-                    rows.append(row)
+                    for metric_idx, metric_name in enumerate(selected_suffixes):
+                        row[f"class_logit_{metric_name}_mean"] = float(feat_mean_np[cand_idx, 5 + metric_idx])
+                    for metric_idx, metric_name in enumerate(selected_suffixes):
+                        row[f"class_logit_{metric_name}_std"] = float(feat_std_np[cand_idx, 5 + metric_idx])
+                    batch_rows.append(row)
 
-                image_stem = Path(str(image_path)).stem
-                image_csv = output_dir / f"{image_id}_{image_stem}_mc.csv"
-                batch_payload.append((str(image_csv), rows))
+            write_queue.put(batch_rows)
 
-            write_queue.put(batch_payload)
             del infer_batch
     except Exception:
         had_error = True
         raise
     finally:
         if had_error:
-            for p in writers:
-                if p.is_alive():
-                    p.terminate()
+            if writer_proc.is_alive():
+                writer_proc.terminate()
+                writer_proc.join()
         else:
-            for _ in writers:
-                write_queue.put(None)
-            for p in writers:
-                p.join()
+            write_queue.put(None)
+            writer_proc.join()
         write_queue.close()
         write_queue.join_thread()
 
@@ -1048,7 +1077,7 @@ def run_mc_dropout_csv(config, run_dir):
     if device.type == "cuda":
         torch.cuda.empty_cache()
 
-    print(f"Saved results CSV dir: {output_dir}")
+    print(f"Saved results CSV: {output_csv}")
 
 
 def run_layer_grad_csv(config, run_dir):
