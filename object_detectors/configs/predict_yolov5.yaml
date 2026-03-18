@@ -54,7 +54,7 @@ output:
     mc_dropout:
       num_runs: 30
       dropout_rate: 0.5
-      queue_maxsize: 8
+      queue_maxsize: 2
       vector_reduction: [L1, L2, min, max, mean, std]  # for reduction of class logits
 
     feature_grad:
