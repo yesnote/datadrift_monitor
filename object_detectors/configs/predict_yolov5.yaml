@@ -24,8 +24,8 @@ dataset:
     test_annotation_file: instances_test2017.json
 
 dataloader:
-  batch_size: 1
-  num_workers: 0
+  batch_size: 32
+  num_workers: 4
   pin_memory: false
   shuffle_train: false
   shuffle_eval: false
