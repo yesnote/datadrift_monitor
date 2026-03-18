@@ -68,6 +68,30 @@ def _build_summary(total_images, fn_images, output_csv):
     }
 
 
+def _as_image_list(images):
+    if isinstance(images, list):
+        return images
+    return [images[i] for i in range(images.shape[0])]
+
+
+def _prepare_infer_batch(detector, images, device, auto=False):
+    image_list = _as_image_list(images)
+    infer_tensors = []
+    ratios = []
+    pads = []
+    resized_chws = []
+    for img in image_list:
+        infer_tensor, ratio, pad, resized_chw = preprocess_with_letterbox(
+            detector, img, device, requires_grad=False, auto=auto
+        )
+        infer_tensors.append(infer_tensor)
+        ratios.append(ratio)
+        pads.append(pad)
+        resized_chws.append(resized_chw)
+    infer_batch = torch.cat(infer_tensors, dim=0)
+    return infer_batch, ratios, pads, resized_chws
+
+
 def _mc_dropout_single_csv_writer(write_queue, output_csv, fieldnames):
     with open(output_csv, "w", newline="", encoding="utf-8") as output_file:
         writer = csv.DictWriter(output_file, fieldnames=fieldnames)
@@ -118,32 +142,31 @@ def run_fn_csv(config, run_dir):
         for step_idx, (images, targets) in enumerate(
             tqdm(dataloader, desc=f"Object Detector ({mode} - {uncertainty})", total=len(dataloader))
         ):
-            batch_size = images.shape[0]
+            image_list = _as_image_list(images)
+            batch_size = len(image_list)
             should_save_step = save_image and (step_idx % image_step == 0)
             step_dir = run_dir / "images" / f"0_{step_idx}"
             if should_save_step:
                 step_dir.mkdir(parents=True, exist_ok=True)
 
-            for sample_idx in range(batch_size):
-                detector.zero_grad(set_to_none=True)
-                infer_tensor, ratio, pad, resized_chw = preprocess_with_letterbox(
-                    detector, images[sample_idx], device, requires_grad=False
-                )
-                with torch.no_grad():
-                    preds, _logits, _objectness, _features = detector(infer_tensor)
+            detector.zero_grad(set_to_none=True)
+            infer_batch, ratios, pads, resized_chws = _prepare_infer_batch(detector, image_list, device, auto=False)
+            with torch.no_grad():
+                preds, _logits, _objectness, _features = detector(infer_batch)
 
+            for sample_idx in range(batch_size):
                 target = targets[sample_idx]
                 row = {
                     "image_id": int(target["image_id"][0].item()),
                     "image_path": target["path"],
                 }
 
-                pred_boxes = preds[0][0]
-                pred_class_names = preds[2][0]
-                pred_scores = preds[3][0]
+                pred_boxes = preds[0][sample_idx]
+                pred_class_names = preds[2][sample_idx]
+                pred_scores = preds[3][sample_idx]
                 gt_boxes_tensor = target["boxes"]
                 gt_labels_tensor = target["labels"]
-                gt_boxes = map_boxes_to_letterbox(gt_boxes_tensor, ratio, pad)
+                gt_boxes = map_boxes_to_letterbox(gt_boxes_tensor, ratios[sample_idx], pads[sample_idx])
                 gt_class_names = [catid_to_name.get(int(label), "__unknown__") for label in gt_labels_tensor.tolist()]
                 fn = has_fn_for_image(
                     gt_boxes=gt_boxes,
@@ -159,12 +182,12 @@ def run_fn_csv(config, run_dir):
                     csv_writer.writerow(row)
 
                 if should_save_step and sample_idx < image_max_num:
-                    vis_image = draw_predictions(resized_chw, pred_boxes, pred_class_names, pred_scores)
+                    vis_image = draw_predictions(resized_chws[sample_idx], pred_boxes, pred_class_names, pred_scores)
                     out_path = step_dir / f"{row['image_id']}.jpg"
                     cv2.imwrite(str(out_path), cv2.cvtColor(vis_image, cv2.COLOR_RGB2BGR))
 
                 total_images += 1
-                del infer_tensor, preds, _logits, _objectness, _features
+            del infer_batch, preds, _logits, _objectness, _features
     finally:
         if csv_file_handle is not None:
             csv_file_handle.close()
@@ -228,14 +251,14 @@ def run_feature_grad_csv(config, run_dir):
             for images, targets in tqdm(
                 dataloader, desc=f"Object Detector ({mode} - {uncertainty})", total=len(dataloader)
             ):
-                for sample_idx in range(images.shape[0]):
+                image_list = _as_image_list(images)
+                infer_batch, _ratios, _pads, _resized_chws = _prepare_infer_batch(detector, image_list, device, auto=False)
+                for sample_idx in range(len(image_list)):
                     target = targets[sample_idx]
                     image_id = int(target["image_id"][0].item())
                     image_path = target["path"]
 
-                    infer_tensor, _ratio, _pad, _resized_chw = preprocess_with_letterbox(
-                        detector, images[sample_idx], device, requires_grad=False
-                    )
+                    infer_tensor = infer_batch[sample_idx: sample_idx + 1]
                     if unit == "bbox":
                         bbox_rows = collect_bbox_gradients_per_target(
                             detector=detector,
@@ -260,7 +283,7 @@ def run_feature_grad_csv(config, run_dir):
                             for grad_key, grad_value in bbox_row["grad_stats"].items():
                                 row[grad_key] = json.dumps(grad_value, separators=(",", ":"))
                             writer.writerow(row)
-                        del infer_tensor, bbox_rows
+                        del bbox_rows
                     else:
                         grad_stats = collect_gradients_per_target(
                             detector=detector,
@@ -274,7 +297,8 @@ def run_feature_grad_csv(config, run_dir):
                         for grad_key, grad_value in grad_stats.items():
                             row[grad_key] = json.dumps(grad_value, separators=(",", ":"))
                         writer.writerow(row)
-                        del infer_tensor, grad_stats
+                        del grad_stats
+                del infer_batch
         finally:
             layer_buffer.remove()
 
@@ -329,24 +353,23 @@ def run_tp_csv(config, run_dir):
         for images, targets in tqdm(
             dataloader, desc=f"Object Detector ({mode} - {uncertainty})", total=len(dataloader)
         ):
-            for sample_idx in range(images.shape[0]):
-                detector.zero_grad(set_to_none=True)
-                infer_tensor, ratio, pad, _resized_chw = preprocess_with_letterbox(
-                    detector, images[sample_idx], device, requires_grad=False
-                )
-                with torch.no_grad():
-                    preds, _logits, _objectness, _features = detector(infer_tensor)
+            image_list = _as_image_list(images)
+            detector.zero_grad(set_to_none=True)
+            infer_batch, ratios, pads, _resized_chws = _prepare_infer_batch(detector, image_list, device, auto=False)
+            with torch.no_grad():
+                preds, _logits, _objectness, _features = detector(infer_batch)
 
+            for sample_idx in range(len(image_list)):
                 target = targets[sample_idx]
                 image_id = int(target["image_id"][0].item())
                 image_path = target["path"]
 
-                pred_boxes = preds[0][0]
-                pred_class_names = preds[2][0]
-                pred_scores = preds[3][0]
+                pred_boxes = preds[0][sample_idx]
+                pred_class_names = preds[2][sample_idx]
+                pred_scores = preds[3][sample_idx]
                 gt_boxes_tensor = target["boxes"]
                 gt_labels_tensor = target["labels"]
-                gt_boxes = map_boxes_to_letterbox(gt_boxes_tensor, ratio, pad)
+                gt_boxes = map_boxes_to_letterbox(gt_boxes_tensor, ratios[sample_idx], pads[sample_idx])
                 gt_class_names = [catid_to_name.get(int(label), "__unknown__") for label in gt_labels_tensor.tolist()]
 
                 tp_flags, best_ious = assign_tp_to_predictions(
@@ -376,8 +399,7 @@ def run_tp_csv(config, run_dir):
                             "tp": int(tp_flags[pred_idx]),
                         }
                     )
-
-                del infer_tensor, preds, _logits, _objectness, _features
+            del infer_batch, preds, _logits, _objectness, _features
 
     del detector
     if device.type == "cuda":
@@ -432,20 +454,19 @@ def run_score_csv(config, run_dir):
         for images, targets in tqdm(
             dataloader, desc=f"Object Detector ({mode} - {uncertainty})", total=len(dataloader)
         ):
-            for sample_idx in range(images.shape[0]):
-                detector.zero_grad(set_to_none=True)
-                infer_tensor, _ratio, _pad, _resized_chw = preprocess_with_letterbox(
-                    detector, images[sample_idx], device, requires_grad=False
-                )
-                with torch.no_grad():
-                    preds, _logits, _objectness, _features = detector(infer_tensor)
+            image_list = _as_image_list(images)
+            detector.zero_grad(set_to_none=True)
+            infer_batch, _ratios, _pads, _resized_chws = _prepare_infer_batch(detector, image_list, device, auto=False)
+            with torch.no_grad():
+                preds, _logits, _objectness, _features = detector(infer_batch)
 
+            for sample_idx in range(len(image_list)):
                 target = targets[sample_idx]
                 image_id = int(target["image_id"][0].item())
                 image_path = target["path"]
-                pred_boxes = preds[0][0]
-                pred_class_names = preds[2][0]
-                pred_scores = preds[3][0]
+                pred_boxes = preds[0][sample_idx]
+                pred_class_names = preds[2][sample_idx]
+                pred_scores = preds[3][sample_idx]
 
                 if unit == "bbox":
                     for pred_idx, (box, score, pred_class) in enumerate(
@@ -482,8 +503,7 @@ def run_score_csv(config, run_dir):
                     for metric_name in score_vector_reduction:
                         row[metric_name] = float(stat_all[metric_name])
                     writer.writerow(row)
-
-                del infer_tensor, preds, _logits, _objectness, _features
+            del infer_batch, preds, _logits, _objectness, _features
 
     del detector
     if device.type == "cuda":
@@ -538,21 +558,20 @@ def run_full_softmax_csv(config, run_dir):
         for images, targets in tqdm(
             dataloader, desc=f"Object Detector ({mode} - {uncertainty})", total=len(dataloader)
         ):
-            for sample_idx in range(images.shape[0]):
-                detector.zero_grad(set_to_none=True)
-                infer_tensor, _ratio, _pad, _resized_chw = preprocess_with_letterbox(
-                    detector, images[sample_idx], device, requires_grad=False
-                )
-                with torch.no_grad():
-                    preds, logits, _objectness, _features = detector(infer_tensor)
+            image_list = _as_image_list(images)
+            detector.zero_grad(set_to_none=True)
+            infer_batch, _ratios, _pads, _resized_chws = _prepare_infer_batch(detector, image_list, device, auto=False)
+            with torch.no_grad():
+                preds, logits, _objectness, _features = detector(infer_batch)
 
+            for sample_idx in range(len(image_list)):
                 target = targets[sample_idx]
                 image_id = int(target["image_id"][0].item())
                 image_path = target["path"]
-                pred_boxes = preds[0][0]
-                pred_class_names = preds[2][0]
-                pred_scores = preds[3][0]
-                pred_logits = logits[0] if logits else torch.zeros((0, num_classes), device=device)
+                pred_boxes = preds[0][sample_idx]
+                pred_class_names = preds[2][sample_idx]
+                pred_scores = preds[3][sample_idx]
+                pred_logits = logits[sample_idx] if logits else torch.zeros((0, num_classes), device=device)
                 pred_probs = torch.softmax(pred_logits, dim=-1) if pred_logits.numel() else pred_logits
 
                 if unit == "bbox":
@@ -604,8 +623,7 @@ def run_full_softmax_csv(config, run_dir):
                             vec = [0.0] * num_classes
                         row[f"{metric_name}_vector"] = json.dumps(vec, separators=(",", ":"))
                     writer.writerow(row)
-
-                del infer_tensor, preds, logits, _objectness, _features
+            del infer_batch, preds, logits, _objectness, _features
 
     del detector
     if device.type == "cuda":
@@ -663,21 +681,20 @@ def run_energy_csv(config, run_dir):
         for images, targets in tqdm(
             dataloader, desc=f"Object Detector ({mode} - {uncertainty})", total=len(dataloader)
         ):
-            for sample_idx in range(images.shape[0]):
-                detector.zero_grad(set_to_none=True)
-                infer_tensor, _ratio, _pad, _resized_chw = preprocess_with_letterbox(
-                    detector, images[sample_idx], device, requires_grad=False
-                )
-                with torch.no_grad():
-                    preds, logits, _objectness, _features = detector(infer_tensor)
+            image_list = _as_image_list(images)
+            detector.zero_grad(set_to_none=True)
+            infer_batch, _ratios, _pads, _resized_chws = _prepare_infer_batch(detector, image_list, device, auto=False)
+            with torch.no_grad():
+                preds, logits, _objectness, _features = detector(infer_batch)
 
+            for sample_idx in range(len(image_list)):
                 target = targets[sample_idx]
                 image_id = int(target["image_id"][0].item())
                 image_path = target["path"]
-                pred_boxes = preds[0][0]
-                pred_class_names = preds[2][0]
-                pred_scores = preds[3][0]
-                pred_logits = logits[0] if logits else torch.zeros((0, num_classes), device=device)
+                pred_boxes = preds[0][sample_idx]
+                pred_class_names = preds[2][sample_idx]
+                pred_scores = preds[3][sample_idx]
+                pred_logits = logits[sample_idx] if logits else torch.zeros((0, num_classes), device=device)
                 pred_probs = torch.softmax(pred_logits, dim=-1) if pred_logits.numel() else pred_logits
                 if pred_probs.numel():
                     probs_clipped = pred_probs.clamp(min=1e-8, max=1.0 - 1e-8)
@@ -731,8 +748,7 @@ def run_energy_csv(config, run_dir):
                     for metric_name in energy_vector_reduction:
                         row[metric_name] = float(stat_all[metric_name])
                     writer.writerow(row)
-
-                del infer_tensor, preds, logits, _objectness, _features
+            del infer_batch, preds, logits, _objectness, _features
 
     del detector
     if device.type == "cuda":
@@ -790,21 +806,20 @@ def run_entropy_csv(config, run_dir):
         for images, targets in tqdm(
             dataloader, desc=f"Object Detector ({mode} - {uncertainty})", total=len(dataloader)
         ):
-            for sample_idx in range(images.shape[0]):
-                detector.zero_grad(set_to_none=True)
-                infer_tensor, _ratio, _pad, _resized_chw = preprocess_with_letterbox(
-                    detector, images[sample_idx], device, requires_grad=False
-                )
-                with torch.no_grad():
-                    preds, logits, _objectness, _features = detector(infer_tensor)
+            image_list = _as_image_list(images)
+            detector.zero_grad(set_to_none=True)
+            infer_batch, _ratios, _pads, _resized_chws = _prepare_infer_batch(detector, image_list, device, auto=False)
+            with torch.no_grad():
+                preds, logits, _objectness, _features = detector(infer_batch)
 
+            for sample_idx in range(len(image_list)):
                 target = targets[sample_idx]
                 image_id = int(target["image_id"][0].item())
                 image_path = target["path"]
-                pred_boxes = preds[0][0]
-                pred_class_names = preds[2][0]
-                pred_scores = preds[3][0]
-                pred_logits = logits[0] if logits else torch.zeros((0, num_classes), device=device)
+                pred_boxes = preds[0][sample_idx]
+                pred_class_names = preds[2][sample_idx]
+                pred_scores = preds[3][sample_idx]
+                pred_logits = logits[sample_idx] if logits else torch.zeros((0, num_classes), device=device)
                 pred_probs = torch.softmax(pred_logits, dim=-1) if pred_logits.numel() else pred_logits
                 if pred_probs.numel():
                     pred_entropy = -torch.sum(pred_probs * torch.log(pred_probs.clamp(min=1e-12)), dim=-1)
@@ -851,8 +866,7 @@ def run_entropy_csv(config, run_dir):
                     for metric_name in entropy_vector_reduction:
                         row[metric_name] = float(stat_all[metric_name])
                     writer.writerow(row)
-
-                del infer_tensor, preds, logits, _objectness, _features
+            del infer_batch, preds, logits, _objectness, _features
 
     del detector
     if device.type == "cuda":
@@ -1212,14 +1226,14 @@ def run_layer_grad_csv(config, run_dir):
         for images, targets in tqdm(
             dataloader, desc=f"Object Detector ({mode} - {uncertainty})", total=len(dataloader)
         ):
-            for sample_idx in range(images.shape[0]):
+            image_list = _as_image_list(images)
+            infer_batch, _ratios, _pads, _resized_chws = _prepare_infer_batch(detector, image_list, device, auto=False)
+            for sample_idx in range(len(image_list)):
                 target = targets[sample_idx]
                 image_id = int(target["image_id"][0].item())
                 image_path = target["path"]
 
-                infer_tensor, _ratio, _pad, _resized_chw = preprocess_with_letterbox(
-                    detector, images[sample_idx], device, requires_grad=False
-                )
+                infer_tensor = infer_batch[sample_idx: sample_idx + 1]
                 if unit == "bbox":
                     bbox_rows = collect_bbox_layer_grads_per_target(
                         detector=detector,
@@ -1261,7 +1275,7 @@ def run_layer_grad_csv(config, run_dir):
                         row[grad_key] = json.dumps(grad_value, separators=(",", ":"))
                     writer.writerow(row)
                     del grad_stats
-                del infer_tensor
+            del infer_batch
 
     del detector
     if device.type == "cuda":
