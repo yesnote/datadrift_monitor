@@ -877,8 +877,8 @@ def run_mc_dropout_csv(config, run_dir):
 
     if not save_csv:
         return
-    if unit != "bbox":
-        raise ValueError("output.save_csv.uncertainty='mc_dropout' requires output.save_csv.unit='bbox'.")
+    if unit not in {"image", "bbox"}:
+        raise ValueError("output.save_csv.uncertainty='mc_dropout' requires output.save_csv.unit in {'image','bbox'}.")
 
     dataloader = _create_unstacked_dataloader(config, split=split)
     if len(dataloader.dataset) == 0:
@@ -888,31 +888,72 @@ def run_mc_dropout_csv(config, run_dir):
     n_classes_hint = len(detector.names) if detector.names is not None else 80
 
     output_csv = run_dir / "mc_dropout.csv"
-    fieldnames = [
-        "image_id",
-        "image_path",
-        "pred_idx",
-        "raw_pred_idx",
-        "xmin",
-        "ymin",
-        "xmax",
-        "ymax",
-        "score",
-        "pred_class",
-        "xmin_mean",
-        "ymin_mean",
-        "xmax_mean",
-        "ymax_mean",
-        "score_mean",
-        "xmin_std",
-        "ymin_std",
-        "xmax_std",
-        "ymax_std",
-        "score_std",
-    ]
-    for class_idx in range(n_classes_hint):
-        fieldnames.append(f"prob_{class_idx}_mean")
-        fieldnames.append(f"prob_{class_idx}_std")
+    stat_keys = ["1-norm", "2-norm", "min", "max", "mean", "std"]
+    stat_alias = {
+        "1-norm": "l1",
+        "2-norm": "l2",
+        "min": "min",
+        "max": "max",
+        "mean": "mean",
+        "std": "std",
+    }
+
+    def stats_from_np(vec):
+        if vec.size == 0:
+            return {
+                "1-norm": 0.0,
+                "2-norm": 0.0,
+                "min": 0.0,
+                "max": 0.0,
+                "mean": 0.0,
+                "std": 0.0,
+            }
+        return {
+            "1-norm": float(np.linalg.norm(vec, ord=1)),
+            "2-norm": float(np.linalg.norm(vec, ord=2)),
+            "min": float(np.min(vec)),
+            "max": float(np.max(vec)),
+            "mean": float(np.mean(vec)),
+            "std": float(np.std(vec)),
+        }
+
+    fieldnames = ["image_id", "image_path"]
+    if unit == "bbox":
+        fieldnames.extend(
+            [
+                "pred_idx",
+                "raw_pred_idx",
+                "xmin",
+                "ymin",
+                "xmax",
+                "ymax",
+                "score",
+                "pred_class",
+                "xmin_mean",
+                "ymin_mean",
+                "xmax_mean",
+                "ymax_mean",
+                "score_mean",
+                "xmin_std",
+                "ymin_std",
+                "xmax_std",
+                "ymax_std",
+                "score_std",
+            ]
+        )
+        for class_idx in range(n_classes_hint):
+            fieldnames.append(f"prob_{class_idx}_mean")
+            fieldnames.append(f"prob_{class_idx}_std")
+    else:
+        fieldnames.append("num_preds")
+        for prefix in ("bbox_mean", "bbox_std", "score_mean", "score_std"):
+            for key in stat_keys:
+                fieldnames.append(f"{prefix}_{stat_alias[key]}")
+        for class_idx in range(n_classes_hint):
+            for key in stat_keys:
+                fieldnames.append(f"prob_{class_idx}_mean_{stat_alias[key]}")
+            for key in stat_keys:
+                fieldnames.append(f"prob_{class_idx}_std_{stat_alias[key]}")
 
     # Probe once to notify if forced-dropout hooks are unavailable on this model.
     probe_handles = enable_forced_mc_dropout_on_yolov5_head(detector.model, dropout_rate)
@@ -1030,37 +1071,82 @@ def run_mc_dropout_csv(config, run_dir):
                 feat_mean_np = feat_mean[b].detach().cpu().numpy()
                 feat_std_np = feat_std[b].detach().cpu().numpy()
                 num_final = int(det_b.shape[0])
+                valid_pairs = []
                 for pred_idx in range(num_final):
                     raw_idx = int(raw_keep_b[pred_idx].detach().cpu().item())
-                    if raw_idx < 0 or raw_idx >= n_candidates:
-                        continue
-                    cls_idx = int(det_b[pred_idx, 5].detach().cpu().item()) if det_b.shape[1] > 5 else -1
-                    row = {
-                        "image_id": image_id,
-                        "image_path": image_path,
-                        "pred_idx": pred_idx,
-                        "raw_pred_idx": raw_idx,
-                        "xmin": float(det_b[pred_idx, 0].detach().cpu().item()),
-                        "ymin": float(det_b[pred_idx, 1].detach().cpu().item()),
-                        "xmax": float(det_b[pred_idx, 2].detach().cpu().item()),
-                        "ymax": float(det_b[pred_idx, 3].detach().cpu().item()),
-                        "score": float(det_b[pred_idx, 4].detach().cpu().item()) if det_b.shape[1] > 4 else 0.0,
-                        "pred_class": detector.names[cls_idx] if (detector.names is not None and cls_idx >= 0) else cls_idx,
-                        "xmin_mean": float(feat_mean_np[raw_idx, 0]),
-                        "ymin_mean": float(feat_mean_np[raw_idx, 1]),
-                        "xmax_mean": float(feat_mean_np[raw_idx, 2]),
-                        "ymax_mean": float(feat_mean_np[raw_idx, 3]),
-                        "score_mean": float(feat_mean_np[raw_idx, 4]),
-                        "xmin_std": float(feat_std_np[raw_idx, 0]),
-                        "ymin_std": float(feat_std_np[raw_idx, 1]),
-                        "xmax_std": float(feat_std_np[raw_idx, 2]),
-                        "ymax_std": float(feat_std_np[raw_idx, 3]),
-                        "score_std": float(feat_std_np[raw_idx, 4]),
-                    }
-                    class_count = int(n_classes) if n_classes is not None else 0
-                    for class_idx in range(class_count):
-                        row[f"prob_{class_idx}_mean"] = float(feat_mean_np[raw_idx, 5 + class_idx])
-                        row[f"prob_{class_idx}_std"] = float(feat_std_np[raw_idx, 5 + class_idx])
+                    if 0 <= raw_idx < n_candidates:
+                        valid_pairs.append((pred_idx, raw_idx))
+
+                if unit == "bbox":
+                    for pred_idx, raw_idx in valid_pairs:
+                        cls_idx = int(det_b[pred_idx, 5].detach().cpu().item()) if det_b.shape[1] > 5 else -1
+                        row = {
+                            "image_id": image_id,
+                            "image_path": image_path,
+                            "pred_idx": pred_idx,
+                            "raw_pred_idx": raw_idx,
+                            "xmin": float(det_b[pred_idx, 0].detach().cpu().item()),
+                            "ymin": float(det_b[pred_idx, 1].detach().cpu().item()),
+                            "xmax": float(det_b[pred_idx, 2].detach().cpu().item()),
+                            "ymax": float(det_b[pred_idx, 3].detach().cpu().item()),
+                            "score": float(det_b[pred_idx, 4].detach().cpu().item()) if det_b.shape[1] > 4 else 0.0,
+                            "pred_class": detector.names[cls_idx] if (detector.names is not None and cls_idx >= 0) else cls_idx,
+                            "xmin_mean": float(feat_mean_np[raw_idx, 0]),
+                            "ymin_mean": float(feat_mean_np[raw_idx, 1]),
+                            "xmax_mean": float(feat_mean_np[raw_idx, 2]),
+                            "ymax_mean": float(feat_mean_np[raw_idx, 3]),
+                            "score_mean": float(feat_mean_np[raw_idx, 4]),
+                            "xmin_std": float(feat_std_np[raw_idx, 0]),
+                            "ymin_std": float(feat_std_np[raw_idx, 1]),
+                            "xmax_std": float(feat_std_np[raw_idx, 2]),
+                            "ymax_std": float(feat_std_np[raw_idx, 3]),
+                            "score_std": float(feat_std_np[raw_idx, 4]),
+                        }
+                        class_count = int(n_classes) if n_classes is not None else 0
+                        for class_idx in range(class_count):
+                            row[f"prob_{class_idx}_mean"] = float(feat_mean_np[raw_idx, 5 + class_idx])
+                            row[f"prob_{class_idx}_std"] = float(feat_std_np[raw_idx, 5 + class_idx])
+                        batch_rows.append(row)
+                else:
+                    raw_indices = [raw_idx for _pred_idx, raw_idx in valid_pairs]
+                    row = {"image_id": image_id, "image_path": image_path, "num_preds": len(raw_indices)}
+                    if len(raw_indices) == 0:
+                        for prefix in ("bbox_mean", "bbox_std", "score_mean", "score_std"):
+                            for key in stat_keys:
+                                row[f"{prefix}_{stat_alias[key]}"] = 0.0
+                        for class_idx in range(n_classes_hint):
+                            for key in stat_keys:
+                                row[f"prob_{class_idx}_mean_{stat_alias[key]}"] = 0.0
+                            for key in stat_keys:
+                                row[f"prob_{class_idx}_std_{stat_alias[key]}"] = 0.0
+                    else:
+                        raw_indices_np = np.asarray(raw_indices, dtype=np.int64)
+                        bbox_mean_vec = feat_mean_np[raw_indices_np, 0:4].reshape(-1)
+                        bbox_std_vec = feat_std_np[raw_indices_np, 0:4].reshape(-1)
+                        score_mean_vec = feat_mean_np[raw_indices_np, 4].reshape(-1)
+                        score_std_vec = feat_std_np[raw_indices_np, 4].reshape(-1)
+
+                        for key, val in stats_from_np(bbox_mean_vec).items():
+                            row[f"bbox_mean_{stat_alias[key]}"] = val
+                        for key, val in stats_from_np(bbox_std_vec).items():
+                            row[f"bbox_std_{stat_alias[key]}"] = val
+                        for key, val in stats_from_np(score_mean_vec).items():
+                            row[f"score_mean_{stat_alias[key]}"] = val
+                        for key, val in stats_from_np(score_std_vec).items():
+                            row[f"score_std_{stat_alias[key]}"] = val
+
+                        class_count = int(n_classes) if n_classes is not None else 0
+                        for class_idx in range(n_classes_hint):
+                            if class_idx < class_count:
+                                prob_mean_vec = feat_mean_np[raw_indices_np, 5 + class_idx].reshape(-1)
+                                prob_std_vec = feat_std_np[raw_indices_np, 5 + class_idx].reshape(-1)
+                            else:
+                                prob_mean_vec = np.zeros((0,), dtype=np.float32)
+                                prob_std_vec = np.zeros((0,), dtype=np.float32)
+                            for key, val in stats_from_np(prob_mean_vec).items():
+                                row[f"prob_{class_idx}_mean_{stat_alias[key]}"] = val
+                            for key, val in stats_from_np(prob_std_vec).items():
+                                row[f"prob_{class_idx}_std_{stat_alias[key]}"] = val
                     batch_rows.append(row)
 
             write_queue.put(batch_rows)

@@ -304,8 +304,8 @@ def parse_output_config(output_cfg):
             score_cfg.get("vector_reduction", ["L1", "L2", "min", "max", "mean", "std"])
         )
     elif uncertainty == "mc_dropout":
-        if unit != "bbox":
-            msg = "Invalid config: output.save_csv.uncertainty='mc_dropout' requires output.save_csv.unit='bbox'."
+        if unit not in {"image", "bbox"}:
+            msg = "Invalid config: output.save_csv.uncertainty='mc_dropout' requires output.save_csv.unit in {'image','bbox'}."
             warnings.warn(msg)
             raise ValueError(msg)
         if mc_num_runs < 1:
