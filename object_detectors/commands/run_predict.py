@@ -874,6 +874,7 @@ def run_mc_dropout_csv(config, run_dir):
     num_runs = int(parsed["mc_num_runs"])
     dropout_rate = float(parsed["mc_dropout_rate"])
     queue_maxsize = int(parsed["mc_queue_maxsize"])
+    vector_reduction = parsed["mc_vector_reduction"]
 
     if not save_csv:
         return
@@ -888,7 +889,7 @@ def run_mc_dropout_csv(config, run_dir):
     n_classes_hint = len(detector.names) if detector.names is not None else 80
 
     output_csv = run_dir / "mc_dropout.csv"
-    stat_keys = ["1-norm", "2-norm", "min", "max", "mean", "std"]
+    stat_keys = list(vector_reduction)
     stat_alias = {
         "1-norm": "l1",
         "2-norm": "l2",
