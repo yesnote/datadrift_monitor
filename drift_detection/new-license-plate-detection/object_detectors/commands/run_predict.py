@@ -874,7 +874,6 @@ def run_mc_dropout_csv(config, run_dir):
     num_runs = int(parsed["mc_num_runs"])
     dropout_rate = float(parsed["mc_dropout_rate"])
     queue_maxsize = int(parsed["mc_queue_maxsize"])
-    vector_reduction = parsed["mc_vector_reduction"]
 
     if not save_csv:
         return
@@ -886,17 +885,9 @@ def run_mc_dropout_csv(config, run_dir):
         raise ValueError("Loaded 0 images. Check dataset root/image_dir/split configuration in YAML.")
 
     detector, device = build_detector(config)
+    n_classes_hint = len(detector.names) if detector.names is not None else 80
 
     output_csv = run_dir / "mc_dropout.csv"
-    metric_alias = {
-        "1-norm": "l1",
-        "2-norm": "l2",
-        "min": "min",
-        "max": "max",
-        "mean": "mean",
-        "std": "std",
-    }
-    selected_suffixes = [metric_alias[m] for m in vector_reduction]
     fieldnames = [
         "image_id",
         "image_path",
@@ -919,10 +910,9 @@ def run_mc_dropout_csv(config, run_dir):
         "ymax_std",
         "score_std",
     ]
-    for metric in selected_suffixes:
-        fieldnames.append(f"class_logit_{metric}_mean")
-    for metric in selected_suffixes:
-        fieldnames.append(f"class_logit_{metric}_std")
+    for class_idx in range(n_classes_hint):
+        fieldnames.append(f"prob_{class_idx}_mean")
+        fieldnames.append(f"prob_{class_idx}_std")
 
     # Probe once to notify if forced-dropout hooks are unavailable on this model.
     probe_handles = enable_forced_mc_dropout_on_yolov5_head(detector.model, dropout_rate)
@@ -979,8 +969,8 @@ def run_mc_dropout_csv(config, run_dir):
             feat_mean = None
             feat_m2 = None
             n_candidates = None
+            n_classes = None
             run_count = 0
-            metric_count = len(vector_reduction)
             mc_handles = enable_forced_mc_dropout_on_yolov5_head(detector.model, dropout_rate)
 
             try:
@@ -998,39 +988,15 @@ def run_mc_dropout_csv(config, run_dir):
                         pred_batch = raw_prediction.detach().float()
                         bbox_xyxy = _xywh_to_xyxy_tensor(pred_batch[..., :4])
                         score_vec = pred_batch[..., 4].unsqueeze(-1)
-                        if raw_logits is not None:
-                            cls_logits = raw_logits.detach().float()
-                        else:
-                            cls_prob = pred_batch[..., 5:].detach().float()
-                            if cls_prob.numel() == 0:
-                                cls_logits = torch.zeros(
-                                    (pred_batch.shape[0], pred_batch.shape[1], 1), device=pred_batch.device
-                                )
-                            else:
-                                cls_logits = torch.logit(torch.clamp(cls_prob, min=1e-6, max=1.0 - 1e-6))
-
-                        cls_metric_tensors = []
-                        if "1-norm" in vector_reduction:
-                            cls_metric_tensors.append(torch.norm(cls_logits, p=1, dim=2, keepdim=True))
-                        if "2-norm" in vector_reduction:
-                            cls_metric_tensors.append(torch.norm(cls_logits, p=2, dim=2, keepdim=True))
-                        if "min" in vector_reduction:
-                            cls_metric_tensors.append(torch.min(cls_logits, dim=2, keepdim=True).values)
-                        if "max" in vector_reduction:
-                            cls_metric_tensors.append(torch.max(cls_logits, dim=2, keepdim=True).values)
-                        if "mean" in vector_reduction:
-                            cls_metric_tensors.append(torch.mean(cls_logits, dim=2, keepdim=True))
-                        if "std" in vector_reduction:
-                            cls_metric_tensors.append(torch.std(cls_logits, dim=2, keepdim=True, unbiased=False))
-                        if cls_metric_tensors:
-                            cls_metrics = torch.cat(cls_metric_tensors, dim=2)
-                        else:
-                            cls_metrics = torch.empty((pred_batch.shape[0], pred_batch.shape[1], 0), device=device)
-                        run_features = torch.cat([bbox_xyxy, score_vec, cls_metrics], dim=2)
+                        prob_mat = pred_batch[..., 5:].detach().float()
+                        if prob_mat.numel() == 0 and raw_logits is not None:
+                            prob_mat = torch.sigmoid(raw_logits.detach().float())
+                        run_features = torch.cat([bbox_xyxy, score_vec, prob_mat], dim=2)
 
                         if n_candidates is None:
                             n_candidates = int(run_features.shape[1])
-                            feat_dim = 5 + metric_count
+                            n_classes = int(run_features.shape[2] - 5)
+                            feat_dim = 5 + n_classes
                             feat_mean = torch.zeros((batch_size, n_candidates, feat_dim), device=device)
                             feat_m2 = torch.zeros((batch_size, n_candidates, feat_dim), device=device)
 
@@ -1091,10 +1057,10 @@ def run_mc_dropout_csv(config, run_dir):
                         "ymax_std": float(feat_std_np[raw_idx, 3]),
                         "score_std": float(feat_std_np[raw_idx, 4]),
                     }
-                    for metric_idx, metric_name in enumerate(selected_suffixes):
-                        row[f"class_logit_{metric_name}_mean"] = float(feat_mean_np[raw_idx, 5 + metric_idx])
-                    for metric_idx, metric_name in enumerate(selected_suffixes):
-                        row[f"class_logit_{metric_name}_std"] = float(feat_std_np[raw_idx, 5 + metric_idx])
+                    class_count = int(n_classes) if n_classes is not None else 0
+                    for class_idx in range(class_count):
+                        row[f"prob_{class_idx}_mean"] = float(feat_mean_np[raw_idx, 5 + class_idx])
+                        row[f"prob_{class_idx}_std"] = float(feat_std_np[raw_idx, 5 + class_idx])
                     batch_rows.append(row)
 
             write_queue.put(batch_rows)
@@ -1115,8 +1081,6 @@ def run_mc_dropout_csv(config, run_dir):
         write_queue.close()
         write_queue.join_thread()
 
-    for h in mc_handles:
-        h.remove()
     del detector
     if device.type == "cuda":
         torch.cuda.empty_cache()
