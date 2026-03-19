@@ -200,6 +200,7 @@ def run_feature_grad_csv(config, run_dir):
     target_layers = parsed["target_layers"]
     feature_map_reduction = parsed["feature_map_reduction"]
     feature_vector_reduction = parsed["feature_vector_reduction"]
+    before_nms = bool(parsed.get("before_nms", False))
 
     if not save_csv:
         return
@@ -271,6 +272,7 @@ def run_feature_grad_csv(config, run_dir):
                             target_values=target_values,
                             target_layers=target_layers,
                             layer_buffer=layer_buffer,
+                            before_nms=before_nms,
                         )
 
                         row = {"image_id": image_id, "image_path": image_path}
