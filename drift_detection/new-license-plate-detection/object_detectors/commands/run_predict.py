@@ -1,6 +1,7 @@
 import csv
 import json
-import multiprocessing as mp
+import queue
+import threading
 from pathlib import Path
 
 import cv2
@@ -1072,14 +1073,13 @@ def run_mc_dropout_csv(config, run_dir):
     for h in probe_handles:
         h.remove()
 
-    mp_ctx = mp.get_context("spawn")
-    write_queue = mp_ctx.Queue(maxsize=queue_maxsize)
-    writer_proc = mp_ctx.Process(
+    write_queue: queue.Queue = queue.Queue(maxsize=queue_maxsize)
+    writer_thread = threading.Thread(
         target=_mc_dropout_single_csv_writer,
-        args=(write_queue, str(output_csv), fieldnames),
+        args=(write_queue, output_csv, fieldnames),
         daemon=True,
     )
-    writer_proc.start()
+    writer_thread.start()
 
     had_error = False
     try:
@@ -1300,14 +1300,11 @@ def run_mc_dropout_csv(config, run_dir):
         raise
     finally:
         if had_error:
-            if writer_proc.is_alive():
-                writer_proc.terminate()
-                writer_proc.join()
+            write_queue.put(None)
+            writer_thread.join()
         else:
             write_queue.put(None)
-            writer_proc.join()
-        write_queue.close()
-        write_queue.join_thread()
+            writer_thread.join()
 
     del detector
     if device.type == "cuda":
