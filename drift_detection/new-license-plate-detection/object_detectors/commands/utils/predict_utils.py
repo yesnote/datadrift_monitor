@@ -207,7 +207,13 @@ def parse_output_config(output_cfg):
     else:
         save_csv_enabled = bool(save_csv_cfg.get("enabled", True))
         uncertainty = str(save_csv_cfg.get("uncertainty", "gt")).lower()
-        pre_nms = bool(save_csv_cfg.get("pre_nms", False))
+        pre_nms_cfg = save_csv_cfg.get("pre_nms", False)
+        if isinstance(pre_nms_cfg, dict):
+            pre_nms = bool(pre_nms_cfg.get("enabled", False))
+            pre_nms_ratio = float(pre_nms_cfg.get("pre_nms_ratio", 1.0))
+        else:
+            pre_nms = bool(pre_nms_cfg)
+            pre_nms_ratio = 1.0
         gt_cfg = save_csv_cfg.get("gt", {})
         score_cfg = save_csv_cfg.get("score", {})
         mc_dropout_cfg = save_csv_cfg.get("mc_dropout", {})
@@ -220,6 +226,10 @@ def parse_output_config(output_cfg):
 
     if isinstance(save_csv_cfg, bool):
         pre_nms = False
+        pre_nms_ratio = 1.0
+
+    if not (0.0 <= float(pre_nms_ratio) <= 1.0):
+        raise ValueError("output.save_csv.pre_nms.pre_nms_ratio must be in [0,1].")
 
     if uncertainty not in {"gt", "score", "mc_dropout", "energy", "entropy", "full_softmax", "feature_grad", "layer_grad"}:
         raise ValueError(
@@ -366,6 +376,7 @@ def parse_output_config(output_cfg):
         "save_csv_enabled": save_csv_enabled,
         "uncertainty": uncertainty,
         "pre_nms": pre_nms,
+        "pre_nms_ratio": float(pre_nms_ratio),
         "unit": unit,
         "gt_iou_match_threshold": gt_iou_match_threshold,
         "mc_num_runs": mc_num_runs,
@@ -403,7 +414,48 @@ def build_target_scalar_pre_nms(target_value, raw_prediction, raw_logits):
         return raw_logits.max(dim=-1).values.sum()
 
     raise ValueError(f"Unsupported target_value: {target_value}")
-def collect_gradients_per_target(detector, input_tensor, target_values, target_layers, layer_buffer, pre_nms=True):
+
+
+def get_pre_nms_keep_indices(pred_row, logit_row=None, pre_nms_ratio=1.0):
+    if pred_row is None or pred_row.numel() == 0:
+        device = pred_row.device if isinstance(pred_row, torch.Tensor) else "cpu"
+        return torch.zeros((0,), dtype=torch.long, device=device)
+    n = int(pred_row.shape[0])
+    ratio = float(pre_nms_ratio)
+    if ratio <= 0.0:
+        return torch.zeros((0,), dtype=torch.long, device=pred_row.device)
+    if ratio >= 1.0:
+        return torch.arange(n, device=pred_row.device, dtype=torch.long)
+
+    obj = pred_row[:, 4] if pred_row.shape[1] > 4 else torch.ones((n,), device=pred_row.device)
+    if logit_row is not None and isinstance(logit_row, torch.Tensor) and logit_row.numel() > 0:
+        cls_prob = torch.sigmoid(logit_row)
+        cls_max = cls_prob.max(dim=1).values if cls_prob.ndim == 2 and cls_prob.shape[1] > 0 else torch.ones_like(obj)
+    else:
+        cls_scores = pred_row[:, 5:] if pred_row.shape[1] > 5 else None
+        cls_max = cls_scores.max(dim=1).values if cls_scores is not None and cls_scores.numel() > 0 else torch.ones_like(obj)
+    score = obj * cls_max
+
+    keep = int(np.ceil(n * ratio))
+    keep = max(0, min(n, keep))
+    if keep == 0:
+        return torch.zeros((0,), dtype=torch.long, device=pred_row.device)
+    if keep == n:
+        return torch.arange(n, device=pred_row.device, dtype=torch.long)
+    top_idx = torch.topk(score, k=keep, largest=True, sorted=False).indices
+    top_idx, _ = torch.sort(top_idx)
+    return top_idx
+
+
+def collect_gradients_per_target(
+    detector,
+    input_tensor,
+    target_values,
+    target_layers,
+    layer_buffer,
+    pre_nms=True,
+    pre_nms_ratio=1.0,
+):
     grad_stats = {}
     for target_value in target_values:
         detector.zero_grad(set_to_none=True)
@@ -417,7 +469,16 @@ def collect_gradients_per_target(detector, input_tensor, target_values, target_l
         target_scalar = None
         if target_value in {"obj", "cls"}:
             if pre_nms:
-                target_scalar = build_target_scalar_pre_nms(target_value, raw_prediction, raw_logits)
+                pred_img = raw_prediction[0] if raw_prediction is not None and raw_prediction.ndim == 3 else None
+                logit_img = raw_logits[0] if raw_logits is not None and raw_logits.ndim == 3 else None
+                keep_idx = get_pre_nms_keep_indices(pred_img, logit_img, pre_nms_ratio=pre_nms_ratio)
+                if int(keep_idx.shape[0]) > 0:
+                    if target_value == "obj":
+                        target_scalar = pred_img[keep_idx, 4].sum()
+                    else:
+                        logits_for_cls = logit_img if logit_img is not None else pred_img[:, 5:]
+                        if logits_for_cls is not None and logits_for_cls.numel() > 0:
+                            target_scalar = logits_for_cls[keep_idx].max(dim=1).values.sum()
             else:
                 with torch.no_grad():
                     _selected_preds, _selected_logits, _selected_objectness, selected_indices = detector.non_max_suppression(
@@ -918,6 +979,7 @@ def collect_image_layer_grads_per_target(
     target_layers,
     vector_reduction=None,
     pre_nms=True,
+    pre_nms_ratio=1.0,
 ):
     layer_params = [resolve_layer_parameter(detector.model, layer_name) for layer_name in target_layers]
     original_requires_grad = [bool(p.requires_grad) for p in layer_params]
@@ -953,7 +1015,13 @@ def collect_image_layer_grads_per_target(
             target_scalar = None
             if target_value in {"obj", "cls"}:
                 if pre_nms:
-                    target_scalar = build_layer_target_scalar_image(target_value, raw_prediction, raw_logits)
+                    keep_idx = get_pre_nms_keep_indices(pred_img, logit_img, pre_nms_ratio=pre_nms_ratio)
+                    if int(keep_idx.shape[0]) > 0:
+                        if target_value == "obj":
+                            target_scalar = pred_img[keep_idx, 4].sum()
+                        else:
+                            if logit_img is not None and logit_img.numel() > 0:
+                                target_scalar = logit_img[keep_idx].max(dim=1).values.sum()
                 else:
                     if int(raw_keep_indices.shape[0]) > 0:
                         if target_value == "obj":
