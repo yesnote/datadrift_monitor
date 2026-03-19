@@ -202,7 +202,7 @@ def run_feature_grad_csv(config, run_dir):
     target_layers = parsed["target_layers"]
     feature_map_reduction = parsed["feature_map_reduction"]
     feature_vector_reduction = parsed["feature_vector_reduction"]
-    before_nms = bool(parsed.get("before_nms", False))
+    pre_nms = bool(parsed.get("pre_nms", False))
 
     if not save_csv:
         return
@@ -274,7 +274,7 @@ def run_feature_grad_csv(config, run_dir):
                             target_values=target_values,
                             target_layers=target_layers,
                             layer_buffer=layer_buffer,
-                            before_nms=before_nms,
+                            pre_nms=pre_nms,
                         )
 
                         row = {"image_id": image_id, "image_path": image_path}
@@ -403,7 +403,7 @@ def run_score_csv(config, run_dir):
     save_csv = parsed["save_csv_enabled"]
     unit = parsed["unit"]
     score_vector_reduction = parsed["score_vector_reduction"]
-    before_nms = bool(parsed.get("before_nms", False))
+    pre_nms = bool(parsed.get("pre_nms", False))
 
     if not save_csv:
         return
@@ -445,7 +445,7 @@ def run_score_csv(config, run_dir):
             raw_prediction = None
             with torch.no_grad():
                 preds, _logits, _objectness, _features = detector(infer_batch)
-                if unit == "image" and before_nms:
+                if unit == "image" and pre_nms:
                     model_output = detector.model(infer_batch, augment=False)
                     raw_prediction = model_output[0] if isinstance(model_output, (tuple, list)) else model_output
 
@@ -475,7 +475,7 @@ def run_score_csv(config, run_dir):
                             }
                         )
                 else:
-                    if before_nms and raw_prediction is not None:
+                    if pre_nms and raw_prediction is not None:
                         pre = raw_prediction[sample_idx].detach().float()
                         if pre.numel() == 0:
                             score_tensor = torch.zeros((0,), dtype=torch.float32, device=device)
@@ -523,7 +523,7 @@ def run_full_softmax_csv(config, run_dir):
     save_csv = parsed["save_csv_enabled"]
     unit = parsed["unit"]
     vector_reduction = parsed["full_softmax_vector_reduction"]
-    before_nms = bool(parsed.get("before_nms", False))
+    pre_nms = bool(parsed.get("pre_nms", False))
 
     if not save_csv:
         return
@@ -566,7 +566,7 @@ def run_full_softmax_csv(config, run_dir):
             raw_logits = None
             with torch.no_grad():
                 preds, logits, _objectness, _features = detector(infer_batch)
-                if unit == "image" and before_nms:
+                if unit == "image" and pre_nms:
                     model_output = detector.model(infer_batch, augment=False)
                     raw_prediction = model_output[0] if isinstance(model_output, (tuple, list)) else model_output
                     raw_logits = (
@@ -608,7 +608,7 @@ def run_full_softmax_csv(config, run_dir):
                             row[f"prob_{class_idx}"] = float(probs[class_idx]) if class_idx < len(probs) else 0.0
                         writer.writerow(row)
                 else:
-                    if before_nms and raw_prediction is not None:
+                    if pre_nms and raw_prediction is not None:
                         if raw_logits is not None:
                             pre_logits = raw_logits[sample_idx].detach().float()
                             pre_probs = torch.softmax(pre_logits, dim=-1) if pre_logits.numel() else pre_logits
@@ -665,7 +665,7 @@ def run_energy_csv(config, run_dir):
     save_csv = parsed["save_csv_enabled"]
     unit = parsed["unit"]
     energy_vector_reduction = parsed["energy_vector_reduction"]
-    before_nms = bool(parsed.get("before_nms", False))
+    pre_nms = bool(parsed.get("pre_nms", False))
 
     if not save_csv:
         return
@@ -711,7 +711,7 @@ def run_energy_csv(config, run_dir):
             raw_logits = None
             with torch.no_grad():
                 preds, logits, _objectness, _features = detector(infer_batch)
-                if unit == "image" and before_nms:
+                if unit == "image" and pre_nms:
                     model_output = detector.model(infer_batch, augment=False)
                     raw_prediction = model_output[0] if isinstance(model_output, (tuple, list)) else model_output
                     raw_logits = (
@@ -765,7 +765,7 @@ def run_energy_csv(config, run_dir):
                             }
                         )
                 else:
-                    if before_nms and raw_prediction is not None:
+                    if pre_nms and raw_prediction is not None:
                         if raw_logits is not None:
                             pre_logits = raw_logits[sample_idx].detach().float()
                             pre_probs = torch.softmax(pre_logits, dim=-1) if pre_logits.numel() else pre_logits
@@ -827,7 +827,7 @@ def run_entropy_csv(config, run_dir):
     save_csv = parsed["save_csv_enabled"]
     unit = parsed["unit"]
     entropy_vector_reduction = parsed["entropy_vector_reduction"]
-    before_nms = bool(parsed.get("before_nms", False))
+    pre_nms = bool(parsed.get("pre_nms", False))
 
     if not save_csv:
         return
@@ -873,7 +873,7 @@ def run_entropy_csv(config, run_dir):
             raw_logits = None
             with torch.no_grad():
                 preds, logits, _objectness, _features = detector(infer_batch)
-                if unit == "image" and before_nms:
+                if unit == "image" and pre_nms:
                     model_output = detector.model(infer_batch, augment=False)
                     raw_prediction = model_output[0] if isinstance(model_output, (tuple, list)) else model_output
                     raw_logits = (
@@ -920,7 +920,7 @@ def run_entropy_csv(config, run_dir):
                             }
                         )
                 else:
-                    if before_nms and raw_prediction is not None:
+                    if pre_nms and raw_prediction is not None:
                         if raw_logits is not None:
                             pre_logits = raw_logits[sample_idx].detach().float()
                             pre_probs = torch.softmax(pre_logits, dim=-1) if pre_logits.numel() else pre_logits
@@ -974,7 +974,7 @@ def run_mc_dropout_csv(config, run_dir):
     dropout_rate = float(parsed["mc_dropout_rate"])
     queue_maxsize = int(parsed["mc_queue_maxsize"])
     vector_reduction = parsed["mc_vector_reduction"]
-    before_nms = bool(parsed.get("before_nms", False))
+    pre_nms = bool(parsed.get("pre_nms", False))
 
     if not save_csv:
         return
@@ -1232,7 +1232,7 @@ def run_mc_dropout_csv(config, run_dir):
                             row[f"prob_{class_idx}_std"] = float(feat_std_cpu[raw_idx, 5 + class_idx].item())
                         batch_rows.append(row)
                 else:
-                    if before_nms:
+                    if pre_nms:
                         raw_indices = list(range(n_candidates))
                     else:
                         raw_indices = [raw_idx for _pred_idx, raw_idx in valid_pairs]
@@ -1342,7 +1342,7 @@ def run_layer_grad_csv(config, run_dir):
     target_values = parsed["layer_target_values"]
     target_layers = parsed["layer_target_layers"]
     layer_vector_reduction = parsed["layer_vector_reduction"]
-    before_nms = bool(parsed.get("before_nms", False))
+    pre_nms = bool(parsed.get("pre_nms", False))
 
     if not save_csv:
         return
@@ -1407,7 +1407,7 @@ def run_layer_grad_csv(config, run_dir):
                         target_values=target_values,
                         target_layers=target_layers,
                         vector_reduction=layer_vector_reduction,
-                        before_nms=before_nms,
+                        pre_nms=pre_nms,
                     )
                     row = {
                         "image_id": image_id,
