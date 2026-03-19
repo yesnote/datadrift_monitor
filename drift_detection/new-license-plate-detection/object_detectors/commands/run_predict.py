@@ -661,6 +661,7 @@ def run_energy_csv(config, run_dir):
     save_csv = parsed["save_csv_enabled"]
     unit = parsed["unit"]
     energy_vector_reduction = parsed["energy_vector_reduction"]
+    before_nms = bool(parsed.get("before_nms", False))
 
     if not save_csv:
         return
@@ -702,8 +703,18 @@ def run_energy_csv(config, run_dir):
             image_list = _as_image_list(images)
             detector.zero_grad(set_to_none=True)
             infer_batch, _ratios, _pads, _resized_chws = _prepare_infer_batch(detector, image_list, device, auto=False)
+            raw_prediction = None
+            raw_logits = None
             with torch.no_grad():
                 preds, logits, _objectness, _features = detector(infer_batch)
+                if unit == "image" and before_nms:
+                    model_output = detector.model(infer_batch, augment=False)
+                    raw_prediction = model_output[0] if isinstance(model_output, (tuple, list)) else model_output
+                    raw_logits = (
+                        model_output[1]
+                        if isinstance(model_output, (tuple, list)) and len(model_output) > 1
+                        else None
+                    )
 
             for sample_idx in range(len(image_list)):
                 target = targets[sample_idx]
@@ -750,7 +761,33 @@ def run_energy_csv(config, run_dir):
                             }
                         )
                 else:
-                    num_preds = int(pred_energy.shape[0])
+                    if before_nms and raw_prediction is not None:
+                        if raw_logits is not None:
+                            pre_logits = raw_logits[sample_idx].detach().float()
+                            pre_probs = torch.softmax(pre_logits, dim=-1) if pre_logits.numel() else pre_logits
+                        else:
+                            pre_raw = raw_prediction[sample_idx].detach().float()
+                            cls_scores = (
+                                pre_raw[:, 5:]
+                                if pre_raw.shape[1] > 5
+                                else torch.zeros((pre_raw.shape[0], num_classes), device=device)
+                            )
+                            pre_probs = torch.softmax(cls_scores, dim=-1) if cls_scores.numel() else cls_scores
+                        if pre_probs.numel():
+                            probs_clipped = pre_probs.clamp(min=1e-8, max=1.0 - 1e-8)
+                            pseudo_logits = torch.log(probs_clipped / (1.0 - probs_clipped))
+                            energy_tensor = -100.0 * torch.log(
+                                torch.clamp(
+                                    torch.sum(torch.exp(pseudo_logits / 100.0), dim=-1),
+                                    min=1e-8,
+                                )
+                            )
+                        else:
+                            energy_tensor = torch.zeros((0,), device=device)
+                    else:
+                        energy_tensor = pred_energy
+
+                    num_preds = int(energy_tensor.shape[0])
                     if num_preds == 0:
                         stat_all = {
                             "1-norm": 0.0,
@@ -761,12 +798,12 @@ def run_energy_csv(config, run_dir):
                             "std": 0.0,
                         }
                     else:
-                        stat_all = map_grad_tensor_to_numbers(pred_energy.detach().float().reshape(-1))
+                        stat_all = map_grad_tensor_to_numbers(energy_tensor.detach().float().reshape(-1))
                     row = {"image_id": image_id, "image_path": image_path, "num_preds": num_preds}
                     for metric_name in energy_vector_reduction:
                         row[metric_name] = float(stat_all[metric_name])
                     writer.writerow(row)
-            del infer_batch, preds, logits, _objectness, _features
+            del infer_batch, preds, logits, _objectness, _features, raw_prediction, raw_logits
 
     del detector
     if device.type == "cuda":
