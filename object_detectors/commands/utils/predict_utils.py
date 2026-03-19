@@ -252,6 +252,7 @@ def parse_output_config(output_cfg):
     feature_vector_reduction = ["1-norm", "2-norm", "min", "max", "mean", "std"]
     layer_target_values = []
     layer_target_layers = []
+    layer_map_reduction = "none"
     layer_vector_reduction = ["1-norm", "2-norm", "min", "max", "mean", "std"]
     if uncertainty == "feature_grad":
         if unit not in {"image", "bbox"}:
@@ -302,6 +303,9 @@ def parse_output_config(output_cfg):
         layer_target_layers = normalize_to_list(layer_grad_cfg.get("target_layer", []))
         if not layer_target_layers and save_csv_enabled:
             raise ValueError("output.save_csv.layer_grad.target_layer must contain at least one layer name.")
+        layer_map_reduction = str(layer_grad_cfg.get("map_reduction", "none")).strip().lower()
+        if layer_map_reduction not in {"none", "energy"}:
+            raise ValueError("output.save_csv.layer_grad.map_reduction must be 'none' or 'energy'.")
         layer_vector_reduction = normalize_vector_reduction(
             layer_grad_cfg.get("vector_reduction", ["L1", "L2", "min", "max", "mean", "std"])
         )
@@ -393,6 +397,7 @@ def parse_output_config(output_cfg):
         "feature_vector_reduction": feature_vector_reduction,
         "layer_target_values": layer_target_values,
         "layer_target_layers": layer_target_layers,
+        "layer_map_reduction": layer_map_reduction,
         "layer_vector_reduction": layer_vector_reduction,
         "save_image_enabled": save_image_enabled,
         "image_step": image_step,
@@ -743,13 +748,28 @@ def normalize_vector_reduction(value):
     return normalized
 
 
-def format_gradient_output(grad_tensor, vector_reduction):
+def format_gradient_output(grad_tensor, vector_reduction, map_reduction="none"):
     if grad_tensor is None:
         return []
     grad_tensor = grad_tensor.detach().float()
+    map_mode = str(map_reduction).strip().lower()
+    if map_mode not in {"none", "energy"}:
+        raise ValueError("layer_grad.map_reduction must be 'none' or 'energy'.")
+
+    if map_mode == "energy":
+        if grad_tensor.ndim == 0:
+            reduced = grad_tensor.abs().reshape(1)
+        elif grad_tensor.ndim == 1:
+            reduced = grad_tensor.abs()
+        else:
+            first_dim = int(grad_tensor.shape[0])
+            reduced = grad_tensor.reshape(first_dim, -1).abs().mean(dim=1)
+    else:
+        reduced = grad_tensor.reshape(-1)
+
     if not vector_reduction:
-        return grad_tensor.reshape(-1).detach().cpu().tolist()
-    stats = map_grad_tensor_to_numbers(grad_tensor)
+        return reduced.detach().cpu().tolist()
+    stats = map_grad_tensor_to_numbers(reduced)
     return {k: stats[k] for k in vector_reduction}
 
 
@@ -882,6 +902,7 @@ def collect_bbox_layer_grads_per_target(
     input_tensor,
     target_values,
     target_layers,
+    map_reduction="none",
     vector_reduction=None,
 ):
     layer_params = [resolve_layer_parameter(detector.model, layer_name) for layer_name in target_layers]
@@ -945,7 +966,11 @@ def collect_bbox_layer_grads_per_target(
                 for layer_idx, layer_name in enumerate(target_layers):
                     key = f"{target_value}_{layer_name}"
                     grad_tensor = grads[layer_idx]
-                    grad_stats[key] = format_gradient_output(grad_tensor, vector_reduction=vector_reduction)
+                    grad_stats[key] = format_gradient_output(
+                        grad_tensor,
+                        vector_reduction=vector_reduction,
+                        map_reduction=map_reduction,
+                    )
 
                 del model_output, raw_prediction, raw_logits, pred_img, logit_img, target_scalar, grads
 
@@ -977,6 +1002,7 @@ def collect_image_layer_grads_per_target(
     input_tensor,
     target_values,
     target_layers,
+    map_reduction="none",
     vector_reduction=None,
     pre_nms=True,
     pre_nms_ratio=1.0,
@@ -1063,7 +1089,11 @@ def collect_image_layer_grads_per_target(
                 if grad_tensor is None:
                     grad_stats[key] = zero_grad_numbers() if vector_reduction else []
                 else:
-                    grad_stats[key] = format_gradient_output(grad_tensor, vector_reduction=vector_reduction)
+                    grad_stats[key] = format_gradient_output(
+                        grad_tensor,
+                        vector_reduction=vector_reduction,
+                        map_reduction=map_reduction,
+                    )
 
             del model_output, raw_prediction, raw_logits, pred_img, logit_img, target_scalar, grads
     finally:

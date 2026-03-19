@@ -1389,6 +1389,7 @@ def run_layer_grad_csv(config, run_dir):
     unit = parsed["unit"]
     target_values = parsed["layer_target_values"]
     target_layers = parsed["layer_target_layers"]
+    layer_map_reduction = parsed["layer_map_reduction"]
     layer_vector_reduction = parsed["layer_vector_reduction"]
     pre_nms = bool(parsed.get("pre_nms", False))
     pre_nms_ratio = float(parsed.get("pre_nms_ratio", 1.0))
@@ -1430,6 +1431,7 @@ def run_layer_grad_csv(config, run_dir):
                         input_tensor=infer_tensor,
                         target_values=target_values,
                         target_layers=target_layers,
+                        map_reduction=layer_map_reduction,
                         vector_reduction=layer_vector_reduction,
                     )
                     for bbox_row in bbox_rows:
@@ -1455,6 +1457,7 @@ def run_layer_grad_csv(config, run_dir):
                         input_tensor=infer_tensor,
                         target_values=target_values,
                         target_layers=target_layers,
+                        map_reduction=layer_map_reduction,
                         vector_reduction=layer_vector_reduction,
                         pre_nms=pre_nms,
                         pre_nms_ratio=pre_nms_ratio,
