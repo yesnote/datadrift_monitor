@@ -23,6 +23,7 @@ from commands.utils.predict_utils import (
     create_layer_grad_buffer,
     draw_predictions,
     get_annotation_path,
+    get_pre_nms_keep_indices,
     has_fn_for_image,
     load_coco_category_maps,
     map_boxes_to_letterbox,
@@ -203,6 +204,7 @@ def run_feature_grad_csv(config, run_dir):
     feature_map_reduction = parsed["feature_map_reduction"]
     feature_vector_reduction = parsed["feature_vector_reduction"]
     pre_nms = bool(parsed.get("pre_nms", False))
+    pre_nms_ratio = float(parsed.get("pre_nms_ratio", 1.0))
 
     if not save_csv:
         return
@@ -275,6 +277,7 @@ def run_feature_grad_csv(config, run_dir):
                             target_layers=target_layers,
                             layer_buffer=layer_buffer,
                             pre_nms=pre_nms,
+                            pre_nms_ratio=pre_nms_ratio,
                         )
 
                         row = {"image_id": image_id, "image_path": image_path}
@@ -404,6 +407,7 @@ def run_score_csv(config, run_dir):
     unit = parsed["unit"]
     score_vector_reduction = parsed["score_vector_reduction"]
     pre_nms = bool(parsed.get("pre_nms", False))
+    pre_nms_ratio = float(parsed.get("pre_nms_ratio", 1.0))
 
     if not save_csv:
         return
@@ -483,6 +487,11 @@ def run_score_csv(config, run_dir):
                             obj = pre[:, 4]
                             cls_max = pre[:, 5:].max(dim=1).values if pre.shape[1] > 5 else torch.ones_like(obj)
                             score_tensor = obj * cls_max
+                            keep_idx = get_pre_nms_keep_indices(pre, pre_nms_ratio=pre_nms_ratio)
+                            if int(keep_idx.shape[0]) > 0:
+                                score_tensor = score_tensor[keep_idx]
+                            else:
+                                score_tensor = torch.zeros((0,), dtype=torch.float32, device=device)
                         num_preds = int(score_tensor.shape[0])
                     else:
                         score_tensor = torch.as_tensor(pred_scores, dtype=torch.float32, device=device)
@@ -524,6 +533,7 @@ def run_full_softmax_csv(config, run_dir):
     unit = parsed["unit"]
     vector_reduction = parsed["full_softmax_vector_reduction"]
     pre_nms = bool(parsed.get("pre_nms", False))
+    pre_nms_ratio = float(parsed.get("pre_nms_ratio", 1.0))
 
     if not save_csv:
         return
@@ -612,10 +622,20 @@ def run_full_softmax_csv(config, run_dir):
                         if raw_logits is not None:
                             pre_logits = raw_logits[sample_idx].detach().float()
                             pre_probs = torch.softmax(pre_logits, dim=-1) if pre_logits.numel() else pre_logits
+                            keep_idx = get_pre_nms_keep_indices(
+                                raw_prediction[sample_idx].detach().float(),
+                                pre_logits,
+                                pre_nms_ratio=pre_nms_ratio,
+                            )
                         else:
                             pre_raw = raw_prediction[sample_idx].detach().float()
                             cls_scores = pre_raw[:, 5:] if pre_raw.shape[1] > 5 else torch.zeros((pre_raw.shape[0], num_classes), device=device)
                             pre_probs = torch.softmax(cls_scores, dim=-1) if cls_scores.numel() else cls_scores
+                            keep_idx = get_pre_nms_keep_indices(pre_raw, pre_nms_ratio=pre_nms_ratio)
+                        if int(keep_idx.shape[0]) > 0:
+                            pre_probs = pre_probs[keep_idx]
+                        else:
+                            pre_probs = torch.zeros((0, num_classes), dtype=torch.float32, device=device)
                         probs_np = pre_probs.detach().cpu().numpy() if pre_probs.numel() else None
                         num_preds = int(pre_probs.shape[0])
                     else:
@@ -666,6 +686,7 @@ def run_energy_csv(config, run_dir):
     unit = parsed["unit"]
     energy_vector_reduction = parsed["energy_vector_reduction"]
     pre_nms = bool(parsed.get("pre_nms", False))
+    pre_nms_ratio = float(parsed.get("pre_nms_ratio", 1.0))
 
     if not save_csv:
         return
@@ -769,6 +790,11 @@ def run_energy_csv(config, run_dir):
                         if raw_logits is not None:
                             pre_logits = raw_logits[sample_idx].detach().float()
                             pre_probs = torch.softmax(pre_logits, dim=-1) if pre_logits.numel() else pre_logits
+                            keep_idx = get_pre_nms_keep_indices(
+                                raw_prediction[sample_idx].detach().float(),
+                                pre_logits,
+                                pre_nms_ratio=pre_nms_ratio,
+                            )
                         else:
                             pre_raw = raw_prediction[sample_idx].detach().float()
                             cls_scores = (
@@ -777,6 +803,11 @@ def run_energy_csv(config, run_dir):
                                 else torch.zeros((pre_raw.shape[0], num_classes), device=device)
                             )
                             pre_probs = torch.softmax(cls_scores, dim=-1) if cls_scores.numel() else cls_scores
+                            keep_idx = get_pre_nms_keep_indices(pre_raw, pre_nms_ratio=pre_nms_ratio)
+                        if int(keep_idx.shape[0]) > 0:
+                            pre_probs = pre_probs[keep_idx]
+                        else:
+                            pre_probs = torch.zeros((0, num_classes), dtype=torch.float32, device=device)
                         if pre_probs.numel():
                             probs_clipped = pre_probs.clamp(min=1e-8, max=1.0 - 1e-8)
                             pseudo_logits = torch.log(probs_clipped / (1.0 - probs_clipped))
@@ -828,6 +859,7 @@ def run_entropy_csv(config, run_dir):
     unit = parsed["unit"]
     entropy_vector_reduction = parsed["entropy_vector_reduction"]
     pre_nms = bool(parsed.get("pre_nms", False))
+    pre_nms_ratio = float(parsed.get("pre_nms_ratio", 1.0))
 
     if not save_csv:
         return
@@ -924,10 +956,20 @@ def run_entropy_csv(config, run_dir):
                         if raw_logits is not None:
                             pre_logits = raw_logits[sample_idx].detach().float()
                             pre_probs = torch.softmax(pre_logits, dim=-1) if pre_logits.numel() else pre_logits
+                            keep_idx = get_pre_nms_keep_indices(
+                                raw_prediction[sample_idx].detach().float(),
+                                pre_logits,
+                                pre_nms_ratio=pre_nms_ratio,
+                            )
                         else:
                             pre_raw = raw_prediction[sample_idx].detach().float()
                             cls_scores = pre_raw[:, 5:] if pre_raw.shape[1] > 5 else torch.zeros((pre_raw.shape[0], num_classes), device=device)
                             pre_probs = torch.softmax(cls_scores, dim=-1) if cls_scores.numel() else cls_scores
+                            keep_idx = get_pre_nms_keep_indices(pre_raw, pre_nms_ratio=pre_nms_ratio)
+                        if int(keep_idx.shape[0]) > 0:
+                            pre_probs = pre_probs[keep_idx]
+                        else:
+                            pre_probs = torch.zeros((0, num_classes), dtype=torch.float32, device=device)
                         if pre_probs.numel():
                             entropy_tensor = -torch.sum(pre_probs * torch.log(pre_probs.clamp(min=1e-12)), dim=-1)
                         else:
@@ -975,6 +1017,7 @@ def run_mc_dropout_csv(config, run_dir):
     queue_maxsize = int(parsed["mc_queue_maxsize"])
     vector_reduction = parsed["mc_vector_reduction"]
     pre_nms = bool(parsed.get("pre_nms", False))
+    pre_nms_ratio = float(parsed.get("pre_nms_ratio", 1.0))
 
     if not save_csv:
         return
@@ -1233,7 +1276,12 @@ def run_mc_dropout_csv(config, run_dir):
                         batch_rows.append(row)
                 else:
                     if pre_nms:
-                        raw_indices = list(range(n_candidates))
+                        raw_keep = get_pre_nms_keep_indices(
+                            det_raw_pred[b].detach().float(),
+                            det_raw_logits[b].detach().float() if det_raw_logits is not None else None,
+                            pre_nms_ratio=pre_nms_ratio,
+                        )
+                        raw_indices = [int(i.item()) for i in raw_keep]
                     else:
                         raw_indices = [raw_idx for _pred_idx, raw_idx in valid_pairs]
                     row = {"image_id": image_id, "image_path": image_path, "num_preds": len(raw_indices)}
@@ -1343,6 +1391,7 @@ def run_layer_grad_csv(config, run_dir):
     target_layers = parsed["layer_target_layers"]
     layer_vector_reduction = parsed["layer_vector_reduction"]
     pre_nms = bool(parsed.get("pre_nms", False))
+    pre_nms_ratio = float(parsed.get("pre_nms_ratio", 1.0))
 
     if not save_csv:
         return
@@ -1408,6 +1457,7 @@ def run_layer_grad_csv(config, run_dir):
                         target_layers=target_layers,
                         vector_reduction=layer_vector_reduction,
                         pre_nms=pre_nms,
+                        pre_nms_ratio=pre_nms_ratio,
                     )
                     row = {
                         "image_id": image_id,
