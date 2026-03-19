@@ -34,6 +34,22 @@ def resolve_path_value(raw_path: str) -> Path:
     return (REPO_ROOT / path).resolve()
 
 
+def normalize_input_roots(raw_value) -> list[str]:
+    if isinstance(raw_value, str):
+        value = raw_value.strip()
+        return [value] if value else []
+    if isinstance(raw_value, (list, tuple)):
+        out: list[str] = []
+        for item in raw_value:
+            if item is None:
+                continue
+            text = str(item).strip()
+            if text:
+                out.append(text)
+        return out
+    return []
+
+
 def parse_root_info(root_path: Path) -> tuple[str, str, str]:
     # Current format: .../runs/{model_group}/{time}_{cue}_{target?}
     # Legacy format:  .../runs/{model_group}/{cue}/{time}
@@ -78,14 +94,24 @@ def main() -> None:
         raise ValueError(f"Unsupported mode: {mode}. Only 'train' is supported.")
 
     dataset_cfg = config.get("dataset", {})
-    input_root_raw = str(dataset_cfg.get("input_root", "")).strip()
+    input_root_raw_list = normalize_input_roots(dataset_cfg.get("input_root", ""))
     gt_root_raw = str(dataset_cfg.get("gt_root", "")).strip()
-    if not input_root_raw or not gt_root_raw:
-        raise ValueError("dataset.input_root and dataset.gt_root are required.")
+    if not input_root_raw_list or not gt_root_raw:
+        raise ValueError("dataset.input_root (str or list[str]) and dataset.gt_root are required.")
 
-    input_root = resolve_path_value(input_root_raw)
+    input_roots = [resolve_path_value(v) for v in input_root_raw_list]
     gt_root = resolve_path_value(gt_root_raw)
-    input_group, input_cue, input_target = parse_root_info(input_root)
+    parsed_inputs = [parse_root_info(p) for p in input_roots]
+    input_groups = {group for group, _cue, _target in parsed_inputs}
+    if len(input_groups) != 1:
+        msg = f"All dataset.input_root entries must share one model group, got: {sorted(input_groups)}"
+        warnings.warn(msg)
+        raise ValueError(msg)
+    input_group = next(iter(input_groups))
+    cue_parts = [cue for _group, cue, _target in parsed_inputs]
+    target_parts = [target for _group, _cue, target in parsed_inputs if target]
+    input_cue = "+".join(cue_parts)
+    input_target = "+".join(target_parts)
     gt_group, _gt_cue, _gt_target = parse_root_info(gt_root)
     if input_group != gt_group:
         msg = (
