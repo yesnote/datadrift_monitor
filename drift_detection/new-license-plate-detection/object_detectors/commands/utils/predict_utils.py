@@ -403,7 +403,7 @@ def build_target_scalar_pre_nms(target_value, raw_prediction, raw_logits):
         return raw_logits.max(dim=-1).values.sum()
 
     raise ValueError(f"Unsupported target_value: {target_value}")
-def collect_gradients_per_target(detector, input_tensor, target_values, target_layers, layer_buffer):
+def collect_gradients_per_target(detector, input_tensor, target_values, target_layers, layer_buffer, before_nms=True):
     grad_stats = {}
     for target_value in target_values:
         detector.zero_grad(set_to_none=True)
@@ -416,7 +416,32 @@ def collect_gradients_per_target(detector, input_tensor, target_values, target_l
 
         target_scalar = None
         if target_value in {"obj", "cls"}:
-            target_scalar = build_target_scalar_pre_nms(target_value, raw_prediction, raw_logits)
+            if before_nms:
+                target_scalar = build_target_scalar_pre_nms(target_value, raw_prediction, raw_logits)
+            else:
+                with torch.no_grad():
+                    _selected_preds, _selected_logits, _selected_objectness, selected_indices = detector.non_max_suppression(
+                        raw_prediction.detach(),
+                        raw_logits.detach() if raw_logits is not None else raw_logits,
+                        detector.confidence,
+                        detector.iou_thresh,
+                        classes=None,
+                        agnostic=detector.agnostic,
+                        return_indices=True,
+                    )
+                    raw_keep_indices = (
+                        selected_indices[0]
+                        if selected_indices
+                        else torch.zeros((0,), dtype=torch.long, device=grad_input.device)
+                    )
+                if int(raw_keep_indices.shape[0]) > 0:
+                    pred_img = raw_prediction[0]
+                    logit_img = raw_logits[0] if raw_logits is not None else pred_img[:, 5:]
+                    if target_value == "obj":
+                        target_scalar = pred_img[raw_keep_indices, 4].sum()
+                    else:
+                        if logit_img is not None and logit_img.numel() > 0:
+                            target_scalar = logit_img[raw_keep_indices].max(dim=1).values.sum()
         else:
             # unit=image + *loss: mean over final NMS predictions
             with torch.no_grad():
