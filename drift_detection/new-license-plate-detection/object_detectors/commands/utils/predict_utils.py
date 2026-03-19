@@ -207,7 +207,7 @@ def parse_output_config(output_cfg):
     else:
         save_csv_enabled = bool(save_csv_cfg.get("enabled", True))
         uncertainty = str(save_csv_cfg.get("uncertainty", "gt")).lower()
-        before_nms = bool(save_csv_cfg.get("before_nms", False))
+        pre_nms = bool(save_csv_cfg.get("pre_nms", False))
         gt_cfg = save_csv_cfg.get("gt", {})
         score_cfg = save_csv_cfg.get("score", {})
         mc_dropout_cfg = save_csv_cfg.get("mc_dropout", {})
@@ -219,7 +219,7 @@ def parse_output_config(output_cfg):
         unit = str(save_csv_cfg.get("unit", "image")).lower()
 
     if isinstance(save_csv_cfg, bool):
-        before_nms = False
+        pre_nms = False
 
     if uncertainty not in {"gt", "score", "mc_dropout", "energy", "entropy", "full_softmax", "feature_grad", "layer_grad"}:
         raise ValueError(
@@ -365,7 +365,7 @@ def parse_output_config(output_cfg):
     return {
         "save_csv_enabled": save_csv_enabled,
         "uncertainty": uncertainty,
-        "before_nms": before_nms,
+        "pre_nms": pre_nms,
         "unit": unit,
         "gt_iou_match_threshold": gt_iou_match_threshold,
         "mc_num_runs": mc_num_runs,
@@ -403,7 +403,7 @@ def build_target_scalar_pre_nms(target_value, raw_prediction, raw_logits):
         return raw_logits.max(dim=-1).values.sum()
 
     raise ValueError(f"Unsupported target_value: {target_value}")
-def collect_gradients_per_target(detector, input_tensor, target_values, target_layers, layer_buffer, before_nms=True):
+def collect_gradients_per_target(detector, input_tensor, target_values, target_layers, layer_buffer, pre_nms=True):
     grad_stats = {}
     for target_value in target_values:
         detector.zero_grad(set_to_none=True)
@@ -416,7 +416,7 @@ def collect_gradients_per_target(detector, input_tensor, target_values, target_l
 
         target_scalar = None
         if target_value in {"obj", "cls"}:
-            if before_nms:
+            if pre_nms:
                 target_scalar = build_target_scalar_pre_nms(target_value, raw_prediction, raw_logits)
             else:
                 with torch.no_grad():
@@ -917,7 +917,7 @@ def collect_image_layer_grads_per_target(
     target_values,
     target_layers,
     vector_reduction=None,
-    before_nms=True,
+    pre_nms=True,
 ):
     layer_params = [resolve_layer_parameter(detector.model, layer_name) for layer_name in target_layers]
     original_requires_grad = [bool(p.requires_grad) for p in layer_params]
@@ -952,7 +952,7 @@ def collect_image_layer_grads_per_target(
 
             target_scalar = None
             if target_value in {"obj", "cls"}:
-                if before_nms:
+                if pre_nms:
                     target_scalar = build_layer_target_scalar_image(target_value, raw_prediction, raw_logits)
                 else:
                     if int(raw_keep_indices.shape[0]) > 0:
