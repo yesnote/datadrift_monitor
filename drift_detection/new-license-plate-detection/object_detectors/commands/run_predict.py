@@ -970,6 +970,7 @@ def run_mc_dropout_csv(config, run_dir):
     dropout_rate = float(parsed["mc_dropout_rate"])
     queue_maxsize = int(parsed["mc_queue_maxsize"])
     vector_reduction = parsed["mc_vector_reduction"]
+    before_nms = bool(parsed.get("before_nms", False))
 
     if not save_csv:
         return
@@ -1215,7 +1216,10 @@ def run_mc_dropout_csv(config, run_dir):
                             row[f"prob_{class_idx}_std"] = float(feat_std_np[raw_idx, 5 + class_idx])
                         batch_rows.append(row)
                 else:
-                    raw_indices = [raw_idx for _pred_idx, raw_idx in valid_pairs]
+                    if before_nms:
+                        raw_indices = list(range(n_candidates))
+                    else:
+                        raw_indices = [raw_idx for _pred_idx, raw_idx in valid_pairs]
                     row = {"image_id": image_id, "image_path": image_path, "num_preds": len(raw_indices)}
                     if len(raw_indices) == 0:
                         for prefix in (
