@@ -917,6 +917,7 @@ def collect_image_layer_grads_per_target(
     target_values,
     target_layers,
     vector_reduction=None,
+    before_nms=True,
 ):
     layer_params = [resolve_layer_parameter(detector.model, layer_name) for layer_name in target_layers]
     original_requires_grad = [bool(p.requires_grad) for p in layer_params]
@@ -951,7 +952,15 @@ def collect_image_layer_grads_per_target(
 
             target_scalar = None
             if target_value in {"obj", "cls"}:
-                target_scalar = build_layer_target_scalar_image(target_value, raw_prediction, raw_logits)
+                if before_nms:
+                    target_scalar = build_layer_target_scalar_image(target_value, raw_prediction, raw_logits)
+                else:
+                    if int(raw_keep_indices.shape[0]) > 0:
+                        if target_value == "obj":
+                            target_scalar = pred_img[raw_keep_indices, 4].sum()
+                        else:
+                            if logit_img is not None and logit_img.numel() > 0:
+                                target_scalar = logit_img[raw_keep_indices].max(dim=1).values.sum()
             else:
                 loss_terms = []
                 for bbox_idx in range(int(raw_keep_indices.shape[0])):
