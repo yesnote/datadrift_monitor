@@ -1011,8 +1011,8 @@ def run_mc_dropout_csv(config, run_dir):
         "std": "std",
     }
 
-    def stats_from_np(vec):
-        if vec.size == 0:
+    def stats_from_tensor(vec):
+        if vec is None or vec.numel() == 0:
             return {
                 "1-norm": 0.0,
                 "2-norm": 0.0,
@@ -1021,13 +1021,14 @@ def run_mc_dropout_csv(config, run_dir):
                 "mean": 0.0,
                 "std": 0.0,
             }
+        v = vec.detach().float().reshape(-1)
         return {
-            "1-norm": float(np.linalg.norm(vec, ord=1)),
-            "2-norm": float(np.linalg.norm(vec, ord=2)),
-            "min": float(np.min(vec)),
-            "max": float(np.max(vec)),
-            "mean": float(np.mean(vec)),
-            "std": float(np.std(vec)),
+            "1-norm": float(torch.norm(v, p=1).item()),
+            "2-norm": float(torch.norm(v, p=2).item()),
+            "min": float(torch.min(v).item()),
+            "max": float(torch.max(v).item()),
+            "mean": float(torch.mean(v).item()),
+            "std": float(torch.std(v, unbiased=False).item()),
         }
 
     fieldnames = ["image_id", "image_path"]
@@ -1191,8 +1192,8 @@ def run_mc_dropout_csv(config, run_dir):
                     if selected_indices and b < len(selected_indices)
                     else torch.zeros((0,), dtype=torch.long, device=device)
                 )
-                feat_mean_np = feat_mean[b].detach().cpu().numpy()
-                feat_std_np = feat_std[b].detach().cpu().numpy()
+                feat_mean_cpu = feat_mean[b].detach().float().cpu()
+                feat_std_cpu = feat_std[b].detach().float().cpu()
                 num_final = int(det_b.shape[0])
                 valid_pairs = []
                 for pred_idx in range(num_final):
@@ -1214,21 +1215,21 @@ def run_mc_dropout_csv(config, run_dir):
                             "ymax": float(det_b[pred_idx, 3].detach().cpu().item()),
                             "score": float(det_b[pred_idx, 4].detach().cpu().item()) if det_b.shape[1] > 4 else 0.0,
                             "pred_class": detector.names[cls_idx] if (detector.names is not None and cls_idx >= 0) else cls_idx,
-                            "xmin_mean": float(feat_mean_np[raw_idx, 0]),
-                            "ymin_mean": float(feat_mean_np[raw_idx, 1]),
-                            "xmax_mean": float(feat_mean_np[raw_idx, 2]),
-                            "ymax_mean": float(feat_mean_np[raw_idx, 3]),
-                            "score_mean": float(feat_mean_np[raw_idx, 4]),
-                            "xmin_std": float(feat_std_np[raw_idx, 0]),
-                            "ymin_std": float(feat_std_np[raw_idx, 1]),
-                            "xmax_std": float(feat_std_np[raw_idx, 2]),
-                            "ymax_std": float(feat_std_np[raw_idx, 3]),
-                            "score_std": float(feat_std_np[raw_idx, 4]),
+                            "xmin_mean": float(feat_mean_cpu[raw_idx, 0].item()),
+                            "ymin_mean": float(feat_mean_cpu[raw_idx, 1].item()),
+                            "xmax_mean": float(feat_mean_cpu[raw_idx, 2].item()),
+                            "ymax_mean": float(feat_mean_cpu[raw_idx, 3].item()),
+                            "score_mean": float(feat_mean_cpu[raw_idx, 4].item()),
+                            "xmin_std": float(feat_std_cpu[raw_idx, 0].item()),
+                            "ymin_std": float(feat_std_cpu[raw_idx, 1].item()),
+                            "xmax_std": float(feat_std_cpu[raw_idx, 2].item()),
+                            "ymax_std": float(feat_std_cpu[raw_idx, 3].item()),
+                            "score_std": float(feat_std_cpu[raw_idx, 4].item()),
                         }
                         class_count = int(n_classes) if n_classes is not None else 0
                         for class_idx in range(class_count):
-                            row[f"prob_{class_idx}_mean"] = float(feat_mean_np[raw_idx, 5 + class_idx])
-                            row[f"prob_{class_idx}_std"] = float(feat_std_np[raw_idx, 5 + class_idx])
+                            row[f"prob_{class_idx}_mean"] = float(feat_mean_cpu[raw_idx, 5 + class_idx].item())
+                            row[f"prob_{class_idx}_std"] = float(feat_std_cpu[raw_idx, 5 + class_idx].item())
                         batch_rows.append(row)
                 else:
                     if before_nms:
@@ -1257,50 +1258,52 @@ def run_mc_dropout_csv(config, run_dir):
                             for key in stat_keys:
                                 row[f"prob_{class_idx}_std_{stat_alias[key]}"] = 0.0
                     else:
-                        raw_indices_np = np.asarray(raw_indices, dtype=np.int64)
-                        xmin_mean_vec = feat_mean_np[raw_indices_np, 0].reshape(-1)
-                        ymin_mean_vec = feat_mean_np[raw_indices_np, 1].reshape(-1)
-                        xmax_mean_vec = feat_mean_np[raw_indices_np, 2].reshape(-1)
-                        ymax_mean_vec = feat_mean_np[raw_indices_np, 3].reshape(-1)
-                        xmin_std_vec = feat_std_np[raw_indices_np, 0].reshape(-1)
-                        ymin_std_vec = feat_std_np[raw_indices_np, 1].reshape(-1)
-                        xmax_std_vec = feat_std_np[raw_indices_np, 2].reshape(-1)
-                        ymax_std_vec = feat_std_np[raw_indices_np, 3].reshape(-1)
-                        score_mean_vec = feat_mean_np[raw_indices_np, 4].reshape(-1)
-                        score_std_vec = feat_std_np[raw_indices_np, 4].reshape(-1)
+                        raw_indices_tensor = torch.tensor(raw_indices, dtype=torch.long, device=feat_mean_cpu.device)
+                        feat_mean_sel = feat_mean_cpu.index_select(0, raw_indices_tensor)
+                        feat_std_sel = feat_std_cpu.index_select(0, raw_indices_tensor)
+                        xmin_mean_vec = feat_mean_sel[:, 0].reshape(-1)
+                        ymin_mean_vec = feat_mean_sel[:, 1].reshape(-1)
+                        xmax_mean_vec = feat_mean_sel[:, 2].reshape(-1)
+                        ymax_mean_vec = feat_mean_sel[:, 3].reshape(-1)
+                        xmin_std_vec = feat_std_sel[:, 0].reshape(-1)
+                        ymin_std_vec = feat_std_sel[:, 1].reshape(-1)
+                        xmax_std_vec = feat_std_sel[:, 2].reshape(-1)
+                        ymax_std_vec = feat_std_sel[:, 3].reshape(-1)
+                        score_mean_vec = feat_mean_sel[:, 4].reshape(-1)
+                        score_std_vec = feat_std_sel[:, 4].reshape(-1)
 
-                        for key, val in stats_from_np(xmin_mean_vec).items():
+                        for key, val in stats_from_tensor(xmin_mean_vec).items():
                             row[f"xmin_mean_{stat_alias[key]}"] = val
-                        for key, val in stats_from_np(ymin_mean_vec).items():
+                        for key, val in stats_from_tensor(ymin_mean_vec).items():
                             row[f"ymin_mean_{stat_alias[key]}"] = val
-                        for key, val in stats_from_np(xmax_mean_vec).items():
+                        for key, val in stats_from_tensor(xmax_mean_vec).items():
                             row[f"xmax_mean_{stat_alias[key]}"] = val
-                        for key, val in stats_from_np(ymax_mean_vec).items():
+                        for key, val in stats_from_tensor(ymax_mean_vec).items():
                             row[f"ymax_mean_{stat_alias[key]}"] = val
-                        for key, val in stats_from_np(xmin_std_vec).items():
+                        for key, val in stats_from_tensor(xmin_std_vec).items():
                             row[f"xmin_std_{stat_alias[key]}"] = val
-                        for key, val in stats_from_np(ymin_std_vec).items():
+                        for key, val in stats_from_tensor(ymin_std_vec).items():
                             row[f"ymin_std_{stat_alias[key]}"] = val
-                        for key, val in stats_from_np(xmax_std_vec).items():
+                        for key, val in stats_from_tensor(xmax_std_vec).items():
                             row[f"xmax_std_{stat_alias[key]}"] = val
-                        for key, val in stats_from_np(ymax_std_vec).items():
+                        for key, val in stats_from_tensor(ymax_std_vec).items():
                             row[f"ymax_std_{stat_alias[key]}"] = val
-                        for key, val in stats_from_np(score_mean_vec).items():
+                        for key, val in stats_from_tensor(score_mean_vec).items():
                             row[f"score_mean_{stat_alias[key]}"] = val
-                        for key, val in stats_from_np(score_std_vec).items():
+                        for key, val in stats_from_tensor(score_std_vec).items():
                             row[f"score_std_{stat_alias[key]}"] = val
 
                         class_count = int(n_classes) if n_classes is not None else 0
                         for class_idx in range(n_classes_hint):
                             if class_idx < class_count:
-                                prob_mean_vec = feat_mean_np[raw_indices_np, 5 + class_idx].reshape(-1)
-                                prob_std_vec = feat_std_np[raw_indices_np, 5 + class_idx].reshape(-1)
+                                prob_mean_vec = feat_mean_sel[:, 5 + class_idx].reshape(-1)
+                                prob_std_vec = feat_std_sel[:, 5 + class_idx].reshape(-1)
                             else:
-                                prob_mean_vec = np.zeros((0,), dtype=np.float32)
-                                prob_std_vec = np.zeros((0,), dtype=np.float32)
-                            for key, val in stats_from_np(prob_mean_vec).items():
+                                prob_mean_vec = torch.zeros((0,), dtype=torch.float32, device=feat_mean_cpu.device)
+                                prob_std_vec = torch.zeros((0,), dtype=torch.float32, device=feat_mean_cpu.device)
+                            for key, val in stats_from_tensor(prob_mean_vec).items():
                                 row[f"prob_{class_idx}_mean_{stat_alias[key]}"] = val
-                            for key, val in stats_from_np(prob_std_vec).items():
+                            for key, val in stats_from_tensor(prob_std_vec).items():
                                 row[f"prob_{class_idx}_std_{stat_alias[key]}"] = val
                     batch_rows.append(row)
 
