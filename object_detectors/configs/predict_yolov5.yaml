@@ -35,7 +35,7 @@ output:
     enabled: true
     unit: image   # image | bbox
     uncertainty: feature_grad  # gt | score | mc_dropout | full_softmax | entropy | energy | mc_dropout | feature_grad | layer_grad
-    before_nms: false  # true: use before NMS preds | false: use after NMS preds
+    before_nms: false  # true: use before-NMS preds | false: use after-NMS preds
     
     gt: # unit:image -> fn | unit:bbox -> tp
       iou_match_threshold: 0.45
