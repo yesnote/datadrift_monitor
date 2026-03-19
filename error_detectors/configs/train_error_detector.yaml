@@ -8,7 +8,10 @@ model:
 
 dataset:
   # object_detectors/runs/{fn_detectors|tp_classifiers}/{time}_{cue}
-  input_root: object_detectors/runs/fn_detectors/03-12-2026_18;34_feature_grad
+  # string or list of roots (features from all roots are merged)
+  input_root:
+    - object_detectors/runs/fn_detectors/03-12-2026_18;34_feature_grad
+    # - object_detectors/runs/fn_detectors/03-12-2026_18;34_entropy
   gt_root: object_detectors/runs/fn_detectors/03-12-2026_18;34_fn
 
 train:

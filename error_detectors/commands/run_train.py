@@ -151,15 +151,38 @@ def parse_root_info(root_path: Path) -> tuple[str, str, str]:
     )
 
 
-def load_training_dataframe(dataset_cfg: dict[str, Any]) -> tuple[pd.DataFrame, str, list[str], dict[str, str]]:
-    input_root_raw = str(dataset_cfg.get("input_root", "")).strip()
-    gt_root_raw = str(dataset_cfg.get("gt_root", "")).strip()
-    if not input_root_raw or not gt_root_raw:
-        raise ValueError("dataset.input_root and dataset.gt_root are required.")
+def normalize_input_roots(raw_value: Any) -> list[str]:
+    if isinstance(raw_value, str):
+        value = raw_value.strip()
+        return [value] if value else []
+    if isinstance(raw_value, (list, tuple)):
+        out: list[str] = []
+        for item in raw_value:
+            if item is None:
+                continue
+            text = str(item).strip()
+            if text:
+                out.append(text)
+        return out
+    return []
 
-    input_root = resolve_path_value(input_root_raw)
+
+def load_training_dataframe(dataset_cfg: dict[str, Any]) -> tuple[pd.DataFrame, str, list[str], dict[str, Any]]:
+    input_root_raw_list = normalize_input_roots(dataset_cfg.get("input_root", ""))
+    gt_root_raw = str(dataset_cfg.get("gt_root", "")).strip()
+    if not input_root_raw_list or not gt_root_raw:
+        raise ValueError("dataset.input_root (str or list[str]) and dataset.gt_root are required.")
+
+    input_roots = [resolve_path_value(v) for v in input_root_raw_list]
     gt_root = resolve_path_value(gt_root_raw)
-    input_group, input_cue, input_target = parse_root_info(input_root)
+    input_infos = [parse_root_info(p) for p in input_roots]
+    input_groups = {group for group, _cue, _target in input_infos}
+    if len(input_groups) != 1:
+        msg = f"All dataset.input_root entries must share one model group, got: {sorted(input_groups)}"
+        warnings.warn(msg)
+        raise ValueError(msg)
+    input_group = next(iter(input_groups))
+
     gt_group, _gt_cue, _gt_target = parse_root_info(gt_root)
     if input_group != gt_group:
         msg = (
@@ -178,101 +201,125 @@ def load_training_dataframe(dataset_cfg: dict[str, Any]) -> tuple[pd.DataFrame, 
         "entropy": "entropy.csv",
         "energy": "energy.csv",
     }
-    input_csv_name = cue_to_csv.get(input_cue)
-    if input_csv_name is None:
-        raise ValueError(
-            f"Unsupported input cue '{input_cue}'. "
-            "Supported cues: layer_grad, feature_grad, score, mc_dropout, full_softmax, entropy, energy."
-        )
-    input_csv = input_root / input_csv_name
-    if not input_csv.is_file():
-        raise FileNotFoundError(f"{input_csv_name} not found: {input_csv}")
-    feature_df = pd.read_csv(input_csv)
-
     if input_group == "fn_detectors":
         gt_csv = gt_root / "fn.csv"
         label_col = "fn"
         if not gt_csv.is_file():
             raise FileNotFoundError(f"fn.csv not found: {gt_csv}")
         gt_df = pd.read_csv(gt_csv)[["image_id", "image_path", label_col]]
-        merge_keys = ["image_id", "image_path"]
-        meta_columns = {"image_id", "image_path", "num_preds", label_col}
+        base_merge_keys = ["image_id", "image_path"]
     elif input_group == "tp_classifiers":
         gt_csv = gt_root / "tp.csv"
         label_col = "tp"
         if not gt_csv.is_file():
             raise FileNotFoundError(f"tp.csv not found: {gt_csv}")
         gt_df = pd.read_csv(gt_csv)
-
-        if {"image_id", "image_path", "pred_idx"}.issubset(feature_df.columns) and {
-            "image_id",
-            "image_path",
-            "pred_idx",
-            label_col,
-        }.issubset(gt_df.columns):
-            merge_keys = ["image_id", "image_path", "pred_idx"]
-        elif {
-            "image_id",
-            "image_path",
-            "xmin",
-            "ymin",
-            "xmax",
-            "ymax",
-        }.issubset(feature_df.columns) and {
-            "image_id",
-            "image_path",
-            "xmin",
-            "ymin",
-            "xmax",
-            "ymax",
-            label_col,
-        }.issubset(gt_df.columns):
-            merge_keys = ["image_id", "image_path", "xmin", "ymin", "xmax", "ymax"]
+        if {"image_id", "image_path", "pred_idx", label_col}.issubset(gt_df.columns):
+            base_merge_keys = ["image_id", "image_path", "pred_idx"]
+        elif {"image_id", "image_path", "xmin", "ymin", "xmax", "ymax", label_col}.issubset(gt_df.columns):
+            base_merge_keys = ["image_id", "image_path", "xmin", "ymin", "xmax", "ymax"]
         else:
-            raise ValueError(f"Cannot match {input_csv_name} and tp.csv. Missing join keys.")
-
-        keep_cols = list(dict.fromkeys(merge_keys + [label_col]))
-        gt_df = gt_df[keep_cols]
-        meta_columns = {
-            "image_id",
-            "image_path",
-            "pred_idx",
-            "raw_pred_idx",
-            "xmin",
-            "ymin",
-            "xmax",
-            "ymax",
-            "score",
-            "pred_class",
-            "max_iou",
-            label_col,
-        }
-        if input_cue == "score":
-            meta_columns.discard("score")
+            raise ValueError("tp.csv missing required join keys.")
+        gt_df = gt_df[list(dict.fromkeys(base_merge_keys + [label_col]))]
     else:
         raise ValueError(
             "Unsupported model group from dataset roots: "
             f"'{input_group}'. Expected 'fn_detectors' or 'tp_classifiers'."
         )
 
-    merged = feature_df.merge(gt_df, on=merge_keys, how="inner")
+    merged = gt_df.copy()
+    prefixed_feature_columns: list[str] = []
+    input_uncertainties: list[str] = []
+    input_targets: list[str] = []
+    for input_root, (_group, input_cue, input_target) in zip(input_roots, input_infos):
+        input_csv_name = cue_to_csv.get(input_cue)
+        if input_csv_name is None:
+            raise ValueError(
+                f"Unsupported input uncertainty '{input_cue}'. "
+                "Supported uncertainties: layer_grad, feature_grad, score, mc_dropout, full_softmax, entropy, energy."
+            )
+        input_csv = input_root / input_csv_name
+        if not input_csv.is_file():
+            raise FileNotFoundError(f"{input_csv_name} not found: {input_csv}")
+        feature_df = pd.read_csv(input_csv)
+
+        if input_group == "fn_detectors":
+            merge_keys = ["image_id", "image_path"]
+            meta_columns = {"image_id", "image_path", "num_preds", label_col}
+        else:
+            if {"image_id", "image_path", "pred_idx"}.issubset(feature_df.columns) and set(base_merge_keys) == {
+                "image_id",
+                "image_path",
+                "pred_idx",
+            }:
+                merge_keys = ["image_id", "image_path", "pred_idx"]
+            elif {
+                "image_id",
+                "image_path",
+                "xmin",
+                "ymin",
+                "xmax",
+                "ymax",
+            }.issubset(feature_df.columns) and set(base_merge_keys) == {
+                "image_id",
+                "image_path",
+                "xmin",
+                "ymin",
+                "xmax",
+                "ymax",
+            }:
+                merge_keys = ["image_id", "image_path", "xmin", "ymin", "xmax", "ymax"]
+            else:
+                raise ValueError(
+                    f"Cannot match {input_csv_name} to tp.csv using keys {base_merge_keys}. "
+                    "All inputs must use the same tp key type."
+                )
+            meta_columns = {
+                "image_id",
+                "image_path",
+                "pred_idx",
+                "raw_pred_idx",
+                "xmin",
+                "ymin",
+                "xmax",
+                "ymax",
+                "score",
+                "pred_class",
+                "max_iou",
+                label_col,
+            }
+            if input_cue == "score":
+                meta_columns.discard("score")
+
+        feature_columns = [c for c in feature_df.columns if c not in meta_columns]
+        if not feature_columns:
+            raise ValueError(f"No input feature columns found in {input_csv}")
+        suffix_target = f"_{input_target}" if input_target else ""
+        prefix = f"{input_cue}{suffix_target}__"
+        rename_map = {c: f"{prefix}{c}" for c in feature_columns}
+        feature_df = feature_df[list(dict.fromkeys(merge_keys + feature_columns))].rename(columns=rename_map)
+        merged = merged.merge(feature_df, on=merge_keys, how="inner")
+        prefixed_feature_columns.extend(rename_map.values())
+        input_uncertainties.append(input_cue)
+        input_targets.append(input_target)
+
     if merged.empty:
         raise ValueError("Merged training dataframe is empty. Check input_root and gt_root pair.")
     if label_col not in merged.columns:
         raise ValueError(f"Ground-truth label column '{label_col}' is missing after merge.")
 
-    grad_columns = [c for c in merged.columns if c not in meta_columns]
-    if not grad_columns:
+    input_features = [c for c in merged.columns if c in prefixed_feature_columns]
+    if not input_features:
         raise ValueError("No input feature columns found after merge.")
 
     root_info = {
-        "input_root": str(input_root),
+        "input_root": [str(p) for p in input_roots],
         "gt_root": str(gt_root),
         "model_group": input_group,
-        "input_uncertainty": input_cue,
-        "input_target": input_target,
+        "input_uncertainty": input_uncertainties,
+        "input_target": input_targets,
     }
-    return merged, label_col, grad_columns, root_info
+    return merged, label_col, input_features, root_info
 
 
 def run_train(config: dict[str, Any], run_dir: Path) -> Path:
