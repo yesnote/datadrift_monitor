@@ -941,7 +941,18 @@ def run_mc_dropout_csv(config, run_dir):
             fieldnames.append(f"prob_{class_idx}_std")
     else:
         fieldnames.append("num_preds")
-        for prefix in ("bbox_mean", "bbox_std", "score_mean", "score_std"):
+        for prefix in (
+            "xmin_mean",
+            "ymin_mean",
+            "xmax_mean",
+            "ymax_mean",
+            "xmin_std",
+            "ymin_std",
+            "xmax_std",
+            "ymax_std",
+            "score_mean",
+            "score_std",
+        ):
             for key in stat_keys:
                 fieldnames.append(f"{prefix}_{stat_alias[key]}")
         for class_idx in range(n_classes_hint):
@@ -1106,7 +1117,18 @@ def run_mc_dropout_csv(config, run_dir):
                     raw_indices = [raw_idx for _pred_idx, raw_idx in valid_pairs]
                     row = {"image_id": image_id, "image_path": image_path, "num_preds": len(raw_indices)}
                     if len(raw_indices) == 0:
-                        for prefix in ("bbox_mean", "bbox_std", "score_mean", "score_std"):
+                        for prefix in (
+                            "xmin_mean",
+                            "ymin_mean",
+                            "xmax_mean",
+                            "ymax_mean",
+                            "xmin_std",
+                            "ymin_std",
+                            "xmax_std",
+                            "ymax_std",
+                            "score_mean",
+                            "score_std",
+                        ):
                             for key in stat_keys:
                                 row[f"{prefix}_{stat_alias[key]}"] = 0.0
                         for class_idx in range(n_classes_hint):
@@ -1116,15 +1138,33 @@ def run_mc_dropout_csv(config, run_dir):
                                 row[f"prob_{class_idx}_std_{stat_alias[key]}"] = 0.0
                     else:
                         raw_indices_np = np.asarray(raw_indices, dtype=np.int64)
-                        bbox_mean_vec = feat_mean_np[raw_indices_np, 0:4].reshape(-1)
-                        bbox_std_vec = feat_std_np[raw_indices_np, 0:4].reshape(-1)
+                        xmin_mean_vec = feat_mean_np[raw_indices_np, 0].reshape(-1)
+                        ymin_mean_vec = feat_mean_np[raw_indices_np, 1].reshape(-1)
+                        xmax_mean_vec = feat_mean_np[raw_indices_np, 2].reshape(-1)
+                        ymax_mean_vec = feat_mean_np[raw_indices_np, 3].reshape(-1)
+                        xmin_std_vec = feat_std_np[raw_indices_np, 0].reshape(-1)
+                        ymin_std_vec = feat_std_np[raw_indices_np, 1].reshape(-1)
+                        xmax_std_vec = feat_std_np[raw_indices_np, 2].reshape(-1)
+                        ymax_std_vec = feat_std_np[raw_indices_np, 3].reshape(-1)
                         score_mean_vec = feat_mean_np[raw_indices_np, 4].reshape(-1)
                         score_std_vec = feat_std_np[raw_indices_np, 4].reshape(-1)
 
-                        for key, val in stats_from_np(bbox_mean_vec).items():
-                            row[f"bbox_mean_{stat_alias[key]}"] = val
-                        for key, val in stats_from_np(bbox_std_vec).items():
-                            row[f"bbox_std_{stat_alias[key]}"] = val
+                        for key, val in stats_from_np(xmin_mean_vec).items():
+                            row[f"xmin_mean_{stat_alias[key]}"] = val
+                        for key, val in stats_from_np(ymin_mean_vec).items():
+                            row[f"ymin_mean_{stat_alias[key]}"] = val
+                        for key, val in stats_from_np(xmax_mean_vec).items():
+                            row[f"xmax_mean_{stat_alias[key]}"] = val
+                        for key, val in stats_from_np(ymax_mean_vec).items():
+                            row[f"ymax_mean_{stat_alias[key]}"] = val
+                        for key, val in stats_from_np(xmin_std_vec).items():
+                            row[f"xmin_std_{stat_alias[key]}"] = val
+                        for key, val in stats_from_np(ymin_std_vec).items():
+                            row[f"ymin_std_{stat_alias[key]}"] = val
+                        for key, val in stats_from_np(xmax_std_vec).items():
+                            row[f"xmax_std_{stat_alias[key]}"] = val
+                        for key, val in stats_from_np(ymax_std_vec).items():
+                            row[f"ymax_std_{stat_alias[key]}"] = val
                         for key, val in stats_from_np(score_mean_vec).items():
                             row[f"score_mean_{stat_alias[key]}"] = val
                         for key, val in stats_from_np(score_std_vec).items():
