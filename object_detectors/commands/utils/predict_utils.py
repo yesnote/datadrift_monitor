@@ -207,6 +207,7 @@ def parse_output_config(output_cfg):
     else:
         save_csv_enabled = bool(save_csv_cfg.get("enabled", True))
         uncertainty = str(save_csv_cfg.get("uncertainty", "gt")).lower()
+        before_nms = bool(save_csv_cfg.get("before_nms", False))
         gt_cfg = save_csv_cfg.get("gt", {})
         score_cfg = save_csv_cfg.get("score", {})
         mc_dropout_cfg = save_csv_cfg.get("mc_dropout", {})
@@ -216,6 +217,9 @@ def parse_output_config(output_cfg):
         feature_grad_cfg = save_csv_cfg.get("feature_grad", {})
         layer_grad_cfg = save_csv_cfg.get("layer_grad", {})
         unit = str(save_csv_cfg.get("unit", "image")).lower()
+
+    if isinstance(save_csv_cfg, bool):
+        before_nms = False
 
     if uncertainty not in {"gt", "score", "mc_dropout", "energy", "entropy", "full_softmax", "feature_grad", "layer_grad"}:
         raise ValueError(
@@ -361,6 +365,7 @@ def parse_output_config(output_cfg):
     return {
         "save_csv_enabled": save_csv_enabled,
         "uncertainty": uncertainty,
+        "before_nms": before_nms,
         "unit": unit,
         "gt_iou_match_threshold": gt_iou_match_threshold,
         "mc_num_runs": mc_num_runs,
