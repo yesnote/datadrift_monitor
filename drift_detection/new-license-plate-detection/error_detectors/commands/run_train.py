@@ -160,7 +160,7 @@ def load_training_dataframe(dataset_cfg: dict[str, Any]) -> tuple[pd.DataFrame, 
     input_root = resolve_path_value(input_root_raw)
     gt_root = resolve_path_value(gt_root_raw)
     input_group, input_cue, input_target = parse_root_info(input_root)
-    gt_group, gt_cue, gt_target = parse_root_info(gt_root)
+    gt_group, _gt_cue, _gt_target = parse_root_info(gt_root)
     if input_group != gt_group:
         msg = (
             "dataset.input_root and dataset.gt_root must have the same model group "
@@ -269,10 +269,8 @@ def load_training_dataframe(dataset_cfg: dict[str, Any]) -> tuple[pd.DataFrame, 
         "input_root": str(input_root),
         "gt_root": str(gt_root),
         "model_group": input_group,
-        "input_cue": input_cue,
+        "input_uncertainty": input_cue,
         "input_target": input_target,
-        "gt_cue": gt_cue,
-        "gt_target": gt_target,
     }
     return merged, label_col, grad_columns, root_info
 
@@ -346,10 +344,8 @@ def run_train(config: dict[str, Any], run_dir: Path) -> Path:
         "input_root": root_info["input_root"],
         "gt_root": root_info["gt_root"],
         "model_group": root_info["model_group"],
-        "input_cue": root_info["input_cue"],
+        "input_uncertainty": root_info["input_uncertainty"],
         "input_target": root_info.get("input_target", ""),
-        "gt_cue": root_info["gt_cue"],
-        "gt_target": root_info.get("gt_target", ""),
         "label_column": label_col,
         "model": model_name,
         "device": device,
@@ -358,8 +354,8 @@ def run_train(config: dict[str, Any], run_dir: Path) -> Path:
         "feature_dimension": int(x.shape[1]),
         "num_rows": int(len(df)),
         "num_positive_fn": int(np.sum(y)),
-        "grad_columns": grad_columns,
-        "dim_by_column": spec.dim_by_column,
+        "input_features": grad_columns,
+        "dim_by_feature": spec.dim_by_column,
         "best_params": best_params,
         "repeats": repeats,
         "test_size": test_size,
