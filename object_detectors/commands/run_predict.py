@@ -8,9 +8,10 @@ import cv2
 import numpy as np
 import pandas as pd
 import torch
+from torch.utils.data import DataLoader
 from tqdm import tqdm
 
-from dataloaders.dataloader_yolo import create_dataloader
+from dataloaders.dataloader_yolo import build_dataset, create_dataloader, yolo_collate_fn
 from commands.utils.predict_utils import (
     assign_tp_to_predictions,
     build_detector,
@@ -980,7 +981,19 @@ def run_mc_dropout_csv(config, run_dir):
     if unit not in {"image", "bbox"}:
         raise ValueError("output.save_csv.uncertainty='mc_dropout' requires output.save_csv.unit in {'image','bbox'}.")
 
-    dataloader = create_dataloader(config, split=split)
+    # Windows OpenMP + subprocess workers can conflict in MC-dropout runs.
+    # Force single-process data loading here to avoid libiomp duplicate init crashes.
+    dataset = build_dataset(config, split=split)
+    dl_cfg = config["dataloader"]
+    shuffle = dl_cfg["shuffle_train"] if split == "train" else dl_cfg["shuffle_eval"]
+    dataloader = DataLoader(
+        dataset,
+        batch_size=dl_cfg["batch_size"],
+        shuffle=shuffle,
+        num_workers=0,
+        pin_memory=dl_cfg["pin_memory"],
+        collate_fn=yolo_collate_fn,
+    )
     if len(dataloader.dataset) == 0:
         raise ValueError("Loaded 0 images. Check dataset root/image_dir/split configuration in YAML.")
 
