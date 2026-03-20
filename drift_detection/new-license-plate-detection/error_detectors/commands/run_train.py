@@ -132,7 +132,7 @@ def parse_root_info(root_path: Path) -> tuple[str, str, str]:
         run_name = root_path.name
         match = re.match(r"^\d{2}-\d{2}-\d{4}_\d{2};\d{2}_(.+)$", run_name)
         tail = match.group(1) if match else run_name
-        for cue_name in ("feature", "feature_grad", "layer_grad", "full_softmax", "entropy", "energy", "score", "mc_dropout", "gt", "fn", "tp"):
+        for cue_name in ("feature_grad", "layer_grad", "full_softmax", "mc_dropout", "entropy", "energy", "feature", "score", "gt", "fn", "tp"):
             if tail == cue_name:
                 return model_group, cue_name, ""
             prefix = f"{cue_name}_"
