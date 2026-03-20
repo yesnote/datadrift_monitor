@@ -65,7 +65,7 @@ output:
 
     feature:
       target_layer: ["model.24.m.0", "model.24.m.1", "model.24.m.2"]
-      map_reduction: energy  # none | energy
+      map_reduction: none  # none | energy
       vector_reduction: [L1, L2, min, max, mean, std]  # empty list [] means save raw vector
 
     feature_grad:
