@@ -34,7 +34,7 @@ output:
   save_csv:
     enabled: true
     unit: image   # image | bbox
-    uncertainty: feature_grad  # gt | score | mc_dropout | full_softmax | entropy | energy | mc_dropout | feature_grad | layer_grad
+    uncertainty: feature_grad  # gt | score | mc_dropout | full_softmax | entropy | energy | feature | feature_grad | layer_grad
     pre_nms:
       enabled: false   # true: use pre-NMS preds | false: use post-NMS preds
       pre_nms_ratio: 1.0  # keep top ratio (0~1) of pre-NMS candidates
@@ -59,6 +59,11 @@ output:
       dropout_rate: 0.5
       queue_maxsize: 2
       vector_reduction: [L1, L2, min, max, mean, std]  # only for unit: image
+
+    feature:
+      target_layer: ["model.24.m.0", "model.24.m.1", "model.24.m.2"]
+      map_reduction: energy  # none | energy
+      vector_reduction: [L1, L2, min, max, mean, std]  # empty list [] means save raw vector after map_reduction
 
     feature_grad:
       target_value: [obj, cls]  # loss | obj_loss | cls_loss | bbox_loss | obj | cls
