@@ -12,7 +12,7 @@ dataset:
   input_root:
     - object_detectors/runs/fn_detectors/03-12-2026_18;34_feature_grad
     # - object_detectors/runs/fn_detectors/03-12-2026_18;34_entropy
-  gt_root: object_detectors/runs/fn_detectors/03-12-2026_18;34_fn
+  gt_root: object_detectors/runs/fn_detectors/03-19-2026_12;54_gt
 
 train:
   augmentation: none           # none | smote
