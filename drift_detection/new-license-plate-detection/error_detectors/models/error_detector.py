@@ -12,7 +12,7 @@ except Exception:  # pragma: no cover
     xgb = None
 
 
-def build_estimator(model_name: str, device: str) -> Pipeline:
+def build_estimator(model_name: str, device: str, random_seed: int = 42) -> Pipeline:
     steps: list[tuple[str, Any]] = [("scaler", StandardScaler())]
 
     if model_name == "logistic":
@@ -21,6 +21,7 @@ def build_estimator(model_name: str, device: str) -> Pipeline:
             solver="saga",
             max_iter=5000,
             n_jobs=None,
+            random_state=int(random_seed),
         )
     elif model_name == "gb_classifier":
         if xgb is None:
@@ -28,7 +29,7 @@ def build_estimator(model_name: str, device: str) -> Pipeline:
         xgb_kwargs = {}
         if str(device).lower().startswith("cuda"):
             xgb_kwargs.update({"tree_method": "gpu_hist", "gpu_id": 0})
-        clf = xgb.XGBClassifier(eval_metric="logloss", **xgb_kwargs)
+        clf = xgb.XGBClassifier(eval_metric="logloss", random_state=int(random_seed), **xgb_kwargs)
     else:
         raise ValueError(f"Unsupported model: {model_name}")
 

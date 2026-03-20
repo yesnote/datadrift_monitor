@@ -1,8 +1,7 @@
-mode: train
-
 model:
   type: gb_classifier         # logistic | gb_classifier
   device: cpu                 # cpu | cuda
+  random_seed: 42
   search: false
   search_scoring: roc_auc
 
@@ -14,9 +13,7 @@ dataset:
     # - object_detectors/runs/fn_detectors/03-12-2026_18;34_entropy
   gt_root: object_detectors/runs/fn_detectors/03-19-2026_12;54_gt
 
-train:
+experiment:
   augmentation: none           # none | smote
-  test_size: 0.3
-  repeats: 15
+  num_fold: 10
   n_jobs: 8
-  random_seed: 42

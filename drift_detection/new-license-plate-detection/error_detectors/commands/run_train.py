@@ -10,7 +10,7 @@ from typing import Any
 
 import numpy as np
 import pandas as pd
-from sklearn.model_selection import GridSearchCV, train_test_split
+from sklearn.model_selection import GridSearchCV, StratifiedKFold
 from tqdm import tqdm
 
 from error_detectors.losses.loss import evaluate_classifier
@@ -100,13 +100,18 @@ def build_feature_matrix(df: pd.DataFrame, spec: FeatureSpec) -> np.ndarray:
     return np.asarray(rows, dtype=np.float32)
 
 
-def apply_augmentation(x: np.ndarray, y: np.ndarray, augmentation: str) -> tuple[np.ndarray, np.ndarray]:
+def apply_augmentation(
+    x: np.ndarray,
+    y: np.ndarray,
+    augmentation: str,
+    random_seed: int = 42,
+) -> tuple[np.ndarray, np.ndarray]:
     if augmentation == "none":
         return x, y
     if augmentation == "smote":
         if SMOTE is None:
             raise ImportError("imblearn is required for augmentation='smote'.")
-        sampler = SMOTE()
+        sampler = SMOTE(random_state=int(random_seed))
         return sampler.fit_resample(x, y)
     raise ValueError(f"Unsupported augmentation: {augmentation}")
 
@@ -324,10 +329,9 @@ def load_training_dataframe(dataset_cfg: dict[str, Any]) -> tuple[pd.DataFrame, 
 
 
 def run_train(config: dict[str, Any], run_dir: Path) -> Path:
-    mode = str(config.get("mode", "train"))
     dataset_cfg = config["dataset"]
     model_cfg = config["model"]
-    train_cfg = config["train"]
+    exp_cfg = config["experiment"]
 
     out_dir = run_dir.resolve()
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -339,18 +343,19 @@ def run_train(config: dict[str, Any], run_dir: Path) -> Path:
 
     model_name = str(model_cfg.get("type", "gb_classifier"))
     device = str(model_cfg.get("device", "cpu"))
-    estimator = build_estimator(model_name, device=device)
+    random_seed = int(model_cfg.get("random_seed", 42))
+    estimator = build_estimator(model_name, device=device, random_seed=random_seed)
     best_params: dict[str, Any] = {}
 
     do_search = bool(model_cfg.get("search", False))
-    augmentation = str(train_cfg.get("augmentation", "none"))
+    augmentation = str(exp_cfg.get("augmentation", "none"))
     if do_search:
-        x_search, y_search = apply_augmentation(x, y, augmentation)
+        x_search, y_search = apply_augmentation(x, y, augmentation, random_seed=random_seed)
         search = GridSearchCV(
             estimator=estimator,
             param_grid=param_grid(model_name),
             scoring=str(model_cfg.get("search_scoring", "roc_auc")),
-            n_jobs=int(train_cfg.get("n_jobs", 8)),
+            n_jobs=int(exp_cfg.get("n_jobs", 8)),
             cv=5,
             verbose=1,
         )
@@ -358,21 +363,17 @@ def run_train(config: dict[str, Any], run_dir: Path) -> Path:
         best_params = dict(search.best_params_)
         estimator.set_params(**best_params)
 
-    repeats = int(train_cfg.get("repeats", 15))
-    test_size = float(train_cfg.get("test_size", 0.3))
-    random_seed = int(train_cfg.get("random_seed", 42))
+    num_fold = int(exp_cfg.get("num_fold", 10))
+    if num_fold < 2:
+        raise ValueError("experiment.num_fold must be >= 2.")
+    kfold = StratifiedKFold(n_splits=num_fold, shuffle=True, random_state=random_seed)
 
     eval_rows: list[dict[str, float]] = []
-    split_iter = tqdm(range(repeats), desc=f"Error Detector ({mode})", unit="split")
-    for i in split_iter:
-        x_train, x_test, y_train, y_test = train_test_split(
-            x,
-            y,
-            test_size=test_size,
-            random_state=random_seed + i,
-            stratify=y,
-        )
-        x_train, y_train = apply_augmentation(x_train, y_train, augmentation)
+    split_iter = tqdm(enumerate(kfold.split(x, y)), desc="Error Detector (train)", total=num_fold, unit="fold")
+    for i, (train_idx, test_idx) in split_iter:
+        x_train, x_test = x[train_idx], x[test_idx]
+        y_train, y_test = y[train_idx], y[test_idx]
+        x_train, y_train = apply_augmentation(x_train, y_train, augmentation, random_seed=random_seed + i)
 
         estimator.fit(x_train, y_train)
         y_pred = estimator.predict_proba(x_test)[:, 1]
@@ -405,9 +406,9 @@ def run_train(config: dict[str, Any], run_dir: Path) -> Path:
         "input_features": grad_columns,
         "dim_by_feature": spec.dim_by_column,
         "best_params": best_params,
-        "repeats": repeats,
-        "test_size": test_size,
+        "num_fold": num_fold,
         "random_seed": random_seed,
+        "kfold_shuffle": True,
         "search": do_search,
     }
     with open(out_dir / "metadata.json", "w", encoding="utf-8") as f:
