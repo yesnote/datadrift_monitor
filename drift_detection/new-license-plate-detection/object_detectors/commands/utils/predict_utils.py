@@ -275,8 +275,8 @@ def parse_output_config(output_cfg):
         if not target_layers and save_csv_enabled:
             raise ValueError("output.save_csv.feature_grad.target_layer must contain at least one layer name.")
         feature_map_reduction = str(feature_grad_cfg.get("map_reduction", "energy")).strip().lower()
-        if feature_map_reduction != "energy":
-            raise ValueError("output.save_csv.feature_grad.map_reduction currently supports only 'energy'.")
+        if feature_map_reduction not in {"none", "energy"}:
+            raise ValueError("output.save_csv.feature_grad.map_reduction must be 'none' or 'energy'.")
         feature_vector_reduction = normalize_vector_reduction(
             feature_grad_cfg.get("vector_reduction", ["L1", "L2", "min", "max", "mean", "std"])
         )
@@ -1110,20 +1110,24 @@ def get_feature_grad_stats(grad_tensor, map_reduction="energy", vector_reduction
     if grad_tensor.ndim >= 1 and grad_tensor.shape[0] == 1:
         grad_tensor = grad_tensor[0]
 
-    if str(map_reduction).lower() != "energy":
-        raise ValueError("feature_grad.map_reduction currently supports only 'energy'.")
+    map_mode = str(map_reduction).lower()
+    if map_mode not in {"none", "energy"}:
+        raise ValueError("feature_grad.map_reduction must be 'none' or 'energy'.")
 
     if grad_tensor.numel() == 0:
         return zero_grad_numbers() if vector_reduction else []
 
-    if grad_tensor.ndim == 0:
-        vec = grad_tensor.abs().reshape(1)
-    elif grad_tensor.ndim == 1:
-        vec = grad_tensor.abs()
+    if map_mode == "energy":
+        if grad_tensor.ndim == 0:
+            vec = grad_tensor.abs().reshape(1)
+        elif grad_tensor.ndim == 1:
+            vec = grad_tensor.abs()
+        else:
+            c = grad_tensor.shape[0]
+            flat = grad_tensor.reshape(c, -1)
+            vec = flat.abs().mean(dim=1)
     else:
-        c = grad_tensor.shape[0]
-        flat = grad_tensor.reshape(c, -1)
-        vec = flat.abs().mean(dim=1)
+        vec = grad_tensor.reshape(-1)
 
     if not vector_reduction:
         return vec.detach().cpu().tolist()
