@@ -89,9 +89,6 @@ def main() -> None:
         raise FileNotFoundError(f"Config not found: {config_path}")
 
     config = load_config(config_path)
-    mode = str(config.get("mode", "train")).lower()
-    if mode != "train":
-        raise ValueError(f"Unsupported mode: {mode}. Only 'train' is supported.")
 
     dataset_cfg = config.get("dataset", {})
     input_root_raw_list = normalize_input_roots(dataset_cfg.get("input_root", ""))
