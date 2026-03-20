@@ -13,7 +13,7 @@ dataset:
   split: val
   
   coco:
-    root: D:/DataDrift/datasets/COCO
+    root: D:/SEONGJIN/datasets/COCO500
     train_split: train2017
     val_split: val2017
     test_split: test2017
