@@ -201,6 +201,7 @@ def parse_output_config(output_cfg):
         energy_cfg = {}
         entropy_cfg = {}
         full_softmax_cfg = {}
+        feature_cfg = {}
         feature_grad_cfg = {}
         layer_grad_cfg = {}
         unit = "image"
@@ -220,6 +221,7 @@ def parse_output_config(output_cfg):
         energy_cfg = save_csv_cfg.get("energy", {})
         entropy_cfg = save_csv_cfg.get("entropy", {})
         full_softmax_cfg = save_csv_cfg.get("full_softmax", {})
+        feature_cfg = save_csv_cfg.get("feature", {})
         feature_grad_cfg = save_csv_cfg.get("feature_grad", {})
         layer_grad_cfg = save_csv_cfg.get("layer_grad", {})
         unit = str(save_csv_cfg.get("unit", "image")).lower()
@@ -231,10 +233,10 @@ def parse_output_config(output_cfg):
     if not (0.0 <= float(pre_nms_ratio) <= 1.0):
         raise ValueError("output.save_csv.pre_nms.pre_nms_ratio must be in [0,1].")
 
-    if uncertainty not in {"gt", "score", "mc_dropout", "energy", "entropy", "full_softmax", "feature_grad", "layer_grad"}:
+    if uncertainty not in {"gt", "score", "mc_dropout", "energy", "entropy", "full_softmax", "feature", "feature_grad", "layer_grad"}:
         raise ValueError(
             f"Unsupported output.save_csv.uncertainty='{uncertainty}'. "
-            "Use 'gt', 'score', 'mc_dropout', 'energy', 'entropy', 'full_softmax', 'feature_grad' or 'layer_grad'."
+            "Use 'gt', 'score', 'mc_dropout', 'energy', 'entropy', 'full_softmax', 'feature', 'feature_grad' or 'layer_grad'."
         )
 
     gt_iou_match_threshold = float(gt_cfg.get("iou_match_threshold", 0.5))
@@ -246,6 +248,9 @@ def parse_output_config(output_cfg):
     energy_vector_reduction = ["1-norm", "2-norm", "min", "max", "mean", "std"]
     entropy_vector_reduction = ["1-norm", "2-norm", "min", "max", "mean", "std"]
     full_softmax_vector_reduction = ["1-norm", "2-norm", "min", "max", "mean", "std"]
+    feature_target_layers = []
+    feature_map_reduction = "energy"
+    feature_vector_reduction = ["1-norm", "2-norm", "min", "max", "mean", "std"]
     target_values = []
     target_layers = []
     feature_map_reduction = "energy"
@@ -360,6 +365,18 @@ def parse_output_config(output_cfg):
         full_softmax_vector_reduction = normalize_vector_reduction(
             full_softmax_cfg.get("vector_reduction", ["L1", "L2", "min", "max", "mean", "std"])
         )
+    elif uncertainty == "feature":
+        if unit != "image":
+            raise ValueError("output.save_csv.uncertainty='feature' currently supports only output.save_csv.unit='image'.")
+        feature_target_layers = normalize_to_list(feature_cfg.get("target_layer", []))
+        if not feature_target_layers and save_csv_enabled:
+            raise ValueError("output.save_csv.feature.target_layer must contain at least one layer name.")
+        feature_map_reduction = str(feature_cfg.get("map_reduction", "energy")).strip().lower()
+        if feature_map_reduction not in {"none", "energy"}:
+            raise ValueError("output.save_csv.feature.map_reduction must be 'none' or 'energy'.")
+        feature_vector_reduction = normalize_vector_reduction(
+            feature_cfg.get("vector_reduction", ["L1", "L2", "min", "max", "mean", "std"])
+        )
 
     save_image_cfg = output_cfg.get("save_image", {})
     if isinstance(save_image_cfg, bool):
@@ -391,6 +408,9 @@ def parse_output_config(output_cfg):
         "energy_vector_reduction": energy_vector_reduction,
         "entropy_vector_reduction": entropy_vector_reduction,
         "full_softmax_vector_reduction": full_softmax_vector_reduction,
+        "feature_target_layers": feature_target_layers,
+        "feature_map_reduction": feature_map_reduction,
+        "feature_vector_reduction": feature_vector_reduction,
         "target_values": target_values,
         "target_layers": target_layers,
         "feature_map_reduction": feature_map_reduction,
@@ -782,6 +802,46 @@ def zero_grad_numbers():
         "mean": 0.0,
         "std": 0.0,
     }
+
+
+def collect_image_features_per_layer(
+    detector,
+    input_tensor,
+    target_layers,
+    map_reduction="energy",
+    vector_reduction=None,
+):
+    collected = {layer_name: None for layer_name in target_layers}
+    handles = []
+    try:
+        for layer_name in target_layers:
+            module = resolve_module_by_name(detector.model, layer_name)
+
+            def _hook(_module, _inputs, output, _layer_name=layer_name):
+                out = output[0] if isinstance(output, (tuple, list)) else output
+                if isinstance(out, torch.Tensor):
+                    collected[_layer_name] = get_feature_grad_stats(
+                        out,
+                        map_reduction=map_reduction,
+                        vector_reduction=vector_reduction,
+                    )
+
+            handles.append(module.register_forward_hook(_hook))
+
+        with torch.no_grad():
+            detector.model(input_tensor, augment=False)
+    finally:
+        for h in handles:
+            h.remove()
+
+    out_dict = {}
+    for layer_name in target_layers:
+        value = collected.get(layer_name, None)
+        if value is None:
+            out_dict[layer_name] = zero_grad_numbers() if vector_reduction else []
+        else:
+            out_dict[layer_name] = value
+    return out_dict
 
 
 def build_pseudo_label_losses(pred_row):
