@@ -14,6 +14,13 @@ dataset:
   gt_root: object_detectors/runs/fn_detectors/03-19-2026_12;54_gt
 
 experiment:
+  process: kfold              # kfold | repeat
   augmentation: none           # none | smote
-  num_fold: 10
   n_jobs: 8
+  
+  kfold:
+    num_fold: 10
+  
+  repeat:
+    split: 0.3
+    repeats: 15
