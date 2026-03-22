@@ -10,7 +10,7 @@ from typing import Any
 
 import numpy as np
 import pandas as pd
-from sklearn.model_selection import GridSearchCV, StratifiedKFold
+from sklearn.model_selection import GridSearchCV, StratifiedKFold, train_test_split
 from tqdm import tqdm
 
 from error_detectors.losses.loss import evaluate_classifier
@@ -363,26 +363,65 @@ def run_train(config: dict[str, Any], run_dir: Path) -> Path:
         best_params = dict(search.best_params_)
         estimator.set_params(**best_params)
 
-    num_fold = int(exp_cfg.get("num_fold", 10))
-    if num_fold < 2:
-        raise ValueError("experiment.num_fold must be >= 2.")
-    kfold = StratifiedKFold(n_splits=num_fold, shuffle=True, random_state=random_seed)
-
     eval_rows: list[dict[str, float]] = []
-    split_iter = tqdm(enumerate(kfold.split(x, y)), desc="Error Detector (train)", total=num_fold, unit="fold")
-    for i, (train_idx, test_idx) in split_iter:
-        x_train, x_test = x[train_idx], x[test_idx]
-        y_train, y_test = y[train_idx], y[test_idx]
-        x_train, y_train = apply_augmentation(x_train, y_train, augmentation, random_seed=random_seed + i)
+    process = str(exp_cfg.get("process", "kfold")).strip().lower()
+    used_num_fold = None
+    used_split = None
+    used_repeats = None
 
-        estimator.fit(x_train, y_train)
-        y_pred = estimator.predict_proba(x_test)[:, 1]
+    if process == "kfold":
+        kfold_cfg = exp_cfg.get("kfold", {})
+        num_fold = int(kfold_cfg.get("num_fold", 10))
+        if num_fold < 2:
+            raise ValueError("experiment.kfold.num_fold must be >= 2.")
+        used_num_fold = num_fold
+        kfold = StratifiedKFold(n_splits=num_fold, shuffle=True, random_state=random_seed)
+        split_iter = tqdm(enumerate(kfold.split(x, y)), desc="Error Detector (kfold)", total=num_fold, unit="fold")
+        for i, (train_idx, test_idx) in split_iter:
+            x_train, x_test = x[train_idx], x[test_idx]
+            y_train, y_test = y[train_idx], y[test_idx]
+            x_train, y_train = apply_augmentation(x_train, y_train, augmentation, random_seed=random_seed + i)
 
-        auroc, ap = evaluate_classifier(y_test, y_pred)
-        eval_rows.append({"auroc": float(auroc), "ap": float(ap)})
+            estimator.fit(x_train, y_train)
+            y_pred = estimator.predict_proba(x_test)[:, 1]
 
-        pd.DataFrame({"y_test": y_test, "y_pred": y_pred}).to_csv(out_dir / f"eval_data_{i}.csv", index=False)
-        save_object(estimator, out_dir / f"model_{i}")
+            auroc, ap = evaluate_classifier(y_test, y_pred)
+            eval_rows.append({"auroc": float(auroc), "ap": float(ap)})
+
+            pd.DataFrame({"y_test": y_test, "y_pred": y_pred}).to_csv(out_dir / f"eval_data_{i}.csv", index=False)
+            save_object(estimator, out_dir / f"model_{i}")
+    elif process == "repeat":
+        repeat_cfg = exp_cfg.get("repeat", {})
+        split = float(repeat_cfg.get("split", 0.3))
+        repeats = int(repeat_cfg.get("repeats", 15))
+        if not (0.0 < split < 1.0):
+            raise ValueError("experiment.repeat.split must be in (0,1).")
+        if repeats < 1:
+            raise ValueError("experiment.repeat.repeats must be >= 1.")
+        used_split = split
+        used_repeats = repeats
+        split_iter = tqdm(range(repeats), desc="Error Detector (repeat)", total=repeats, unit="split")
+        for i in split_iter:
+            x_train, x_test, y_train, y_test = train_test_split(
+                x,
+                y,
+                test_size=split,
+                random_state=random_seed + i,
+                stratify=y,
+                shuffle=True,
+            )
+            x_train, y_train = apply_augmentation(x_train, y_train, augmentation, random_seed=random_seed + i)
+
+            estimator.fit(x_train, y_train)
+            y_pred = estimator.predict_proba(x_test)[:, 1]
+
+            auroc, ap = evaluate_classifier(y_test, y_pred)
+            eval_rows.append({"auroc": float(auroc), "ap": float(ap)})
+
+            pd.DataFrame({"y_test": y_test, "y_pred": y_pred}).to_csv(out_dir / f"eval_data_{i}.csv", index=False)
+            save_object(estimator, out_dir / f"model_{i}")
+    else:
+        raise ValueError("experiment.process must be 'kfold' or 'repeat'.")
 
     eval_df = pd.DataFrame(eval_rows)
     eval_df.loc["mean"] = eval_df.mean(numeric_only=True)
@@ -406,9 +445,12 @@ def run_train(config: dict[str, Any], run_dir: Path) -> Path:
         "input_features": grad_columns,
         "dim_by_feature": spec.dim_by_column,
         "best_params": best_params,
-        "num_fold": num_fold,
+        "process": process,
+        "num_fold": used_num_fold,
+        "repeat_split": used_split,
+        "repeat_repeats": used_repeats,
         "random_seed": random_seed,
-        "kfold_shuffle": True,
+        "shuffle": True,
         "search": do_search,
     }
     with open(out_dir / "metadata.json", "w", encoding="utf-8") as f:

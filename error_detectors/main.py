@@ -81,7 +81,7 @@ def parse_root_info(root_path: Path) -> tuple[str, str, str]:
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--config", type=str, default="error_detectors/configs/train_error_detector.yaml")
+    parser.add_argument("--config", type=str, default="error_detectors/configs/experiment_error_detector.yaml")
     args = parser.parse_args()
 
     config_path = resolve_config_path(args.config)
