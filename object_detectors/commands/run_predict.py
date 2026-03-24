@@ -182,7 +182,7 @@ def run_fn_csv(config, run_dir):
                         cv2.rectangle(vis_image, (x1, y1), (x2, y2), (255, 0, 0), 2)
                         cv2.putText(
                             vis_image,
-                            f"FN_GT:{gt_name}",
+                            f"{gt_name}",
                             (x1, max(0, y1 - 6)),
                             cv2.FONT_HERSHEY_SIMPLEX,
                             0.5,
