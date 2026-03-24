@@ -1258,6 +1258,25 @@ def has_fn_for_image(gt_boxes, gt_class_names, pred_boxes, pred_class_names, iou
     return 0
 
 
+def get_fn_gt_indices(gt_boxes, gt_class_names, pred_boxes, pred_class_names, iou_match_threshold):
+    matched_pred_indices = set()
+    fn_gt_indices = []
+    for gt_idx, (gt_box, gt_name) in enumerate(zip(gt_boxes, gt_class_names)):
+        found_match = False
+        for pred_idx, (pred_box, pred_name) in enumerate(zip(pred_boxes, pred_class_names)):
+            if pred_idx in matched_pred_indices:
+                continue
+            if gt_name != pred_name:
+                continue
+            if box_iou_xyxy(gt_box, pred_box) >= iou_match_threshold:
+                matched_pred_indices.add(pred_idx)
+                found_match = True
+                break
+        if not found_match:
+            fn_gt_indices.append(gt_idx)
+    return fn_gt_indices
+
+
 def assign_tp_to_predictions(
     gt_boxes,
     gt_class_names,

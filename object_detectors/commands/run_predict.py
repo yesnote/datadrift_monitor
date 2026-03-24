@@ -24,6 +24,7 @@ from commands.utils.predict_utils import (
     create_layer_grad_buffer,
     draw_predictions,
     get_annotation_path,
+    get_fn_gt_indices,
     get_pre_nms_keep_indices,
     has_fn_for_image,
     load_coco_category_maps,
@@ -167,6 +168,28 @@ def run_fn_csv(config, run_dir):
 
                 if should_save_step and sample_idx < image_max_num:
                     vis_image = draw_predictions(resized_chws[sample_idx], pred_boxes, pred_class_names, pred_scores)
+                    fn_gt_indices = get_fn_gt_indices(
+                        gt_boxes=gt_boxes,
+                        gt_class_names=gt_class_names,
+                        pred_boxes=pred_boxes,
+                        pred_class_names=pred_class_names,
+                        iou_match_threshold=iou_match_threshold,
+                    )
+                    for gt_idx in fn_gt_indices:
+                        gt_box = gt_boxes[gt_idx]
+                        gt_name = gt_class_names[gt_idx]
+                        x1, y1, x2, y2 = [int(v) for v in gt_box]
+                        cv2.rectangle(vis_image, (x1, y1), (x2, y2), (255, 0, 0), 2)
+                        cv2.putText(
+                            vis_image,
+                            f"FN_GT:{gt_name}",
+                            (x1, max(0, y1 - 6)),
+                            cv2.FONT_HERSHEY_SIMPLEX,
+                            0.5,
+                            (255, 0, 0),
+                            1,
+                            cv2.LINE_AA,
+                        )
                     out_path = step_dir / f"{row['image_id']}.jpg"
                     cv2.imwrite(str(out_path), cv2.cvtColor(vis_image, cv2.COLOR_RGB2BGR))
 
