@@ -10,7 +10,7 @@ model:
 
 dataset:
   used_dataset: coco
-  split: val
+  split: train
   
   coco:
     root: D:/SEONGJIN/datasets/COCO
