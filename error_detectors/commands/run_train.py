@@ -100,6 +100,24 @@ def build_feature_matrix(df: pd.DataFrame, spec: FeatureSpec) -> np.ndarray:
     return np.asarray(rows, dtype=np.float32)
 
 
+def sanitize_feature_matrix(x: np.ndarray) -> tuple[np.ndarray, dict[str, int]]:
+    stats = {
+        "nan_count": int(np.isnan(x).sum()),
+        "posinf_count": int(np.isposinf(x).sum()),
+        "neginf_count": int(np.isneginf(x).sum()),
+    }
+    if stats["nan_count"] == 0 and stats["posinf_count"] == 0 and stats["neginf_count"] == 0:
+        return x, stats
+    # Replace non-finite values with bounded finite numbers to keep sklearn pipeline stable.
+    x_clean = np.nan_to_num(
+        x,
+        nan=0.0,
+        posinf=1e6,
+        neginf=-1e6,
+    ).astype(np.float32, copy=False)
+    return x_clean, stats
+
+
 def apply_augmentation(
     x: np.ndarray,
     y: np.ndarray,
@@ -340,6 +358,13 @@ def run_train(config: dict[str, Any], run_dir: Path) -> Path:
     y = df[label_col].astype(int).to_numpy()
     spec = infer_feature_spec(df, grad_columns)
     x = build_feature_matrix(df, spec)
+    x, nonfinite_stats = sanitize_feature_matrix(x)
+    had_nonfinite = any(v > 0 for v in nonfinite_stats.values())
+    if had_nonfinite:
+        warnings.warn(
+            "Non-finite values found in input features and replaced with finite values: "
+            f"{nonfinite_stats}"
+        )
 
     model_name = str(model_cfg.get("type", "gb_classifier"))
     device = str(model_cfg.get("device", "cpu"))
@@ -449,6 +474,8 @@ def run_train(config: dict[str, Any], run_dir: Path) -> Path:
         "num_fold": used_num_fold,
         "repeat_split": used_split,
         "repeat_repeats": used_repeats,
+        "nonfinite_replaced": had_nonfinite,
+        "nonfinite_stats": nonfinite_stats,
         "random_seed": random_seed,
         "shuffle": True,
         "search": do_search,
