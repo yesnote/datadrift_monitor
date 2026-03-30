@@ -34,7 +34,7 @@ output:
   save_csv:
     enabled: true
     unit: image   # image | bbox
-    uncertainty: feature_grad  # gt | score | full_softmax | entropy | energy | mc_dropout | feature | feature_grad | layer_grad
+    uncertainty: feature_grad  # gt | score | meta_detect | full_softmax | entropy | energy | mc_dropout | feature | feature_grad | layer_grad
     pre_nms:
       enabled: false   # true: use pre-NMS preds | false: use post-NMS preds
       pre_nms_ratio: 1.0  # keep top ratio (0~1) of pre-NMS candidates
@@ -61,7 +61,9 @@ output:
       vector_reduction: [L1, L2, min, max, mean, std]  # only for unit: image
 
     # TODO: ensemble
-    # TODO: meta_detect
+    meta_detect:
+      score_threshold: 0.0
+      iou_threshold: 0.45
 
     feature:
       target_layer: ["model.24.m.0", "model.24.m.1", "model.24.m.2"]

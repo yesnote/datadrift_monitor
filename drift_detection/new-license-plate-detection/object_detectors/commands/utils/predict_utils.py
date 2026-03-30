@@ -197,6 +197,7 @@ def parse_output_config(output_cfg):
         uncertainty = "gt"
         gt_cfg = {}
         score_cfg = {}
+        meta_detect_cfg = {}
         mc_dropout_cfg = {}
         energy_cfg = {}
         entropy_cfg = {}
@@ -217,6 +218,7 @@ def parse_output_config(output_cfg):
             pre_nms_ratio = 1.0
         gt_cfg = save_csv_cfg.get("gt", {})
         score_cfg = save_csv_cfg.get("score", {})
+        meta_detect_cfg = save_csv_cfg.get("meta_detect", {})
         mc_dropout_cfg = save_csv_cfg.get("mc_dropout", {})
         energy_cfg = save_csv_cfg.get("energy", {})
         entropy_cfg = save_csv_cfg.get("entropy", {})
@@ -233,13 +235,15 @@ def parse_output_config(output_cfg):
     if not (0.0 <= float(pre_nms_ratio) <= 1.0):
         raise ValueError("output.save_csv.pre_nms.pre_nms_ratio must be in [0,1].")
 
-    if uncertainty not in {"gt", "score", "mc_dropout", "energy", "entropy", "full_softmax", "feature", "feature_grad", "layer_grad"}:
+    if uncertainty not in {"gt", "score", "meta_detect", "mc_dropout", "energy", "entropy", "full_softmax", "feature", "feature_grad", "layer_grad"}:
         raise ValueError(
             f"Unsupported output.save_csv.uncertainty='{uncertainty}'. "
-            "Use 'gt', 'score', 'mc_dropout', 'energy', 'entropy', 'full_softmax', 'feature', 'feature_grad' or 'layer_grad'."
+            "Use 'gt', 'score', 'meta_detect', 'mc_dropout', 'energy', 'entropy', 'full_softmax', 'feature', 'feature_grad' or 'layer_grad'."
         )
 
     gt_iou_match_threshold = float(gt_cfg.get("iou_match_threshold", 0.5))
+    meta_detect_score_threshold = float(meta_detect_cfg.get("score_threshold", 0.0))
+    meta_detect_iou_threshold = float(meta_detect_cfg.get("iou_threshold", 0.45))
     mc_num_runs = int(mc_dropout_cfg.get("num_runs", 30))
     mc_dropout_rate = float(mc_dropout_cfg.get("dropout_rate", 0.5))
     mc_queue_maxsize = int(mc_dropout_cfg.get("queue_maxsize", 8))
@@ -327,6 +331,15 @@ def parse_output_config(output_cfg):
         score_vector_reduction = normalize_vector_reduction(
             score_cfg.get("vector_reduction", ["L1", "L2", "min", "max", "mean", "std"])
         )
+    elif uncertainty == "meta_detect":
+        if unit != "bbox":
+            msg = "Invalid config: output.save_csv.uncertainty='meta_detect' requires output.save_csv.unit='bbox'."
+            warnings.warn(msg)
+            raise ValueError(msg)
+        if not (0.0 <= meta_detect_score_threshold <= 1.0):
+            raise ValueError("output.save_csv.meta_detect.score_threshold must be in [0,1].")
+        if not (0.0 <= meta_detect_iou_threshold <= 1.0):
+            raise ValueError("output.save_csv.meta_detect.iou_threshold must be in [0,1].")
     elif uncertainty == "mc_dropout":
         if unit not in {"image", "bbox"}:
             msg = "Invalid config: output.save_csv.uncertainty='mc_dropout' requires output.save_csv.unit in {'image','bbox'}."
@@ -400,6 +413,8 @@ def parse_output_config(output_cfg):
         "pre_nms_ratio": float(pre_nms_ratio),
         "unit": unit,
         "gt_iou_match_threshold": gt_iou_match_threshold,
+        "meta_detect_score_threshold": meta_detect_score_threshold,
+        "meta_detect_iou_threshold": meta_detect_iou_threshold,
         "mc_num_runs": mc_num_runs,
         "mc_dropout_rate": mc_dropout_rate,
         "mc_queue_maxsize": mc_queue_maxsize,
