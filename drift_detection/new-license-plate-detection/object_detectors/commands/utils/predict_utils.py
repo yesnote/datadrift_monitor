@@ -244,6 +244,7 @@ def parse_output_config(output_cfg):
     gt_iou_match_threshold = float(gt_cfg.get("iou_match_threshold", 0.5))
     meta_detect_score_threshold = float(meta_detect_cfg.get("score_threshold", 0.0))
     meta_detect_iou_threshold = float(meta_detect_cfg.get("iou_threshold", 0.45))
+    meta_detect_vector_reduction = ["1-norm", "2-norm", "min", "max", "mean", "std"]
     mc_num_runs = int(mc_dropout_cfg.get("num_runs", 30))
     mc_dropout_rate = float(mc_dropout_cfg.get("dropout_rate", 0.5))
     mc_queue_maxsize = int(mc_dropout_cfg.get("queue_maxsize", 8))
@@ -332,14 +333,17 @@ def parse_output_config(output_cfg):
             score_cfg.get("vector_reduction", ["L1", "L2", "min", "max", "mean", "std"])
         )
     elif uncertainty == "meta_detect":
-        if unit != "bbox":
-            msg = "Invalid config: output.save_csv.uncertainty='meta_detect' requires output.save_csv.unit='bbox'."
+        if unit not in {"image", "bbox"}:
+            msg = "Invalid config: output.save_csv.uncertainty='meta_detect' requires output.save_csv.unit in {'image','bbox'}."
             warnings.warn(msg)
             raise ValueError(msg)
         if not (0.0 <= meta_detect_score_threshold <= 1.0):
             raise ValueError("output.save_csv.meta_detect.score_threshold must be in [0,1].")
         if not (0.0 <= meta_detect_iou_threshold <= 1.0):
             raise ValueError("output.save_csv.meta_detect.iou_threshold must be in [0,1].")
+        meta_detect_vector_reduction = normalize_vector_reduction(
+            meta_detect_cfg.get("vector_reduction", ["L1", "L2", "min", "max", "mean", "std"])
+        )
     elif uncertainty == "mc_dropout":
         if unit not in {"image", "bbox"}:
             msg = "Invalid config: output.save_csv.uncertainty='mc_dropout' requires output.save_csv.unit in {'image','bbox'}."
@@ -415,6 +419,7 @@ def parse_output_config(output_cfg):
         "gt_iou_match_threshold": gt_iou_match_threshold,
         "meta_detect_score_threshold": meta_detect_score_threshold,
         "meta_detect_iou_threshold": meta_detect_iou_threshold,
+        "meta_detect_vector_reduction": meta_detect_vector_reduction,
         "mc_num_runs": mc_num_runs,
         "mc_dropout_rate": mc_dropout_rate,
         "mc_queue_maxsize": mc_queue_maxsize,

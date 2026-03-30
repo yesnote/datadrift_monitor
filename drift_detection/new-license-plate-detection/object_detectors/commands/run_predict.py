@@ -492,11 +492,12 @@ def run_meta_detect_csv(config, run_dir):
     unit = parsed["unit"]
     score_threshold = float(parsed["meta_detect_score_threshold"])
     iou_threshold = float(parsed["meta_detect_iou_threshold"])
+    vector_reduction = parsed["meta_detect_vector_reduction"]
 
     if not save_csv:
         return
-    if unit != "bbox":
-        raise ValueError("output.save_csv.uncertainty='meta_detect' requires output.save_csv.unit='bbox'.")
+    if unit not in {"image", "bbox"}:
+        raise ValueError("output.save_csv.uncertainty='meta_detect' requires output.save_csv.unit in {'image','bbox'}.")
 
     def _stats(v: torch.Tensor):
         if v is None or v.numel() == 0:
@@ -517,8 +518,7 @@ def run_meta_detect_csv(config, run_dir):
         return inter / union.clamp(min=1e-12)
 
     output_csv = run_dir / "meta_detect.csv"
-    fieldnames = [
-        "image_id", "image_path", "pred_idx", "xmin", "ymin", "xmax", "ymax", "score", "pred_class",
+    meta_feature_names = [
         "num_candidate_boxes",
         "x_min", "x_max", "x_mean", "x_std",
         "y_min", "y_max", "y_mean", "y_std",
@@ -530,6 +530,17 @@ def run_meta_detect_csv(config, run_dir):
         "score_min", "score_max", "score_mean", "score_std",
         "iou_pb_min", "iou_pb_max", "iou_pb_mean", "iou_pb_std",
     ]
+    if unit == "bbox":
+        fieldnames = [
+            "image_id", "image_path", "pred_idx", "xmin", "ymin", "xmax", "ymax", "score", "pred_class",
+            *meta_feature_names,
+        ]
+    else:
+        fieldnames = ["image_id", "image_path"]
+        for feature_name in meta_feature_names:
+            for metric_name in vector_reduction:
+                fieldnames.append(f"{feature_name}_{metric_name}")
+        fieldnames.append("num_preds")
 
     dataloader = create_dataloader(config, split=split)
     if len(dataloader.dataset) == 0:
@@ -572,6 +583,7 @@ def run_meta_detect_csv(config, run_dir):
                     raw_cls_idx = torch.zeros((raw.shape[0],), dtype=torch.long, device=device)
                 raw_score = raw_obj * raw_cls_max
 
+                image_feature_rows = []
                 for pred_idx, (box, score, pred_class_name) in enumerate(zip(pred_boxes, pred_scores, pred_class_names)):
                     fbox = torch.tensor(box, dtype=torch.float32, device=device)
                     cls_idx = int(pred_class_ids[pred_idx]) if pred_idx < len(pred_class_ids) else -1
@@ -613,23 +625,62 @@ def run_meta_detect_csv(config, run_dir):
                     score_min, score_max, score_mean, score_std = _stats(cand_scores)
                     iou_pb_min, iou_pb_max, iou_pb_mean, iou_pb_std = _stats(iou_pb_pos)
 
-                    writer.writerow(
-                        {
-                            "image_id": image_id, "image_path": image_path, "pred_idx": pred_idx,
-                            "xmin": fx1, "ymin": fy1, "xmax": fx2, "ymax": fy2, "score": float(score), "pred_class": pred_class_name,
-                            "num_candidate_boxes": int(cand_boxes.shape[0]),
-                            "x_min": x_min, "x_max": x_max, "x_mean": x_mean, "x_std": x_std,
-                            "y_min": y_min, "y_max": y_max, "y_mean": y_mean, "y_std": y_std,
-                            "w_min": w_min, "w_max": w_max, "w_mean": w_mean, "w_std": w_std,
-                            "h_min": h_min, "h_max": h_max, "h_mean": h_mean, "h_std": h_std,
-                            "size": fsize, "size_min": size_min, "size_max": size_max, "size_mean": size_mean, "size_std": size_std,
-                            "circum": fcircum, "circum_min": circum_min, "circum_max": circum_max, "circum_mean": circum_mean, "circum_std": circum_std,
-                            "size_circum": fsize_circum, "size_circum_min": size_circum_min, "size_circum_max": size_circum_max,
-                            "size_circum_mean": size_circum_mean, "size_circum_std": size_circum_std,
-                            "score_min": score_min, "score_max": score_max, "score_mean": score_mean, "score_std": score_std,
-                            "iou_pb_min": iou_pb_min, "iou_pb_max": iou_pb_max, "iou_pb_mean": iou_pb_mean, "iou_pb_std": iou_pb_std,
-                        }
-                    )
+                    feature_row = {
+                        "num_candidate_boxes": float(cand_boxes.shape[0]),
+                        "x_min": x_min, "x_max": x_max, "x_mean": x_mean, "x_std": x_std,
+                        "y_min": y_min, "y_max": y_max, "y_mean": y_mean, "y_std": y_std,
+                        "w_min": w_min, "w_max": w_max, "w_mean": w_mean, "w_std": w_std,
+                        "h_min": h_min, "h_max": h_max, "h_mean": h_mean, "h_std": h_std,
+                        "size": fsize, "size_min": size_min, "size_max": size_max, "size_mean": size_mean, "size_std": size_std,
+                        "circum": fcircum, "circum_min": circum_min, "circum_max": circum_max, "circum_mean": circum_mean, "circum_std": circum_std,
+                        "size_circum": fsize_circum, "size_circum_min": size_circum_min, "size_circum_max": size_circum_max,
+                        "size_circum_mean": size_circum_mean, "size_circum_std": size_circum_std,
+                        "score_min": score_min, "score_max": score_max, "score_mean": score_mean, "score_std": score_std,
+                        "iou_pb_min": iou_pb_min, "iou_pb_max": iou_pb_max, "iou_pb_mean": iou_pb_mean, "iou_pb_std": iou_pb_std,
+                    }
+                    if unit == "bbox":
+                        writer.writerow(
+                            {
+                                "image_id": image_id,
+                                "image_path": image_path,
+                                "pred_idx": pred_idx,
+                                "xmin": fx1,
+                                "ymin": fy1,
+                                "xmax": fx2,
+                                "ymax": fy2,
+                                "score": float(score),
+                                "pred_class": pred_class_name,
+                                **feature_row,
+                            }
+                        )
+                    else:
+                        image_feature_rows.append(feature_row)
+                if unit == "image":
+                    row = {
+                        "image_id": image_id,
+                        "image_path": image_path,
+                        "num_preds": len(image_feature_rows),
+                    }
+                    for feature_name in meta_feature_names:
+                        if len(image_feature_rows) == 0:
+                            stats = {
+                                "1-norm": 0.0,
+                                "2-norm": 0.0,
+                                "min": 0.0,
+                                "max": 0.0,
+                                "mean": 0.0,
+                                "std": 0.0,
+                            }
+                        else:
+                            vec = torch.tensor(
+                                [float(r[feature_name]) for r in image_feature_rows],
+                                dtype=torch.float32,
+                                device=device,
+                            )
+                            stats = map_grad_tensor_to_numbers(vec)
+                        for metric_name in vector_reduction:
+                            row[f"{feature_name}_{metric_name}"] = float(stats[metric_name])
+                    writer.writerow(row)
             del infer_batch, preds, _logits, _objectness, _features, raw_prediction
 
     del detector

@@ -64,6 +64,7 @@ output:
     meta_detect:
       score_threshold: 0.0
       iou_threshold: 0.45
+      vector_reduction: [L1, L2, min, max, mean, std]  # only for unit: image
 
     feature:
       target_layer: ["model.24.m.0", "model.24.m.1", "model.24.m.2"]
