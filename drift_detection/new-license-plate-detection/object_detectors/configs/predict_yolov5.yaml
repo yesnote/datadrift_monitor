@@ -34,7 +34,7 @@ output:
   save_csv:
     enabled: true
     unit: image   # image | bbox
-    uncertainty: feature_grad  # gt | score | meta_detect | full_softmax | entropy | energy | mc_dropout | feature | feature_grad | layer_grad
+    uncertainty: feature_grad  # gt | score | full_softmax | entropy | energy | mc_dropout | meta_detect | feature | feature_grad | layer_grad
     pre_nms:
       enabled: false   # true: use pre-NMS preds | false: use post-NMS preds
       pre_nms_ratio: 1.0  # keep top ratio (0~1) of pre-NMS candidates
