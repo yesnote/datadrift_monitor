@@ -61,6 +61,7 @@ output:
       vector_reduction: [L1, L2, min, max, mean, std]  # only for unit: image
 
     # TODO: ensemble
+    
     meta_detect:
       score_threshold: 0.0
       iou_threshold: 0.45
