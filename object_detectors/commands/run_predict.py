@@ -480,6 +480,164 @@ def run_tp_csv(config, run_dir):
     print(f"Saved results CSV: {output_csv}")
 
 
+def run_meta_detect_csv(config, run_dir):
+    run_dir = Path(run_dir)
+    mode = str(config.get("mode", "predict"))
+    uncertainty = "meta_detect"
+
+    dataset_cfg = config.get("dataset", {})
+    split = dataset_cfg.get("split", "val")
+    parsed = parse_output_config(config.get("output", {}))
+    save_csv = parsed["save_csv_enabled"]
+    unit = parsed["unit"]
+    score_threshold = float(parsed["meta_detect_score_threshold"])
+    iou_threshold = float(parsed["meta_detect_iou_threshold"])
+
+    if not save_csv:
+        return
+    if unit != "bbox":
+        raise ValueError("output.save_csv.uncertainty='meta_detect' requires output.save_csv.unit='bbox'.")
+
+    def _stats(v: torch.Tensor):
+        if v is None or v.numel() == 0:
+            return 0.0, 0.0, 0.0, 0.0
+        x = v.detach().float().reshape(-1)
+        return float(torch.min(x).item()), float(torch.max(x).item()), float(torch.mean(x).item()), float(torch.std(x, unbiased=False).item())
+
+    def _iou_1vN(box: torch.Tensor, boxes: torch.Tensor):
+        if boxes.numel() == 0:
+            return torch.zeros((0,), dtype=torch.float32, device=box.device)
+        lt = torch.max(box[:2], boxes[:, :2])
+        rb = torch.min(box[2:], boxes[:, 2:])
+        wh = (rb - lt).clamp(min=0)
+        inter = wh[:, 0] * wh[:, 1]
+        area1 = (box[2] - box[0]).clamp(min=0) * (box[3] - box[1]).clamp(min=0)
+        area2 = (boxes[:, 2] - boxes[:, 0]).clamp(min=0) * (boxes[:, 3] - boxes[:, 1]).clamp(min=0)
+        union = area1 + area2 - inter
+        return inter / union.clamp(min=1e-12)
+
+    output_csv = run_dir / "meta_detect.csv"
+    fieldnames = [
+        "image_id", "image_path", "pred_idx", "xmin", "ymin", "xmax", "ymax", "score", "pred_class",
+        "num_candidate_boxes",
+        "x_min", "x_max", "x_mean", "x_std",
+        "y_min", "y_max", "y_mean", "y_std",
+        "w_min", "w_max", "w_mean", "w_std",
+        "h_min", "h_max", "h_mean", "h_std",
+        "size", "size_min", "size_max", "size_mean", "size_std",
+        "circum", "circum_min", "circum_max", "circum_mean", "circum_std",
+        "size_circum", "size_circum_min", "size_circum_max", "size_circum_mean", "size_circum_std",
+        "score_min", "score_max", "score_mean", "score_std",
+        "iou_pb_min", "iou_pb_max", "iou_pb_mean", "iou_pb_std",
+    ]
+
+    dataloader = create_dataloader(config, split=split)
+    if len(dataloader.dataset) == 0:
+        raise ValueError("Loaded 0 images. Check dataset root/image_dir/split configuration in YAML.")
+
+    detector, device = build_detector(config)
+    with open(output_csv, "w", newline="", encoding="utf-8") as output_file:
+        writer = csv.DictWriter(output_file, fieldnames=fieldnames)
+        writer.writeheader()
+        for images, targets in tqdm(
+            dataloader, desc=f"Object Detector ({mode} - {uncertainty})", total=len(dataloader)
+        ):
+            image_list = _as_image_list(images)
+            infer_batch, _ratios, _pads, _resized_chws = _prepare_infer_batch(detector, image_list, device, auto=False)
+            with torch.no_grad():
+                preds, _logits, _objectness, _features = detector(infer_batch)
+                model_output = detector.model(infer_batch, augment=False)
+                raw_prediction = model_output[0] if isinstance(model_output, (tuple, list)) else model_output
+
+            for sample_idx in range(len(image_list)):
+                target = targets[sample_idx]
+                image_id = int(target["image_id"][0].item())
+                image_path = target["path"]
+
+                pred_boxes = preds[0][sample_idx]
+                pred_scores = preds[3][sample_idx]
+                pred_class_names = preds[2][sample_idx]
+                pred_class_ids = preds[1][sample_idx] if len(preds) > 1 else []
+
+                raw = raw_prediction[sample_idx].detach().float()
+                if raw.numel() == 0:
+                    continue
+                raw_xyxy = _xywh_to_xyxy_tensor(raw[:, :4])
+                raw_obj = raw[:, 4] if raw.shape[1] > 4 else torch.ones((raw.shape[0],), device=device)
+                raw_cls = raw[:, 5:] if raw.shape[1] > 5 else torch.zeros((raw.shape[0], 0), device=device)
+                if raw_cls.numel() > 0:
+                    raw_cls_max, raw_cls_idx = raw_cls.max(dim=1)
+                else:
+                    raw_cls_max = torch.ones_like(raw_obj)
+                    raw_cls_idx = torch.zeros((raw.shape[0],), dtype=torch.long, device=device)
+                raw_score = raw_obj * raw_cls_max
+
+                for pred_idx, (box, score, pred_class_name) in enumerate(zip(pred_boxes, pred_scores, pred_class_names)):
+                    fbox = torch.tensor(box, dtype=torch.float32, device=device)
+                    cls_idx = int(pred_class_ids[pred_idx]) if pred_idx < len(pred_class_ids) else -1
+                    ious = _iou_1vN(fbox, raw_xyxy)
+                    class_mask = (raw_cls_idx == cls_idx) if cls_idx >= 0 else torch.ones_like(raw_score, dtype=torch.bool)
+                    cand_mask = class_mask & (raw_score > score_threshold) & (ious > iou_threshold)
+
+                    cand_boxes = raw_xyxy[cand_mask]
+                    cand_scores = raw_score[cand_mask]
+                    cand_ious = ious[cand_mask]
+                    if cand_boxes.numel() == 0:
+                        cand_boxes = fbox.view(1, 4)
+                        cand_scores = torch.tensor([float(score)], dtype=torch.float32, device=device)
+                        cand_ious = torch.zeros((1,), dtype=torch.float32, device=device)
+
+                    x = 0.5 * (cand_boxes[:, 0] + cand_boxes[:, 2])
+                    y = 0.5 * (cand_boxes[:, 1] + cand_boxes[:, 3])
+                    w = torch.abs(0.5 * (cand_boxes[:, 0] - cand_boxes[:, 2]))
+                    h = torch.abs(0.5 * (cand_boxes[:, 1] - cand_boxes[:, 3]))
+                    size_vals = (0.5 * (x - w)) * (0.5 * (y - h))
+                    circum_vals = (cand_boxes[:, 2] - cand_boxes[:, 0]) + (cand_boxes[:, 3] - cand_boxes[:, 1])
+                    size_circum_vals = (w * h) / (torch.abs(cand_boxes[:, 2] - cand_boxes[:, 0]) + torch.abs(cand_boxes[:, 3] - cand_boxes[:, 1])).clamp(min=1e-12)
+
+                    iou_pb = torch.where(cand_ious == 1.0, torch.zeros_like(cand_ious), cand_ious)
+                    iou_pb_pos = iou_pb[iou_pb > 0]
+
+                    fx1, fy1, fx2, fy2 = float(box[0]), float(box[1]), float(box[2]), float(box[3])
+                    fsize = float((0.5 * ((0.5 * (fx1 + fx2)) - abs(0.5 * (fx1 - fx2)))) * (0.5 * ((0.5 * (fy1 + fy2)) - abs(0.5 * (fy1 - fy2)))))
+                    fcircum = float(abs(fx2 - fx1) + abs(fy2 - fy1))
+                    fsize_circum = float(((0.5 * abs(fx2 - fx1)) * (0.5 * abs(fy2 - fy1))) / max(abs(fx2 - fx1) + abs(fy2 - fy1), 1e-12))
+
+                    x_min, x_max, x_mean, x_std = _stats(x)
+                    y_min, y_max, y_mean, y_std = _stats(y)
+                    w_min, w_max, w_mean, w_std = _stats(w)
+                    h_min, h_max, h_mean, h_std = _stats(h)
+                    size_min, size_max, size_mean, size_std = _stats(size_vals)
+                    circum_min, circum_max, circum_mean, circum_std = _stats(circum_vals)
+                    size_circum_min, size_circum_max, size_circum_mean, size_circum_std = _stats(size_circum_vals)
+                    score_min, score_max, score_mean, score_std = _stats(cand_scores)
+                    iou_pb_min, iou_pb_max, iou_pb_mean, iou_pb_std = _stats(iou_pb_pos)
+
+                    writer.writerow(
+                        {
+                            "image_id": image_id, "image_path": image_path, "pred_idx": pred_idx,
+                            "xmin": fx1, "ymin": fy1, "xmax": fx2, "ymax": fy2, "score": float(score), "pred_class": pred_class_name,
+                            "num_candidate_boxes": int(cand_boxes.shape[0]),
+                            "x_min": x_min, "x_max": x_max, "x_mean": x_mean, "x_std": x_std,
+                            "y_min": y_min, "y_max": y_max, "y_mean": y_mean, "y_std": y_std,
+                            "w_min": w_min, "w_max": w_max, "w_mean": w_mean, "w_std": w_std,
+                            "h_min": h_min, "h_max": h_max, "h_mean": h_mean, "h_std": h_std,
+                            "size": fsize, "size_min": size_min, "size_max": size_max, "size_mean": size_mean, "size_std": size_std,
+                            "circum": fcircum, "circum_min": circum_min, "circum_max": circum_max, "circum_mean": circum_mean, "circum_std": circum_std,
+                            "size_circum": fsize_circum, "size_circum_min": size_circum_min, "size_circum_max": size_circum_max,
+                            "size_circum_mean": size_circum_mean, "size_circum_std": size_circum_std,
+                            "score_min": score_min, "score_max": score_max, "score_mean": score_mean, "score_std": score_std,
+                            "iou_pb_min": iou_pb_min, "iou_pb_max": iou_pb_max, "iou_pb_mean": iou_pb_mean, "iou_pb_std": iou_pb_std,
+                        }
+                    )
+            del infer_batch, preds, _logits, _objectness, _features, raw_prediction
+
+    del detector
+    if device.type == "cuda":
+        torch.cuda.empty_cache()
+    print(f"Saved results CSV: {output_csv}")
+
+
 def run_score_csv(config, run_dir):
     run_dir = Path(run_dir)
     mode = str(config.get("mode", "predict"))
@@ -1579,6 +1737,9 @@ def run_predict(config, run_dir):
         raise ValueError("output.save_csv.uncertainty='gt' requires output.save_csv.unit in {'image','bbox'}.")
     if uncertainty == "score":
         run_score_csv(config, run_dir)
+        return
+    if uncertainty == "meta_detect":
+        run_meta_detect_csv(config, run_dir)
         return
     if uncertainty == "mc_dropout":
         run_mc_dropout_csv(config, run_dir)
