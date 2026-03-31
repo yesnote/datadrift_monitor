@@ -1,0 +1,17 @@
+torch
+torchvision
+numpy
+pandas
+opencv-python
+Pillow
+PyYAML
+tqdm
+scikit-learn
+xgboost
+imbalanced-learn
+matplotlib
+seaborn
+scipy
+requests
+joblib
+setuptools
