@@ -20,45 +20,24 @@ from error_detectors.commands.run_train import (
 
 
 def _parse_model_index(path: Path) -> int:
-    match = re.match(r"^model_(\d+)\.(joblib|pkl)$", path.name)
+    match = re.match(r"^model_(\d+)\.joblib$", path.name)
     if not match:
         return 10**9
     return int(match.group(1))
 
 
 def _resolve_model_paths(model_cfg: dict[str, Any]) -> list[Path]:
-    model_path_raw = str(model_cfg.get("model_path", "")).strip()
-    if model_path_raw:
-        model_path = Path(model_path_raw).resolve()
-        if not model_path.is_file():
-            raise FileNotFoundError(f"model.model_path not found: {model_path}")
-        return [model_path]
-
     model_root_raw = str(model_cfg.get("model_root", "")).strip()
     if not model_root_raw:
-        raise ValueError("For mode='test', set model.model_path or model.model_root in config.")
+        raise ValueError("For mode='test', set model.model_root in config.")
     model_root = Path(model_root_raw).resolve()
     if not model_root.is_dir():
         raise FileNotFoundError(f"model.model_root not found: {model_root}")
 
-    model_index_raw = model_cfg.get("model_index", None)
-    if model_index_raw is not None:
-        model_index = int(model_index_raw)
-        candidates = [
-            model_root / f"model_{model_index}.joblib",
-            model_root / f"model_{model_index}.pkl",
-        ]
-        for candidate in candidates:
-            if candidate.is_file():
-                return [candidate]
-        raise FileNotFoundError(
-            f"model_index={model_index} requested but model_{model_index}.joblib/.pkl not found in {model_root}"
-        )
-
-    paths = [*model_root.glob("model_*.joblib"), *model_root.glob("model_*.pkl")]
+    paths = [*model_root.glob("model_*.joblib")]
     paths = sorted({p.resolve() for p in paths}, key=_parse_model_index)
     if not paths:
-        raise FileNotFoundError(f"No model_*.joblib/.pkl files found in {model_root}")
+        raise FileNotFoundError(f"No model_*.joblib files found in {model_root}")
     return paths
 
 
