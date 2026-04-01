@@ -9,7 +9,6 @@ model:
   # model_index: 0   # optional; if set, only model_{index}.joblib/.pkl is evaluated
 
 dataset:
-  # Must match the feature/gt roots used when training the loaded model.
   input_root:
     - object_detectors/runs/fn_detectors/03-12-2026_18;34_feature_grad
   gt_root: object_detectors/runs/fn_detectors/03-27-2026_17;54_gt
