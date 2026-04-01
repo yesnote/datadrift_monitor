@@ -12,6 +12,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from error_detectors.commands.run_train import run_train
+from error_detectors.commands.run_test import run_test
 from error_detectors.commands.utils.run_utils import create_run_dir, save_used_config
 
 
@@ -81,7 +82,7 @@ def parse_root_info(root_path: Path) -> tuple[str, str, str]:
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--config", type=str, default="error_detectors/configs/experiment_error_detector.yaml")
+    parser.add_argument("--config", type=str, default="error_detectors/configs/train_error_detector.yaml")
     args = parser.parse_args()
 
     config_path = resolve_config_path(args.config)
@@ -89,6 +90,10 @@ def main() -> None:
         raise FileNotFoundError(f"Config not found: {config_path}")
 
     config = load_config(config_path)
+
+    mode = str(config.get("mode", "train")).strip().lower()
+    if mode not in {"train", "test"}:
+        raise ValueError(f"Unsupported mode: {mode}. Use 'train' or 'test'.")
 
     dataset_cfg = config.get("dataset", {})
     input_root_raw_list = normalize_input_roots(dataset_cfg.get("input_root", ""))
@@ -118,9 +123,13 @@ def main() -> None:
         warnings.warn(msg)
         raise ValueError(msg)
 
-    run_dir = create_run_dir(model_group=input_group, cue=input_cue, target_value=input_target).resolve()
+    cue_for_run = input_cue if mode == "train" else f"{input_cue}_test"
+    run_dir = create_run_dir(model_group=input_group, cue=cue_for_run, target_value=input_target).resolve()
     save_used_config(config_path, run_dir)
-    run_train(config, run_dir)
+    if mode == "train":
+        run_train(config, run_dir)
+    else:
+        run_test(config, run_dir)
 
 
 if __name__ == "__main__":

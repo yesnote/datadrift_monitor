@@ -145,6 +145,18 @@ def save_object(obj: Any, path_without_suffix: Path) -> Path:
     return out
 
 
+def load_object(path: Path) -> Any:
+    suffix = path.suffix.lower()
+    if suffix == ".joblib":
+        if joblib is None:
+            raise ImportError("joblib is required to load '.joblib' model files.")
+        return joblib.load(path)
+    if suffix == ".pkl":
+        with open(path, "rb") as f:
+            return pickle.load(f)
+    raise ValueError(f"Unsupported model file suffix: {path.suffix}")
+
+
 def parse_root_info(root_path: Path) -> tuple[str, str, str]:
     # Current format: .../runs/{model_group}/{time}_{cue}_{target?}
     # Legacy format:  .../runs/{model_group}/{cue}/{time}
