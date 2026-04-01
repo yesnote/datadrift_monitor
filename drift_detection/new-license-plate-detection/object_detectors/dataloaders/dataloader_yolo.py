@@ -4,6 +4,7 @@ from torch.utils.data import DataLoader
 import yaml
 
 from dataloaders.datasets.coco import COCODataset
+from dataloaders.datasets.openimages import OpenImagesDataset
 from dataloaders.datasets.voc import VOCDataset
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -64,6 +65,17 @@ def build_dataset(config, split="train"):
         split_key = f"{split}_split"
         voc_split = dataset_cfg.get(split_key, split)
         return VOCDataset(root=root, split=voc_split, img_size=config["model"]["img_size"])
+
+    if name in {"openimages", "open_images", "oid"}:
+        split_key = f"{split}_split"
+        oi_split = dataset_cfg.get(split_key, split)
+        class_names = dataset_cfg.get("class_names")
+        return OpenImagesDataset(
+            root=root,
+            split=oi_split,
+            class_names=class_names,
+            img_size=config["model"]["img_size"],
+        )
 
     raise ValueError(f"Unsupported dataset name: {name}")
 

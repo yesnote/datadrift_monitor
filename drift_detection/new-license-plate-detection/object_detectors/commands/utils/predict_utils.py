@@ -44,28 +44,42 @@ def normalize_to_list(value):
 
 def get_dataset_cfg(config):
     dataset_root_cfg = config["dataset"]
-    used_dataset = dataset_root_cfg["used_dataset"]
-    if used_dataset.lower() != "coco":
-        raise ValueError("Predict mode currently supports COCO only.")
+    used_dataset = str(dataset_root_cfg["used_dataset"]).lower()
     if used_dataset not in dataset_root_cfg:
         raise ValueError(f"dataset.{used_dataset} is missing in config.")
-    return dataset_root_cfg[used_dataset]
+    return used_dataset, dataset_root_cfg[used_dataset]
 
 
 def get_annotation_path(config, split):
-    dataset_cfg = get_dataset_cfg(config)
+    used_dataset, dataset_cfg = get_dataset_cfg(config)
+    if used_dataset != "coco":
+        return None
     root = Path(dataset_cfg["root"])
     if not root.is_absolute():
         root = (PROJECT_ROOT / root).resolve()
-    ann_dir = dataset_cfg["annotation_dir"]
-    ann_name = dataset_cfg[f"{split}_annotation_file"]
+    ann_dir = dataset_cfg.get("annotation_dir")
+    ann_name = dataset_cfg.get(f"{split}_annotation_file")
+    if not ann_dir or not ann_name:
+        return None
     return root / ann_dir / ann_name
 
 
 def load_coco_category_maps(annotation_path):
+    if annotation_path is None:
+        return {}
     with open(annotation_path, "r", encoding="utf-8") as f:
         payload = json.load(f)
     return {int(c["id"]): c["name"] for c in payload.get("categories", [])}
+
+
+def load_gt_category_maps(config, split):
+    used_dataset, dataset_cfg = get_dataset_cfg(config)
+    if used_dataset == "coco":
+        annotation_path = get_annotation_path(config, split)
+        return load_coco_category_maps(annotation_path)
+
+    class_names = dataset_cfg.get("class_names") or []
+    return {idx: str(name) for idx, name in enumerate(class_names)}
 
 
 def build_detector(config):
