@@ -18,10 +18,11 @@ class OpenImagesDataset(Dataset):
 
     IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".bmp"}
 
-    def __init__(self, root, split="validation", img_size=640):
+    def __init__(self, root, split="validation", img_size=640, min_gt_boxes=0):
         self.root = root
         self.split = split
         self.img_size = img_size
+        self.min_gt_boxes = max(0, int(min_gt_boxes))
 
         split_dir = Path(root) / split
         if not split_dir.is_dir():
@@ -32,6 +33,7 @@ class OpenImagesDataset(Dataset):
         self.idx_to_class = []
 
         self.images = self._resolve_images()
+        self.samples = self._build_samples()
 
     def _ensure_class_index(self, class_name):
         if class_name not in self.class_to_idx:
@@ -81,17 +83,34 @@ class OpenImagesDataset(Dataset):
                 boxes.append([x1, y1, x2, y2])
         return boxes, labels
 
+    def _build_samples(self):
+        samples = []
+        for image_path in self.images:
+            img_path = Path(image_path)
+            label_path = img_path.parent / "Label" / f"{img_path.stem}.txt"
+            boxes, labels = self._read_label_file(label_path)
+            if len(boxes) < self.min_gt_boxes:
+                continue
+            samples.append(
+                {
+                    "image_path": image_path,
+                    "boxes": boxes,
+                    "labels": labels,
+                }
+            )
+        return samples
+
     def __len__(self):
-        return len(self.images)
+        return len(self.samples)
 
     def __getitem__(self, index):
-        image_path = self.images[index]
+        sample = self.samples[index]
+        image_path = sample["image_path"]
         image = read_image_as_rgb(image_path)
         image = torch.from_numpy(image).permute(2, 0, 1).float() / 255.0
 
-        img_path = Path(image_path)
-        label_path = img_path.parent / "Label" / f"{img_path.stem}.txt"
-        boxes, labels = self._read_label_file(label_path)
+        boxes = sample["boxes"]
+        labels = sample["labels"]
 
         target = {
             "boxes": torch.tensor(boxes, dtype=torch.float32) if boxes else torch.zeros((0, 4), dtype=torch.float32),
