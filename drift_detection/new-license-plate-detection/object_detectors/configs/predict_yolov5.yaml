@@ -24,7 +24,7 @@ dataset:
     test_annotation_file: instances_test2017.json
   
   openimages:
-    root: D:/DataDrift/datasets/OIDv4_ToolKit/OID/Dataset
+    root: D:/SEONGJIN/datasets/OIDv4_ToolKit/OID/Dataset
     train_split: train
     val_split: validation
     test_split: test
