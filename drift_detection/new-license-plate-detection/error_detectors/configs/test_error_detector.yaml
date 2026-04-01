@@ -1,12 +1,7 @@
 mode: test
 
 model:
-  # Option 1) Evaluate one specific model file:
-  # model_path: error_detectors/runs/fn_detectors/03-30-2026_12;00_feature_grad/model_0.joblib
-  #
-  # Option 2) Evaluate models in one trained run directory:
   model_root: error_detectors/runs/fn_detectors/03-30-2026_12;00_feature_grad
-  # model_index: 0   # optional; if set, only model_{index}.joblib/.pkl is evaluated
 
 dataset:
   input_root:
