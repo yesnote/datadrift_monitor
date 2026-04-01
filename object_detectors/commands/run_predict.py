@@ -23,11 +23,10 @@ from commands.utils.predict_utils import (
     collect_image_layer_grads_per_target,
     create_layer_grad_buffer,
     draw_predictions,
-    get_annotation_path,
     get_fn_gt_indices,
     get_pre_nms_keep_indices,
     has_fn_for_image,
-    load_coco_category_maps,
+    load_gt_category_maps,
     map_boxes_to_letterbox,
     map_grad_tensor_to_numbers,
     parse_output_config,
@@ -106,8 +105,7 @@ def run_fn_csv(config, run_dir):
     output_csv = run_dir / "fn.csv"
     summary_json = run_dir / "summary.json"
 
-    annotation_path = get_annotation_path(config, split)
-    catid_to_name = load_coco_category_maps(annotation_path)
+    catid_to_name = load_gt_category_maps(config, split)
     dataloader = create_dataloader(config, split=split)
     if len(dataloader.dataset) == 0:
         raise ValueError("Loaded 0 images. Check dataset root/image_dir/split configuration in YAML.")
@@ -410,8 +408,7 @@ def run_tp_csv(config, run_dir):
         "tp",
     ]
 
-    annotation_path = get_annotation_path(config, split)
-    catid_to_name = load_coco_category_maps(annotation_path)
+    catid_to_name = load_gt_category_maps(config, split)
     dataloader = create_dataloader(config, split=split)
     if len(dataloader.dataset) == 0:
         raise ValueError("Loaded 0 images. Check dataset root/image_dir/split configuration in YAML.")
