@@ -77,9 +77,7 @@ def load_gt_category_maps(config, split):
     if used_dataset == "coco":
         annotation_path = get_annotation_path(config, split)
         return load_coco_category_maps(annotation_path)
-
-    class_names = dataset_cfg.get("class_names") or []
-    return {idx: str(name) for idx, name in enumerate(class_names)}
+    return {}
 
 
 def build_detector(config):

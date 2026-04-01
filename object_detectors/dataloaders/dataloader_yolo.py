@@ -69,11 +69,9 @@ def build_dataset(config, split="train"):
     if name in {"openimages", "open_images", "oid"}:
         split_key = f"{split}_split"
         oi_split = dataset_cfg.get(split_key, split)
-        class_names = dataset_cfg.get("class_names")
         return OpenImagesDataset(
             root=root,
             split=oi_split,
-            class_names=class_names,
             img_size=config["model"]["img_size"],
         )
 

@@ -28,9 +28,6 @@ dataset:
     train_split: train
     val_split: validation
     test_split: test
-    # Optional: used for gt uncertainty mode label-name matching.
-    # If empty, unknown labels are shown as "__unknown__".
-    class_names: []
 
 dataloader:
   batch_size: 32

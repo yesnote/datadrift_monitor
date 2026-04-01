@@ -18,7 +18,7 @@ class OpenImagesDataset(Dataset):
 
     IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".bmp"}
 
-    def __init__(self, root, split="validation", class_names=None, img_size=640):
+    def __init__(self, root, split="validation", img_size=640):
         self.root = root
         self.split = split
         self.img_size = img_size
@@ -30,8 +30,6 @@ class OpenImagesDataset(Dataset):
 
         self.class_to_idx = {}
         self.idx_to_class = []
-        for class_name in class_names or []:
-            self._ensure_class_index(str(class_name))
 
         self.images = self._resolve_images()
 
