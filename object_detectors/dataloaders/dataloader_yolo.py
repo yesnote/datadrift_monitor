@@ -69,10 +69,12 @@ def build_dataset(config, split="train"):
     if name in {"openimages", "open_images", "oid"}:
         split_key = f"{split}_split"
         oi_split = dataset_cfg.get(split_key, split)
+        min_gt_boxes = int(dataset_cfg.get("min_gt_boxes", 0))
         return OpenImagesDataset(
             root=root,
             split=oi_split,
             img_size=config["model"]["img_size"],
+            min_gt_boxes=min_gt_boxes,
         )
 
     raise ValueError(f"Unsupported dataset name: {name}")

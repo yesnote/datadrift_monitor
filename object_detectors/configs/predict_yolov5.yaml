@@ -28,6 +28,7 @@ dataset:
     train_split: train
     val_split: validation
     test_split: test
+    min_gt_boxes: 1  # keep only images with at least this many GT boxes
 
 dataloader:
   batch_size: 32
