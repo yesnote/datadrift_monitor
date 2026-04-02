@@ -28,6 +28,7 @@ class COCODataset(Dataset):
         self.images = list_image_files(self.image_dir)
         self.image_id_by_name = {}
         self.annotations_by_image_id = defaultdict(list)
+        self.category_name_by_id = {}
 
         if os.path.isfile(self.annotation_file):
             self._load_annotations()
@@ -38,6 +39,9 @@ class COCODataset(Dataset):
 
         for image in payload.get("images", []):
             self.image_id_by_name[image["file_name"]] = image["id"]
+
+        for cat in payload.get("categories", []):
+            self.category_name_by_id[int(cat["id"])] = str(cat.get("name", "__unknown__"))
 
         for ann in payload.get("annotations", []):
             self.annotations_by_image_id[ann["image_id"]].append(ann)
@@ -56,15 +60,20 @@ class COCODataset(Dataset):
 
         boxes = []
         labels = []
+        gt_class_names = []
         for ann in anns:
             x, y, w, h = ann["bbox"]
             boxes.append([x, y, x + w, y + h])
-            labels.append(ann["category_id"])
+            cat_id = int(ann["category_id"])
+            labels.append(cat_id)
+            gt_class_names.append(self.category_name_by_id.get(cat_id, "__unknown__"))
 
         target = {
             "boxes": torch.tensor(boxes, dtype=torch.float32) if boxes else torch.zeros((0, 4), dtype=torch.float32),
             "labels": torch.tensor(labels, dtype=torch.int64) if labels else torch.zeros((0,), dtype=torch.int64),
             "image_id": torch.tensor([image_id], dtype=torch.int64),
             "path": image_path,
+            "dataset_name": "coco",
+            "gt_class_names": gt_class_names,
         }
         return image, target

@@ -50,6 +50,7 @@ class VOCDataset(Dataset):
         )
         boxes = []
         labels = []
+        gt_class_names = []
         if os.path.isfile(ann_path):
             root = ET.parse(ann_path).getroot()
             for obj in root.findall("object"):
@@ -63,11 +64,14 @@ class VOCDataset(Dataset):
                 ymax = float(bbox.findtext("ymax", default="0"))
                 boxes.append([xmin, ymin, xmax, ymax])
                 labels.append(self.class_to_idx.get(label_name, 0))
+                gt_class_names.append(label_name)
 
         target = {
             "boxes": torch.tensor(boxes, dtype=torch.float32) if boxes else torch.zeros((0, 4), dtype=torch.float32),
             "labels": torch.tensor(labels, dtype=torch.int64) if labels else torch.zeros((0,), dtype=torch.int64),
             "image_id": torch.tensor([index], dtype=torch.int64),
             "path": image_path,
+            "dataset_name": "voc",
+            "gt_class_names": gt_class_names,
         }
         return image, target

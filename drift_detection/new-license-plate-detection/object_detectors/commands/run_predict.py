@@ -76,6 +76,14 @@ def _prepare_infer_batch(detector, images, device, auto=False):
     return infer_batch, ratios, pads, resized_chws
 
 
+def _resolve_gt_class_names(target, catid_to_name):
+    gt_names = target.get("gt_class_names")
+    if gt_names is not None:
+        return [str(v) for v in gt_names]
+    gt_labels_tensor = target["labels"]
+    return [catid_to_name.get(int(label), "__unknown__") for label in gt_labels_tensor.tolist()]
+
+
 def _mc_dropout_single_csv_writer(write_queue, output_csv, fieldnames):
     with open(output_csv, "w", newline="", encoding="utf-8") as output_file:
         writer = csv.DictWriter(output_file, fieldnames=fieldnames)
@@ -148,9 +156,8 @@ def run_fn_csv(config, run_dir):
                 pred_class_names = preds[2][sample_idx]
                 pred_scores = preds[3][sample_idx]
                 gt_boxes_tensor = target["boxes"]
-                gt_labels_tensor = target["labels"]
                 gt_boxes = map_boxes_to_letterbox(gt_boxes_tensor, ratios[sample_idx], pads[sample_idx])
-                gt_class_names = [catid_to_name.get(int(label), "__unknown__") for label in gt_labels_tensor.tolist()]
+                gt_class_names = _resolve_gt_class_names(target, catid_to_name)
                 fn = has_fn_for_image(
                     gt_boxes=gt_boxes,
                     gt_class_names=gt_class_names,
@@ -437,9 +444,8 @@ def run_tp_csv(config, run_dir):
                 pred_class_names = preds[2][sample_idx]
                 pred_scores = preds[3][sample_idx]
                 gt_boxes_tensor = target["boxes"]
-                gt_labels_tensor = target["labels"]
                 gt_boxes = map_boxes_to_letterbox(gt_boxes_tensor, ratios[sample_idx], pads[sample_idx])
-                gt_class_names = [catid_to_name.get(int(label), "__unknown__") for label in gt_labels_tensor.tolist()]
+                gt_class_names = _resolve_gt_class_names(target, catid_to_name)
 
                 tp_flags, best_ious = assign_tp_to_predictions(
                     gt_boxes=gt_boxes,
