@@ -36,22 +36,6 @@ def _normalize_dataset_names(dataset_cfg):
     return names
 
 
-def get_active_dataset_cfg(config):
-    dataset_cfg = config["dataset"]
-    names = _normalize_dataset_names(dataset_cfg)
-    if len(names) != 1:
-        raise ValueError(
-            "get_active_dataset_cfg expects a single dataset. "
-            "Use build_dataset with used_dataset list for multi-dataset mode."
-        )
-    used_dataset = names[0]
-    if used_dataset not in dataset_cfg:
-        raise ValueError(
-            f"dataset.used_dataset='{used_dataset}' but dataset.{used_dataset} is not defined."
-        )
-    return used_dataset, dataset_cfg[used_dataset]
-
-
 def _build_single_dataset(name, dataset_cfg, root, split_key, img_size):
     if name == "coco":
         coco_split = dataset_cfg.get(f"{split_key}_split", split_key)
