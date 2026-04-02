@@ -39,11 +39,18 @@ def _normalize_config_paths(config):
 
     dataset_cfg = config.get("dataset", {})
     used_dataset = dataset_cfg.get("used_dataset")
-    if isinstance(used_dataset, str) and used_dataset in dataset_cfg:
-        active_cfg = dataset_cfg[used_dataset]
-        root = active_cfg.get("root")
-        if isinstance(root, str) and root:
-            active_cfg["root"] = str(_resolve_path_value(root))
+    if isinstance(used_dataset, str):
+        names = [used_dataset.strip()]
+    elif isinstance(used_dataset, (list, tuple)):
+        names = [str(v).strip() for v in used_dataset if str(v).strip()]
+    else:
+        names = []
+    for name in names:
+        if name in dataset_cfg:
+            active_cfg = dataset_cfg[name]
+            root = active_cfg.get("root")
+            if isinstance(root, str) and root:
+                active_cfg["root"] = str(_resolve_path_value(root))
 
     return config
 

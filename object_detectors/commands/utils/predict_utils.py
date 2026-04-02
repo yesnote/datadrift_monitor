@@ -44,10 +44,22 @@ def normalize_to_list(value):
 
 def get_dataset_cfg(config):
     dataset_root_cfg = config["dataset"]
-    used_dataset = str(dataset_root_cfg["used_dataset"]).lower()
-    if used_dataset not in dataset_root_cfg:
-        raise ValueError(f"dataset.{used_dataset} is missing in config.")
-    return used_dataset, dataset_root_cfg[used_dataset]
+    used_raw = dataset_root_cfg["used_dataset"]
+    if isinstance(used_raw, str):
+        used_list = [used_raw.strip().lower()]
+    elif isinstance(used_raw, (list, tuple)):
+        used_list = [str(v).strip().lower() for v in used_raw if str(v).strip()]
+    else:
+        raise ValueError("dataset.used_dataset must be a string or list of strings.")
+    if not used_list:
+        raise ValueError("dataset.used_dataset is empty.")
+    for used_dataset in used_list:
+        if used_dataset not in dataset_root_cfg:
+            raise ValueError(f"dataset.{used_dataset} is missing in config.")
+    if len(used_list) == 1:
+        used_dataset = used_list[0]
+        return used_dataset, dataset_root_cfg[used_dataset]
+    return "__multi__", {name: dataset_root_cfg[name] for name in used_list}
 
 
 def get_annotation_path(config, split):
