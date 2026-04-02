@@ -9,8 +9,12 @@ model:
   device: cuda
 
 dataset:
-  used_dataset: openimages   # coco | voc | openimages | [coco, openimages]
-  split: val                 # e.g. [val, val] when used_dataset is a list
+  used_dataset:   # coco | voc | openimages | [coco, openimages]
+    - coco
+    - openimages
+  split:          # e.g. [val, val] when used_dataset is a list
+    - val
+    - val
   
   coco:
     root: D:/SEONGJIN/datasets/COCO
