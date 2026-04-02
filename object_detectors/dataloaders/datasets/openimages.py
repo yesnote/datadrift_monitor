@@ -96,6 +96,7 @@ class OpenImagesDataset(Dataset):
                     "image_path": image_path,
                     "boxes": boxes,
                     "labels": labels,
+                    "gt_class_names": ["__unknown__"] * len(labels),
                 }
             )
         return samples
@@ -111,11 +112,14 @@ class OpenImagesDataset(Dataset):
 
         boxes = sample["boxes"]
         labels = sample["labels"]
+        gt_class_names = sample["gt_class_names"]
 
         target = {
             "boxes": torch.tensor(boxes, dtype=torch.float32) if boxes else torch.zeros((0, 4), dtype=torch.float32),
             "labels": torch.tensor(labels, dtype=torch.int64) if labels else torch.zeros((0,), dtype=torch.int64),
             "image_id": torch.tensor([index], dtype=torch.int64),
             "path": image_path,
+            "dataset_name": "openimages",
+            "gt_class_names": gt_class_names,
         }
         return image, target
