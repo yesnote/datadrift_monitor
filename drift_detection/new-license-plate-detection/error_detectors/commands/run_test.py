@@ -98,7 +98,7 @@ def run_test(config: dict[str, Any], run_dir: Path) -> Path:
 
     eval_df = pd.DataFrame(eval_rows)
     summary = {
-        "model_file": "mean/std",
+        "model_file": "mean",
         "model_index": -1,
         "auroc": float(eval_df["auroc"].mean()),
         "ap": float(eval_df["ap"].mean()),
