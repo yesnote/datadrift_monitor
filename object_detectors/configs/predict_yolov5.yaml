@@ -9,7 +9,7 @@ model:
   device: cuda
 
 dataset:
-  used_dataset:   # coco | voc | openimages | [coco, openimages]
+  used_dataset:   # coco | voc | openimages
     - coco
     - openimages
   split:          # e.g. [val, val] when used_dataset is a list
