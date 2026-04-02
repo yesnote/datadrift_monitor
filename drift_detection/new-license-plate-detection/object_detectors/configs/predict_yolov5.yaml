@@ -12,7 +12,7 @@ dataset:
   used_dataset:   # coco | voc | openimages
     - coco
     - openimages
-  split:          # e.g. [val, val] when used_dataset is a list
+  split:
     - val
     - val
   
