@@ -1265,6 +1265,14 @@ def map_boxes_to_letterbox(boxes_tensor, ratio, pad):
     return boxes.tolist()
 
 
+def normalize_class_name(name) -> str:
+    return str(name).strip().lower()
+
+
+def classes_match(name_a, name_b) -> bool:
+    return normalize_class_name(name_a) == normalize_class_name(name_b)
+
+
 def draw_predictions(image_chw, boxes, labels, scores):
     # image_chw: C,H,W uint8
     image = np.transpose(image_chw, (1, 2, 0)).copy()
@@ -1291,7 +1299,7 @@ def has_fn_for_image(gt_boxes, gt_class_names, pred_boxes, pred_class_names, iou
         for pred_idx, (pred_box, pred_name) in enumerate(zip(pred_boxes, pred_class_names)):
             if pred_idx in matched_pred_indices:
                 continue
-            if gt_name != pred_name:
+            if not classes_match(gt_name, pred_name):
                 continue
             if box_iou_xyxy(gt_box, pred_box) >= iou_match_threshold:
                 matched_pred_indices.add(pred_idx)
@@ -1310,7 +1318,7 @@ def get_fn_gt_indices(gt_boxes, gt_class_names, pred_boxes, pred_class_names, io
         for pred_idx, (pred_box, pred_name) in enumerate(zip(pred_boxes, pred_class_names)):
             if pred_idx in matched_pred_indices:
                 continue
-            if gt_name != pred_name:
+            if not classes_match(gt_name, pred_name):
                 continue
             if box_iou_xyxy(gt_box, pred_box) >= iou_match_threshold:
                 matched_pred_indices.add(pred_idx)
@@ -1347,7 +1355,7 @@ def assign_tp_to_predictions(
         for gt_idx, (gt_box, gt_name) in enumerate(zip(gt_boxes, gt_class_names)):
             if gt_idx in matched_gt_indices:
                 continue
-            if gt_name != pred_name:
+            if not classes_match(gt_name, pred_name):
                 continue
             iou = box_iou_xyxy(gt_box, pred_box)
             if iou > best_iou:
