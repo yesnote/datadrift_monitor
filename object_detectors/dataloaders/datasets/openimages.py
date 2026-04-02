@@ -61,8 +61,9 @@ class OpenImagesDataset(Dataset):
     def _read_label_file(self, label_path):
         boxes = []
         labels = []
+        class_names = []
         if not label_path.is_file():
-            return boxes, labels
+            return boxes, labels, class_names
 
         with open(label_path, "r", encoding="utf-8") as f:
             for raw in f:
@@ -81,14 +82,15 @@ class OpenImagesDataset(Dataset):
                     continue
                 labels.append(self._ensure_class_index(class_name))
                 boxes.append([x1, y1, x2, y2])
-        return boxes, labels
+                class_names.append(class_name)
+        return boxes, labels, class_names
 
     def _build_samples(self):
         samples = []
         for image_path in self.images:
             img_path = Path(image_path)
             label_path = img_path.parent / "Label" / f"{img_path.stem}.txt"
-            boxes, labels = self._read_label_file(label_path)
+            boxes, labels, class_names = self._read_label_file(label_path)
             if len(boxes) < self.min_gt_boxes:
                 continue
             samples.append(
@@ -96,7 +98,7 @@ class OpenImagesDataset(Dataset):
                     "image_path": image_path,
                     "boxes": boxes,
                     "labels": labels,
-                    "gt_class_names": ["__unknown__"] * len(labels),
+                    "gt_class_names": class_names,
                 }
             )
         return samples
