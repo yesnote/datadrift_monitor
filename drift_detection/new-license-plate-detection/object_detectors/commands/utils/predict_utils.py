@@ -320,10 +320,17 @@ def parse_output_config(output_cfg):
             msg = "Invalid config: output.save_csv.uncertainty='layer_grad' requires output.save_csv.unit in {'image','bbox'}."
             warnings.warn(msg)
             raise ValueError(msg)
-        layer_pseudo_gt = str(layer_grad_cfg.get("pseudo_gt", "cand")).strip().lower()
+        layer_target_value_cfg = layer_grad_cfg.get("target_value", ["loss"])
+        if isinstance(layer_target_value_cfg, dict):
+            raw_layer_target_values = layer_target_value_cfg.get("value", ["loss"])
+            layer_pseudo_gt = str(layer_target_value_cfg.get("pseudo_gt", "cand")).strip().lower()
+        else:
+            raw_layer_target_values = layer_target_value_cfg
+            # Backward compatibility for older config location.
+            layer_pseudo_gt = str(layer_grad_cfg.get("pseudo_gt", "cand")).strip().lower()
         if layer_pseudo_gt not in {"cand", "uniform"}:
-            raise ValueError("output.save_csv.layer_grad.pseudo_gt must be 'cand' or 'uniform'.")
-        layer_target_values = [v.lower() for v in normalize_to_list(layer_grad_cfg.get("target_value", ["loss"]))]
+            raise ValueError("output.save_csv.layer_grad.target_value.pseudo_gt must be 'cand' or 'uniform'.")
+        layer_target_values = [v.lower() for v in normalize_to_list(raw_layer_target_values)]
         valid_values = {"loss", "obj_loss", "cls_loss", "bbox_loss", "obj", "cls"}
         invalid_values = [v for v in layer_target_values if v not in valid_values]
         if invalid_values:
@@ -345,7 +352,7 @@ def parse_output_config(output_cfg):
             unsupported_uniform = [v for v in layer_target_values if v == "bbox_loss"]
             if unsupported_uniform:
                 raise ValueError(
-                    "output.save_csv.layer_grad.pseudo_gt='uniform' currently supports only "
+                    "output.save_csv.layer_grad.target_value.pseudo_gt='uniform' currently supports only "
                     "target_value in {'obj_loss','cls_loss'} for loss terms."
                 )
         layer_target_layers = normalize_to_list(layer_grad_cfg.get("target_layer", []))
