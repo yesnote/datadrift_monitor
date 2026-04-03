@@ -1696,7 +1696,7 @@ def run_layer_grad_csv(config, run_dir):
         return
     if layer_pseudo_gt == "uniform" and (unit != "bbox" or pre_nms):
         raise ValueError(
-            "output.save_csv.layer_grad.pseudo_gt='uniform' is currently supported only when "
+            "output.save_csv.layer_grad.target_value.pseudo_gt='uniform' is currently supported only when "
             "output.save_csv.unit='bbox' and output.save_csv.pre_nms.enabled=false."
         )
 

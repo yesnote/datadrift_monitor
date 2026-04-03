@@ -83,6 +83,8 @@ def main():
             target_tag = "-".join([str(v).strip().lower() for v in vals if str(v).strip()])
     elif uncertainty == "layer_grad":
         raw_vals = save_csv_cfg.get("layer_grad", {}).get("target_value", [])
+        if isinstance(raw_vals, dict):
+            raw_vals = raw_vals.get("value", [])
         raw_list = [str(v).strip().lower() for v in (raw_vals if isinstance(raw_vals, list) else [raw_vals]) if str(v).strip()]
         if raw_list == ["loss"]:
             target_tag = "loss"
