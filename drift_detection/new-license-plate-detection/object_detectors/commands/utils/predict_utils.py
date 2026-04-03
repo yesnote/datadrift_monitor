@@ -1023,13 +1023,13 @@ def build_layer_target_scalar_bbox(target_value, pred_img, logit_img, raw_idx, i
             obj_target = torch.full_like(obj_prob, 0.5)
             return F.binary_cross_entropy(obj_prob, obj_target)
         if target_value == "cls_loss":
-            cls_prob = pred_row[5:]
-            if cls_prob.numel() == 0:
+            cls_logits = logit_img[raw_idx] if (logit_img is not None and raw_idx < logit_img.shape[0]) else pred_row[5:]
+            if cls_logits.numel() == 0:
                 return None
-            cls_prob = cls_prob.clamp(eps, 1.0 - eps)
-            uniform_target = torch.full_like(cls_prob, 1.0 / float(cls_prob.numel()))
-            # Per-class BCE then mean: equivalent to "class-wise loss mean".
-            return F.binary_cross_entropy(cls_prob, uniform_target)
+            log_probs = F.log_softmax(cls_logits, dim=-1)
+            uniform_target = torch.full_like(log_probs, 1.0 / float(log_probs.numel()))
+            # Soft-target cross-entropy with uniform pseudo GT.
+            return -(uniform_target * log_probs).sum()
         return None
 
     losses = build_pseudo_label_losses_for_candidates(
