@@ -288,6 +288,7 @@ def parse_output_config(output_cfg):
     layer_target_layers = []
     layer_map_reduction = "none"
     layer_vector_reduction = ["1-norm", "2-norm", "min", "max", "mean", "std"]
+    layer_pseudo_gt = "cand"
     if uncertainty == "feature_grad":
         if unit not in {"image", "bbox"}:
             raise ValueError("output.save_csv.unit must be 'image' or 'bbox' when uncertainty is 'feature_grad'.")
@@ -319,6 +320,9 @@ def parse_output_config(output_cfg):
             msg = "Invalid config: output.save_csv.uncertainty='layer_grad' requires output.save_csv.unit in {'image','bbox'}."
             warnings.warn(msg)
             raise ValueError(msg)
+        layer_pseudo_gt = str(layer_grad_cfg.get("pseudo_gt", "cand")).strip().lower()
+        if layer_pseudo_gt not in {"cand", "uniform"}:
+            raise ValueError("output.save_csv.layer_grad.pseudo_gt must be 'cand' or 'uniform'.")
         layer_target_values = [v.lower() for v in normalize_to_list(layer_grad_cfg.get("target_value", ["loss"]))]
         valid_values = {"loss", "obj_loss", "cls_loss", "bbox_loss", "obj", "cls"}
         invalid_values = [v for v in layer_target_values if v not in valid_values]
@@ -329,11 +333,21 @@ def parse_output_config(output_cfg):
             expanded = []
             for v in layer_target_values:
                 if v == "loss":
-                    expanded.extend(["obj_loss", "cls_loss", "bbox_loss"])
+                    if layer_pseudo_gt == "uniform":
+                        expanded.extend(["obj_loss", "cls_loss"])
+                    else:
+                        expanded.extend(["obj_loss", "cls_loss", "bbox_loss"])
                 else:
                     expanded.append(v)
             # keep order while removing duplicates
             layer_target_values = list(dict.fromkeys(expanded))
+        if layer_pseudo_gt == "uniform":
+            unsupported_uniform = [v for v in layer_target_values if v == "bbox_loss"]
+            if unsupported_uniform:
+                raise ValueError(
+                    "output.save_csv.layer_grad.pseudo_gt='uniform' currently supports only "
+                    "target_value in {'obj_loss','cls_loss'} for loss terms."
+                )
         layer_target_layers = normalize_to_list(layer_grad_cfg.get("target_layer", []))
         if not layer_target_layers and save_csv_enabled:
             raise ValueError("output.save_csv.layer_grad.target_layer must contain at least one layer name.")
@@ -463,6 +477,7 @@ def parse_output_config(output_cfg):
         "layer_target_layers": layer_target_layers,
         "layer_map_reduction": layer_map_reduction,
         "layer_vector_reduction": layer_vector_reduction,
+        "layer_pseudo_gt": layer_pseudo_gt,
         "save_image_enabled": save_image_enabled,
         "image_step": image_step,
         "image_max_num": image_max_num,
@@ -981,7 +996,7 @@ def build_layer_target_scalar_image(target_value, raw_prediction, raw_logits):
     return None
 
 
-def build_layer_target_scalar_bbox(target_value, pred_img, logit_img, raw_idx, iou_threshold):
+def build_layer_target_scalar_bbox(target_value, pred_img, logit_img, raw_idx, iou_threshold, pseudo_gt="cand"):
     if target_value == "obj":
         if raw_idx >= pred_img.shape[0]:
             return None
@@ -990,6 +1005,25 @@ def build_layer_target_scalar_bbox(target_value, pred_img, logit_img, raw_idx, i
         if raw_idx >= logit_img.shape[0]:
             return None
         return logit_img[raw_idx].max()
+
+    if pseudo_gt == "uniform":
+        if raw_idx >= pred_img.shape[0]:
+            return None
+        eps = 1e-6
+        pred_row = pred_img[raw_idx]
+        if target_value == "obj_loss":
+            obj_prob = pred_row[4].clamp(eps, 1.0 - eps)
+            obj_target = torch.full_like(obj_prob, 0.5)
+            return F.binary_cross_entropy(obj_prob, obj_target)
+        if target_value == "cls_loss":
+            cls_prob = pred_row[5:]
+            if cls_prob.numel() == 0:
+                return None
+            cls_prob = cls_prob.clamp(eps, 1.0 - eps)
+            uniform_target = torch.full_like(cls_prob, 1.0 / float(cls_prob.numel()))
+            # Per-class BCE then mean: equivalent to "class-wise loss mean".
+            return F.binary_cross_entropy(cls_prob, uniform_target)
+        return None
 
     losses = build_pseudo_label_losses_for_candidates(
         pred_img=pred_img,
@@ -1008,6 +1042,7 @@ def collect_bbox_layer_grads_per_target(
     target_layers,
     map_reduction="none",
     vector_reduction=None,
+    pseudo_gt="cand",
 ):
     layer_params = [resolve_layer_parameter(detector.model, layer_name) for layer_name in target_layers]
     original_requires_grad = [bool(p.requires_grad) for p in layer_params]
@@ -1053,6 +1088,7 @@ def collect_bbox_layer_grads_per_target(
                     logit_img=logit_img,
                     raw_idx=raw_idx,
                     iou_threshold=iou_threshold,
+                    pseudo_gt=pseudo_gt,
                 )
 
                 if target_scalar is None:
