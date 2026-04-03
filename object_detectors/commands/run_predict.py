@@ -1688,11 +1688,17 @@ def run_layer_grad_csv(config, run_dir):
     target_layers = parsed["layer_target_layers"]
     layer_map_reduction = parsed["layer_map_reduction"]
     layer_vector_reduction = parsed["layer_vector_reduction"]
+    layer_pseudo_gt = parsed.get("layer_pseudo_gt", "cand")
     pre_nms = bool(parsed.get("pre_nms", False))
     pre_nms_ratio = float(parsed.get("pre_nms_ratio", 1.0))
 
     if not save_csv:
         return
+    if layer_pseudo_gt == "uniform" and (unit != "bbox" or pre_nms):
+        raise ValueError(
+            "output.save_csv.layer_grad.pseudo_gt='uniform' is currently supported only when "
+            "output.save_csv.unit='bbox' and output.save_csv.pre_nms.enabled=false."
+        )
 
     output_csv = run_dir / "layer_grad.csv"
     fieldnames = ["image_id", "image_path"]
@@ -1730,6 +1736,7 @@ def run_layer_grad_csv(config, run_dir):
                         target_layers=target_layers,
                         map_reduction=layer_map_reduction,
                         vector_reduction=layer_vector_reduction,
+                        pseudo_gt=layer_pseudo_gt,
                     )
                     for bbox_row in bbox_rows:
                         row = {
