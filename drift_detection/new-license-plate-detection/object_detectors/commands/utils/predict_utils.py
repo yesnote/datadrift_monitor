@@ -1153,6 +1153,7 @@ def collect_image_layer_grads_per_target(
     vector_reduction=None,
     pre_nms=True,
     pre_nms_ratio=1.0,
+    pseudo_gt="cand",
 ):
     layer_params = [resolve_layer_parameter(detector.model, layer_name) for layer_name in target_layers]
     original_requires_grad = [bool(p.requires_grad) for p in layer_params]
@@ -1204,14 +1205,23 @@ def collect_image_layer_grads_per_target(
                                 target_scalar = logit_img[raw_keep_indices].max(dim=1).values.sum()
             else:
                 loss_terms = []
-                for bbox_idx in range(int(raw_keep_indices.shape[0])):
-                    raw_idx = int(raw_keep_indices[bbox_idx].detach().cpu().item())
+                if pseudo_gt == "uniform":
+                    if pre_nms:
+                        idx_tensor = get_pre_nms_keep_indices(pred_img, logit_img, pre_nms_ratio=pre_nms_ratio)
+                    else:
+                        idx_tensor = raw_keep_indices
+                else:
+                    idx_tensor = raw_keep_indices
+
+                for bbox_idx in range(int(idx_tensor.shape[0])):
+                    raw_idx = int(idx_tensor[bbox_idx].detach().cpu().item())
                     scalar = build_layer_target_scalar_bbox(
                         target_value=target_value,
                         pred_img=pred_img,
                         logit_img=logit_img,
                         raw_idx=raw_idx,
                         iou_threshold=iou_threshold,
+                        pseudo_gt=pseudo_gt,
                     )
                     if scalar is not None:
                         loss_terms.append(scalar)
