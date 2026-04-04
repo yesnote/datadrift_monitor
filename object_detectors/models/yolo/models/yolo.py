@@ -94,6 +94,7 @@ class Detect(nn.Module):
         z = []  # inference output
         ys = []
         logits_ = []
+        priors_ = []
         for i in range(self.nl):
             x[i] = self.m[i](x[i])  # conv
             bs, _, ny, nx = x[i].shape  # x(bs,255,20,20) to x(bs,3,20,20,85)
@@ -104,6 +105,10 @@ class Detect(nn.Module):
                     self.grid[i], self.anchor_grid[i] = self._make_grid(nx, ny, i)
                 logits = x[i][..., 5:]
                 y = x[i].sigmoid()
+                # Anchor prior in decoded xywh space with zero-offset assumption.
+                prior_xy = (0.5 + self.grid[i]) * self.stride[i]
+                prior_wh = self.anchor_grid[i]
+                prior_xywh = torch.cat((prior_xy, prior_wh), -1)
                 if self.inplace:
                     y[..., 0:2] = (y[..., 0:2] * 2. - 0.5 + self.grid[i]) * self.stride[i]  # xy
                     y[..., 2:4] = (y[..., 2:4] * 2) ** 2 * self.anchor_grid[i]  # wh
@@ -113,7 +118,8 @@ class Detect(nn.Module):
                     y = torch.cat((xy, wh, y[..., 4:]), -1)
                 z.append(y.view(bs, -1, self.no))
                 logits_.append(logits.view(bs, -1, self.no - 5))
-        return x if self.training else (torch.cat(z, 1), torch.cat(logits_, 1), x)
+                priors_.append(prior_xywh.view(bs, -1, 4))
+        return x if self.training else (torch.cat(z, 1), torch.cat(logits_, 1), x, torch.cat(priors_, 1))
 
     def _make_grid(self, nx=20, ny=20, i=0, torch_1_10=check_version(torch.__version__, '1.10.0')):
         d = self.anchors[i].device
