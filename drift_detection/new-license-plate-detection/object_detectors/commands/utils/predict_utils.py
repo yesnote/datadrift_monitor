@@ -341,7 +341,10 @@ def parse_output_config(output_cfg):
             for v in layer_target_values:
                 if v == "loss":
                     if layer_pseudo_gt == "uniform":
-                        expanded.extend(["obj_loss", "cls_loss"])
+                        if unit == "bbox":
+                            expanded.extend(["obj_loss", "cls_loss", "bbox_loss"])
+                        else:
+                            expanded.extend(["obj_loss", "cls_loss"])
                     else:
                         expanded.extend(["obj_loss", "cls_loss", "bbox_loss"])
                 else:
@@ -349,11 +352,11 @@ def parse_output_config(output_cfg):
             # keep order while removing duplicates
             layer_target_values = list(dict.fromkeys(expanded))
         if layer_pseudo_gt == "uniform":
-            unsupported_uniform = [v for v in layer_target_values if v == "bbox_loss"]
+            unsupported_uniform = [v for v in layer_target_values if v == "bbox_loss" and unit != "bbox"]
             if unsupported_uniform:
                 raise ValueError(
                     "output.save_csv.layer_grad.target_value.pseudo_gt='uniform' currently supports only "
-                    "target_value in {'obj_loss','cls_loss'} for loss terms."
+                    "target_value in {'obj_loss','cls_loss'} for loss terms when unit='image'."
                 )
         layer_target_layers = normalize_to_list(layer_grad_cfg.get("target_layer", []))
         if not layer_target_layers and save_csv_enabled:
@@ -1003,7 +1006,15 @@ def build_layer_target_scalar_image(target_value, raw_prediction, raw_logits):
     return None
 
 
-def build_layer_target_scalar_bbox(target_value, pred_img, logit_img, raw_idx, iou_threshold, pseudo_gt="cand"):
+def build_layer_target_scalar_bbox(
+    target_value,
+    pred_img,
+    logit_img,
+    raw_idx,
+    iou_threshold,
+    pseudo_gt="cand",
+    anchor_xywh=None,
+):
     if target_value == "obj":
         if raw_idx >= pred_img.shape[0]:
             return None
@@ -1030,6 +1041,12 @@ def build_layer_target_scalar_bbox(target_value, pred_img, logit_img, raw_idx, i
             uniform_target = torch.full_like(log_probs, 1.0 / float(log_probs.numel()))
             # Soft-target cross-entropy with uniform pseudo GT.
             return -(uniform_target * log_probs).sum()
+        if target_value == "bbox_loss":
+            if anchor_xywh is None:
+                return None
+            pred_xywh = pred_row[:4]
+            anchor_xywh = anchor_xywh.to(dtype=pred_xywh.dtype, device=pred_xywh.device)
+            return F.smooth_l1_loss(pred_xywh, anchor_xywh, reduction="mean")
         return None
 
     losses = build_pseudo_label_losses_for_candidates(
@@ -1060,6 +1077,7 @@ def collect_bbox_layer_grads_per_target(
         model_output = detector.model(input_tensor.detach(), augment=False)
         raw_prediction = model_output[0] if isinstance(model_output, (tuple, list)) else model_output
         raw_logits = model_output[1] if isinstance(model_output, (tuple, list)) and len(model_output) > 1 else None
+        raw_anchor_priors = model_output[3] if isinstance(model_output, (tuple, list)) and len(model_output) > 3 else None
         selected_preds, _selected_logits, _selected_objectness, selected_indices = detector.non_max_suppression(
             raw_prediction,
             raw_logits,
@@ -1086,8 +1104,11 @@ def collect_bbox_layer_grads_per_target(
                 model_output = detector.model(input_tensor.detach(), augment=False)
                 raw_prediction = model_output[0] if isinstance(model_output, (tuple, list)) else model_output
                 raw_logits = model_output[1] if isinstance(model_output, (tuple, list)) and len(model_output) > 1 else None
+                raw_anchor_priors = model_output[3] if isinstance(model_output, (tuple, list)) and len(model_output) > 3 else None
                 pred_img = raw_prediction[0]
                 logit_img = raw_logits[0] if raw_logits is not None else pred_img[:, 5:]
+                anchor_img = raw_anchor_priors[0] if raw_anchor_priors is not None else None
+                anchor_row = anchor_img[raw_idx] if (anchor_img is not None and raw_idx < anchor_img.shape[0]) else None
 
                 target_scalar = build_layer_target_scalar_bbox(
                     target_value=target_value,
@@ -1096,12 +1117,13 @@ def collect_bbox_layer_grads_per_target(
                     raw_idx=raw_idx,
                     iou_threshold=iou_threshold,
                     pseudo_gt=pseudo_gt,
+                    anchor_xywh=anchor_row,
                 )
 
                 if target_scalar is None:
                     for layer_name in target_layers:
                         grad_stats[f"{target_value}_{layer_name}"] = []
-                    del model_output, raw_prediction, raw_logits, pred_img, logit_img
+                    del model_output, raw_prediction, raw_logits, raw_anchor_priors, pred_img, logit_img, anchor_img, anchor_row
                     continue
 
                 grads = torch.autograd.grad(
@@ -1119,7 +1141,7 @@ def collect_bbox_layer_grads_per_target(
                         map_reduction=map_reduction,
                     )
 
-                del model_output, raw_prediction, raw_logits, pred_img, logit_img, target_scalar, grads
+                del model_output, raw_prediction, raw_logits, raw_anchor_priors, pred_img, logit_img, anchor_img, anchor_row, target_scalar, grads
 
             cls_idx = int(det[bbox_idx, 5].detach().cpu().item())
             rows.append(
@@ -1140,7 +1162,7 @@ def collect_bbox_layer_grads_per_target(
             param.requires_grad_(req_grad)
         detector.zero_grad(set_to_none=True)
 
-    del selected_preds, selected_indices, det, raw_keep_indices
+    del selected_preds, selected_indices, det, raw_keep_indices, raw_anchor_priors
     return rows
 
 
