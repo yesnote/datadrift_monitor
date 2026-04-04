@@ -340,24 +340,11 @@ def parse_output_config(output_cfg):
             expanded = []
             for v in layer_target_values:
                 if v == "loss":
-                    if layer_pseudo_gt == "uniform":
-                        if unit == "bbox":
-                            expanded.extend(["obj_loss", "cls_loss", "bbox_loss"])
-                        else:
-                            expanded.extend(["obj_loss", "cls_loss"])
-                    else:
-                        expanded.extend(["obj_loss", "cls_loss", "bbox_loss"])
+                    expanded.extend(["obj_loss", "cls_loss", "bbox_loss"])
                 else:
                     expanded.append(v)
             # keep order while removing duplicates
             layer_target_values = list(dict.fromkeys(expanded))
-        if layer_pseudo_gt == "uniform":
-            unsupported_uniform = [v for v in layer_target_values if v == "bbox_loss" and unit != "bbox"]
-            if unsupported_uniform:
-                raise ValueError(
-                    "output.save_csv.layer_grad.target_value.pseudo_gt='uniform' currently supports only "
-                    "target_value in {'obj_loss','cls_loss'} for loss terms when unit='image'."
-                )
         layer_target_layers = normalize_to_list(layer_grad_cfg.get("target_layer", []))
         if not layer_target_layers and save_csv_enabled:
             raise ValueError("output.save_csv.layer_grad.target_layer must contain at least one layer name.")
@@ -1186,6 +1173,7 @@ def collect_image_layer_grads_per_target(
         model_output = detector.model(input_tensor.detach(), augment=False)
         raw_prediction = model_output[0] if isinstance(model_output, (tuple, list)) else model_output
         raw_logits = model_output[1] if isinstance(model_output, (tuple, list)) and len(model_output) > 1 else None
+        raw_anchor_priors = model_output[3] if isinstance(model_output, (tuple, list)) and len(model_output) > 3 else None
         _selected_preds, _selected_logits, _selected_objectness, selected_indices = detector.non_max_suppression(
             raw_prediction,
             raw_logits,
@@ -1205,8 +1193,10 @@ def collect_image_layer_grads_per_target(
             model_output = detector.model(input_tensor.detach(), augment=False)
             raw_prediction = model_output[0] if isinstance(model_output, (tuple, list)) else model_output
             raw_logits = model_output[1] if isinstance(model_output, (tuple, list)) and len(model_output) > 1 else None
+            raw_anchor_priors = model_output[3] if isinstance(model_output, (tuple, list)) and len(model_output) > 3 else None
             pred_img = raw_prediction[0]
             logit_img = raw_logits[0] if raw_logits is not None else pred_img[:, 5:]
+            anchor_img = raw_anchor_priors[0] if raw_anchor_priors is not None else None
 
             target_scalar = None
             if target_value in {"obj", "cls"}:
@@ -1237,6 +1227,7 @@ def collect_image_layer_grads_per_target(
 
                 for bbox_idx in range(int(idx_tensor.shape[0])):
                     raw_idx = int(idx_tensor[bbox_idx].detach().cpu().item())
+                    anchor_row = anchor_img[raw_idx] if (anchor_img is not None and raw_idx < anchor_img.shape[0]) else None
                     scalar = build_layer_target_scalar_bbox(
                         target_value=target_value,
                         pred_img=pred_img,
@@ -1244,6 +1235,7 @@ def collect_image_layer_grads_per_target(
                         raw_idx=raw_idx,
                         iou_threshold=iou_threshold,
                         pseudo_gt=pseudo_gt,
+                        anchor_xywh=anchor_row,
                     )
                     if scalar is not None:
                         loss_terms.append(scalar)
@@ -1253,7 +1245,7 @@ def collect_image_layer_grads_per_target(
             if target_scalar is None:
                 for layer_name in target_layers:
                     grad_stats[f"{target_value}_{layer_name}"] = zero_grad_numbers() if vector_reduction else []
-                del model_output, raw_prediction, raw_logits, pred_img, logit_img
+                del model_output, raw_prediction, raw_logits, raw_anchor_priors, pred_img, logit_img, anchor_img
                 continue
 
             grads = torch.autograd.grad(
@@ -1274,7 +1266,7 @@ def collect_image_layer_grads_per_target(
                         map_reduction=map_reduction,
                     )
 
-            del model_output, raw_prediction, raw_logits, pred_img, logit_img, target_scalar, grads
+            del model_output, raw_prediction, raw_logits, raw_anchor_priors, pred_img, logit_img, anchor_img, target_scalar, grads
     finally:
         for param, req_grad in zip(layer_params, original_requires_grad):
             param.requires_grad_(req_grad)
