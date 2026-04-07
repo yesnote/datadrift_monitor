@@ -12,7 +12,7 @@ dataset:
   used_dataset:   # coco | voc | openimages
     - coco
     - openimages
-  split:
+  split:  # train | val | test
     - val
     - val
   
