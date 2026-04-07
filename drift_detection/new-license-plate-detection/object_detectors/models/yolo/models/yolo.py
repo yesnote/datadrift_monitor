@@ -118,7 +118,8 @@ class Detect(nn.Module):
                     y = torch.cat((xy, wh, y[..., 4:]), -1)
                 z.append(y.view(bs, -1, self.no))
                 logits_.append(logits.view(bs, -1, self.no - 5))
-                priors_.append(prior_xywh.view(bs, -1, 4))
+                prior_xywh_b = prior_xywh.expand(bs, -1, -1, -1, -1).contiguous()
+                priors_.append(prior_xywh_b.view(bs, -1, 4))
         return x if self.training else (torch.cat(z, 1), torch.cat(logits_, 1), x, torch.cat(priors_, 1))
 
     def _make_grid(self, nx=20, ny=20, i=0, torch_1_10=check_version(torch.__version__, '1.10.0')):
