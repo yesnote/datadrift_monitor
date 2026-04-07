@@ -367,6 +367,10 @@ def run_train(config: dict[str, Any], run_dir: Path) -> Path:
 
     out_dir = run_dir.resolve()
     out_dir.mkdir(parents=True, exist_ok=True)
+    results_dir = out_dir / "results"
+    models_dir = out_dir / "models"
+    results_dir.mkdir(parents=True, exist_ok=True)
+    models_dir.mkdir(parents=True, exist_ok=True)
 
     df, label_col, grad_columns, root_info = load_training_dataframe(dataset_cfg)
     y = df[label_col].astype(int).to_numpy()
@@ -427,9 +431,9 @@ def run_train(config: dict[str, Any], run_dir: Path) -> Path:
             auroc, ap = evaluate_classifier(y_test, y_pred)
             eval_rows.append({"auroc": float(auroc), "ap": float(ap)})
 
-            pd.DataFrame({"y_test": y_test, "y_pred": y_pred}).to_csv(out_dir / f"eval_data_{i}.csv", index=False)
+            pd.DataFrame({"y_test": y_test, "y_pred": y_pred}).to_csv(results_dir / f"eval_data_{i}.csv", index=False)
             save_eval_plots(y_test, y_pred, out_dir=out_dir, model_name=f"model_{i}")
-            save_object(estimator, out_dir / f"model_{i}")
+            save_object(estimator, models_dir / f"model_{i}")
     elif process == "repeat":
         repeat_cfg = exp_cfg.get("repeat", {})
         split = float(repeat_cfg.get("split", 0.3))
@@ -458,16 +462,16 @@ def run_train(config: dict[str, Any], run_dir: Path) -> Path:
             auroc, ap = evaluate_classifier(y_test, y_pred)
             eval_rows.append({"auroc": float(auroc), "ap": float(ap)})
 
-            pd.DataFrame({"y_test": y_test, "y_pred": y_pred}).to_csv(out_dir / f"eval_data_{i}.csv", index=False)
+            pd.DataFrame({"y_test": y_test, "y_pred": y_pred}).to_csv(results_dir / f"eval_data_{i}.csv", index=False)
             save_eval_plots(y_test, y_pred, out_dir=out_dir, model_name=f"model_{i}")
-            save_object(estimator, out_dir / f"model_{i}")
+            save_object(estimator, models_dir / f"model_{i}")
     else:
         raise ValueError("experiment.process must be 'kfold' or 'repeat'.")
 
     eval_df = pd.DataFrame(eval_rows)
     eval_df.loc["mean"] = eval_df.mean(numeric_only=True)
     eval_df.loc["std"] = eval_df.std(numeric_only=True)
-    eval_df.to_csv(out_dir / "evaluation_results.csv", index=True)
+    eval_df.to_csv(results_dir / "evaluation_results.csv", index=True)
 
     metadata = {
         "input_root": root_info["input_root"],
