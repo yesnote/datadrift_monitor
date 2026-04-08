@@ -1823,6 +1823,7 @@ def run_layer_grad_csv(config, run_dir):
     save_image_enabled = bool(parsed.get("save_image_enabled", False))
     viz_enabled = bool(save_image_enabled and unit == "image")
     viz_normalize = str(parsed.get("save_image_layer_grad_normalize", "layer_minmax")).strip().lower()
+    viz_target_layer_cfg = parsed.get("save_image_layer_grad_target_layer", "target_layer")
     viz_max_per_group = int(parsed.get("save_image_layer_grad_max_num_per_group", 200))
     viz_save_mean_maps = bool(parsed.get("save_image_layer_grad_save_mean_maps", True))
     viz_save_diff_map = bool(parsed.get("save_image_layer_grad_save_diff_map", True))
@@ -1844,9 +1845,26 @@ def run_layer_grad_csv(config, run_dir):
         raise ValueError("Loaded 0 images. Check dataset root/image_dir/split configuration in YAML.")
 
     detector, device = build_detector(config)
+    viz_target_layers = list(target_layers)
+    if unit == "image" and viz_enabled:
+        if isinstance(viz_target_layer_cfg, str):
+            mode = viz_target_layer_cfg.strip().lower()
+            if mode == "all_conv":
+                viz_target_layers = [
+                    name
+                    for name, module in detector.model.named_modules()
+                    if name and isinstance(module, torch.nn.Conv2d)
+                ]
+            else:
+                viz_target_layers = list(target_layers)
+        elif isinstance(viz_target_layer_cfg, (list, tuple)):
+            viz_target_layers = [str(v).strip() for v in viz_target_layer_cfg if str(v).strip()]
+        if not viz_target_layers:
+            viz_target_layers = list(target_layers)
+
     layer_param_shapes = {}
     if unit == "image" and viz_enabled:
-        for layer_name in target_layers:
+        for layer_name in viz_target_layers:
             try:
                 layer_param_shapes[layer_name] = tuple(resolve_layer_parameter(detector.model, layer_name).shape)
             except Exception:
@@ -1941,22 +1959,54 @@ def run_layer_grad_csv(config, run_dir):
                     del bbox_rows
                 else:
                     use_raw_for_viz = viz_enabled
-                    grad_stats = collect_image_layer_grads_per_target(
-                        detector=detector,
-                        input_tensor=infer_tensor,
-                        target_values=target_values,
-                        target_layers=target_layers,
-                        map_reduction=layer_map_reduction,
-                        vector_reduction=[] if use_raw_for_viz else layer_vector_reduction,
-                        pre_nms=pre_nms,
-                        pre_nms_ratio=pre_nms_ratio,
-                        pseudo_gt=layer_pseudo_gt,
-                    )
+                    can_share_grad_stats = use_raw_for_viz and (viz_target_layers == list(target_layers))
+                    grad_stats_csv = None
+                    grad_stats_viz = None
 
-                    if csv_writer is not None:
+                    if can_share_grad_stats:
+                        grad_stats_shared = collect_image_layer_grads_per_target(
+                            detector=detector,
+                            input_tensor=infer_tensor,
+                            target_values=target_values,
+                            target_layers=target_layers,
+                            map_reduction=layer_map_reduction,
+                            vector_reduction=[],
+                            pre_nms=pre_nms,
+                            pre_nms_ratio=pre_nms_ratio,
+                            pseudo_gt=layer_pseudo_gt,
+                        )
+                        grad_stats_csv = grad_stats_shared
+                        grad_stats_viz = grad_stats_shared
+                    else:
+                        if csv_writer is not None:
+                            grad_stats_csv = collect_image_layer_grads_per_target(
+                                detector=detector,
+                                input_tensor=infer_tensor,
+                                target_values=target_values,
+                                target_layers=target_layers,
+                                map_reduction=layer_map_reduction,
+                                vector_reduction=layer_vector_reduction,
+                                pre_nms=pre_nms,
+                                pre_nms_ratio=pre_nms_ratio,
+                                pseudo_gt=layer_pseudo_gt,
+                            )
+                        if use_raw_for_viz:
+                            grad_stats_viz = collect_image_layer_grads_per_target(
+                                detector=detector,
+                                input_tensor=infer_tensor,
+                                target_values=target_values,
+                                target_layers=viz_target_layers,
+                                map_reduction=layer_map_reduction,
+                                vector_reduction=[],
+                                pre_nms=pre_nms,
+                                pre_nms_ratio=pre_nms_ratio,
+                                pseudo_gt=layer_pseudo_gt,
+                            )
+
+                    if csv_writer is not None and grad_stats_csv is not None:
                         row = {"image_id": image_id, "image_path": image_path}
-                        if use_raw_for_viz and layer_vector_reduction:
-                            for grad_key, grad_value in grad_stats.items():
+                        if can_share_grad_stats and layer_vector_reduction:
+                            for grad_key, grad_value in grad_stats_csv.items():
                                 vec = torch.tensor(_vector_from_grad_value(grad_value), dtype=torch.float32)
                                 stats = map_grad_tensor_to_numbers(vec)
                                 row[grad_key] = json.dumps(
@@ -1964,11 +2014,11 @@ def run_layer_grad_csv(config, run_dir):
                                     separators=(",", ":"),
                                 )
                         else:
-                            for grad_key, grad_value in grad_stats.items():
+                            for grad_key, grad_value in grad_stats_csv.items():
                                 row[grad_key] = json.dumps(grad_value, separators=(",", ":"))
                         csv_writer.writerow(row)
 
-                    if viz_enabled:
+                    if viz_enabled and grad_stats_viz is not None:
                         pred_boxes = batch_preds[0][sample_idx]
                         pred_class_names = batch_preds[2][sample_idx]
                         gt_boxes = map_boxes_to_letterbox(target["boxes"], ratios[sample_idx], pads[sample_idx])
@@ -1985,9 +2035,9 @@ def run_layer_grad_csv(config, run_dir):
 
                         if len(viz_maps[group_key]) < viz_max_per_group:
                             grad_map = _build_layer_filter_map_from_grad_stats(
-                                grad_stats=grad_stats,
+                                grad_stats=grad_stats_viz,
                                 target_values=target_values,
-                                target_layers=target_layers,
+                                target_layers=viz_target_layers,
                                 layer_param_shapes=layer_param_shapes,
                             )
                             grad_map = _normalize_layer_map(grad_map, mode=viz_normalize)
@@ -2008,7 +2058,11 @@ def run_layer_grad_csv(config, run_dir):
                         ):
                             viz_maps_saved = _save_layer_grad_group_maps_if_needed()
                             viz_saved_early = bool(viz_maps_saved)
-                    del grad_stats
+                    same_stats_obj = grad_stats_csv is not None and grad_stats_viz is grad_stats_csv
+                    if grad_stats_csv is not None:
+                        del grad_stats_csv
+                    if grad_stats_viz is not None and not same_stats_obj:
+                        del grad_stats_viz
             del infer_batch
             if batch_preds is not None:
                 del batch_preds
@@ -2025,6 +2079,7 @@ def run_layer_grad_csv(config, run_dir):
             "max_num_per_group": int(viz_max_per_group),
             "group_total_counts": {k: int(v) for k, v in viz_counts.items()},
             "group_used_counts": {k: int(len(viz_maps[k])) for k in ("fn", "non_fn")},
+            "target_layers_for_map": viz_target_layers,
             "save_mean_maps": bool(viz_save_mean_maps),
             "save_diff_map": bool(viz_save_diff_map),
             "save_per_image": bool(viz_save_per_image),
