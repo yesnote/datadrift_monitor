@@ -1848,8 +1848,8 @@ def run_layer_grad_csv(config, run_dir):
     viz_target_layers = list(target_layers)
     if unit == "image" and viz_enabled:
         if isinstance(viz_target_layer_cfg, str):
-            mode = viz_target_layer_cfg.strip().lower()
-            if mode == "all_conv":
+            viz_layer_mode = viz_target_layer_cfg.strip().lower()
+            if viz_layer_mode == "all_conv":
                 viz_target_layers = [
                     name
                     for name, module in detector.model.named_modules()
@@ -1921,7 +1921,12 @@ def run_layer_grad_csv(config, run_dir):
             image_list = _as_image_list(images)
             infer_batch, ratios, pads, _resized_chws = _prepare_infer_batch(detector, image_list, device, auto=False)
             batch_preds = None
-            if viz_enabled:
+            need_viz_batch = bool(
+                viz_enabled
+                and (not viz_maps_saved)
+                and (viz_save_mean_maps or viz_save_diff_map or viz_save_per_image)
+            )
+            if need_viz_batch:
                 detector.zero_grad(set_to_none=True)
                 with torch.no_grad():
                     batch_preds, _bz_logits, _bz_obj, _bz_feat = detector(infer_batch)
@@ -1963,7 +1968,7 @@ def run_layer_grad_csv(config, run_dir):
                 else:
                     group_key = None
                     need_viz_for_sample = False
-                    if viz_enabled:
+                    if need_viz_batch and batch_preds is not None:
                         pred_boxes = batch_preds[0][sample_idx]
                         pred_class_names = batch_preds[2][sample_idx]
                         gt_boxes = map_boxes_to_letterbox(target["boxes"], ratios[sample_idx], pads[sample_idx])
@@ -2021,7 +2026,7 @@ def run_layer_grad_csv(config, run_dir):
                                     row[grad_key] = json.dumps(grad_value, separators=(",", ":"))
                         csv_writer.writerow(row)
 
-                    if viz_enabled and need_viz_for_sample and group_key is not None:
+                    if need_viz_batch and need_viz_for_sample and group_key is not None:
                         if len(viz_maps[group_key]) < viz_max_per_group:
                             grad_map = _build_layer_filter_map_from_grad_stats(
                                 grad_stats=grad_stats_all,
