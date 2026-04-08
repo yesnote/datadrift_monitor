@@ -1869,6 +1869,9 @@ def run_layer_grad_csv(config, run_dir):
                 layer_param_shapes[layer_name] = tuple(resolve_layer_parameter(detector.model, layer_name).shape)
             except Exception:
                 layer_param_shapes[layer_name] = None
+    all_layers_for_grad = list(target_layers)
+    if unit == "image" and viz_enabled:
+        all_layers_for_grad = list(dict.fromkeys(list(target_layers) + list(viz_target_layers)))
     catid_to_name = load_gt_category_maps(config, split) if viz_enabled else {}
     iou_match_threshold = parsed["gt_iou_match_threshold"] if viz_enabled else 0.45
     viz_maps = {"fn": [], "non_fn": []}
@@ -1958,67 +1961,9 @@ def run_layer_grad_csv(config, run_dir):
                             csv_writer.writerow(row)
                     del bbox_rows
                 else:
-                    use_raw_for_viz = viz_enabled
-                    can_share_grad_stats = use_raw_for_viz and (viz_target_layers == list(target_layers))
-                    grad_stats_csv = None
-                    grad_stats_viz = None
-
-                    if can_share_grad_stats:
-                        grad_stats_shared = collect_image_layer_grads_per_target(
-                            detector=detector,
-                            input_tensor=infer_tensor,
-                            target_values=target_values,
-                            target_layers=target_layers,
-                            map_reduction=layer_map_reduction,
-                            vector_reduction=[],
-                            pre_nms=pre_nms,
-                            pre_nms_ratio=pre_nms_ratio,
-                            pseudo_gt=layer_pseudo_gt,
-                        )
-                        grad_stats_csv = grad_stats_shared
-                        grad_stats_viz = grad_stats_shared
-                    else:
-                        if csv_writer is not None:
-                            grad_stats_csv = collect_image_layer_grads_per_target(
-                                detector=detector,
-                                input_tensor=infer_tensor,
-                                target_values=target_values,
-                                target_layers=target_layers,
-                                map_reduction=layer_map_reduction,
-                                vector_reduction=layer_vector_reduction,
-                                pre_nms=pre_nms,
-                                pre_nms_ratio=pre_nms_ratio,
-                                pseudo_gt=layer_pseudo_gt,
-                            )
-                        if use_raw_for_viz:
-                            grad_stats_viz = collect_image_layer_grads_per_target(
-                                detector=detector,
-                                input_tensor=infer_tensor,
-                                target_values=target_values,
-                                target_layers=viz_target_layers,
-                                map_reduction=layer_map_reduction,
-                                vector_reduction=[],
-                                pre_nms=pre_nms,
-                                pre_nms_ratio=pre_nms_ratio,
-                                pseudo_gt=layer_pseudo_gt,
-                            )
-
-                    if csv_writer is not None and grad_stats_csv is not None:
-                        row = {"image_id": image_id, "image_path": image_path}
-                        if can_share_grad_stats and layer_vector_reduction:
-                            for grad_key, grad_value in grad_stats_csv.items():
-                                vec = torch.tensor(_vector_from_grad_value(grad_value), dtype=torch.float32)
-                                stats = map_grad_tensor_to_numbers(vec)
-                                row[grad_key] = json.dumps(
-                                    {k: float(stats[k]) for k in layer_vector_reduction},
-                                    separators=(",", ":"),
-                                )
-                        else:
-                            for grad_key, grad_value in grad_stats_csv.items():
-                                row[grad_key] = json.dumps(grad_value, separators=(",", ":"))
-                        csv_writer.writerow(row)
-
-                    if viz_enabled and grad_stats_viz is not None:
+                    group_key = None
+                    need_viz_for_sample = False
+                    if viz_enabled:
                         pred_boxes = batch_preds[0][sample_idx]
                         pred_class_names = batch_preds[2][sample_idx]
                         gt_boxes = map_boxes_to_letterbox(target["boxes"], ratios[sample_idx], pads[sample_idx])
@@ -2032,10 +1977,53 @@ def run_layer_grad_csv(config, run_dir):
                         )
                         group_key = "fn" if is_fn else "non_fn"
                         viz_counts[group_key] += 1
+                        need_viz_for_sample = (
+                            len(viz_maps[group_key]) < viz_max_per_group
+                            and (viz_save_mean_maps or viz_save_diff_map or viz_save_per_image)
+                        )
 
+                    required_layers = []
+                    if csv_writer is not None:
+                        required_layers.extend(target_layers)
+                    if need_viz_for_sample:
+                        required_layers.extend(viz_target_layers)
+                    required_layers = list(dict.fromkeys(required_layers))
+
+                    grad_stats_all = {}
+                    if required_layers:
+                        grad_stats_all = collect_image_layer_grads_per_target(
+                            detector=detector,
+                            input_tensor=infer_tensor,
+                            target_values=target_values,
+                            target_layers=required_layers,
+                            map_reduction=layer_map_reduction,
+                            vector_reduction=[],
+                            pre_nms=pre_nms,
+                            pre_nms_ratio=pre_nms_ratio,
+                            pseudo_gt=layer_pseudo_gt,
+                        )
+
+                    if csv_writer is not None:
+                        row = {"image_id": image_id, "image_path": image_path}
+                        for target_value in target_values:
+                            for layer_name in target_layers:
+                                grad_key = f"{target_value}_{layer_name}"
+                                grad_value = grad_stats_all.get(grad_key, [])
+                                if layer_vector_reduction:
+                                    vec = torch.tensor(_vector_from_grad_value(grad_value), dtype=torch.float32)
+                                    stats = map_grad_tensor_to_numbers(vec)
+                                    row[grad_key] = json.dumps(
+                                        {k: float(stats[k]) for k in layer_vector_reduction},
+                                        separators=(",", ":"),
+                                    )
+                                else:
+                                    row[grad_key] = json.dumps(grad_value, separators=(",", ":"))
+                        csv_writer.writerow(row)
+
+                    if viz_enabled and need_viz_for_sample and group_key is not None:
                         if len(viz_maps[group_key]) < viz_max_per_group:
                             grad_map = _build_layer_filter_map_from_grad_stats(
-                                grad_stats=grad_stats_viz,
+                                grad_stats=grad_stats_all,
                                 target_values=target_values,
                                 target_layers=viz_target_layers,
                                 layer_param_shapes=layer_param_shapes,
@@ -2058,11 +2046,7 @@ def run_layer_grad_csv(config, run_dir):
                         ):
                             viz_maps_saved = _save_layer_grad_group_maps_if_needed()
                             viz_saved_early = bool(viz_maps_saved)
-                    same_stats_obj = grad_stats_csv is not None and grad_stats_viz is grad_stats_csv
-                    if grad_stats_csv is not None:
-                        del grad_stats_csv
-                    if grad_stats_viz is not None and not same_stats_obj:
-                        del grad_stats_viz
+                    del grad_stats_all
             del infer_batch
             if batch_preds is not None:
                 del batch_preds
