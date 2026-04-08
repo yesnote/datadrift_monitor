@@ -42,14 +42,14 @@ dataloader:
   shuffle_eval: false
 
 output:
+  unit: image   # image | bbox
+  uncertainty: feature_grad  # gt | score | full_softmax | entropy | energy | mc_dropout | meta_detect | feature | feature_grad | layer_grad
+  pre_nms:
+    enabled: false   # true: use pre-NMS preds | false: use post-NMS preds
+    pre_nms_ratio: 1.0  # keep top ratio (0~1) of pre-NMS candidates
+
   save_csv:
     enabled: true
-    unit: image   # image | bbox
-    uncertainty: feature_grad  # gt | score | full_softmax | entropy | energy | mc_dropout | meta_detect | feature | feature_grad | layer_grad
-    pre_nms:
-      enabled: false   # true: use pre-NMS preds | false: use post-NMS preds
-      pre_nms_ratio: 1.0  # keep top ratio (0~1) of pre-NMS candidates
-    
     gt: # unit:image -> fn | unit:bbox -> tp
       iou_match_threshold: 0.45
 
@@ -101,3 +101,5 @@ output:
     enabled: true
     step: 10
     max_num: 10
+    gt: {}
+    layer_grad: {}
