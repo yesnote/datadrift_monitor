@@ -5,11 +5,15 @@ import threading
 from pathlib import Path
 
 import cv2
+import matplotlib
 import numpy as np
 import pandas as pd
 import torch
 from torch.utils.data import DataLoader
 from tqdm import tqdm
+
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt  # noqa: E402
 
 from dataloaders.dataloader_yolo import build_dataset, create_dataloader, yolo_collate_fn
 from commands.utils.predict_utils import (
@@ -181,16 +185,28 @@ def _stack_nanmean_maps(maps):
 def _save_heatmap_png(map_2d, out_path):
     out_path = Path(out_path)
     out_path.parent.mkdir(parents=True, exist_ok=True)
+    fig, ax = plt.subplots(figsize=(12, 8), dpi=150)
+    fig.patch.set_facecolor("white")
+    ax.set_facecolor("#efefef")
+
     if map_2d.size == 0:
-        blank = np.full((64, 64, 3), 255, dtype=np.uint8)
-        cv2.imwrite(str(out_path), blank)
+        ax.text(0.5, 0.5, "No data", ha="center", va="center", transform=ax.transAxes)
+        ax.set_xlabel("Layer Number")
+        ax.set_ylabel("Filter Number")
+        fig.tight_layout()
+        fig.savefig(out_path)
+        plt.close(fig)
         return
 
     m = map_2d.astype(np.float32, copy=True)
     finite_mask = np.isfinite(m)
     if not finite_mask.any():
-        blank = np.full((max(8, m.shape[0]), max(8, m.shape[1]), 3), 255, dtype=np.uint8)
-        cv2.imwrite(str(out_path), blank)
+        ax.text(0.5, 0.5, "No finite values", ha="center", va="center", transform=ax.transAxes)
+        ax.set_xlabel("Layer Number")
+        ax.set_ylabel("Filter Number")
+        fig.tight_layout()
+        fig.savefig(out_path)
+        plt.close(fig)
         return
 
     vals = m[finite_mask]
@@ -201,16 +217,28 @@ def _save_heatmap_png(map_2d, out_path):
     else:
         m[finite_mask] = 0.0
 
-    img_u8 = np.zeros(m.shape, dtype=np.uint8)
-    img_u8[finite_mask] = np.clip(m[finite_mask] * 255.0, 0.0, 255.0).astype(np.uint8)
-    color = cv2.applyColorMap(img_u8, cv2.COLORMAP_VIRIDIS)
-    color[~finite_mask] = np.array([255, 255, 255], dtype=np.uint8)
-
-    h, w = color.shape[:2]
-    scale = max(1, int(np.ceil(512.0 / max(1, max(h, w)))))
-    if scale > 1:
-        color = cv2.resize(color, (w * scale, h * scale), interpolation=cv2.INTER_NEAREST)
-    cv2.imwrite(str(out_path), color)
+    layer_idx, filter_idx = np.where(finite_mask)
+    color_vals = m[finite_mask]
+    sc = ax.scatter(
+        layer_idx.astype(np.float32),
+        filter_idx.astype(np.float32),
+        c=color_vals,
+        cmap="jet",
+        vmin=0.0,
+        vmax=1.0,
+        s=90,
+        alpha=0.32,
+        edgecolors="none",
+    )
+    cbar = plt.colorbar(sc, ax=ax, fraction=0.046, pad=0.04)
+    cbar.set_label("Normalized Gradient")
+    ax.set_xlabel("Layer Number")
+    ax.set_ylabel("Filter Number")
+    ax.set_xlim(-0.5, m.shape[0] - 0.5)
+    ax.set_ylim(-0.5, m.shape[1] - 0.5)
+    fig.tight_layout()
+    fig.savefig(out_path)
+    plt.close(fig)
 
 
 def _mc_dropout_single_csv_writer(write_queue, output_csv, fieldnames):
