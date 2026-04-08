@@ -2010,7 +2010,7 @@ def run_layer_grad_csv(config, run_dir):
             _save_layer_profile_plot(
                 fn_profiles=viz_profiles["fn"],
                 non_fn_profiles=viz_profiles["non_fn"],
-                out_path=viz_dir / "layer_profile_mean_std_log.png",
+                out_path=viz_dir / "mean_std_log.png",
                 log_scale=True,
             )
         return True
