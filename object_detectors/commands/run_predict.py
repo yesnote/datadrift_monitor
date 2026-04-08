@@ -184,7 +184,73 @@ def _stack_nanmean_maps(maps):
     arr = np.full((len(maps), l_max, f_max), np.nan, dtype=np.float32)
     for i, m in enumerate(maps):
         arr[i, : m.shape[0], : m.shape[1]] = m
-    return np.nanmean(arr, axis=0)
+    valid = np.isfinite(arr)
+    count = valid.sum(axis=0).astype(np.float32)
+    total = np.where(valid, arr, 0.0).sum(axis=0).astype(np.float32)
+    out = np.full((l_max, f_max), np.nan, dtype=np.float32)
+    mask = count > 0
+    out[mask] = total[mask] / count[mask]
+    return out
+
+
+def _profile_stats(profiles):
+    if not profiles:
+        return np.zeros((0,), dtype=np.float32), np.zeros((0,), dtype=np.float32), np.zeros((0,), dtype=np.int64)
+    l_max = max(p.shape[0] for p in profiles)
+    arr = np.full((len(profiles), l_max), np.nan, dtype=np.float32)
+    for i, p in enumerate(profiles):
+        arr[i, : p.shape[0]] = p
+    valid = np.isfinite(arr)
+    count = valid.sum(axis=0)
+    idx = np.where(count > 0)[0]
+    if idx.size == 0:
+        return np.zeros((0,), dtype=np.float32), np.zeros((0,), dtype=np.float32), np.zeros((0,), dtype=np.int64)
+    mean = np.nanmean(arr[:, idx], axis=0).astype(np.float32)
+    std = np.nanstd(arr[:, idx], axis=0).astype(np.float32)
+    return mean, std, idx.astype(np.int64)
+
+
+def _save_layer_profile_plot(fn_profiles, non_fn_profiles, out_path, log_scale=True):
+    out_path = Path(out_path)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+
+    fn_mean, fn_std, fn_idx = _profile_stats(fn_profiles)
+    non_mean, non_std, non_idx = _profile_stats(non_fn_profiles)
+
+    fig, ax = plt.subplots(figsize=(12, 6), dpi=150)
+    fig.patch.set_facecolor("white")
+    ax.set_facecolor("#f4f4f4")
+
+    eps = 1e-12
+    plotted = False
+    if fn_idx.size > 0:
+        y = np.maximum(fn_mean, eps) if log_scale else fn_mean
+        lo = np.maximum(fn_mean - fn_std, eps) if log_scale else (fn_mean - fn_std)
+        hi = np.maximum(fn_mean + fn_std, eps) if log_scale else (fn_mean + fn_std)
+        ax.plot(fn_idx, y, color="#d62728", linewidth=2.0, label="FN mean")
+        ax.fill_between(fn_idx, lo, hi, color="#d62728", alpha=0.18, linewidth=0)
+        plotted = True
+    if non_idx.size > 0:
+        y = np.maximum(non_mean, eps) if log_scale else non_mean
+        lo = np.maximum(non_mean - non_std, eps) if log_scale else (non_mean - non_std)
+        hi = np.maximum(non_mean + non_std, eps) if log_scale else (non_mean + non_std)
+        ax.plot(non_idx, y, color="#1f77b4", linewidth=2.0, label="non-FN mean")
+        ax.fill_between(non_idx, lo, hi, color="#1f77b4", alpha=0.18, linewidth=0)
+        plotted = True
+
+    if log_scale:
+        ax.set_yscale("log")
+    ax.set_xlabel("Layer Number")
+    ax.set_ylabel("Layer Sum(|grad|)")
+    ax.set_title("Layer-wise Gradient Profile (mean ± std)")
+    ax.grid(True, which="both", axis="both", alpha=0.2)
+    if plotted:
+        ax.legend(loc="best")
+    else:
+        ax.text(0.5, 0.5, "No profile data", transform=ax.transAxes, ha="center", va="center")
+    fig.tight_layout()
+    fig.savefig(out_path)
+    plt.close(fig)
 
 
 def _save_heatmap_png(map_2d, out_path):
@@ -1908,6 +1974,7 @@ def run_layer_grad_csv(config, run_dir):
     catid_to_name = load_gt_category_maps(config, split) if viz_enabled else {}
     iou_match_threshold = parsed["gt_iou_match_threshold"] if viz_enabled else 0.45
     viz_maps = {"fn": [], "non_fn": []}
+    viz_profiles = {"fn": [], "non_fn": []}
     viz_counts = {"fn": 0, "non_fn": 0}
     viz_saved_per_image = {"fn": 0, "non_fn": 0}
     viz_maps_saved = False
@@ -1938,6 +2005,12 @@ def run_layer_grad_csv(config, run_dir):
                 non_fn_pad[: non_fn_mean.shape[0], : non_fn_mean.shape[1]] = non_fn_mean
             diff_map = fn_pad - non_fn_pad
             _save_heatmap_png(diff_map, viz_dir / "diff_map.png")
+        _save_layer_profile_plot(
+            fn_profiles=viz_profiles["fn"],
+            non_fn_profiles=viz_profiles["non_fn"],
+            out_path=viz_dir / "layer_profile_mean_std_log.png",
+            log_scale=True,
+        )
         return True
 
     csv_file_handle = None
@@ -2067,6 +2140,8 @@ def run_layer_grad_csv(config, run_dir):
                                 target_layers=viz_target_layers,
                                 layer_param_shapes=layer_param_shapes,
                             )
+                            layer_profile = np.nansum(np.where(np.isfinite(grad_map), np.abs(grad_map), 0.0), axis=1).astype(np.float32)
+                            viz_profiles[group_key].append(layer_profile)
                             grad_map = _normalize_layer_map(grad_map, mode=viz_normalize)
                             viz_maps[group_key].append(grad_map)
                             if viz_save_per_image:
@@ -2102,6 +2177,7 @@ def run_layer_grad_csv(config, run_dir):
             "max_num_per_group": int(viz_max_per_group),
             "group_total_counts": {k: int(v) for k, v in viz_counts.items()},
             "group_used_counts": {k: int(len(viz_maps[k])) for k in ("fn", "non_fn")},
+            "group_used_profile_counts": {k: int(len(viz_profiles[k])) for k in ("fn", "non_fn")},
             "target_layers_for_map": viz_target_layers,
             "save_mean_maps": bool(viz_save_mean_maps),
             "save_diff_map": bool(viz_save_diff_map),
