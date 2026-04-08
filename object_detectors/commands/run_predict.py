@@ -1991,13 +1991,14 @@ def run_layer_grad_csv(config, run_dir):
 
                     grad_stats_all = {}
                     if required_layers:
+                        use_raw_grad = bool(need_viz_for_sample)
                         grad_stats_all = collect_image_layer_grads_per_target(
                             detector=detector,
                             input_tensor=infer_tensor,
                             target_values=target_values,
                             target_layers=required_layers,
                             map_reduction=layer_map_reduction,
-                            vector_reduction=[],
+                            vector_reduction=[] if use_raw_grad else layer_vector_reduction,
                             pre_nms=pre_nms,
                             pre_nms_ratio=pre_nms_ratio,
                             pseudo_gt=layer_pseudo_gt,
@@ -2009,7 +2010,7 @@ def run_layer_grad_csv(config, run_dir):
                             for layer_name in target_layers:
                                 grad_key = f"{target_value}_{layer_name}"
                                 grad_value = grad_stats_all.get(grad_key, [])
-                                if layer_vector_reduction:
+                                if use_raw_grad and layer_vector_reduction:
                                     vec = torch.tensor(_vector_from_grad_value(grad_value), dtype=torch.float32)
                                     stats = map_grad_tensor_to_numbers(vec)
                                     row[grad_key] = json.dumps(
