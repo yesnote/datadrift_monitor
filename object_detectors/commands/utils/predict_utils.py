@@ -216,9 +216,31 @@ def create_layer_grad_buffer(model, target_layers, map_reduction="energy", vecto
 
 def parse_output_config(output_cfg):
     save_csv_cfg = output_cfg.get("save_csv", {})
+    save_image_cfg = output_cfg.get("save_image", {})
+
+    # Preferred location: output.{unit, uncertainty, pre_nms}
+    # Backward compatibility: output.save_csv.{unit, uncertainty, pre_nms}
+    if isinstance(save_csv_cfg, dict):
+        fallback_uncertainty = str(save_csv_cfg.get("uncertainty", "gt")).lower()
+        fallback_unit = str(save_csv_cfg.get("unit", "image")).lower()
+        fallback_pre_nms_cfg = save_csv_cfg.get("pre_nms", False)
+    else:
+        fallback_uncertainty = "gt"
+        fallback_unit = "image"
+        fallback_pre_nms_cfg = False
+
+    uncertainty = str(output_cfg.get("uncertainty", fallback_uncertainty)).lower()
+    unit = str(output_cfg.get("unit", fallback_unit)).lower()
+    pre_nms_cfg = output_cfg.get("pre_nms", fallback_pre_nms_cfg)
+    if isinstance(pre_nms_cfg, dict):
+        pre_nms = bool(pre_nms_cfg.get("enabled", False))
+        pre_nms_ratio = float(pre_nms_cfg.get("pre_nms_ratio", 1.0))
+    else:
+        pre_nms = bool(pre_nms_cfg)
+        pre_nms_ratio = 1.0
+
     if isinstance(save_csv_cfg, bool):
         save_csv_enabled = save_csv_cfg
-        uncertainty = "gt"
         gt_cfg = {}
         score_cfg = {}
         meta_detect_cfg = {}
@@ -229,17 +251,8 @@ def parse_output_config(output_cfg):
         feature_cfg = {}
         feature_grad_cfg = {}
         layer_grad_cfg = {}
-        unit = "image"
     else:
         save_csv_enabled = bool(save_csv_cfg.get("enabled", True))
-        uncertainty = str(save_csv_cfg.get("uncertainty", "gt")).lower()
-        pre_nms_cfg = save_csv_cfg.get("pre_nms", False)
-        if isinstance(pre_nms_cfg, dict):
-            pre_nms = bool(pre_nms_cfg.get("enabled", False))
-            pre_nms_ratio = float(pre_nms_cfg.get("pre_nms_ratio", 1.0))
-        else:
-            pre_nms = bool(pre_nms_cfg)
-            pre_nms_ratio = 1.0
         gt_cfg = save_csv_cfg.get("gt", {})
         score_cfg = save_csv_cfg.get("score", {})
         meta_detect_cfg = save_csv_cfg.get("meta_detect", {})
@@ -250,18 +263,13 @@ def parse_output_config(output_cfg):
         feature_cfg = save_csv_cfg.get("feature", {})
         feature_grad_cfg = save_csv_cfg.get("feature_grad", {})
         layer_grad_cfg = save_csv_cfg.get("layer_grad", {})
-        unit = str(save_csv_cfg.get("unit", "image")).lower()
-
-    if isinstance(save_csv_cfg, bool):
-        pre_nms = False
-        pre_nms_ratio = 1.0
 
     if not (0.0 <= float(pre_nms_ratio) <= 1.0):
-        raise ValueError("output.save_csv.pre_nms.pre_nms_ratio must be in [0,1].")
+        raise ValueError("output.pre_nms.pre_nms_ratio must be in [0,1].")
 
     if uncertainty not in {"gt", "score", "meta_detect", "mc_dropout", "energy", "entropy", "full_softmax", "feature", "feature_grad", "layer_grad"}:
         raise ValueError(
-            f"Unsupported output.save_csv.uncertainty='{uncertainty}'. "
+            f"Unsupported output.uncertainty='{uncertainty}'. "
             "Use 'gt', 'score', 'meta_detect', 'mc_dropout', 'energy', 'entropy', 'full_softmax', 'feature', 'feature_grad' or 'layer_grad'."
         )
 
@@ -291,7 +299,7 @@ def parse_output_config(output_cfg):
     layer_pseudo_gt = "cand"
     if uncertainty == "feature_grad":
         if unit not in {"image", "bbox"}:
-            raise ValueError("output.save_csv.unit must be 'image' or 'bbox' when uncertainty is 'feature_grad'.")
+            raise ValueError("output.unit must be 'image' or 'bbox' when uncertainty is 'feature_grad'.")
         target_values = [v.lower() for v in normalize_to_list(feature_grad_cfg.get("target_value", ["obj"]))]
         valid_values = {"obj", "cls", "loss", "obj_loss", "cls_loss", "bbox_loss"}
         invalid_values = [v for v in target_values if v not in valid_values]
@@ -317,7 +325,7 @@ def parse_output_config(output_cfg):
         )
     elif uncertainty == "layer_grad":
         if unit not in {"image", "bbox"}:
-            msg = "Invalid config: output.save_csv.uncertainty='layer_grad' requires output.save_csv.unit in {'image','bbox'}."
+            msg = "Invalid config: output.uncertainty='layer_grad' requires output.unit in {'image','bbox'}."
             warnings.warn(msg)
             raise ValueError(msg)
         layer_target_value_cfg = layer_grad_cfg.get("target_value", ["loss"])
@@ -356,12 +364,12 @@ def parse_output_config(output_cfg):
         )
     elif uncertainty == "gt":
         if unit not in {"image", "bbox"}:
-            msg = "Invalid config: output.save_csv.uncertainty='gt' requires output.save_csv.unit in {'image','bbox'}."
+            msg = "Invalid config: output.uncertainty='gt' requires output.unit in {'image','bbox'}."
             warnings.warn(msg)
             raise ValueError(msg)
     elif uncertainty == "score":
         if unit not in {"image", "bbox"}:
-            msg = "Invalid config: output.save_csv.uncertainty='score' requires output.save_csv.unit in {'image','bbox'}."
+            msg = "Invalid config: output.uncertainty='score' requires output.unit in {'image','bbox'}."
             warnings.warn(msg)
             raise ValueError(msg)
         score_vector_reduction = normalize_vector_reduction(
@@ -369,7 +377,7 @@ def parse_output_config(output_cfg):
         )
     elif uncertainty == "meta_detect":
         if unit not in {"image", "bbox"}:
-            msg = "Invalid config: output.save_csv.uncertainty='meta_detect' requires output.save_csv.unit in {'image','bbox'}."
+            msg = "Invalid config: output.uncertainty='meta_detect' requires output.unit in {'image','bbox'}."
             warnings.warn(msg)
             raise ValueError(msg)
         if not (0.0 <= meta_detect_score_threshold <= 1.0):
@@ -381,7 +389,7 @@ def parse_output_config(output_cfg):
         )
     elif uncertainty == "mc_dropout":
         if unit not in {"image", "bbox"}:
-            msg = "Invalid config: output.save_csv.uncertainty='mc_dropout' requires output.save_csv.unit in {'image','bbox'}."
+            msg = "Invalid config: output.uncertainty='mc_dropout' requires output.unit in {'image','bbox'}."
             warnings.warn(msg)
             raise ValueError(msg)
         if mc_num_runs < 1:
@@ -395,7 +403,7 @@ def parse_output_config(output_cfg):
         )
     elif uncertainty == "energy":
         if unit not in {"image", "bbox"}:
-            msg = "Invalid config: output.save_csv.uncertainty='energy' requires output.save_csv.unit in {'image','bbox'}."
+            msg = "Invalid config: output.uncertainty='energy' requires output.unit in {'image','bbox'}."
             warnings.warn(msg)
             raise ValueError(msg)
         energy_vector_reduction = normalize_vector_reduction(
@@ -403,7 +411,7 @@ def parse_output_config(output_cfg):
         )
     elif uncertainty == "entropy":
         if unit not in {"image", "bbox"}:
-            msg = "Invalid config: output.save_csv.uncertainty='entropy' requires output.save_csv.unit in {'image','bbox'}."
+            msg = "Invalid config: output.uncertainty='entropy' requires output.unit in {'image','bbox'}."
             warnings.warn(msg)
             raise ValueError(msg)
         entropy_vector_reduction = normalize_vector_reduction(
@@ -411,7 +419,7 @@ def parse_output_config(output_cfg):
         )
     elif uncertainty == "full_softmax":
         if unit not in {"image", "bbox"}:
-            msg = "Invalid config: output.save_csv.uncertainty='full_softmax' requires output.save_csv.unit in {'image','bbox'}."
+            msg = "Invalid config: output.uncertainty='full_softmax' requires output.unit in {'image','bbox'}."
             warnings.warn(msg)
             raise ValueError(msg)
         full_softmax_vector_reduction = normalize_vector_reduction(
@@ -419,7 +427,7 @@ def parse_output_config(output_cfg):
         )
     elif uncertainty == "feature":
         if unit != "image":
-            raise ValueError("output.save_csv.uncertainty='feature' currently supports only output.save_csv.unit='image'.")
+            raise ValueError("output.uncertainty='feature' currently supports only output.unit='image'.")
         feature_target_layers = normalize_to_list(feature_cfg.get("target_layer", []))
         if not feature_target_layers and save_csv_enabled:
             raise ValueError("output.save_csv.feature.target_layer must contain at least one layer name.")
@@ -430,15 +438,16 @@ def parse_output_config(output_cfg):
             feature_cfg.get("vector_reduction", ["L1", "L2", "min", "max", "mean", "std"])
         )
 
-    save_image_cfg = output_cfg.get("save_image", {})
     if isinstance(save_image_cfg, bool):
         save_image_enabled = save_image_cfg
         image_step = 1
         image_max_num = 1
+        save_image_target_cfg = {}
     else:
         save_image_enabled = bool(save_image_cfg.get("enabled", False))
         image_step = int(save_image_cfg.get("step", 1))
         image_max_num = int(save_image_cfg.get("max_num", 1))
+        save_image_target_cfg = save_image_cfg.get(uncertainty, {})
 
     if image_step <= 0:
         raise ValueError("output.save_image.step must be >= 1.")
@@ -476,6 +485,7 @@ def parse_output_config(output_cfg):
         "layer_vector_reduction": layer_vector_reduction,
         "layer_pseudo_gt": layer_pseudo_gt,
         "save_image_enabled": save_image_enabled,
+        "save_image_target_cfg": save_image_target_cfg,
         "image_step": image_step,
         "image_max_num": image_max_num,
     }

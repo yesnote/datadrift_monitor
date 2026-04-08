@@ -342,7 +342,7 @@ def run_feature_csv(config, run_dir):
     if not save_csv:
         return
     if unit != "image":
-        raise ValueError("output.save_csv.uncertainty='feature' currently supports only output.save_csv.unit='image'.")
+        raise ValueError("output.uncertainty='feature' currently supports only output.unit='image'.")
 
     output_csv = run_dir / "feature.csv"
     fieldnames = ["image_id", "image_path"] + target_layers
@@ -500,7 +500,7 @@ def run_meta_detect_csv(config, run_dir):
     if not save_csv:
         return
     if unit not in {"image", "bbox"}:
-        raise ValueError("output.save_csv.uncertainty='meta_detect' requires output.save_csv.unit in {'image','bbox'}.")
+        raise ValueError("output.uncertainty='meta_detect' requires output.unit in {'image','bbox'}.")
 
     def _stats(v: torch.Tensor):
         if v is None or v.numel() == 0:
@@ -835,7 +835,7 @@ def run_full_softmax_csv(config, run_dir):
     if not save_csv:
         return
     if unit not in {"image", "bbox"}:
-        raise ValueError("output.save_csv.uncertainty='full_softmax' requires output.save_csv.unit in {'image','bbox'}.")
+        raise ValueError("output.uncertainty='full_softmax' requires output.unit in {'image','bbox'}.")
 
     dataloader = create_dataloader(config, split=split)
     if len(dataloader.dataset) == 0:
@@ -988,7 +988,7 @@ def run_energy_csv(config, run_dir):
     if not save_csv:
         return
     if unit not in {"image", "bbox"}:
-        raise ValueError("output.save_csv.uncertainty='energy' requires output.save_csv.unit in {'image','bbox'}.")
+        raise ValueError("output.uncertainty='energy' requires output.unit in {'image','bbox'}.")
 
     dataloader = create_dataloader(config, split=split)
     if len(dataloader.dataset) == 0:
@@ -1161,7 +1161,7 @@ def run_entropy_csv(config, run_dir):
     if not save_csv:
         return
     if unit not in {"image", "bbox"}:
-        raise ValueError("output.save_csv.uncertainty='entropy' requires output.save_csv.unit in {'image','bbox'}.")
+        raise ValueError("output.uncertainty='entropy' requires output.unit in {'image','bbox'}.")
 
     dataloader = create_dataloader(config, split=split)
     if len(dataloader.dataset) == 0:
@@ -1319,7 +1319,7 @@ def run_mc_dropout_csv(config, run_dir):
     if not save_csv:
         return
     if unit not in {"image", "bbox"}:
-        raise ValueError("output.save_csv.uncertainty='mc_dropout' requires output.save_csv.unit in {'image','bbox'}.")
+        raise ValueError("output.uncertainty='mc_dropout' requires output.unit in {'image','bbox'}.")
 
     # Windows OpenMP + subprocess workers can conflict in MC-dropout runs.
     # Force single-process data loading here to avoid libiomp duplicate init crashes.
@@ -1791,7 +1791,7 @@ def run_predict(config, run_dir):
         if unit == "bbox":
             run_tp_csv(config, run_dir)
             return
-        raise ValueError("output.save_csv.uncertainty='gt' requires output.save_csv.unit in {'image','bbox'}.")
+        raise ValueError("output.uncertainty='gt' requires output.unit in {'image','bbox'}.")
     if uncertainty == "score":
         run_score_csv(config, run_dir)
         return
