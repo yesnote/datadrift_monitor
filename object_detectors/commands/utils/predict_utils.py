@@ -465,11 +465,8 @@ def parse_output_config(output_cfg):
         raise ValueError("output.save_image.gt.max_num must be >= 1.")
 
     layer_grad_image_normalize = str(layer_grad_image_cfg.get("normalize", "layer_minmax")).strip().lower()
-    if layer_grad_image_normalize not in {"layer_minmax", "overall_minmax", "log_transform", "none"}:
-        raise ValueError(
-            "output.save_image.layer_grad.normalize must be "
-            "'layer_minmax', 'overall_minmax', 'log_transform', or 'none'."
-        )
+    if layer_grad_image_normalize not in {"layer_minmax", "none"}:
+        raise ValueError("output.save_image.layer_grad.normalize must be 'layer_minmax' or 'none'.")
     layer_grad_image_target_layer = layer_grad_image_cfg.get("target_layer", "target_layer")
     if isinstance(layer_grad_image_target_layer, str):
         layer_grad_image_target_layer = layer_grad_image_target_layer.strip()
