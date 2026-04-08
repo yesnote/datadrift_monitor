@@ -487,6 +487,7 @@ def parse_output_config(output_cfg):
     layer_grad_image_save_mean_maps = bool(layer_grad_image_cfg.get("save_mean_maps", True))
     layer_grad_image_save_diff_map = bool(layer_grad_image_cfg.get("save_diff_map", True))
     layer_grad_image_save_per_image = bool(layer_grad_image_cfg.get("save_per_image", False))
+    layer_grad_image_save_graph = bool(layer_grad_image_cfg.get("save_graph", True))
 
     return {
         "save_csv_enabled": save_csv_enabled,
@@ -527,6 +528,7 @@ def parse_output_config(output_cfg):
         "save_image_layer_grad_save_mean_maps": layer_grad_image_save_mean_maps,
         "save_image_layer_grad_save_diff_map": layer_grad_image_save_diff_map,
         "save_image_layer_grad_save_per_image": layer_grad_image_save_per_image,
+        "save_image_layer_grad_save_graph": layer_grad_image_save_graph,
     }
 
 
