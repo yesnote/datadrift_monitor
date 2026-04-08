@@ -162,10 +162,15 @@ def _normalize_layer_map(layer_map, mode="layer_minmax"):
         if not finite_mask.any():
             continue
         vals = row[finite_mask]
-        vmin = float(np.min(vals))
-        vmax = float(np.max(vals))
+        if mode == "layer_trimmed_minmax":
+            vmin = float(np.percentile(vals, 5.0))
+            vmax = float(np.percentile(vals, 95.0))
+        else:
+            vmin = float(np.min(vals))
+            vmax = float(np.max(vals))
         if vmax > vmin:
-            row[finite_mask] = (vals - vmin) / (vmax - vmin)
+            normed = (vals - vmin) / (vmax - vmin)
+            row[finite_mask] = np.clip(normed, 0.0, 1.0)
         else:
             row[finite_mask] = 0.0
     return out
