@@ -163,8 +163,8 @@ def _normalize_layer_map(layer_map, mode="layer_minmax"):
             continue
         vals = row[finite_mask]
         if mode == "layer_trimmed_minmax":
-            vmin = float(np.percentile(vals, 5.0))
-            vmax = float(np.percentile(vals, 95.0))
+            vmin = float(np.percentile(vals, 1.0))
+            vmax = float(np.percentile(vals, 99.0))
         else:
             vmin = float(np.min(vals))
             vmax = float(np.max(vals))
