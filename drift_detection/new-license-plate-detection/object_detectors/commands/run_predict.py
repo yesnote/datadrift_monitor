@@ -1835,10 +1835,35 @@ def run_layer_grad_csv(config, run_dir):
     viz_maps = {"fn": [], "non_fn": []}
     viz_counts = {"fn": 0, "non_fn": 0}
     viz_saved_per_image = {"fn": 0, "non_fn": 0}
+    viz_maps_saved = False
+    viz_saved_early = False
     viz_dir = run_dir / "images"
     if viz_enabled and viz_save_per_image:
         (viz_dir / "per_image" / "fn").mkdir(parents=True, exist_ok=True)
         (viz_dir / "per_image" / "non_fn").mkdir(parents=True, exist_ok=True)
+
+    def _save_layer_grad_group_maps_if_needed():
+        if not viz_enabled:
+            return False
+        if not (viz_save_mean_maps or viz_save_diff_map):
+            return False
+        fn_mean = _stack_nanmean_maps(viz_maps["fn"])
+        non_fn_mean = _stack_nanmean_maps(viz_maps["non_fn"])
+        if viz_save_mean_maps:
+            _save_heatmap_png(fn_mean, viz_dir / "fn_mean_map.png")
+            _save_heatmap_png(non_fn_mean, viz_dir / "non_fn_mean_map.png")
+        if viz_save_diff_map:
+            l_max = max(fn_mean.shape[0], non_fn_mean.shape[0]) if (fn_mean.size or non_fn_mean.size) else 0
+            f_max = max(fn_mean.shape[1], non_fn_mean.shape[1]) if (fn_mean.size or non_fn_mean.size) else 0
+            fn_pad = np.full((l_max, f_max), np.nan, dtype=np.float32)
+            non_fn_pad = np.full((l_max, f_max), np.nan, dtype=np.float32)
+            if fn_mean.size:
+                fn_pad[: fn_mean.shape[0], : fn_mean.shape[1]] = fn_mean
+            if non_fn_mean.size:
+                non_fn_pad[: non_fn_mean.shape[0], : non_fn_mean.shape[1]] = non_fn_mean
+            diff_map = fn_pad - non_fn_pad
+            _save_heatmap_png(diff_map, viz_dir / "diff_map.png")
+        return True
 
     csv_file_handle = None
     csv_writer = None
@@ -1954,6 +1979,13 @@ def run_layer_grad_csv(config, run_dir):
                                 )
                                 _save_heatmap_png(grad_map, out_path)
                                 viz_saved_per_image[group_key] += 1
+                        if (
+                            not viz_maps_saved
+                            and len(viz_maps["fn"]) >= viz_max_per_group
+                            and len(viz_maps["non_fn"]) >= viz_max_per_group
+                        ):
+                            viz_maps_saved = _save_layer_grad_group_maps_if_needed()
+                            viz_saved_early = bool(viz_maps_saved)
                     del grad_stats
             del infer_batch
             if batch_preds is not None:
@@ -1963,22 +1995,8 @@ def run_layer_grad_csv(config, run_dir):
             csv_file_handle.close()
 
     if viz_enabled:
-        if viz_save_mean_maps:
-            fn_mean = _stack_nanmean_maps(viz_maps["fn"])
-            non_fn_mean = _stack_nanmean_maps(viz_maps["non_fn"])
-            _save_heatmap_png(fn_mean, viz_dir / "fn_mean_map.png")
-            _save_heatmap_png(non_fn_mean, viz_dir / "non_fn_mean_map.png")
-            if viz_save_diff_map:
-                l_max = max(fn_mean.shape[0], non_fn_mean.shape[0]) if (fn_mean.size or non_fn_mean.size) else 0
-                f_max = max(fn_mean.shape[1], non_fn_mean.shape[1]) if (fn_mean.size or non_fn_mean.size) else 0
-                fn_pad = np.full((l_max, f_max), np.nan, dtype=np.float32)
-                non_fn_pad = np.full((l_max, f_max), np.nan, dtype=np.float32)
-                if fn_mean.size:
-                    fn_pad[: fn_mean.shape[0], : fn_mean.shape[1]] = fn_mean
-                if non_fn_mean.size:
-                    non_fn_pad[: non_fn_mean.shape[0], : non_fn_mean.shape[1]] = non_fn_mean
-                diff_map = fn_pad - non_fn_pad
-                _save_heatmap_png(diff_map, viz_dir / "diff_map.png")
+        if not viz_maps_saved:
+            viz_maps_saved = _save_layer_grad_group_maps_if_needed()
 
         viz_summary = {
             "normalize": viz_normalize,
@@ -1988,6 +2006,7 @@ def run_layer_grad_csv(config, run_dir):
             "save_mean_maps": bool(viz_save_mean_maps),
             "save_diff_map": bool(viz_save_diff_map),
             "save_per_image": bool(viz_save_per_image),
+            "maps_saved_early": bool(viz_saved_early),
         }
         with open(viz_dir / "summary.json", "w", encoding="utf-8") as f:
             json.dump(viz_summary, f, ensure_ascii=False, indent=2)
