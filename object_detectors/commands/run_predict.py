@@ -1836,7 +1836,7 @@ def run_layer_grad_csv(config, run_dir):
     viz_counts = {"fn": 0, "non_fn": 0}
     viz_saved_per_image = {"fn": 0, "non_fn": 0}
     viz_dir = run_dir / "images"
-    if viz_enabled:
+    if viz_enabled and viz_save_per_image:
         (viz_dir / "per_image" / "fn").mkdir(parents=True, exist_ok=True)
         (viz_dir / "per_image" / "non_fn").mkdir(parents=True, exist_ok=True)
 
