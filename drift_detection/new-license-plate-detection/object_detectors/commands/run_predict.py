@@ -155,6 +155,19 @@ def _build_layer_filter_map_from_grad_stats(grad_stats, target_values, target_la
 def _normalize_layer_map(layer_map, mode="layer_minmax"):
     if mode == "none":
         return layer_map.astype(np.float32, copy=True)
+    if mode == "overall_minmax":
+        out = layer_map.astype(np.float32, copy=True)
+        finite_mask = np.isfinite(out)
+        if not finite_mask.any():
+            return out
+        vals = out[finite_mask]
+        vmin = float(np.min(vals))
+        vmax = float(np.max(vals))
+        if vmax > vmin:
+            out[finite_mask] = (vals - vmin) / (vmax - vmin)
+        else:
+            out[finite_mask] = 0.0
+        return out
     out = layer_map.astype(np.float32, copy=True)
     for i in range(out.shape[0]):
         row = out[i]

@@ -11,13 +11,13 @@ model:
 dataset:
   used_dataset:   # coco | voc | openimages
     - coco
-    - openimages
+    # - openimages
   split:  # train | val | test
     - val
-    - val
+    # - val
   
   coco:
-    root: D:/SEONGJIN/datasets/COCO
+    root: D:/DataDrift/datasets/COCO
     train_split: train2017
     val_split: val2017
     test_split: test2017
@@ -43,13 +43,13 @@ dataloader:
 
 output:
   unit: image   # image | bbox
-  uncertainty: feature_grad  # gt | score | full_softmax | entropy | energy | mc_dropout | meta_detect | feature | feature_grad | layer_grad
+  uncertainty: layer_grad  # gt | score | full_softmax | entropy | energy | mc_dropout | meta_detect | feature | feature_grad | layer_grad
   pre_nms:
     enabled: false   # true: use pre-NMS preds | false: use post-NMS preds
     pre_nms_ratio: 1.0  # keep top ratio (0~1) of pre-NMS candidates
 
   save_csv:
-    enabled: true
+    enabled: false
     gt: # unit:image -> fn | unit:bbox -> tp
       iou_match_threshold: 0.45
 
@@ -91,8 +91,8 @@ output:
 
     layer_grad:
       target_value:
-        value: [loss]  # loss | obj_loss | cls_loss | bbox_loss | obj | cls
-        pseudo_gt: cand  # cand | uniform
+        value: [obj_loss]  # loss | obj_loss | cls_loss | bbox_loss | obj | cls
+        pseudo_gt: uniform  # cand | uniform
       target_layer: ["model.24.m.0", "model.24.m.1", "model.24.m.2"]  # "model.17.cv3.conv", "model.20.cv3.conv", "model.23.cv3.conv"
       map_reduction: none   # none | energy
       vector_reduction: [L1, L2, min, max, mean, std]  # empty list [] means save raw vector
@@ -105,8 +105,8 @@ output:
     
     layer_grad:
       target_layer: all_conv   # all_conv | target_layer | [layer names]
-      normalize: layer_minmax  # layer_minmax | none
-      max_num_per_group: 200
+      normalize: layer_minmax  # layer_minmax | overall_minmax | none
+      max_num_per_group: 20
       save_mean_maps: true
       save_diff_map: true
-      save_per_image: false
+      save_per_image: true
