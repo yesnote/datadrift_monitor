@@ -467,6 +467,17 @@ def parse_output_config(output_cfg):
     layer_grad_image_normalize = str(layer_grad_image_cfg.get("normalize", "layer_minmax")).strip().lower()
     if layer_grad_image_normalize not in {"layer_minmax", "none"}:
         raise ValueError("output.save_image.layer_grad.normalize must be 'layer_minmax' or 'none'.")
+    layer_grad_image_target_layer = layer_grad_image_cfg.get("target_layer", "target_layer")
+    if isinstance(layer_grad_image_target_layer, str):
+        layer_grad_image_target_layer = layer_grad_image_target_layer.strip()
+        if layer_grad_image_target_layer.lower() not in {"all_conv", "target_layer"}:
+            raise ValueError("output.save_image.layer_grad.target_layer must be 'all_conv', 'target_layer', or a list.")
+    elif isinstance(layer_grad_image_target_layer, (list, tuple)):
+        layer_grad_image_target_layer = [str(v).strip() for v in layer_grad_image_target_layer if str(v).strip()]
+        if not layer_grad_image_target_layer:
+            raise ValueError("output.save_image.layer_grad.target_layer list must not be empty.")
+    else:
+        raise ValueError("output.save_image.layer_grad.target_layer must be a string or list.")
     layer_grad_image_max_num_per_group = int(layer_grad_image_cfg.get("max_num_per_group", 200))
     if layer_grad_image_max_num_per_group <= 0:
         raise ValueError("output.save_image.layer_grad.max_num_per_group must be >= 1.")
@@ -508,6 +519,7 @@ def parse_output_config(output_cfg):
         "save_image_gt_step": gt_image_step,
         "save_image_gt_max_num": gt_image_max_num,
         "save_image_layer_grad_normalize": layer_grad_image_normalize,
+        "save_image_layer_grad_target_layer": layer_grad_image_target_layer,
         "save_image_layer_grad_max_num_per_group": layer_grad_image_max_num_per_group,
         "save_image_layer_grad_save_mean_maps": layer_grad_image_save_mean_maps,
         "save_image_layer_grad_save_diff_map": layer_grad_image_save_diff_map,
