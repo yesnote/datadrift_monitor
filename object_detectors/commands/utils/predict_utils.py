@@ -440,19 +440,39 @@ def parse_output_config(output_cfg):
 
     if isinstance(save_image_cfg, bool):
         save_image_enabled = save_image_cfg
-        image_step = 1
-        image_max_num = 1
-        save_image_target_cfg = {}
+        gt_image_cfg = {}
+        layer_grad_image_cfg = {}
+        gt_image_step = 1
+        gt_image_max_num = 1
     else:
         save_image_enabled = bool(save_image_cfg.get("enabled", False))
-        image_step = int(save_image_cfg.get("step", 1))
-        image_max_num = int(save_image_cfg.get("max_num", 1))
-        save_image_target_cfg = save_image_cfg.get(uncertainty, {})
+        gt_image_cfg = save_image_cfg.get("gt", {})
+        if not isinstance(gt_image_cfg, dict):
+            gt_image_cfg = {}
+        layer_grad_image_cfg = save_image_cfg.get("layer_grad", {})
+        if not isinstance(layer_grad_image_cfg, dict):
+            layer_grad_image_cfg = {}
 
-    if image_step <= 0:
-        raise ValueError("output.save_image.step must be >= 1.")
-    if image_max_num <= 0:
-        raise ValueError("output.save_image.max_num must be >= 1.")
+        # Backward compatibility for legacy flat keys under output.save_image.
+        legacy_step = int(save_image_cfg.get("step", 1))
+        legacy_max_num = int(save_image_cfg.get("max_num", 1))
+        gt_image_step = int(gt_image_cfg.get("step", legacy_step))
+        gt_image_max_num = int(gt_image_cfg.get("max_num", legacy_max_num))
+
+    if gt_image_step <= 0:
+        raise ValueError("output.save_image.gt.step must be >= 1.")
+    if gt_image_max_num <= 0:
+        raise ValueError("output.save_image.gt.max_num must be >= 1.")
+
+    layer_grad_image_normalize = str(layer_grad_image_cfg.get("normalize", "layer_minmax")).strip().lower()
+    if layer_grad_image_normalize not in {"layer_minmax", "none"}:
+        raise ValueError("output.save_image.layer_grad.normalize must be 'layer_minmax' or 'none'.")
+    layer_grad_image_max_num_per_group = int(layer_grad_image_cfg.get("max_num_per_group", 200))
+    if layer_grad_image_max_num_per_group <= 0:
+        raise ValueError("output.save_image.layer_grad.max_num_per_group must be >= 1.")
+    layer_grad_image_save_mean_maps = bool(layer_grad_image_cfg.get("save_mean_maps", True))
+    layer_grad_image_save_diff_map = bool(layer_grad_image_cfg.get("save_diff_map", True))
+    layer_grad_image_save_per_image = bool(layer_grad_image_cfg.get("save_per_image", False))
 
     return {
         "save_csv_enabled": save_csv_enabled,
@@ -485,9 +505,13 @@ def parse_output_config(output_cfg):
         "layer_vector_reduction": layer_vector_reduction,
         "layer_pseudo_gt": layer_pseudo_gt,
         "save_image_enabled": save_image_enabled,
-        "save_image_target_cfg": save_image_target_cfg,
-        "image_step": image_step,
-        "image_max_num": image_max_num,
+        "save_image_gt_step": gt_image_step,
+        "save_image_gt_max_num": gt_image_max_num,
+        "save_image_layer_grad_normalize": layer_grad_image_normalize,
+        "save_image_layer_grad_max_num_per_group": layer_grad_image_max_num_per_group,
+        "save_image_layer_grad_save_mean_maps": layer_grad_image_save_mean_maps,
+        "save_image_layer_grad_save_diff_map": layer_grad_image_save_diff_map,
+        "save_image_layer_grad_save_per_image": layer_grad_image_save_per_image,
     }
 
 
