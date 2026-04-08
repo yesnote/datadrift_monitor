@@ -776,6 +776,13 @@ def collect_bbox_gradients_per_target(
 
 
 def map_grad_tensor_to_numbers(v):
+    if v is None:
+        return {"1-norm": 0.0, "2-norm": 0.0, "min": 0.0, "max": 0.0, "mean": 0.0, "std": 0.0}
+    if not isinstance(v, torch.Tensor):
+        v = torch.tensor(v, dtype=torch.float32)
+    v = v.detach().float().reshape(-1)
+    if v.numel() == 0:
+        return {"1-norm": 0.0, "2-norm": 0.0, "min": 0.0, "max": 0.0, "mean": 0.0, "std": 0.0}
     return {
         "1-norm": float(torch.norm(v, p=1).detach().cpu().item()),
         "2-norm": float(torch.norm(v, p=2).detach().cpu().item()),
