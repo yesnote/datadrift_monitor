@@ -2140,10 +2140,11 @@ def run_layer_grad_csv(config, run_dir):
                                 target_layers=viz_target_layers,
                                 layer_param_shapes=layer_param_shapes,
                             )
-                            layer_profile = np.nansum(np.where(np.isfinite(grad_map), np.abs(grad_map), 0.0), axis=1).astype(np.float32)
+                            grad_map_norm = _normalize_layer_map(grad_map, mode=viz_normalize)
+                            with np.errstate(invalid="ignore"):
+                                layer_profile = np.nanmean(grad_map_norm, axis=1).astype(np.float32)
                             viz_profiles[group_key].append(layer_profile)
-                            grad_map = _normalize_layer_map(grad_map, mode=viz_normalize)
-                            viz_maps[group_key].append(grad_map)
+                            viz_maps[group_key].append(grad_map_norm)
                             if viz_save_per_image:
                                 out_path = (
                                     viz_dir
@@ -2151,7 +2152,7 @@ def run_layer_grad_csv(config, run_dir):
                                     / group_key
                                     / f"{image_id}_{viz_saved_per_image[group_key]:05d}.png"
                                 )
-                                _save_heatmap_png(grad_map, out_path)
+                                _save_heatmap_png(grad_map_norm, out_path)
                                 viz_saved_per_image[group_key] += 1
                         if (
                             not viz_maps_saved
