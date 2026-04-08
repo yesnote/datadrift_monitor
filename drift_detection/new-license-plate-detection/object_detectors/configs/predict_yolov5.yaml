@@ -99,7 +99,12 @@ output:
   
   save_image:
     enabled: true
-    step: 10
-    max_num: 10
-    gt: {}
-    layer_grad: {}
+    gt:
+      step: 10
+      max_num: 10
+    layer_grad:
+      normalize: layer_minmax  # layer_minmax | none
+      max_num_per_group: 200
+      save_mean_maps: true
+      save_diff_map: true
+      save_per_image: false

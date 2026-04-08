@@ -107,8 +107,8 @@ def run_fn_csv(config, run_dir):
     save_csv = parsed["save_csv_enabled"]
     iou_match_threshold = parsed["gt_iou_match_threshold"]
     save_image = parsed["save_image_enabled"]
-    image_step = parsed["image_step"]
-    image_max_num = parsed["image_max_num"]
+    image_step = parsed["save_image_gt_step"]
+    image_max_num = parsed["save_image_gt_max_num"]
 
     output_csv = run_dir / "fn.csv"
     summary_json = run_dir / "summary.json"
