@@ -84,6 +84,121 @@ def _resolve_gt_class_names(target, catid_to_name):
     return [catid_to_name.get(int(label), "__unknown__") for label in gt_labels_tensor.tolist()]
 
 
+def _vector_from_grad_value(grad_value):
+    if isinstance(grad_value, list):
+        if len(grad_value) == 0:
+            return np.zeros((0,), dtype=np.float32)
+        arr = np.asarray(grad_value, dtype=np.float32).reshape(-1)
+        return np.abs(arr)
+    if isinstance(grad_value, (int, float)):
+        return np.asarray([abs(float(grad_value))], dtype=np.float32)
+    if isinstance(grad_value, dict):
+        # Fallback: when vector_reduction is configured, grad value may be a stats dict.
+        vals = []
+        for k in sorted(grad_value.keys()):
+            try:
+                vals.append(float(grad_value[k]))
+            except Exception:
+                continue
+        if not vals:
+            return np.zeros((0,), dtype=np.float32)
+        return np.abs(np.asarray(vals, dtype=np.float32).reshape(-1))
+    return np.zeros((0,), dtype=np.float32)
+
+
+def _build_layer_filter_map_from_grad_stats(grad_stats, target_values, target_layers):
+    layer_vectors = []
+    for layer_name in target_layers:
+        per_target = []
+        max_len = 0
+        for target_value in target_values:
+            key = f"{target_value}_{layer_name}"
+            vec = _vector_from_grad_value(grad_stats.get(key, []))
+            per_target.append(vec)
+            if vec.shape[0] > max_len:
+                max_len = vec.shape[0]
+        if max_len == 0:
+            layer_vectors.append(np.zeros((0,), dtype=np.float32))
+            continue
+        mat = np.full((len(per_target), max_len), np.nan, dtype=np.float32)
+        for i, vec in enumerate(per_target):
+            if vec.shape[0] > 0:
+                mat[i, : vec.shape[0]] = vec
+        layer_vectors.append(np.nanmean(mat, axis=0))
+
+    f_max = max((v.shape[0] for v in layer_vectors), default=0)
+    out = np.full((len(target_layers), f_max), np.nan, dtype=np.float32)
+    for li, vec in enumerate(layer_vectors):
+        if vec.shape[0] > 0:
+            out[li, : vec.shape[0]] = vec
+    return out
+
+
+def _normalize_layer_map(layer_map, mode="layer_minmax"):
+    if mode == "none":
+        return layer_map.astype(np.float32, copy=True)
+    out = layer_map.astype(np.float32, copy=True)
+    for i in range(out.shape[0]):
+        row = out[i]
+        finite_mask = np.isfinite(row)
+        if not finite_mask.any():
+            continue
+        vals = row[finite_mask]
+        vmin = float(np.min(vals))
+        vmax = float(np.max(vals))
+        if vmax > vmin:
+            row[finite_mask] = (vals - vmin) / (vmax - vmin)
+        else:
+            row[finite_mask] = 0.0
+    return out
+
+
+def _stack_nanmean_maps(maps):
+    if not maps:
+        return np.zeros((0, 0), dtype=np.float32)
+    l_max = max(m.shape[0] for m in maps)
+    f_max = max(m.shape[1] for m in maps)
+    arr = np.full((len(maps), l_max, f_max), np.nan, dtype=np.float32)
+    for i, m in enumerate(maps):
+        arr[i, : m.shape[0], : m.shape[1]] = m
+    return np.nanmean(arr, axis=0)
+
+
+def _save_heatmap_png(map_2d, out_path):
+    out_path = Path(out_path)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    if map_2d.size == 0:
+        blank = np.full((64, 64, 3), 255, dtype=np.uint8)
+        cv2.imwrite(str(out_path), blank)
+        return
+
+    m = map_2d.astype(np.float32, copy=True)
+    finite_mask = np.isfinite(m)
+    if not finite_mask.any():
+        blank = np.full((max(8, m.shape[0]), max(8, m.shape[1]), 3), 255, dtype=np.uint8)
+        cv2.imwrite(str(out_path), blank)
+        return
+
+    vals = m[finite_mask]
+    vmin = float(np.min(vals))
+    vmax = float(np.max(vals))
+    if vmax > vmin:
+        m[finite_mask] = (vals - vmin) / (vmax - vmin)
+    else:
+        m[finite_mask] = 0.0
+
+    img_u8 = np.zeros(m.shape, dtype=np.uint8)
+    img_u8[finite_mask] = np.clip(m[finite_mask] * 255.0, 0.0, 255.0).astype(np.uint8)
+    color = cv2.applyColorMap(img_u8, cv2.COLORMAP_VIRIDIS)
+    color[~finite_mask] = np.array([255, 255, 255], dtype=np.uint8)
+
+    h, w = color.shape[:2]
+    scale = max(1, int(np.ceil(512.0 / max(1, max(h, w)))))
+    if scale > 1:
+        color = cv2.resize(color, (w * scale, h * scale), interpolation=cv2.INTER_NEAREST)
+    cv2.imwrite(str(out_path), color)
+
+
 def _mc_dropout_single_csv_writer(write_queue, output_csv, fieldnames):
     with open(output_csv, "w", newline="", encoding="utf-8") as output_file:
         writer = csv.DictWriter(output_file, fieldnames=fieldnames)
@@ -1691,8 +1806,15 @@ def run_layer_grad_csv(config, run_dir):
     layer_pseudo_gt = parsed.get("layer_pseudo_gt", "cand")
     pre_nms = bool(parsed.get("pre_nms", False))
     pre_nms_ratio = float(parsed.get("pre_nms_ratio", 1.0))
+    save_image_enabled = bool(parsed.get("save_image_enabled", False))
+    viz_enabled = bool(save_image_enabled and unit == "image")
+    viz_normalize = str(parsed.get("save_image_layer_grad_normalize", "layer_minmax")).strip().lower()
+    viz_max_per_group = int(parsed.get("save_image_layer_grad_max_num_per_group", 200))
+    viz_save_mean_maps = bool(parsed.get("save_image_layer_grad_save_mean_maps", True))
+    viz_save_diff_map = bool(parsed.get("save_image_layer_grad_save_diff_map", True))
+    viz_save_per_image = bool(parsed.get("save_image_layer_grad_save_per_image", False))
 
-    if not save_csv:
+    if not save_csv and not viz_enabled:
         return
 
     output_csv = run_dir / "layer_grad.csv"
@@ -1708,15 +1830,35 @@ def run_layer_grad_csv(config, run_dir):
         raise ValueError("Loaded 0 images. Check dataset root/image_dir/split configuration in YAML.")
 
     detector, device = build_detector(config)
+    catid_to_name = load_gt_category_maps(config, split) if viz_enabled else {}
+    iou_match_threshold = parsed["gt_iou_match_threshold"] if viz_enabled else 0.45
+    viz_maps = {"fn": [], "non_fn": []}
+    viz_counts = {"fn": 0, "non_fn": 0}
+    viz_saved_per_image = {"fn": 0, "non_fn": 0}
+    viz_dir = run_dir / "images"
+    if viz_enabled:
+        (viz_dir / "per_image" / "fn").mkdir(parents=True, exist_ok=True)
+        (viz_dir / "per_image" / "non_fn").mkdir(parents=True, exist_ok=True)
 
-    with open(output_csv, "w", newline="", encoding="utf-8") as output_file:
-        writer = csv.DictWriter(output_file, fieldnames=fieldnames)
-        writer.writeheader()
+    csv_file_handle = None
+    csv_writer = None
+    if save_csv:
+        csv_file_handle = open(output_csv, "w", newline="", encoding="utf-8")
+        csv_writer = csv.DictWriter(csv_file_handle, fieldnames=fieldnames)
+        csv_writer.writeheader()
+
+    try:
         for images, targets in tqdm(
             dataloader, desc=f"Object Detector ({mode} - {uncertainty})", total=len(dataloader)
         ):
             image_list = _as_image_list(images)
-            infer_batch, _ratios, _pads, _resized_chws = _prepare_infer_batch(detector, image_list, device, auto=False)
+            infer_batch, ratios, pads, _resized_chws = _prepare_infer_batch(detector, image_list, device, auto=False)
+            batch_preds = None
+            if viz_enabled:
+                detector.zero_grad(set_to_none=True)
+                with torch.no_grad():
+                    batch_preds, _bz_logits, _bz_obj, _bz_feat = detector(infer_batch)
+
             for sample_idx in range(len(image_list)):
                 target = targets[sample_idx]
                 image_id = int(target["image_id"][0].item())
@@ -1733,50 +1875,131 @@ def run_layer_grad_csv(config, run_dir):
                         vector_reduction=layer_vector_reduction,
                         pseudo_gt=layer_pseudo_gt,
                     )
-                    for bbox_row in bbox_rows:
-                        row = {
-                            "image_id": image_id,
-                            "image_path": image_path,
-                            "pred_idx": bbox_row["pred_idx"],
-                            "raw_pred_idx": bbox_row["raw_pred_idx"],
-                            "xmin": bbox_row["xmin"],
-                            "ymin": bbox_row["ymin"],
-                            "xmax": bbox_row["xmax"],
-                            "ymax": bbox_row["ymax"],
-                            "score": bbox_row["score"],
-                            "pred_class": bbox_row["pred_class"],
-                        }
-                        for grad_key, grad_value in bbox_row["grad_stats"].items():
-                            row[grad_key] = json.dumps(grad_value, separators=(",", ":"))
-                        writer.writerow(row)
+                    if csv_writer is not None:
+                        for bbox_row in bbox_rows:
+                            row = {
+                                "image_id": image_id,
+                                "image_path": image_path,
+                                "pred_idx": bbox_row["pred_idx"],
+                                "raw_pred_idx": bbox_row["raw_pred_idx"],
+                                "xmin": bbox_row["xmin"],
+                                "ymin": bbox_row["ymin"],
+                                "xmax": bbox_row["xmax"],
+                                "ymax": bbox_row["ymax"],
+                                "score": bbox_row["score"],
+                                "pred_class": bbox_row["pred_class"],
+                            }
+                            for grad_key, grad_value in bbox_row["grad_stats"].items():
+                                row[grad_key] = json.dumps(grad_value, separators=(",", ":"))
+                            csv_writer.writerow(row)
                     del bbox_rows
                 else:
+                    use_raw_for_viz = viz_enabled
                     grad_stats = collect_image_layer_grads_per_target(
                         detector=detector,
                         input_tensor=infer_tensor,
                         target_values=target_values,
                         target_layers=target_layers,
                         map_reduction=layer_map_reduction,
-                        vector_reduction=layer_vector_reduction,
+                        vector_reduction=[] if use_raw_for_viz else layer_vector_reduction,
                         pre_nms=pre_nms,
                         pre_nms_ratio=pre_nms_ratio,
                         pseudo_gt=layer_pseudo_gt,
                     )
-                    row = {
-                        "image_id": image_id,
-                        "image_path": image_path,
-                    }
-                    for grad_key, grad_value in grad_stats.items():
-                        row[grad_key] = json.dumps(grad_value, separators=(",", ":"))
-                    writer.writerow(row)
+
+                    if csv_writer is not None:
+                        row = {"image_id": image_id, "image_path": image_path}
+                        if use_raw_for_viz and layer_vector_reduction:
+                            for grad_key, grad_value in grad_stats.items():
+                                vec = torch.tensor(_vector_from_grad_value(grad_value), dtype=torch.float32)
+                                stats = map_grad_tensor_to_numbers(vec)
+                                row[grad_key] = json.dumps(
+                                    {k: float(stats[k]) for k in layer_vector_reduction},
+                                    separators=(",", ":"),
+                                )
+                        else:
+                            for grad_key, grad_value in grad_stats.items():
+                                row[grad_key] = json.dumps(grad_value, separators=(",", ":"))
+                        csv_writer.writerow(row)
+
+                    if viz_enabled:
+                        pred_boxes = batch_preds[0][sample_idx]
+                        pred_class_names = batch_preds[2][sample_idx]
+                        gt_boxes = map_boxes_to_letterbox(target["boxes"], ratios[sample_idx], pads[sample_idx])
+                        gt_class_names = _resolve_gt_class_names(target, catid_to_name)
+                        is_fn = has_fn_for_image(
+                            gt_boxes=gt_boxes,
+                            gt_class_names=gt_class_names,
+                            pred_boxes=pred_boxes,
+                            pred_class_names=pred_class_names,
+                            iou_match_threshold=iou_match_threshold,
+                        )
+                        group_key = "fn" if is_fn else "non_fn"
+                        viz_counts[group_key] += 1
+
+                        if len(viz_maps[group_key]) < viz_max_per_group:
+                            grad_map = _build_layer_filter_map_from_grad_stats(
+                                grad_stats=grad_stats,
+                                target_values=target_values,
+                                target_layers=target_layers,
+                            )
+                            grad_map = _normalize_layer_map(grad_map, mode=viz_normalize)
+                            viz_maps[group_key].append(grad_map)
+                            if viz_save_per_image:
+                                out_path = (
+                                    viz_dir
+                                    / "per_image"
+                                    / group_key
+                                    / f"{image_id}_{viz_saved_per_image[group_key]:05d}.png"
+                                )
+                                _save_heatmap_png(grad_map, out_path)
+                                viz_saved_per_image[group_key] += 1
                     del grad_stats
             del infer_batch
+            if batch_preds is not None:
+                del batch_preds
+    finally:
+        if csv_file_handle is not None:
+            csv_file_handle.close()
+
+    if viz_enabled:
+        if viz_save_mean_maps:
+            fn_mean = _stack_nanmean_maps(viz_maps["fn"])
+            non_fn_mean = _stack_nanmean_maps(viz_maps["non_fn"])
+            _save_heatmap_png(fn_mean, viz_dir / "fn_mean_map.png")
+            _save_heatmap_png(non_fn_mean, viz_dir / "non_fn_mean_map.png")
+            if viz_save_diff_map:
+                l_max = max(fn_mean.shape[0], non_fn_mean.shape[0]) if (fn_mean.size or non_fn_mean.size) else 0
+                f_max = max(fn_mean.shape[1], non_fn_mean.shape[1]) if (fn_mean.size or non_fn_mean.size) else 0
+                fn_pad = np.full((l_max, f_max), np.nan, dtype=np.float32)
+                non_fn_pad = np.full((l_max, f_max), np.nan, dtype=np.float32)
+                if fn_mean.size:
+                    fn_pad[: fn_mean.shape[0], : fn_mean.shape[1]] = fn_mean
+                if non_fn_mean.size:
+                    non_fn_pad[: non_fn_mean.shape[0], : non_fn_mean.shape[1]] = non_fn_mean
+                diff_map = fn_pad - non_fn_pad
+                _save_heatmap_png(diff_map, viz_dir / "diff_map.png")
+
+        viz_summary = {
+            "normalize": viz_normalize,
+            "max_num_per_group": int(viz_max_per_group),
+            "group_total_counts": {k: int(v) for k, v in viz_counts.items()},
+            "group_used_counts": {k: int(len(viz_maps[k])) for k in ("fn", "non_fn")},
+            "save_mean_maps": bool(viz_save_mean_maps),
+            "save_diff_map": bool(viz_save_diff_map),
+            "save_per_image": bool(viz_save_per_image),
+        }
+        with open(viz_dir / "summary.json", "w", encoding="utf-8") as f:
+            json.dump(viz_summary, f, ensure_ascii=False, indent=2)
 
     del detector
     if device.type == "cuda":
         torch.cuda.empty_cache()
 
-    print(f"Saved results CSV: {output_csv}")
+    if save_csv:
+        print(f"Saved results CSV: {output_csv}")
+    if viz_enabled:
+        print(f"Saved layer-grad maps: {viz_dir}")
 
 
 def run_predict(config, run_dir):
