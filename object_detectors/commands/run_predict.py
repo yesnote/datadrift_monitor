@@ -31,6 +31,7 @@ from commands.utils.predict_utils import (
     map_grad_tensor_to_numbers,
     parse_output_config,
     preprocess_with_letterbox,
+    resolve_layer_parameter,
 )
 
 
@@ -106,14 +107,27 @@ def _vector_from_grad_value(grad_value):
     return np.zeros((0,), dtype=np.float32)
 
 
-def _build_layer_filter_map_from_grad_stats(grad_stats, target_values, target_layers):
+def _build_layer_filter_map_from_grad_stats(grad_stats, target_values, target_layers, layer_param_shapes=None):
     layer_vectors = []
     for layer_name in target_layers:
         per_target = []
         max_len = 0
+        expected_shape = None
+        if layer_param_shapes is not None:
+            expected_shape = layer_param_shapes.get(layer_name)
         for target_value in target_values:
             key = f"{target_value}_{layer_name}"
-            vec = _vector_from_grad_value(grad_stats.get(key, []))
+            raw_vec = _vector_from_grad_value(grad_stats.get(key, []))
+            vec = raw_vec
+            if expected_shape and raw_vec.size > 0:
+                numel = int(np.prod(expected_shape))
+                if raw_vec.size == numel:
+                    reshaped = raw_vec.reshape(expected_shape)
+                    if len(expected_shape) == 1:
+                        vec = np.abs(reshaped).astype(np.float32, copy=False)
+                    else:
+                        first_dim = int(expected_shape[0])
+                        vec = np.abs(reshaped).reshape(first_dim, -1).mean(axis=1).astype(np.float32, copy=False)
             per_target.append(vec)
             if vec.shape[0] > max_len:
                 max_len = vec.shape[0]
@@ -1830,6 +1844,13 @@ def run_layer_grad_csv(config, run_dir):
         raise ValueError("Loaded 0 images. Check dataset root/image_dir/split configuration in YAML.")
 
     detector, device = build_detector(config)
+    layer_param_shapes = {}
+    if unit == "image" and viz_enabled:
+        for layer_name in target_layers:
+            try:
+                layer_param_shapes[layer_name] = tuple(resolve_layer_parameter(detector.model, layer_name).shape)
+            except Exception:
+                layer_param_shapes[layer_name] = None
     catid_to_name = load_gt_category_maps(config, split) if viz_enabled else {}
     iou_match_threshold = parsed["gt_iou_match_threshold"] if viz_enabled else 0.45
     viz_maps = {"fn": [], "non_fn": []}
@@ -1967,6 +1988,7 @@ def run_layer_grad_csv(config, run_dir):
                                 grad_stats=grad_stats,
                                 target_values=target_values,
                                 target_layers=target_layers,
+                                layer_param_shapes=layer_param_shapes,
                             )
                             grad_map = _normalize_layer_map(grad_map, mode=viz_normalize)
                             viz_maps[group_key].append(grad_map)
