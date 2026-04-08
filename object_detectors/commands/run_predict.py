@@ -1927,6 +1927,7 @@ def run_layer_grad_csv(config, run_dir):
     viz_save_mean_maps = bool(parsed.get("save_image_layer_grad_save_mean_maps", True))
     viz_save_diff_map = bool(parsed.get("save_image_layer_grad_save_diff_map", True))
     viz_save_per_image = bool(parsed.get("save_image_layer_grad_save_per_image", False))
+    viz_save_graph = bool(parsed.get("save_image_layer_grad_save_graph", True))
 
     if not save_csv and not viz_enabled:
         return
@@ -2005,12 +2006,13 @@ def run_layer_grad_csv(config, run_dir):
                 non_fn_pad[: non_fn_mean.shape[0], : non_fn_mean.shape[1]] = non_fn_mean
             diff_map = fn_pad - non_fn_pad
             _save_heatmap_png(diff_map, viz_dir / "diff_map.png")
-        _save_layer_profile_plot(
-            fn_profiles=viz_profiles["fn"],
-            non_fn_profiles=viz_profiles["non_fn"],
-            out_path=viz_dir / "layer_profile_mean_std_log.png",
-            log_scale=True,
-        )
+        if viz_save_graph:
+            _save_layer_profile_plot(
+                fn_profiles=viz_profiles["fn"],
+                non_fn_profiles=viz_profiles["non_fn"],
+                out_path=viz_dir / "layer_profile_mean_std_log.png",
+                log_scale=True,
+            )
         return True
 
     csv_file_handle = None
