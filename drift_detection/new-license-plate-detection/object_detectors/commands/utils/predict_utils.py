@@ -481,11 +481,8 @@ def parse_output_config(output_cfg):
             raise ValueError("output.save_image.layer_grad.target_layer list must not be empty.")
     else:
         raise ValueError("output.save_image.layer_grad.target_layer must be a string or list.")
-    legacy_layer_grad_image_max_num_per_group = int(layer_grad_image_cfg.get("max_num_per_group", 200))
-    layer_grad_image_max_num_fn = int(layer_grad_image_cfg.get("max_num_fn", legacy_layer_grad_image_max_num_per_group))
-    layer_grad_image_max_num_non_fn = int(
-        layer_grad_image_cfg.get("max_num_non_fn", legacy_layer_grad_image_max_num_per_group)
-    )
+    layer_grad_image_max_num_fn = int(layer_grad_image_cfg.get("max_num_fn", 200))
+    layer_grad_image_max_num_non_fn = int(layer_grad_image_cfg.get("max_num_non_fn", 200))
     if layer_grad_image_max_num_fn < 0:
         raise ValueError("output.save_image.layer_grad.max_num_fn must be >= 0.")
     if layer_grad_image_max_num_non_fn < 0:
