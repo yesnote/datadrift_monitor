@@ -1954,7 +1954,10 @@ def run_layer_grad_csv(config, run_dir):
     viz_enabled = bool(save_image_enabled and unit == "image")
     viz_normalize = str(parsed.get("save_image_layer_grad_normalize", "layer_minmax")).strip().lower()
     viz_target_layer_cfg = parsed.get("save_image_layer_grad_target_layer", "target_layer")
-    viz_max_per_group = int(parsed.get("save_image_layer_grad_max_num_per_group", 200))
+    viz_max_by_group = {
+        "fn": int(parsed.get("save_image_layer_grad_max_num_fn", 200)),
+        "non_fn": int(parsed.get("save_image_layer_grad_max_num_non_fn", 200)),
+    }
     viz_save_mean_maps = bool(parsed.get("save_image_layer_grad_save_mean_maps", True))
     viz_save_diff_map = bool(parsed.get("save_image_layer_grad_save_diff_map", True))
     viz_save_per_image = bool(parsed.get("save_image_layer_grad_save_per_image", False))
@@ -2013,20 +2016,32 @@ def run_layer_grad_csv(config, run_dir):
     viz_saved_early = False
     viz_dir = run_dir / "images"
     if viz_enabled and viz_save_per_image:
-        (viz_dir / "per_image" / "fn").mkdir(parents=True, exist_ok=True)
-        (viz_dir / "per_image" / "non_fn").mkdir(parents=True, exist_ok=True)
+        if viz_max_by_group["fn"] > 0:
+            (viz_dir / "per_image" / "fn").mkdir(parents=True, exist_ok=True)
+        if viz_max_by_group["non_fn"] > 0:
+            (viz_dir / "per_image" / "non_fn").mkdir(parents=True, exist_ok=True)
 
     def _save_layer_grad_group_maps_if_needed():
         if not viz_enabled:
             return False
         if not (viz_save_mean_maps or viz_save_diff_map):
             return False
-        fn_mean = _stack_nanmean_maps(viz_maps["fn"])
-        non_fn_mean = _stack_nanmean_maps(viz_maps["non_fn"])
+        fn_mean = _stack_nanmean_maps(viz_maps["fn"]) if (viz_max_by_group["fn"] > 0 and viz_maps["fn"]) else np.zeros((0, 0), dtype=np.float32)
+        non_fn_mean = (
+            _stack_nanmean_maps(viz_maps["non_fn"])
+            if (viz_max_by_group["non_fn"] > 0 and viz_maps["non_fn"])
+            else np.zeros((0, 0), dtype=np.float32)
+        )
+        has_fn = bool(fn_mean.size > 0)
+        has_non_fn = bool(non_fn_mean.size > 0)
+        if not (has_fn or has_non_fn):
+            return False
         if viz_save_mean_maps:
-            _save_heatmap_png(fn_mean, viz_dir / "fn_mean_map.png")
-            _save_heatmap_png(non_fn_mean, viz_dir / "non_fn_mean_map.png")
-        if viz_save_diff_map:
+            if has_fn:
+                _save_heatmap_png(fn_mean, viz_dir / "fn_mean_map.png")
+            if has_non_fn:
+                _save_heatmap_png(non_fn_mean, viz_dir / "non_fn_mean_map.png")
+        if viz_save_diff_map and has_fn and has_non_fn:
             l_max = max(fn_mean.shape[0], non_fn_mean.shape[0]) if (fn_mean.size or non_fn_mean.size) else 0
             f_max = max(fn_mean.shape[1], non_fn_mean.shape[1]) if (fn_mean.size or non_fn_mean.size) else 0
             fn_pad = np.full((l_max, f_max), np.nan, dtype=np.float32)
@@ -2037,7 +2052,7 @@ def run_layer_grad_csv(config, run_dir):
                 non_fn_pad[: non_fn_mean.shape[0], : non_fn_mean.shape[1]] = non_fn_mean
             diff_map = fn_pad - non_fn_pad
             _save_heatmap_png(diff_map, viz_dir / "diff_map.png")
-        if viz_save_graph:
+        if viz_save_graph and (has_fn or has_non_fn):
             _save_layer_profile_plot(
                 fn_mean_map=fn_mean,
                 non_fn_mean_map=non_fn_mean,
@@ -2064,6 +2079,10 @@ def run_layer_grad_csv(config, run_dir):
                 viz_enabled
                 and (not viz_maps_saved)
                 and (viz_save_mean_maps or viz_save_diff_map or viz_save_per_image)
+                and (
+                    (viz_max_by_group["fn"] > 0 and len(viz_maps["fn"]) < viz_max_by_group["fn"])
+                    or (viz_max_by_group["non_fn"] > 0 and len(viz_maps["non_fn"]) < viz_max_by_group["non_fn"])
+                )
             )
             if need_viz_batch:
                 detector.zero_grad(set_to_none=True)
@@ -2121,8 +2140,10 @@ def run_layer_grad_csv(config, run_dir):
                         )
                         group_key = "fn" if is_fn else "non_fn"
                         viz_counts[group_key] += 1
+                        group_limit = int(viz_max_by_group.get(group_key, 0))
                         need_viz_for_sample = (
-                            len(viz_maps[group_key]) < viz_max_per_group
+                            group_limit > 0
+                            and len(viz_maps[group_key]) < group_limit
                             and (viz_save_mean_maps or viz_save_diff_map or viz_save_per_image)
                         )
 
@@ -2166,7 +2187,8 @@ def run_layer_grad_csv(config, run_dir):
                         csv_writer.writerow(row)
 
                     if need_viz_batch and need_viz_for_sample and group_key is not None:
-                        if len(viz_maps[group_key]) < viz_max_per_group:
+                        group_limit = int(viz_max_by_group.get(group_key, 0))
+                        if group_limit > 0 and len(viz_maps[group_key]) < group_limit:
                             grad_map = _build_layer_filter_map_from_grad_stats(
                                 grad_stats=grad_stats_all,
                                 target_values=target_values,
@@ -2189,8 +2211,13 @@ def run_layer_grad_csv(config, run_dir):
                                 viz_saved_per_image[group_key] += 1
                         if (
                             not viz_maps_saved
-                            and len(viz_maps["fn"]) >= viz_max_per_group
-                            and len(viz_maps["non_fn"]) >= viz_max_per_group
+                            and (
+                                (viz_max_by_group["fn"] <= 0 or len(viz_maps["fn"]) >= viz_max_by_group["fn"])
+                                and (
+                                    viz_max_by_group["non_fn"] <= 0
+                                    or len(viz_maps["non_fn"]) >= viz_max_by_group["non_fn"]
+                                )
+                            )
                         ):
                             viz_maps_saved = _save_layer_grad_group_maps_if_needed()
                             viz_saved_early = bool(viz_maps_saved)
@@ -2208,7 +2235,8 @@ def run_layer_grad_csv(config, run_dir):
 
         viz_summary = {
             "normalize": viz_normalize,
-            "max_num_per_group": int(viz_max_per_group),
+            "max_num_fn": int(viz_max_by_group["fn"]),
+            "max_num_non_fn": int(viz_max_by_group["non_fn"]),
             "group_total_counts": {k: int(v) for k, v in viz_counts.items()},
             "group_used_counts": {k: int(len(viz_maps[k])) for k in ("fn", "non_fn")},
             "group_used_profile_counts": {k: int(len(viz_profiles[k])) for k in ("fn", "non_fn")},
