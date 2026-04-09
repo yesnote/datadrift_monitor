@@ -488,12 +488,6 @@ def parse_output_config(output_cfg):
     layer_grad_image_save_diff_map = bool(layer_grad_image_cfg.get("save_diff_map", True))
     layer_grad_image_save_per_image = bool(layer_grad_image_cfg.get("save_per_image", False))
     layer_grad_image_save_graph = bool(layer_grad_image_cfg.get("save_graph", True))
-    layer_grad_image_profile_clip_ymax = bool(layer_grad_image_cfg.get("profile_clip_ymax", True))
-    layer_grad_image_profile_ymax_clip_percentile = float(
-        layer_grad_image_cfg.get("profile_ymax_clip_percentile", 99.0)
-    )
-    if not (0.0 < layer_grad_image_profile_ymax_clip_percentile <= 100.0):
-        raise ValueError("output.save_image.layer_grad.profile_ymax_clip_percentile must be in (0, 100].")
 
     return {
         "save_csv_enabled": save_csv_enabled,
@@ -535,8 +529,6 @@ def parse_output_config(output_cfg):
         "save_image_layer_grad_save_diff_map": layer_grad_image_save_diff_map,
         "save_image_layer_grad_save_per_image": layer_grad_image_save_per_image,
         "save_image_layer_grad_save_graph": layer_grad_image_save_graph,
-        "save_image_layer_grad_profile_clip_ymax": layer_grad_image_profile_clip_ymax,
-        "save_image_layer_grad_profile_ymax_clip_percentile": layer_grad_image_profile_ymax_clip_percentile,
     }
 
 
