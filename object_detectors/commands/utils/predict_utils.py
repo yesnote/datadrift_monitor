@@ -481,9 +481,15 @@ def parse_output_config(output_cfg):
             raise ValueError("output.save_image.layer_grad.target_layer list must not be empty.")
     else:
         raise ValueError("output.save_image.layer_grad.target_layer must be a string or list.")
-    layer_grad_image_max_num_per_group = int(layer_grad_image_cfg.get("max_num_per_group", 200))
-    if layer_grad_image_max_num_per_group <= 0:
-        raise ValueError("output.save_image.layer_grad.max_num_per_group must be >= 1.")
+    legacy_layer_grad_image_max_num_per_group = int(layer_grad_image_cfg.get("max_num_per_group", 200))
+    layer_grad_image_max_num_fn = int(layer_grad_image_cfg.get("max_num_fn", legacy_layer_grad_image_max_num_per_group))
+    layer_grad_image_max_num_non_fn = int(
+        layer_grad_image_cfg.get("max_num_non_fn", legacy_layer_grad_image_max_num_per_group)
+    )
+    if layer_grad_image_max_num_fn < 0:
+        raise ValueError("output.save_image.layer_grad.max_num_fn must be >= 0.")
+    if layer_grad_image_max_num_non_fn < 0:
+        raise ValueError("output.save_image.layer_grad.max_num_non_fn must be >= 0.")
     layer_grad_image_save_mean_maps = bool(layer_grad_image_cfg.get("save_mean_maps", True))
     layer_grad_image_save_diff_map = bool(layer_grad_image_cfg.get("save_diff_map", True))
     layer_grad_image_save_per_image = bool(layer_grad_image_cfg.get("save_per_image", False))
@@ -524,7 +530,8 @@ def parse_output_config(output_cfg):
         "save_image_gt_max_num": gt_image_max_num,
         "save_image_layer_grad_normalize": layer_grad_image_normalize,
         "save_image_layer_grad_target_layer": layer_grad_image_target_layer,
-        "save_image_layer_grad_max_num_per_group": layer_grad_image_max_num_per_group,
+        "save_image_layer_grad_max_num_fn": layer_grad_image_max_num_fn,
+        "save_image_layer_grad_max_num_non_fn": layer_grad_image_max_num_non_fn,
         "save_image_layer_grad_save_mean_maps": layer_grad_image_save_mean_maps,
         "save_image_layer_grad_save_diff_map": layer_grad_image_save_diff_map,
         "save_image_layer_grad_save_per_image": layer_grad_image_save_per_image,

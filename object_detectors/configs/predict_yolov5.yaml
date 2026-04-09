@@ -106,7 +106,8 @@ output:
     layer_grad:
       target_layer: all_conv   # all_conv | target_layer | [layer names]
       normalize: layer_minmax  # layer_minmax | layer_trimmed_minmax | none
-      max_num_per_group: 20
+      max_num_fn: 20
+      max_num_non_fn: 20
       save_mean_maps: true
       save_diff_map: true
       save_graph: true
