@@ -219,8 +219,6 @@ def _save_layer_profile_plot(
     non_fn_mean_map,
     out_path,
     log_scale=True,
-    clip_ymax=True,
-    ymax_clip_percentile=99.0,
 ):
     out_path = Path(out_path)
     out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -234,12 +232,13 @@ def _save_layer_profile_plot(
 
     eps = 1e-12
     plotted = False
-    upper_values = []
+    band_values = []
     if fn_idx.size > 0:
         y = np.maximum(fn_mean, eps) if log_scale else fn_mean
         lo = np.maximum(fn_mean - fn_std, eps) if log_scale else (fn_mean - fn_std)
         hi = np.maximum(fn_mean + fn_std, eps) if log_scale else (fn_mean + fn_std)
-        upper_values.append(hi)
+        band_values.append(lo)
+        band_values.append(hi)
         ax.plot(fn_idx, y, color="#d62728", linewidth=2.0, label="FN mean")
         ax.fill_between(fn_idx, lo, hi, color="#d62728", alpha=0.18, linewidth=0)
         plotted = True
@@ -247,27 +246,31 @@ def _save_layer_profile_plot(
         y = np.maximum(non_mean, eps) if log_scale else non_mean
         lo = np.maximum(non_mean - non_std, eps) if log_scale else (non_mean - non_std)
         hi = np.maximum(non_mean + non_std, eps) if log_scale else (non_mean + non_std)
-        upper_values.append(hi)
+        band_values.append(lo)
+        band_values.append(hi)
         ax.plot(non_idx, y, color="#1f77b4", linewidth=2.0, label="non-FN mean")
         ax.fill_between(non_idx, lo, hi, color="#1f77b4", alpha=0.18, linewidth=0)
         plotted = True
 
     if log_scale:
         ax.set_yscale("log")
-    if plotted and clip_ymax and upper_values:
-        hi_all = np.concatenate([v.reshape(-1) for v in upper_values]).astype(np.float32, copy=False)
-        hi_all = hi_all[np.isfinite(hi_all)]
+    if plotted and band_values:
+        vals = np.concatenate([v.reshape(-1) for v in band_values]).astype(np.float32, copy=False)
+        vals = vals[np.isfinite(vals)]
         if log_scale:
-            hi_all = hi_all[hi_all > eps]
-        if hi_all.size > 0:
-            current_lo, current_hi = ax.get_ylim()
-            robust_hi = float(np.percentile(hi_all, ymax_clip_percentile))
+            vals = vals[vals > eps]
+        if vals.size > 1:
+            cur_lo, cur_hi = ax.get_ylim()
+            robust_lo = float(np.percentile(vals, 1.0))
+            robust_hi = float(np.percentile(vals, 99.0))
             if log_scale:
-                robust_hi = max(robust_hi, max(current_lo * 10.0, eps))
-            else:
-                robust_hi = max(robust_hi, current_lo)
-            if robust_hi < current_hi:
-                ax.set_ylim(top=robust_hi)
+                robust_lo = max(robust_lo, eps)
+                robust_hi = max(robust_hi, robust_lo * 1.01)
+            if robust_hi > robust_lo:
+                new_lo = max(cur_lo, robust_lo)
+                new_hi = min(cur_hi, robust_hi)
+                if new_hi > new_lo:
+                    ax.set_ylim(new_lo, new_hi)
     ax.set_xlabel("Layer Number")
     ax.set_ylabel("Layer Sum(|grad|)")
     ax.set_title("Layer-wise Gradient Profile (mean ± std)")
@@ -1956,8 +1959,6 @@ def run_layer_grad_csv(config, run_dir):
     viz_save_diff_map = bool(parsed.get("save_image_layer_grad_save_diff_map", True))
     viz_save_per_image = bool(parsed.get("save_image_layer_grad_save_per_image", False))
     viz_save_graph = bool(parsed.get("save_image_layer_grad_save_graph", True))
-    viz_profile_clip_ymax = bool(parsed.get("save_image_layer_grad_profile_clip_ymax", True))
-    viz_profile_ymax_clip_percentile = float(parsed.get("save_image_layer_grad_profile_ymax_clip_percentile", 99.0))
 
     if not save_csv and not viz_enabled:
         return
@@ -2042,8 +2043,6 @@ def run_layer_grad_csv(config, run_dir):
                 non_fn_mean_map=non_fn_mean,
                 out_path=viz_dir / "profile_mean_std_log.png",
                 log_scale=True,
-                clip_ymax=viz_profile_clip_ymax,
-                ymax_clip_percentile=viz_profile_ymax_clip_percentile,
             )
         return True
 

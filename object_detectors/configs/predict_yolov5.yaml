@@ -110,6 +110,4 @@ output:
       save_mean_maps: true
       save_diff_map: true
       save_graph: true
-      profile_clip_ymax: true
-      profile_ymax_clip_percentile: 99.0
       save_per_image: false
