@@ -9,9 +9,9 @@ model:
   device: cuda
 
 dataset:
-  used_dataset:   # coco | voc | openimages
+  used_dataset:   # coco | voc | openimages | null_image
     - coco
-    - openimages
+    - null_image
   split:  # train | val | test
     - val
     - val
@@ -33,6 +33,10 @@ dataset:
     val_split: validation
     test_split: test
     min_gt_boxes: 1  # keep only images with at least this many GT boxes
+
+  null_image:
+    num_samples: 64
+    # seed: 1234  # optional
 
 dataloader:
   batch_size: 32
