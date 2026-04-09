@@ -193,29 +193,33 @@ def _stack_nanmean_maps(maps):
     return out
 
 
-def _profile_stats(profiles):
-    if not profiles:
+def _profile_stats_from_mean_map(mean_map):
+    if mean_map.size == 0:
         return np.zeros((0,), dtype=np.float32), np.zeros((0,), dtype=np.float32), np.zeros((0,), dtype=np.int64)
-    l_max = max(p.shape[0] for p in profiles)
-    arr = np.full((len(profiles), l_max), np.nan, dtype=np.float32)
-    for i, p in enumerate(profiles):
-        arr[i, : p.shape[0]] = p
-    valid = np.isfinite(arr)
-    count = valid.sum(axis=0)
-    idx = np.where(count > 0)[0]
-    if idx.size == 0:
+    means, stds, idxs = [], [], []
+    for layer_idx in range(int(mean_map.shape[0])):
+        row = mean_map[layer_idx]
+        vals = row[np.isfinite(row)]
+        if vals.size == 0:
+            continue
+        idxs.append(layer_idx)
+        means.append(float(np.mean(vals)))
+        stds.append(float(np.std(vals)))
+    if not idxs:
         return np.zeros((0,), dtype=np.float32), np.zeros((0,), dtype=np.float32), np.zeros((0,), dtype=np.int64)
-    mean = np.nanmean(arr[:, idx], axis=0).astype(np.float32)
-    std = np.nanstd(arr[:, idx], axis=0).astype(np.float32)
-    return mean, std, idx.astype(np.int64)
+    return (
+        np.asarray(means, dtype=np.float32),
+        np.asarray(stds, dtype=np.float32),
+        np.asarray(idxs, dtype=np.int64),
+    )
 
 
-def _save_layer_profile_plot(fn_profiles, non_fn_profiles, out_path, log_scale=True):
+def _save_layer_profile_plot(fn_mean_map, non_fn_mean_map, out_path, log_scale=True):
     out_path = Path(out_path)
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
-    fn_mean, fn_std, fn_idx = _profile_stats(fn_profiles)
-    non_mean, non_std, non_idx = _profile_stats(non_fn_profiles)
+    fn_mean, fn_std, fn_idx = _profile_stats_from_mean_map(fn_mean_map)
+    non_mean, non_std, non_idx = _profile_stats_from_mean_map(non_fn_mean_map)
 
     fig, ax = plt.subplots(figsize=(12, 6), dpi=150)
     fig.patch.set_facecolor("white")
@@ -2008,8 +2012,8 @@ def run_layer_grad_csv(config, run_dir):
             _save_heatmap_png(diff_map, viz_dir / "diff_map.png")
         if viz_save_graph:
             _save_layer_profile_plot(
-                fn_profiles=viz_profiles["fn"],
-                non_fn_profiles=viz_profiles["non_fn"],
+                fn_mean_map=fn_mean,
+                non_fn_mean_map=non_fn_mean,
                 out_path=viz_dir / "profile_mean_std_log.png",
                 log_scale=True,
             )
