@@ -2015,6 +2015,8 @@ def run_layer_grad_csv(config, run_dir):
     viz_maps_saved = False
     viz_saved_early = False
     viz_dir = run_dir / "images"
+    if viz_enabled:
+        viz_dir.mkdir(parents=True, exist_ok=True)
     if viz_enabled and viz_save_per_image:
         if viz_max_by_group["fn"] > 0:
             (viz_dir / "per_image" / "fn").mkdir(parents=True, exist_ok=True)
@@ -2196,8 +2198,15 @@ def run_layer_grad_csv(config, run_dir):
                                 layer_param_shapes=layer_param_shapes,
                             )
                             grad_map_norm = _normalize_layer_map(grad_map, mode=viz_normalize)
-                            with np.errstate(invalid="ignore"):
-                                layer_profile = np.nanmean(grad_map_norm, axis=1).astype(np.float32)
+                            if grad_map_norm.size == 0:
+                                layer_profile = np.zeros((0,), dtype=np.float32)
+                            else:
+                                finite_mask = np.isfinite(grad_map_norm)
+                                row_count = finite_mask.sum(axis=1).astype(np.float32)
+                                row_sum = np.where(finite_mask, grad_map_norm, 0.0).sum(axis=1).astype(np.float32)
+                                layer_profile = np.full((grad_map_norm.shape[0],), np.nan, dtype=np.float32)
+                                valid_rows = row_count > 0
+                                layer_profile[valid_rows] = row_sum[valid_rows] / row_count[valid_rows]
                             viz_profiles[group_key].append(layer_profile)
                             viz_maps[group_key].append(grad_map_norm)
                             if viz_save_per_image:
