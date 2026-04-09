@@ -4,6 +4,7 @@ from torch.utils.data import ConcatDataset, DataLoader
 import yaml
 
 from dataloaders.datasets.coco import COCODataset
+from dataloaders.datasets.null_image import NullImageDataset
 from dataloaders.datasets.openimages import OpenImagesDataset
 from dataloaders.datasets.voc import VOCDataset
 
@@ -71,10 +72,20 @@ def _build_single_dataset(name, dataset_cfg, root, split_key, img_size):
             min_gt_boxes=min_gt_boxes,
         )
 
+    if name == "null_image":
+        if "num_samples" not in dataset_cfg:
+            raise ValueError("dataset.null_image.num_samples is required.")
+        return NullImageDataset(
+            num_samples=dataset_cfg["num_samples"],
+            img_size=img_size,
+            seed=dataset_cfg.get("seed"),
+        )
+
     raise ValueError(f"Unsupported dataset name: {name}")
 
 
 def build_dataset(config, split="train"):
+    mode = get_mode(config)
     root_dataset_cfg = config["dataset"]
     names = _normalize_dataset_names(root_dataset_cfg)
 
@@ -95,11 +106,15 @@ def build_dataset(config, split="train"):
             raise ValueError(f"dataset.used_dataset includes '{name}' but dataset.{name} is not defined.")
         dataset_cfg = root_dataset_cfg[name]
 
-        root_path = Path(dataset_cfg["root"])
-        if not root_path.is_absolute():
-            root_path = (PROJECT_ROOT / root_path).resolve()
-        root = str(root_path)
+        if name == "null_image" and mode != "predict":
+            raise ValueError("dataset.null_image is supported only when mode='predict'.")
 
+        root = None
+        if name != "null_image":
+            root_path = Path(dataset_cfg["root"])
+            if not root_path.is_absolute():
+                root_path = (PROJECT_ROOT / root_path).resolve()
+            root = str(root_path)
         datasets.append(_build_single_dataset(name, dataset_cfg, root, split_key, img_size))
 
     if len(datasets) == 1:
