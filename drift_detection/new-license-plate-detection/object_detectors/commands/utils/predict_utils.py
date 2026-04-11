@@ -1423,12 +1423,10 @@ def draw_predictions(image_chw, boxes, labels, scores):
 
 def has_fn_for_image(gt_boxes, gt_class_names, pred_boxes, pred_class_names, iou_match_threshold):
     matched_pred_indices = set()
-    for gt_box, gt_name in zip(gt_boxes, gt_class_names):
+    for gt_box, _gt_name in zip(gt_boxes, gt_class_names):
         found_match = False
-        for pred_idx, (pred_box, pred_name) in enumerate(zip(pred_boxes, pred_class_names)):
+        for pred_idx, (pred_box, _pred_name) in enumerate(zip(pred_boxes, pred_class_names)):
             if pred_idx in matched_pred_indices:
-                continue
-            if not classes_match(gt_name, pred_name):
                 continue
             if box_iou_xyxy(gt_box, pred_box) >= iou_match_threshold:
                 matched_pred_indices.add(pred_idx)
@@ -1442,12 +1440,10 @@ def has_fn_for_image(gt_boxes, gt_class_names, pred_boxes, pred_class_names, iou
 def get_fn_gt_indices(gt_boxes, gt_class_names, pred_boxes, pred_class_names, iou_match_threshold):
     matched_pred_indices = set()
     fn_gt_indices = []
-    for gt_idx, (gt_box, gt_name) in enumerate(zip(gt_boxes, gt_class_names)):
+    for gt_idx, (gt_box, _gt_name) in enumerate(zip(gt_boxes, gt_class_names)):
         found_match = False
-        for pred_idx, (pred_box, pred_name) in enumerate(zip(pred_boxes, pred_class_names)):
+        for pred_idx, (pred_box, _pred_name) in enumerate(zip(pred_boxes, pred_class_names)):
             if pred_idx in matched_pred_indices:
-                continue
-            if not classes_match(gt_name, pred_name):
                 continue
             if box_iou_xyxy(gt_box, pred_box) >= iou_match_threshold:
                 matched_pred_indices.add(pred_idx)
