@@ -2059,7 +2059,7 @@ def run_layer_grad_csv(config, run_dir):
                 fn_mean_map=fn_mean,
                 non_fn_mean_map=non_fn_mean,
                 out_path=viz_dir / "profile_mean_std_log.png",
-                log_scale=True,
+                log_scale=False,
             )
         return True
 
