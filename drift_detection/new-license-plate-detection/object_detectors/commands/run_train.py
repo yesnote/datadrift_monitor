@@ -6,10 +6,10 @@ from pathlib import Path
 
 import numpy as np
 import torch
+import torch.nn.functional as F
 from tqdm import tqdm
 
 from dataloaders.dataloader_yolo import create_dataloader
-from dataloaders.utils.yolo_datasets import letterbox
 from losses.loss import build_loss
 from models.yolo.models.experimental import attempt_load
 from models.yolo.utils.general import coco80_to_coco91_class
@@ -51,16 +51,38 @@ def _prepare_batch(images, img_size, device):
     infer_tensors = []
     ratios = []
     pads = []
+    pad_value = float(114.0 / 255.0)
     for img in images:
-        image_np = img.permute(1, 2, 0).cpu().numpy()
-        image_np = np.clip(image_np * 255.0, 0, 255).astype(np.uint8)
-        resized, ratio, pad = letterbox(image_np, new_shape=(out_h, out_w), auto=False)
-        resized = resized.transpose((2, 0, 1))
-        infer_tensor = torch.from_numpy(np.ascontiguousarray(resized)).float().to(device) / 255.0
-        infer_tensors.append(infer_tensor.unsqueeze(0))
-        ratios.append(ratio)
-        pads.append(pad)
-    return torch.cat(infer_tensors, dim=0), ratios, pads
+        # img: [C,H,W] float tensor in [0,1]
+        c, h, w = int(img.shape[0]), int(img.shape[1]), int(img.shape[2])
+        if c != 3:
+            raise ValueError(f"Expected 3-channel image tensor, got shape={tuple(img.shape)}")
+
+        scale = min(float(out_h) / float(h), float(out_w) / float(w))
+        new_h = max(1, int(round(h * scale)))
+        new_w = max(1, int(round(w * scale)))
+
+        resized = F.interpolate(
+            img.unsqueeze(0),
+            size=(new_h, new_w),
+            mode="bilinear",
+            align_corners=False,
+        ).squeeze(0)
+
+        pad_h = out_h - new_h
+        pad_w = out_w - new_w
+        top = int(pad_h // 2)
+        bottom = int(pad_h - top)
+        left = int(pad_w // 2)
+        right = int(pad_w - left)
+        resized = F.pad(resized, (left, right, top, bottom), value=pad_value)
+
+        infer_tensors.append(resized)
+        ratios.append((scale, scale))
+        pads.append((float(left), float(top)))
+
+    infer_batch = torch.stack(infer_tensors, dim=0).to(device=device, non_blocking=True)
+    return infer_batch, ratios, pads
 
 
 def _to_yolo_targets(targets, ratios, pads, img_h, img_w, device):
@@ -163,7 +185,7 @@ def _run_one_epoch(model, dataloader, loss_fn, optimizer, img_size, device, trai
     if train_mode:
         model.train()
     else:
-        model.train()
+        model.eval()
 
     total_loss = 0.0
     total_steps = 0
@@ -228,6 +250,9 @@ def run_train(config, run_dir):
 
     _set_seed(seed)
     device = _resolve_device(config.get("model", {}).get("device", "cuda"))
+    print(f"[train] device={device}")
+    if str(device) == "cpu":
+        print("[train][warn] CUDA unavailable -> training on CPU (very slow).")
 
     train_loader = create_dataloader(config, split="train")
     val_loader = None
