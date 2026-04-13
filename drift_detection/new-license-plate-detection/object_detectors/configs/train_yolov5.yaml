@@ -10,6 +10,7 @@ model:
 
 dataset:
   used_dataset: coco
+  
   coco:
     root: object_detectors/datasets/COCO
     train_split: train2017
@@ -102,12 +103,14 @@ dataset:
       - teddy bear
       - hair drier
       - toothbrush
+  
   voc:
     root: object_detectors/datasets/VOCdevkit/VOC2012
     train_split: train
     val_split: val
     test_split: test
     num_classes: 20
+  
   openimages:
     root: object_detectors/datasets/openimages
     train_split: train
