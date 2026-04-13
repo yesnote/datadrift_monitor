@@ -114,13 +114,8 @@ def main():
         if args.run_dir:
             run_dir = _resolve_run_dir(args.run_dir)
         else:
-            training_cfg = config.get("training", {})
-            save_dir = training_cfg.get("save_dir", "")
-            if isinstance(save_dir, str) and save_dir.strip():
-                run_dir = _resolve_run_dir(save_dir.strip())
-            else:
-                timestamp = datetime.now().strftime("%m-%d-%Y_%H;%M")
-                run_dir = (PROJECT_ROOT / "runs" / "train" / f"{timestamp}_yolov5").resolve()
+            timestamp = datetime.now().strftime("%m-%d-%Y_%H;%M")
+            run_dir = (PROJECT_ROOT / "runs" / "train" / f"{timestamp}_yolov5").resolve()
         run_dir.mkdir(parents=True, exist_ok=True)
         save_used_config(config_path, run_dir)
         run_train(config, run_dir)
