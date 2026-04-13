@@ -28,7 +28,6 @@ dataset:
     train_split: train
     val_split: val
     test_split: test
-    num_classes: 20
   
   openimages:
     root: object_detectors/datasets/openimages
