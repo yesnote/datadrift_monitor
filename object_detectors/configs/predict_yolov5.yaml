@@ -47,7 +47,7 @@ dataloader:
 
 output:
   unit: image   # image | bbox
-  uncertainty: layer_grad  # gt | score | full_softmax | entropy | energy | mc_dropout | meta_detect | feature | feature_grad | layer_grad
+  uncertainty: layer_grad  # gt | score | full_softmax | entropy | energy | mc_dropout | ensemble | meta_detect | feature | feature_grad | layer_grad
   pre_nms:
     enabled: false   # true: use pre-NMS preds | false: use post-NMS preds
     pre_nms_ratio: 1.0  # keep top ratio (0~1) of pre-NMS candidates
@@ -75,7 +75,8 @@ output:
       queue_maxsize: 2
       vector_reduction: [L1, L2, min, max, mean, std]  # only for unit: image
 
-    # TODO: ensemble
+    ensemble:
+      vector_reduction: [L1, L2, min, max, mean, std]  # only for unit: image
     
     meta_detect:
       score_threshold: 0.0

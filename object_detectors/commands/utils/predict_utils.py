@@ -92,7 +92,7 @@ def load_gt_category_maps(config, split):
     return {}
 
 
-def build_detector(config):
+def build_detector(config, model_weight=None):
     torch.backends.cudnn.benchmark = False
     model_cfg = config["model"]
     device_str = model_cfg.get("device", "cuda")
@@ -103,7 +103,10 @@ def build_detector(config):
     confidence = model_cfg.get("confidence_threshold", 0.4)
     iou_thresh = model_cfg.get("iou_threshold", 0.45)
 
-    weight_path = Path(model_cfg["weights"])
+    weight_source = model_weight if model_weight is not None else model_cfg["weights"]
+    if isinstance(weight_source, (list, tuple)):
+        raise ValueError("build_detector expects a single weight path, got a list.")
+    weight_path = Path(weight_source)
     if not weight_path.is_absolute():
         weight_path = (PROJECT_ROOT / weight_path).resolve()
 
@@ -245,6 +248,7 @@ def parse_output_config(output_cfg):
         score_cfg = {}
         meta_detect_cfg = {}
         mc_dropout_cfg = {}
+        ensemble_cfg = {}
         energy_cfg = {}
         entropy_cfg = {}
         full_softmax_cfg = {}
@@ -257,6 +261,7 @@ def parse_output_config(output_cfg):
         score_cfg = save_csv_cfg.get("score", {})
         meta_detect_cfg = save_csv_cfg.get("meta_detect", {})
         mc_dropout_cfg = save_csv_cfg.get("mc_dropout", {})
+        ensemble_cfg = save_csv_cfg.get("ensemble", {})
         energy_cfg = save_csv_cfg.get("energy", {})
         entropy_cfg = save_csv_cfg.get("entropy", {})
         full_softmax_cfg = save_csv_cfg.get("full_softmax", {})
@@ -267,10 +272,10 @@ def parse_output_config(output_cfg):
     if not (0.0 <= float(pre_nms_ratio) <= 1.0):
         raise ValueError("output.pre_nms.pre_nms_ratio must be in [0,1].")
 
-    if uncertainty not in {"gt", "score", "meta_detect", "mc_dropout", "energy", "entropy", "full_softmax", "feature", "feature_grad", "layer_grad"}:
+    if uncertainty not in {"gt", "score", "meta_detect", "mc_dropout", "ensemble", "energy", "entropy", "full_softmax", "feature", "feature_grad", "layer_grad"}:
         raise ValueError(
             f"Unsupported output.uncertainty='{uncertainty}'. "
-            "Use 'gt', 'score', 'meta_detect', 'mc_dropout', 'energy', 'entropy', 'full_softmax', 'feature', 'feature_grad' or 'layer_grad'."
+            "Use 'gt', 'score', 'meta_detect', 'mc_dropout', 'ensemble', 'energy', 'entropy', 'full_softmax', 'feature', 'feature_grad' or 'layer_grad'."
         )
 
     gt_iou_match_threshold = float(gt_cfg.get("iou_match_threshold", 0.5))
@@ -281,6 +286,7 @@ def parse_output_config(output_cfg):
     mc_dropout_rate = float(mc_dropout_cfg.get("dropout_rate", 0.5))
     mc_queue_maxsize = int(mc_dropout_cfg.get("queue_maxsize", 8))
     mc_vector_reduction = ["1-norm", "2-norm", "min", "max", "mean", "std"]
+    ensemble_vector_reduction = ["1-norm", "2-norm", "min", "max", "mean", "std"]
     score_vector_reduction = ["1-norm", "2-norm", "min", "max", "mean", "std"]
     energy_vector_reduction = ["1-norm", "2-norm", "min", "max", "mean", "std"]
     entropy_vector_reduction = ["1-norm", "2-norm", "min", "max", "mean", "std"]
@@ -401,6 +407,14 @@ def parse_output_config(output_cfg):
         mc_vector_reduction = normalize_vector_reduction(
             mc_dropout_cfg.get("vector_reduction", ["L1", "L2", "min", "max", "mean", "std"])
         )
+    elif uncertainty == "ensemble":
+        if unit not in {"image", "bbox"}:
+            msg = "Invalid config: output.uncertainty='ensemble' requires output.unit in {'image','bbox'}."
+            warnings.warn(msg)
+            raise ValueError(msg)
+        ensemble_vector_reduction = normalize_vector_reduction(
+            ensemble_cfg.get("vector_reduction", ["L1", "L2", "min", "max", "mean", "std"])
+        )
     elif uncertainty == "energy":
         if unit not in {"image", "bbox"}:
             msg = "Invalid config: output.uncertainty='energy' requires output.unit in {'image','bbox'}."
@@ -506,6 +520,7 @@ def parse_output_config(output_cfg):
         "mc_dropout_rate": mc_dropout_rate,
         "mc_queue_maxsize": mc_queue_maxsize,
         "mc_vector_reduction": mc_vector_reduction,
+        "ensemble_vector_reduction": ensemble_vector_reduction,
         "score_vector_reduction": score_vector_reduction,
         "energy_vector_reduction": energy_vector_reduction,
         "entropy_vector_reduction": entropy_vector_reduction,
