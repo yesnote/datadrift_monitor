@@ -190,6 +190,23 @@ def _run_one_epoch(model, dataloader, loss_fn, optimizer, img_size, device, trai
     total_loss = 0.0
     total_steps = 0
     pbar = tqdm(dataloader, total=len(dataloader), desc="train" if train_mode else "val")
+
+    def _normalize_preds_for_yolo_loss(model_output):
+        # ComputeLoss expects a list of per-detection-layer tensors:
+        # [bs, na, ny, nx, no] for each detection layer.
+        if isinstance(model_output, list):
+            return model_output
+        if isinstance(model_output, tuple):
+            # In eval mode our Detect head returns:
+            # (cat_pred, cat_logits, per_layer_preds, priors)
+            if len(model_output) > 2 and isinstance(model_output[2], list):
+                return model_output[2]
+            if len(model_output) > 0 and isinstance(model_output[0], list):
+                return model_output[0]
+        raise TypeError(
+            f"Unsupported model output type for YOLO loss: {type(model_output)}"
+        )
+
     for images, targets in pbar:
         infer_batch, ratios, pads = _prepare_batch(images, img_size=img_size, device=device)
         img_h, img_w = int(infer_batch.shape[2]), int(infer_batch.shape[3])
@@ -197,13 +214,13 @@ def _run_one_epoch(model, dataloader, loss_fn, optimizer, img_size, device, trai
 
         if train_mode:
             optimizer.zero_grad(set_to_none=True)
-            preds = model(infer_batch)
+            preds = _normalize_preds_for_yolo_loss(model(infer_batch))
             loss, _loss_items = loss_fn(preds, yolo_targets)
             loss.backward()
             optimizer.step()
         else:
             with torch.no_grad():
-                preds = model(infer_batch)
+                preds = _normalize_preds_for_yolo_loss(model(infer_batch))
                 loss, _loss_items = loss_fn(preds, yolo_targets)
 
         loss_value = float(loss.detach().cpu().item())
