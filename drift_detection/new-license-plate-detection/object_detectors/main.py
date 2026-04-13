@@ -38,6 +38,12 @@ def _normalize_config_paths(config):
     weight_path = model_cfg.get("weights")
     if isinstance(weight_path, str) and weight_path:
         model_cfg["weights"] = str(_resolve_path_value(weight_path))
+    elif isinstance(weight_path, (list, tuple)):
+        model_cfg["weights"] = [
+            str(_resolve_path_value(v))
+            for v in weight_path
+            if isinstance(v, str) and v
+        ]
 
     dataset_cfg = config.get("dataset", {})
     used_dataset = dataset_cfg.get("used_dataset")
