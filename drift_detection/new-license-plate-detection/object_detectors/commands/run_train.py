@@ -133,9 +133,7 @@ def _build_model_for_train(config, device):
     if use_finetune:
         model = attempt_load(weights, device=device, fuse=False)
     else:
-        arch_ref = model_cfg.get("default_arch_weights")
-        if not arch_ref:
-            arch_ref = str((PROJECT_ROOT / "models" / "yolo" / "weights" / "yolov5x.pt").resolve())
+        arch_ref = str((PROJECT_ROOT / "models" / "yolo" / "weights" / "yolov5x.pt").resolve())
         model = attempt_load(arch_ref, device=device, fuse=False)
         for module in model.modules():
             if hasattr(module, "reset_parameters"):
