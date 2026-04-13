@@ -22,7 +22,6 @@ dataset:
     train_annotation_file: instances_train2017.json
     val_annotation_file: instances_val2017.json
     test_annotation_file: instances_test2017.json
-    num_classes: 80
   
   voc:
     root: object_detectors/datasets/VOCdevkit/VOC2012
