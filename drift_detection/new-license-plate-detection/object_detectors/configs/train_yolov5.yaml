@@ -2,7 +2,7 @@ mode: train
 
 model:
   type: yolov5
-  weights: object_detectors/models/yolo/weights/yolov5x.pt  # empty or null -> train from scratch init
+  weights: object_detectors/models/yolo/weights/yolov5x.pt
   default_arch_weights: object_detectors/models/yolo/weights/yolov5x.pt
   img_size: 640
   confidence_threshold: 0.25
