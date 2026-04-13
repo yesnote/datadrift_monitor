@@ -38,9 +38,6 @@ def _normalize_config_paths(config):
     weight_path = model_cfg.get("weights")
     if isinstance(weight_path, str) and weight_path:
         model_cfg["weights"] = str(_resolve_path_value(weight_path))
-    default_arch_weights = model_cfg.get("default_arch_weights")
-    if isinstance(default_arch_weights, str) and default_arch_weights:
-        model_cfg["default_arch_weights"] = str(_resolve_path_value(default_arch_weights))
 
     dataset_cfg = config.get("dataset", {})
     used_dataset = dataset_cfg.get("used_dataset")
