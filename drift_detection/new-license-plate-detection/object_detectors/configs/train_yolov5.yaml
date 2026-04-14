@@ -36,7 +36,7 @@ dataset:
     min_gt_boxes: 1  # keep only images with at least this many GT boxes
 
 dataloader:
-  batch_size: 8
+  batch_size: 12
   num_workers: 4
   pin_memory: true
   shuffle_train: true
