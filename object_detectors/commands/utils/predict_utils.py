@@ -270,7 +270,7 @@ def parse_output_config(output_cfg):
         layer_grad_cfg = {}
     elif isinstance(save_csv_cfg, dict):
         if "layer_grad_ref" in save_csv_cfg:
-            raise ValueError("output.<uncertainty>.save_csv.layer_grad_ref was removed. Use output.layer_grad.save_image.layer_grad.csv instead.")
+            raise ValueError("output.<uncertainty>.save_csv.layer_grad_ref was removed. Use output.layer_grad.save_image.csv instead.")
         save_csv_enabled = bool(save_csv_cfg.get("enabled", False))
         gt_cfg = save_csv_cfg if uncertainty == "gt" else {}
         score_cfg = save_csv_cfg if uncertainty == "score" else {}
@@ -571,6 +571,12 @@ def parse_output_config(output_cfg):
         legacy_max_num = int(save_image_cfg.get("max_num", 1))
         gt_image_step = int(gt_image_cfg.get("step", legacy_step))
         gt_image_max_num = int(gt_image_cfg.get("max_num", legacy_max_num))
+
+    if uncertainty == "layer_grad" and isinstance(save_image_cfg, dict):
+        if "layer_grad" in save_image_cfg:
+            raise ValueError("output.layer_grad.save_image.layer_grad was removed. Put those keys directly under output.layer_grad.save_image.")
+        layer_grad_image_cfg = dict(save_image_cfg)
+        layer_grad_image_cfg.pop("enabled", None)
 
     if gt_image_step <= 0:
         raise ValueError("output.save_image.gt.step must be >= 1.")
