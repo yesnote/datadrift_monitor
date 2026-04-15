@@ -2488,10 +2488,10 @@ def run_layer_grad_csv(config, run_dir):
     viz_save_mean_maps = bool(parsed.get("save_image_layer_grad_save_mean_maps", True))
     viz_save_per_image = bool(parsed.get("save_image_layer_grad_save_per_image", False))
     viz_save_graph = bool(parsed.get("save_image_layer_grad_save_graph", True))
-    layer_grad_ref_enabled = bool(parsed.get("save_csv_layer_grad_ref_enabled", False))
-    layer_grad_ref_save_running_log = bool(parsed.get("save_csv_layer_grad_ref_save_running_log", True))
-    layer_grad_ref_save_final_raw_map_csv = bool(parsed.get("save_csv_layer_grad_ref_save_final_raw_map_csv", True))
-    layer_grad_ref_save_final_norm_map_csv = bool(parsed.get("save_csv_layer_grad_ref_save_final_norm_map_csv", True))
+    layer_grad_ref_enabled = bool(parsed.get("save_image_layer_grad_ref_enabled", False))
+    layer_grad_ref_save_running_log = bool(parsed.get("save_image_layer_grad_ref_save_running_log", True))
+    layer_grad_ref_save_final_raw_map_csv = bool(parsed.get("save_image_layer_grad_ref_save_final_raw_map_csv", True))
+    layer_grad_ref_save_final_norm_map_csv = bool(parsed.get("save_image_layer_grad_ref_save_final_norm_map_csv", True))
 
     if not save_csv and not viz_enabled:
         return
