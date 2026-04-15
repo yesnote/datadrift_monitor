@@ -128,10 +128,12 @@ output:
       unit: image  # image | bbox
       pre_nms:
         enabled: false
-      target_value: [obj, cls]
-      target_layer: ["model.24.m.0", "model.24.m.1", "model.24.m.2"]
-      map_reduction: none
-      vector_reduction: [L1, L2, min, max, mean, std]
+      gradient:
+        scalar: [obj, cls]
+        layer: ["model.24.m.0", "model.24.m.1", "model.24.m.2"]
+      reduction:
+        map: none
+        vector: [L1, L2, min, max, mean, std]
 
   layer_grad:
     save_csv:

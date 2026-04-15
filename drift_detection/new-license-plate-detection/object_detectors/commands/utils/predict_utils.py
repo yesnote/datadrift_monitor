@@ -382,8 +382,22 @@ def parse_output_config(output_cfg):
     layer_pseudo_gt = "cand"
     if uncertainty == "feature_grad":
         if unit not in {"image", "bbox"}:
-            raise ValueError("output.save_csv.feature_grad.unit must be 'image' or 'bbox'.")
-        target_values = [v.lower() for v in normalize_to_list(feature_grad_cfg.get("target_value", ["obj"]))]
+            raise ValueError("output.feature_grad.save_csv.unit must be 'image' or 'bbox'.")
+        legacy_feature_grad_keys = {"target_value", "target_layer", "map_reduction", "vector_reduction"}
+        used_feature_grad_legacy_keys = sorted([k for k in legacy_feature_grad_keys if k in feature_grad_cfg])
+        if used_feature_grad_legacy_keys:
+            raise ValueError(
+                "Legacy output.feature_grad.save_csv keys are not supported: "
+                f"{used_feature_grad_legacy_keys}. Use feature_grad.gradient/reduction schema."
+            )
+        feature_grad_gradient_cfg = feature_grad_cfg.get("gradient", {})
+        feature_grad_reduction_cfg = feature_grad_cfg.get("reduction", {})
+        if not isinstance(feature_grad_gradient_cfg, dict):
+            raise ValueError("output.feature_grad.save_csv.gradient must be a dict.")
+        if not isinstance(feature_grad_reduction_cfg, dict):
+            raise ValueError("output.feature_grad.save_csv.reduction must be a dict.")
+
+        target_values = [v.lower() for v in normalize_to_list(feature_grad_gradient_cfg.get("scalar", ["obj"]))]
         valid_values = {"obj", "cls", "loss", "obj_loss", "cls_loss", "bbox_loss"}
         invalid_values = [v for v in target_values if v not in valid_values]
         if invalid_values:
@@ -397,14 +411,14 @@ def parse_output_config(output_cfg):
                     expanded.append(v)
             target_values = list(dict.fromkeys(expanded))
 
-        target_layers = normalize_to_list(feature_grad_cfg.get("target_layer", []))
+        target_layers = normalize_to_list(feature_grad_gradient_cfg.get("layer", []))
         if not target_layers and save_csv_enabled:
-            raise ValueError("output.save_csv.feature_grad.target_layer must contain at least one layer name.")
-        feature_map_reduction = str(feature_grad_cfg.get("map_reduction", "energy")).strip().lower()
+            raise ValueError("output.feature_grad.save_csv.gradient.layer must contain at least one layer name.")
+        feature_map_reduction = str(feature_grad_reduction_cfg.get("map", "energy")).strip().lower()
         if feature_map_reduction not in {"none", "energy"}:
-            raise ValueError("output.save_csv.feature_grad.map_reduction must be 'none' or 'energy'.")
+            raise ValueError("output.feature_grad.save_csv.reduction.map must be 'none' or 'energy'.")
         feature_vector_reduction = normalize_vector_reduction(
-            feature_grad_cfg.get("vector_reduction", ["L1", "L2", "min", "max", "mean", "std"])
+            feature_grad_reduction_cfg.get("vector", ["L1", "L2", "min", "max", "mean", "std"])
         )
     elif uncertainty == "layer_grad":
         if unit not in {"image", "bbox"}:
