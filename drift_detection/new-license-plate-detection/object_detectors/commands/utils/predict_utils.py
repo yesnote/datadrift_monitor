@@ -239,16 +239,21 @@ def create_layer_grad_buffer(model, target_layers, map_reduction="energy", vecto
 
 
 def parse_output_config(output_cfg):
-    save_csv_cfg = output_cfg.get("save_csv", {})
-    save_image_cfg = output_cfg.get("save_image", {})
-
     if "unit" in output_cfg:
-        raise ValueError("output.unit was removed. Set output.save_csv.<uncertainty>.unit instead.")
+        raise ValueError("output.unit was removed. Set output.<uncertainty>.save_csv.unit instead.")
     if "pre_nms" in output_cfg:
-        raise ValueError("output.pre_nms was removed. Set output.save_csv.<uncertainty>.pre_nms instead.")
+        raise ValueError("output.pre_nms was removed. Set output.<uncertainty>.save_csv.pre_nms instead.")
+    if "save_csv" in output_cfg:
+        raise ValueError("output.save_csv was removed. Use output.<uncertainty>.save_csv.")
+    if "save_image" in output_cfg:
+        raise ValueError("output.save_image was removed. Use output.<uncertainty>.save_image.")
 
     uncertainty = str(output_cfg.get("uncertainty", "gt")).lower()
-    active_uncertainty_cfg = {}
+    active_uncertainty_root = output_cfg.get(uncertainty, {})
+    if not isinstance(active_uncertainty_root, dict):
+        active_uncertainty_root = {}
+    save_csv_cfg = active_uncertainty_root.get("save_csv", {})
+    save_image_cfg = active_uncertainty_root.get("save_image", {})
 
     if isinstance(save_csv_cfg, bool):
         save_csv_enabled = save_csv_cfg
@@ -264,29 +269,22 @@ def parse_output_config(output_cfg):
         feature_grad_cfg = {}
         layer_grad_cfg = {}
     elif isinstance(save_csv_cfg, dict):
-        if "unit" in save_csv_cfg:
-            raise ValueError("output.save_csv.unit was removed. Set output.save_csv.<uncertainty>.unit instead.")
-        if "pre_nms" in save_csv_cfg:
-            raise ValueError("output.save_csv.pre_nms was removed. Set output.save_csv.<uncertainty>.pre_nms instead.")
         if "layer_grad_ref" in save_csv_cfg:
-            raise ValueError("output.save_csv.layer_grad_ref was removed. Use output.save_image.layer_grad.csv instead.")
-        save_csv_enabled = bool(save_csv_cfg.get("enabled", True))
-        gt_cfg = save_csv_cfg.get("gt", {})
-        score_cfg = save_csv_cfg.get("score", {})
-        meta_detect_cfg = save_csv_cfg.get("meta_detect", {})
-        mc_dropout_cfg = save_csv_cfg.get("mc_dropout", {})
-        ensemble_cfg = save_csv_cfg.get("ensemble", {})
-        energy_cfg = save_csv_cfg.get("energy", {})
-        entropy_cfg = save_csv_cfg.get("entropy", {})
-        full_softmax_cfg = save_csv_cfg.get("full_softmax", {})
-        feature_cfg = save_csv_cfg.get("feature", {})
-        feature_grad_cfg = save_csv_cfg.get("feature_grad", {})
-        layer_grad_cfg = save_csv_cfg.get("layer_grad", {})
-        active_uncertainty_cfg = save_csv_cfg.get(uncertainty, {})
-        if not isinstance(active_uncertainty_cfg, dict):
-            active_uncertainty_cfg = {}
+            raise ValueError("output.<uncertainty>.save_csv.layer_grad_ref was removed. Use output.layer_grad.save_image.layer_grad.csv instead.")
+        save_csv_enabled = bool(save_csv_cfg.get("enabled", False))
+        gt_cfg = save_csv_cfg if uncertainty == "gt" else {}
+        score_cfg = save_csv_cfg if uncertainty == "score" else {}
+        meta_detect_cfg = save_csv_cfg if uncertainty == "meta_detect" else {}
+        mc_dropout_cfg = save_csv_cfg if uncertainty == "mc_dropout" else {}
+        ensemble_cfg = save_csv_cfg if uncertainty == "ensemble" else {}
+        energy_cfg = save_csv_cfg if uncertainty == "energy" else {}
+        entropy_cfg = save_csv_cfg if uncertainty == "entropy" else {}
+        full_softmax_cfg = save_csv_cfg if uncertainty == "full_softmax" else {}
+        feature_cfg = save_csv_cfg if uncertainty == "feature" else {}
+        feature_grad_cfg = save_csv_cfg if uncertainty == "feature_grad" else {}
+        layer_grad_cfg = save_csv_cfg if uncertainty == "layer_grad" else {}
     else:
-        raise ValueError("output.save_csv must be a bool or dict.")
+        raise ValueError("output.<uncertainty>.save_csv must be a bool or dict.")
 
     if not isinstance(gt_cfg, dict):
         gt_cfg = {}
@@ -311,35 +309,36 @@ def parse_output_config(output_cfg):
     if not isinstance(layer_grad_cfg, dict):
         layer_grad_cfg = {}
 
-    unit = str(active_uncertainty_cfg.get("unit", "image")).lower()
+    save_csv_dict = save_csv_cfg if isinstance(save_csv_cfg, dict) else {}
+    unit = str(save_csv_dict.get("unit", "image")).lower()
     pre_nms_allowed = {"score", "full_softmax", "energy", "entropy", "feature_grad", "layer_grad"}
     pre_nms_forbidden = {"gt", "meta_detect", "feature", "mc_dropout", "ensemble"}
     pre_nms = False
     pre_nms_ratio = 1.0
     if uncertainty in pre_nms_allowed:
-        pre_nms_cfg = active_uncertainty_cfg.get("pre_nms", {"enabled": False})
+        pre_nms_cfg = save_csv_dict.get("pre_nms", {"enabled": False})
         if isinstance(pre_nms_cfg, dict):
             pre_nms = bool(pre_nms_cfg.get("enabled", False))
             if pre_nms:
                 if "pre_nms_ratio" not in pre_nms_cfg:
                     raise ValueError(
-                        f"output.save_csv.{uncertainty}.pre_nms.pre_nms_ratio is required when pre_nms.enabled=true."
+                        f"output.{uncertainty}.save_csv.pre_nms.pre_nms_ratio is required when pre_nms.enabled=true."
                     )
                 pre_nms_ratio = float(pre_nms_cfg.get("pre_nms_ratio"))
             else:
                 pre_nms_ratio = float(pre_nms_cfg.get("pre_nms_ratio", 1.0))
         else:
-            raise ValueError(f"output.save_csv.{uncertainty}.pre_nms must be a dict with 'enabled' and optional 'pre_nms_ratio'.")
+            raise ValueError(f"output.{uncertainty}.save_csv.pre_nms must be a dict with 'enabled' and optional 'pre_nms_ratio'.")
         if not (0.0 <= float(pre_nms_ratio) <= 1.0):
             raise ValueError(
-                f"output.save_csv.{uncertainty}.pre_nms.pre_nms_ratio must be in [0,1]."
+                f"output.{uncertainty}.save_csv.pre_nms.pre_nms_ratio must be in [0,1]."
             )
     elif uncertainty in pre_nms_forbidden:
-        if "pre_nms" in active_uncertainty_cfg:
-            raise ValueError(f"output.save_csv.{uncertainty}.pre_nms is not supported for this uncertainty.")
-        if "pre_nms_ratio" in active_uncertainty_cfg:
+        if "pre_nms" in save_csv_dict:
+            raise ValueError(f"output.{uncertainty}.save_csv.pre_nms is not supported for this uncertainty.")
+        if "pre_nms_ratio" in save_csv_dict:
             raise ValueError(
-                f"output.save_csv.{uncertainty}.pre_nms_ratio is not supported. This uncertainty does not expose pre_nms options."
+                f"output.{uncertainty}.save_csv.pre_nms_ratio is not supported. This uncertainty does not expose pre_nms options."
             )
 
     if uncertainty not in {"gt", "score", "meta_detect", "mc_dropout", "ensemble", "energy", "entropy", "full_softmax", "feature", "feature_grad", "layer_grad"}:

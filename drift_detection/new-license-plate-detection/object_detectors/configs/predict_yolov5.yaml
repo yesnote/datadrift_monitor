@@ -48,107 +48,127 @@ dataloader:
 output:
   uncertainty: layer_grad  # gt | score | full_softmax | entropy | energy | mc_dropout | ensemble | meta_detect | feature | feature_grad | layer_grad
 
-  save_csv:
-    enabled: false
-    gt: # unit:image -> fn | unit:bbox -> tp
+  gt:
+    save_csv:
+      enabled: false
       unit: image  # image | bbox
       iou_match_threshold: 0.45
+    save_image:
+      enabled: true
+      gt:
+        step: 10
+        max_num: 10
 
-    score:
+  score:
+    save_csv:
+      enabled: false
       unit: image  # image | bbox
       pre_nms:
         enabled: false
-      vector_reduction: [L1, L2, min, max, mean, std]  # only for unit: image
+      vector_reduction: [L1, L2, min, max, mean, std]
 
-    full_softmax:
+  full_softmax:
+    save_csv:
+      enabled: false
       unit: image  # image | bbox
       pre_nms:
         enabled: false
-      vector_reduction: [L1, L2, min, max, mean, std]  # only for unit: image
-    
-    entropy:
+      vector_reduction: [L1, L2, min, max, mean, std]
+
+  entropy:
+    save_csv:
+      enabled: false
       unit: image  # image | bbox
       pre_nms:
         enabled: false
-      vector_reduction: [L1, L2, min, max, mean, std]  # only for unit: image
+      vector_reduction: [L1, L2, min, max, mean, std]
 
-    energy:
+  energy:
+    save_csv:
+      enabled: false
       unit: image  # image | bbox
       pre_nms:
         enabled: false
-      vector_reduction: [L1, L2, min, max, mean, std]  # only for unit: image
+      vector_reduction: [L1, L2, min, max, mean, std]
 
-    mc_dropout:
+  mc_dropout:
+    save_csv:
+      enabled: false
       unit: image  # image | bbox
       num_runs: 30
       dropout_rate: 0.5
       queue_maxsize: 2
-      vector_reduction: [L1, L2, min, max, mean, std]  # only for unit: image
+      vector_reduction: [L1, L2, min, max, mean, std]
 
-    ensemble:
+  ensemble:
+    save_csv:
+      enabled: false
       unit: image  # image | bbox
-      vector_reduction: [L1, L2, min, max, mean, std]  # only for unit: image
-    
-    meta_detect:
+      vector_reduction: [L1, L2, min, max, mean, std]
+
+  meta_detect:
+    save_csv:
+      enabled: false
       unit: image  # image | bbox
       score_threshold: 0.0
       iou_threshold: 0.45
-      vector_reduction: [L1, L2, min, max, mean, std]  # only for unit: image
+      vector_reduction: [L1, L2, min, max, mean, std]
 
-    feature:
+  feature:
+    save_csv:
+      enabled: false
       unit: image  # image only
       target_layer: ["model.24.m.0", "model.24.m.1", "model.24.m.2"]
       map_reduction: none  # none | energy
-      vector_reduction: [L1, L2, min, max, mean, std]  # empty list [] means save raw vector
+      vector_reduction: [L1, L2, min, max, mean, std]
 
-    feature_grad:
+  feature_grad:
+    save_csv:
+      enabled: false
       unit: image  # image | bbox
       pre_nms:
         enabled: false
-      target_value: [obj, cls]  # loss | obj_loss | cls_loss | bbox_loss | obj | cls
+      target_value: [obj, cls]
       target_layer: ["model.24.m.0", "model.24.m.1", "model.24.m.2"]
-      map_reduction: none   # none | energy
-      vector_reduction: [L1, L2, min, max, mean, std]  # empty list [] means save raw vector
+      map_reduction: none
+      vector_reduction: [L1, L2, min, max, mean, std]
 
-    layer_grad:
+  layer_grad:
+    save_csv:
+      enabled: false
       unit: image  # image | bbox
       pre_nms:
         enabled: false
       gradient:
-        scalar: [loss]  # loss | obj_loss | cls_loss | bbox_loss | obj | cls
-        layer: ["model.24.m.0", "model.24.m.1", "model.24.m.2"]  # "model.17.cv3.conv", "model.20.cv3.conv", "model.23.cv3.conv"
-        target: null  # cand | null
-      reduction:
-        map: none   # none | energy
-        vector: [L1, L2, min, max, mean, std]  # empty list [] means save raw vector
-  
-  save_image:
-    enabled: true
-    gt:
-      step: 10
-      max_num: 10
-    
-    layer_grad:
-      mode: fix  # fix | convergence
-      gt: object_detectors/runs/fn_detectors/04-07-2026_14;09_gt
-      gradient:
-        scalar: [loss]  # loss | obj_loss | cls_loss | bbox_loss | obj | cls
+        scalar: [loss]
         layer: ["model.24.m.0", "model.24.m.1", "model.24.m.2"]
-        target: null  # cand | null
-      normalize: layer_minmax  # layer_minmax | layer_trimmed_minmax | none
-      save_mean_maps: true
-      save_graph: true
-      save_per_image: false
-      csv:
-        enabled: false
-        save_running_log: true
-        save_final_raw_map_csv: true
-        save_final_norm_map_csv: true
-      fix:
-        num_fn: 20
-        num_non_fn: 20
-      convergence:
-        delta_l2_tol: 1.0e-4
-        patience: 20
-        min_samples: 200
-        max_samples: 20000
+        target: null
+      reduction:
+        map: none
+        vector: [L1, L2, min, max, mean, std]
+    save_image:
+      enabled: true
+      layer_grad:
+        mode: fix  # fix | convergence
+        gt: object_detectors/runs/fn_detectors/04-07-2026_14;09_gt
+        gradient:
+          scalar: [loss]
+          layer: ["model.24.m.0", "model.24.m.1", "model.24.m.2"]
+          target: null
+        normalize: layer_minmax  # layer_minmax | layer_trimmed_minmax | none
+        save_mean_maps: true
+        save_graph: true
+        save_per_image: false
+        csv:
+          enabled: false
+          save_running_log: true
+          save_final_raw_map_csv: true
+          save_final_norm_map_csv: true
+        fix:
+          num_fn: 20
+          num_non_fn: 20
+        convergence:
+          delta_l2_tol: 1.0e-4
+          patience: 20
+          min_samples: 200
+          max_samples: 20000
