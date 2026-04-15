@@ -567,22 +567,18 @@ def parse_output_config(output_cfg):
     if not save_image_enabled:
         layer_grad_image_cfg = {
             "mode": "fix",
+            "gt": "__disabled__",
+            "gradient": {"scalar": ["loss"], "layer": ["__disabled__"], "target": "cand"},
             "normalize": "layer_minmax",
             "save_mean_maps": True,
             "save_per_image": False,
             "save_graph": True,
             "csv": {"enabled": False, "save_running_log": True, "save_final_raw_map_csv": True, "save_final_norm_map_csv": True},
             "fix": {
-                "gt": "__disabled__",
-                "gradient": {"scalar": ["loss"], "layer": ["__disabled__"], "target": "cand"},
                 "num_fn": 0,
                 "num_non_fn": 0,
             },
             "convergence": {
-                "gt": "__disabled__",
-                "gradient": {"scalar": ["loss"], "layer": ["__disabled__"], "target": "cand"},
-                "num_fn": "inf",
-                "num_non_fn": "inf",
                 "delta_l2_tol": 1e-4,
                 "patience": 20,
                 "min_samples": 200,
@@ -590,7 +586,7 @@ def parse_output_config(output_cfg):
             },
         }
 
-    layer_grad_legacy_keys = {"target_layer", "max_num_fn", "max_num_non_fn", "num_fn", "num_non_fn", "gt"}
+    layer_grad_legacy_keys = {"target_layer", "max_num_fn", "max_num_non_fn", "num_fn", "num_non_fn"}
     used_layer_grad_legacy_keys = sorted([k for k in layer_grad_legacy_keys if k in layer_grad_image_cfg])
     if used_layer_grad_legacy_keys:
         raise ValueError(
@@ -606,7 +602,10 @@ def parse_output_config(output_cfg):
         layer_grad_fix_cfg = {}
     if not isinstance(layer_grad_conv_cfg, dict):
         layer_grad_conv_cfg = {}
-    active_layer_grad_cfg = layer_grad_fix_cfg if layer_grad_mode == "fix" else layer_grad_conv_cfg
+    if any(k in layer_grad_fix_cfg for k in ("gt", "gradient")):
+        raise ValueError("output.save_image.layer_grad.fix must not contain gt/gradient. Use output.save_image.layer_grad.gt and .gradient.")
+    if any(k in layer_grad_conv_cfg for k in ("gt", "gradient")):
+        raise ValueError("output.save_image.layer_grad.convergence must not contain gt/gradient. Use output.save_image.layer_grad.gt and .gradient.")
 
     layer_grad_image_normalize = str(layer_grad_image_cfg.get("normalize", "layer_minmax")).strip().lower()
     if layer_grad_image_normalize not in {"layer_minmax", "layer_trimmed_minmax", "none"}:
@@ -617,26 +616,33 @@ def parse_output_config(output_cfg):
     layer_grad_image_save_per_image = bool(layer_grad_image_cfg.get("save_per_image", False))
     layer_grad_image_save_graph = bool(layer_grad_image_cfg.get("save_graph", True))
 
-    layer_grad_image_gt_csv = str(active_layer_grad_cfg.get("gt", "")).strip()
-    if not layer_grad_image_gt_csv:
-        raise ValueError(f"output.save_image.layer_grad.{layer_grad_mode}.gt is required.")
+    layer_grad_image_gt_dir = str(layer_grad_image_cfg.get("gt", "")).strip()
+    if not layer_grad_image_gt_dir:
+        raise ValueError("output.save_image.layer_grad.gt is required.")
+    if str(layer_grad_image_gt_dir).lower().endswith(".csv"):
+        raise ValueError("output.save_image.layer_grad.gt must be a directory path (run dir), not a CSV file path.")
+    layer_grad_image_gt_csv = str((Path(layer_grad_image_gt_dir) / "fn.csv").as_posix())
+
     layer_grad_image_num_fn = parse_count_or_inf(
-        active_layer_grad_cfg.get("num_fn", 200),
-        key_name=f"output.save_image.layer_grad.{layer_grad_mode}.num_fn",
+        layer_grad_fix_cfg.get("num_fn", 200),
+        key_name="output.save_image.layer_grad.fix.num_fn",
     )
     layer_grad_image_num_non_fn = parse_count_or_inf(
-        active_layer_grad_cfg.get("num_non_fn", 200),
-        key_name=f"output.save_image.layer_grad.{layer_grad_mode}.num_non_fn",
+        layer_grad_fix_cfg.get("num_non_fn", 200),
+        key_name="output.save_image.layer_grad.fix.num_non_fn",
     )
     if layer_grad_mode == "fix":
         if np.isinf(layer_grad_image_num_fn) or np.isinf(layer_grad_image_num_non_fn):
             raise ValueError("output.save_image.layer_grad.fix.num_fn/num_non_fn must be finite integers.")
     else:
-        if (not np.isinf(layer_grad_image_num_fn)) or (not np.isinf(layer_grad_image_num_non_fn)):
-            raise ValueError("output.save_image.layer_grad.convergence.num_fn/num_non_fn must be 'inf'.")
-    gradient_cfg_img = active_layer_grad_cfg.get("gradient", {})
+        layer_grad_image_num_fn = math.inf
+        layer_grad_image_num_non_fn = math.inf
+        if "num_fn" in layer_grad_conv_cfg or "num_non_fn" in layer_grad_conv_cfg:
+            raise ValueError("output.save_image.layer_grad.convergence.num_fn/num_non_fn are not supported.")
+
+    gradient_cfg_img = layer_grad_image_cfg.get("gradient", {})
     if not isinstance(gradient_cfg_img, dict):
-        raise ValueError(f"output.save_image.layer_grad.{layer_grad_mode}.gradient must be a dict.")
+        raise ValueError("output.save_image.layer_grad.gradient must be a dict.")
     raw_layer_img_target_values = gradient_cfg_img.get("scalar", ["loss"])
     layer_img_target_values = [v.lower() for v in normalize_to_list(raw_layer_img_target_values)]
     valid_values = {"loss", "obj_loss", "cls_loss", "bbox_loss", "obj", "cls"}
@@ -653,11 +659,11 @@ def parse_output_config(output_cfg):
         layer_img_target_values = list(dict.fromkeys(expanded))
     layer_img_target_layers = normalize_to_list(gradient_cfg_img.get("layer", []))
     if not layer_img_target_layers:
-        raise ValueError(f"output.save_image.layer_grad.{layer_grad_mode}.gradient.layer must contain at least one layer.")
+        raise ValueError("output.save_image.layer_grad.gradient.layer must contain at least one layer.")
     layer_img_target_raw = gradient_cfg_img.get("target", "cand")
     layer_img_target_policy = "null" if layer_img_target_raw is None else str(layer_img_target_raw).strip().lower()
     if layer_img_target_policy not in {"cand", "null"}:
-        raise ValueError(f"output.save_image.layer_grad.{layer_grad_mode}.gradient.target must be 'cand' or 'null'.")
+        raise ValueError("output.save_image.layer_grad.gradient.target must be 'cand' or 'null'.")
     layer_grad_image_pseudo_gt = "uniform" if layer_img_target_policy == "null" else "cand"
 
     layer_grad_image_delta_metric = "l2"
