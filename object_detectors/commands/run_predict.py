@@ -1673,8 +1673,6 @@ def run_mc_dropout_csv(config, run_dir):
     dropout_rate = float(parsed["mc_dropout_rate"])
     queue_maxsize = int(parsed["mc_queue_maxsize"])
     vector_reduction = parsed["mc_vector_reduction"]
-    pre_nms = bool(parsed.get("pre_nms", False))
-    pre_nms_ratio = float(parsed.get("pre_nms_ratio", 1.0))
 
     if not save_csv:
         return
@@ -1932,15 +1930,7 @@ def run_mc_dropout_csv(config, run_dir):
                             row[f"prob_{class_idx}_std"] = float(feat_std_cpu[raw_idx, 5 + class_idx].item())
                         batch_rows.append(row)
                 else:
-                    if pre_nms:
-                        raw_keep = get_pre_nms_keep_indices(
-                            det_raw_pred[b].detach().float(),
-                            det_raw_logits[b].detach().float() if det_raw_logits is not None else None,
-                            pre_nms_ratio=pre_nms_ratio,
-                        )
-                        raw_indices = [int(i.item()) for i in raw_keep]
-                    else:
-                        raw_indices = [raw_idx for _pred_idx, raw_idx in valid_pairs]
+                    raw_indices = list(range(n_candidates))
                     row = {"image_id": image_id, "image_path": image_path, "num_preds": len(raw_indices)}
                     if len(raw_indices) == 0:
                         for prefix in (
@@ -2045,8 +2035,6 @@ def run_ensemble_csv(config, run_dir):
     save_csv = parsed["save_csv_enabled"]
     unit = parsed["unit"]
     vector_reduction = parsed["ensemble_vector_reduction"]
-    pre_nms = bool(parsed.get("pre_nms", False))
-    pre_nms_ratio = float(parsed.get("pre_nms_ratio", 1.0))
 
     if not save_csv:
         return
@@ -2359,11 +2347,7 @@ def run_ensemble_csv(config, run_dir):
                                     row[f"prob_{class_idx}_std"] = 0.0
                             writer.writerow(row)
                     else:
-                        if pre_nms:
-                            raw_keep = get_pre_nms_keep_indices(mean_b, None, pre_nms_ratio=pre_nms_ratio)
-                            raw_indices = [int(i.item()) for i in raw_keep.detach().cpu()]
-                        else:
-                            raw_indices = [int(v) for v in raw_keep_indices[b] if 0 <= int(v) < n_candidates]
+                        raw_indices = list(range(n_candidates))
 
                         row = {"image_id": image_id, "image_path": image_path, "num_preds": len(raw_indices)}
                         if len(raw_indices) == 0:
@@ -2469,29 +2453,30 @@ def run_layer_grad_csv(config, run_dir):
     pre_nms_ratio = float(parsed.get("pre_nms_ratio", 1.0))
     save_image_enabled = bool(parsed.get("save_image_enabled", False))
     viz_enabled = bool(save_image_enabled and unit == "image")
+    viz_mode = str(parsed.get("save_image_layer_grad_mode", "fix")).strip().lower()
     viz_normalize = str(parsed.get("save_image_layer_grad_normalize", "layer_minmax")).strip().lower()
-    viz_target_layer_cfg = parsed.get("save_image_layer_grad_target_layer", "target_layer")
+    viz_target_values = list(parsed.get("save_image_layer_grad_target_values", target_values))
+    viz_target_layers = list(parsed.get("save_image_layer_grad_target_layers", target_layers))
+    viz_pseudo_gt = str(parsed.get("save_image_layer_grad_pseudo_gt", layer_pseudo_gt)).strip().lower()
     viz_num_by_group = {
-        "fn": parsed.get("save_image_layer_grad_num_fn", int(parsed.get("save_image_layer_grad_max_num_fn", 200))),
-        "non_fn": parsed.get("save_image_layer_grad_num_non_fn", int(parsed.get("save_image_layer_grad_max_num_non_fn", 200))),
+        "fn": parsed.get("save_image_layer_grad_num_fn", 200),
+        "non_fn": parsed.get("save_image_layer_grad_num_non_fn", 200),
     }
     viz_gt_csv = str(parsed.get("save_image_layer_grad_gt_csv", "")).strip()
     conv_delta_l2_tol = float(parsed.get("save_image_layer_grad_convergence_delta_l2_tol", 1e-4))
     conv_patience = int(parsed.get("save_image_layer_grad_convergence_patience", 20))
     conv_min_samples = int(parsed.get("save_image_layer_grad_convergence_min_samples", 200))
     conv_max_samples = int(parsed.get("save_image_layer_grad_convergence_max_samples", 20000))
-    convergence_mode = bool(
-        np.isinf(viz_num_by_group["fn"]) or np.isinf(viz_num_by_group["non_fn"])
-    )
+    convergence_mode = (viz_mode == "convergence")
     if convergence_mode and not viz_gt_csv:
         raise ValueError("output.save_image.layer_grad.gt is required when num_fn/num_non_fn is 'inf'.")
     viz_save_mean_maps = bool(parsed.get("save_image_layer_grad_save_mean_maps", True))
     viz_save_per_image = bool(parsed.get("save_image_layer_grad_save_per_image", False))
     viz_save_graph = bool(parsed.get("save_image_layer_grad_save_graph", True))
-    layer_grad_ref_enabled = bool(parsed.get("save_image_layer_grad_ref_enabled", False))
-    layer_grad_ref_save_running_log = bool(parsed.get("save_image_layer_grad_ref_save_running_log", True))
-    layer_grad_ref_save_final_raw_map_csv = bool(parsed.get("save_image_layer_grad_ref_save_final_raw_map_csv", True))
-    layer_grad_ref_save_final_norm_map_csv = bool(parsed.get("save_image_layer_grad_ref_save_final_norm_map_csv", True))
+    layer_grad_ref_enabled = bool(parsed.get("save_image_layer_grad_csv_enabled", False))
+    layer_grad_ref_save_running_log = bool(parsed.get("save_image_layer_grad_csv_save_running_log", True))
+    layer_grad_ref_save_final_raw_map_csv = bool(parsed.get("save_image_layer_grad_csv_save_final_raw_map_csv", True))
+    layer_grad_ref_save_final_norm_map_csv = bool(parsed.get("save_image_layer_grad_csv_save_final_norm_map_csv", True))
 
     if not save_csv and not viz_enabled:
         return
@@ -2509,22 +2494,11 @@ def run_layer_grad_csv(config, run_dir):
         raise ValueError("Loaded 0 images. Check dataset root/image_dir/split configuration in YAML.")
 
     detector, device = build_detector(config)
-    viz_target_layers = list(target_layers)
-    if unit == "image" and viz_enabled:
-        if isinstance(viz_target_layer_cfg, str):
-            viz_layer_mode = viz_target_layer_cfg.strip().lower()
-            if viz_layer_mode == "all_conv":
-                viz_target_layers = [
-                    name
-                    for name, module in detector.model.named_modules()
-                    if name and isinstance(module, torch.nn.Conv2d)
-                ]
-            else:
-                viz_target_layers = list(target_layers)
-        elif isinstance(viz_target_layer_cfg, (list, tuple)):
-            viz_target_layers = [str(v).strip() for v in viz_target_layer_cfg if str(v).strip()]
-        if not viz_target_layers:
-            viz_target_layers = list(target_layers)
+    if not viz_target_values:
+        viz_target_values = list(target_values)
+    if not viz_target_layers:
+        viz_target_layers = list(target_layers)
+    collect_target_values = list(dict.fromkeys(list(target_values) + list(viz_target_values)))
 
     layer_param_shapes = {}
     if unit == "image" and viz_enabled:
@@ -2585,10 +2559,8 @@ def run_layer_grad_csv(config, run_dir):
     if viz_enabled:
         viz_dir.mkdir(parents=True, exist_ok=True)
     if viz_enabled and viz_save_per_image:
-        if int(parsed.get("save_image_layer_grad_max_num_fn", 200)) > 0:
-            (viz_dir / "per_image" / "fn").mkdir(parents=True, exist_ok=True)
-        if int(parsed.get("save_image_layer_grad_max_num_non_fn", 200)) > 0:
-            (viz_dir / "per_image" / "non_fn").mkdir(parents=True, exist_ok=True)
+        (viz_dir / "per_image" / "fn").mkdir(parents=True, exist_ok=True)
+        (viz_dir / "per_image" / "non_fn").mkdir(parents=True, exist_ok=True)
 
     csv_file_handle = None
     csv_writer = None
@@ -2694,13 +2666,13 @@ def run_layer_grad_csv(config, run_dir):
                         grad_stats_all = collect_image_layer_grads_per_target(
                             detector=detector,
                             input_tensor=infer_tensor,
-                            target_values=target_values,
+                            target_values=collect_target_values,
                             target_layers=required_layers,
                             map_reduction=layer_map_reduction,
                             vector_reduction=[],
                             pre_nms=pre_nms,
                             pre_nms_ratio=pre_nms_ratio,
-                            pseudo_gt=layer_pseudo_gt,
+                            pseudo_gt=viz_pseudo_gt if viz_enabled else layer_pseudo_gt,
                         )
 
                     if csv_writer is not None:
@@ -2723,7 +2695,7 @@ def run_layer_grad_csv(config, run_dir):
                     if viz_enabled and group_key is not None:
                         grad_map_raw = _build_layer_filter_map_from_grad_stats(
                             grad_stats=grad_stats_all,
-                            target_values=target_values,
+                            target_values=viz_target_values,
                             target_layers=viz_target_layers,
                             layer_param_shapes=layer_param_shapes,
                         )

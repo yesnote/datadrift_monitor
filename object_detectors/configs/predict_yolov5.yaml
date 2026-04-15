@@ -52,32 +52,34 @@ output:
     enabled: false
     gt: # unit:image -> fn | unit:bbox -> tp
       unit: image  # image | bbox
-      pre_nms: false
       iou_match_threshold: 0.45
 
     score:
       unit: image  # image | bbox
-      pre_nms: false
+      pre_nms:
+        enabled: false
       vector_reduction: [L1, L2, min, max, mean, std]  # only for unit: image
 
     full_softmax:
       unit: image  # image | bbox
-      pre_nms: false
+      pre_nms:
+        enabled: false
       vector_reduction: [L1, L2, min, max, mean, std]  # only for unit: image
     
     entropy:
       unit: image  # image | bbox
-      pre_nms: false
+      pre_nms:
+        enabled: false
       vector_reduction: [L1, L2, min, max, mean, std]  # only for unit: image
 
     energy:
       unit: image  # image | bbox
-      pre_nms: false
+      pre_nms:
+        enabled: false
       vector_reduction: [L1, L2, min, max, mean, std]  # only for unit: image
 
     mc_dropout:
       unit: image  # image | bbox
-      pre_nms: false
       num_runs: 30
       dropout_rate: 0.5
       queue_maxsize: 2
@@ -85,26 +87,24 @@ output:
 
     ensemble:
       unit: image  # image | bbox
-      pre_nms: false
       vector_reduction: [L1, L2, min, max, mean, std]  # only for unit: image
     
     meta_detect:
       unit: image  # image | bbox
-      pre_nms: false
       score_threshold: 0.0
       iou_threshold: 0.45
       vector_reduction: [L1, L2, min, max, mean, std]  # only for unit: image
 
     feature:
       unit: image  # image only
-      pre_nms: false
       target_layer: ["model.24.m.0", "model.24.m.1", "model.24.m.2"]
       map_reduction: none  # none | energy
       vector_reduction: [L1, L2, min, max, mean, std]  # empty list [] means save raw vector
 
     feature_grad:
       unit: image  # image | bbox
-      pre_nms: false
+      pre_nms:
+        enabled: false
       target_value: [obj, cls]  # loss | obj_loss | cls_loss | bbox_loss | obj | cls
       target_layer: ["model.24.m.0", "model.24.m.1", "model.24.m.2"]
       map_reduction: none   # none | energy
@@ -112,7 +112,8 @@ output:
 
     layer_grad:
       unit: image  # image | bbox
-      pre_nms: false
+      pre_nms:
+        enabled: false
       gradient:
         scalar: [loss]  # loss | obj_loss | cls_loss | bbox_loss | obj | cls
         layer: ["model.24.m.0", "model.24.m.1", "model.24.m.2"]  # "model.17.cv3.conv", "model.20.cv3.conv", "model.23.cv3.conv"
@@ -128,25 +129,33 @@ output:
       max_num: 10
     
     layer_grad:
-      gt: object_detectors/runs/fn_detectors/04-07-2026_14;09_gt/fn.csv
-      target_layer: all_conv   # all_conv | target_layer | [layer names]
+      mode: fix  # fix | convergence
       normalize: layer_minmax  # layer_minmax | layer_trimmed_minmax | none
-      max_num_fn: 20
-      max_num_non_fn: 20
-      num_fn: 20         # int or "inf"
-      num_non_fn: 20     # int or "inf"
+      save_mean_maps: true
+      save_graph: true
+      save_per_image: false
+      csv:
+        enabled: false
+        save_running_log: true
+        save_final_raw_map_csv: true
+        save_final_norm_map_csv: true
+      fix:
+        gt: object_detectors/runs/fn_detectors/04-07-2026_14;09_gt/fn.csv
+        gradient:
+          scalar: [loss]  # loss | obj_loss | cls_loss | bbox_loss | obj | cls
+          layer: ["model.24.m.0", "model.24.m.1", "model.24.m.2"]
+          target: null  # cand | null (null == legacy uniform)
+        num_fn: 20
+        num_non_fn: 20
       convergence:
-        delta_metric: l2
+        gt: object_detectors/runs/fn_detectors/04-07-2026_14;09_gt/fn.csv
+        gradient:
+          scalar: [loss]  # loss | obj_loss | cls_loss | bbox_loss | obj | cls
+          layer: ["model.24.m.0", "model.24.m.1", "model.24.m.2"]
+          target: null  # cand | null (null == legacy uniform)
+        num_fn: "inf"
+        num_non_fn: "inf"
         delta_l2_tol: 1.0e-4
         patience: 20
         min_samples: 200
         max_samples: 20000
-      save_mean_maps: true
-      save_graph: true
-      save_per_image: false
-
-    layer_grad_ref:
-      enabled: false
-      save_running_log: true
-      save_final_raw_map_csv: true
-      save_final_norm_map_csv: true
