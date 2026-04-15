@@ -242,26 +242,13 @@ def parse_output_config(output_cfg):
     save_csv_cfg = output_cfg.get("save_csv", {})
     save_image_cfg = output_cfg.get("save_image", {})
 
-    # Preferred location: output.{unit, uncertainty, pre_nms}
-    # Backward compatibility: output.save_csv.{unit, uncertainty, pre_nms}
-    if isinstance(save_csv_cfg, dict):
-        fallback_uncertainty = str(save_csv_cfg.get("uncertainty", "gt")).lower()
-        fallback_unit = str(save_csv_cfg.get("unit", "image")).lower()
-        fallback_pre_nms_cfg = save_csv_cfg.get("pre_nms", False)
-    else:
-        fallback_uncertainty = "gt"
-        fallback_unit = "image"
-        fallback_pre_nms_cfg = False
+    if "unit" in output_cfg:
+        raise ValueError("output.unit was removed. Set output.save_csv.<uncertainty>.unit instead.")
+    if "pre_nms" in output_cfg:
+        raise ValueError("output.pre_nms was removed. Set output.save_csv.<uncertainty>.pre_nms instead.")
 
-    uncertainty = str(output_cfg.get("uncertainty", fallback_uncertainty)).lower()
-    unit = str(output_cfg.get("unit", fallback_unit)).lower()
-    pre_nms_cfg = output_cfg.get("pre_nms", fallback_pre_nms_cfg)
-    if isinstance(pre_nms_cfg, dict):
-        pre_nms = bool(pre_nms_cfg.get("enabled", False))
-        pre_nms_ratio = float(pre_nms_cfg.get("pre_nms_ratio", 1.0))
-    else:
-        pre_nms = bool(pre_nms_cfg)
-        pre_nms_ratio = 1.0
+    uncertainty = str(output_cfg.get("uncertainty", "gt")).lower()
+    active_uncertainty_cfg = {}
 
     if isinstance(save_csv_cfg, bool):
         save_csv_enabled = save_csv_cfg
@@ -276,8 +263,13 @@ def parse_output_config(output_cfg):
         feature_cfg = {}
         feature_grad_cfg = {}
         layer_grad_cfg = {}
-        layer_grad_ref_cfg = {}
-    else:
+    elif isinstance(save_csv_cfg, dict):
+        if "unit" in save_csv_cfg:
+            raise ValueError("output.save_csv.unit was removed. Set output.save_csv.<uncertainty>.unit instead.")
+        if "pre_nms" in save_csv_cfg:
+            raise ValueError("output.save_csv.pre_nms was removed. Set output.save_csv.<uncertainty>.pre_nms instead.")
+        if "layer_grad_ref" in save_csv_cfg:
+            raise ValueError("output.save_csv.layer_grad_ref was moved to output.save_image.layer_grad_ref.")
         save_csv_enabled = bool(save_csv_cfg.get("enabled", True))
         gt_cfg = save_csv_cfg.get("gt", {})
         score_cfg = save_csv_cfg.get("score", {})
@@ -290,16 +282,62 @@ def parse_output_config(output_cfg):
         feature_cfg = save_csv_cfg.get("feature", {})
         feature_grad_cfg = save_csv_cfg.get("feature_grad", {})
         layer_grad_cfg = save_csv_cfg.get("layer_grad", {})
-        layer_grad_ref_cfg = save_csv_cfg.get("layer_grad_ref", {})
+        active_uncertainty_cfg = save_csv_cfg.get(uncertainty, {})
+        if not isinstance(active_uncertainty_cfg, dict):
+            active_uncertainty_cfg = {}
+    else:
+        raise ValueError("output.save_csv must be a bool or dict.")
+
+    if not isinstance(gt_cfg, dict):
+        gt_cfg = {}
+    if not isinstance(score_cfg, dict):
+        score_cfg = {}
+    if not isinstance(meta_detect_cfg, dict):
+        meta_detect_cfg = {}
+    if not isinstance(mc_dropout_cfg, dict):
+        mc_dropout_cfg = {}
+    if not isinstance(ensemble_cfg, dict):
+        ensemble_cfg = {}
+    if not isinstance(energy_cfg, dict):
+        energy_cfg = {}
+    if not isinstance(entropy_cfg, dict):
+        entropy_cfg = {}
+    if not isinstance(full_softmax_cfg, dict):
+        full_softmax_cfg = {}
+    if not isinstance(feature_cfg, dict):
+        feature_cfg = {}
+    if not isinstance(feature_grad_cfg, dict):
+        feature_grad_cfg = {}
+    if not isinstance(layer_grad_cfg, dict):
+        layer_grad_cfg = {}
+
+    unit = str(active_uncertainty_cfg.get("unit", "image")).lower()
+    pre_nms_cfg = active_uncertainty_cfg.get("pre_nms", False)
+    if isinstance(pre_nms_cfg, dict):
+        pre_nms = bool(pre_nms_cfg.get("enabled", False))
+        pre_nms_ratio = float(pre_nms_cfg.get("pre_nms_ratio", 1.0))
+    else:
+        pre_nms = bool(pre_nms_cfg)
+        pre_nms_ratio = 1.0
 
     if not (0.0 <= float(pre_nms_ratio) <= 1.0):
-        raise ValueError("output.pre_nms.pre_nms_ratio must be in [0,1].")
+        raise ValueError(
+            f"output.save_csv.{uncertainty}.pre_nms.pre_nms_ratio must be in [0,1]."
+        )
 
     if uncertainty not in {"gt", "score", "meta_detect", "mc_dropout", "ensemble", "energy", "entropy", "full_softmax", "feature", "feature_grad", "layer_grad"}:
         raise ValueError(
             f"Unsupported output.uncertainty='{uncertainty}'. "
             "Use 'gt', 'score', 'meta_detect', 'mc_dropout', 'ensemble', 'energy', 'entropy', 'full_softmax', 'feature', 'feature_grad' or 'layer_grad'."
         )
+    if isinstance(layer_grad_cfg, dict):
+        legacy_layer_grad_keys = {"target_value", "target_layer", "map_reduction", "vector_reduction", "pseudo_gt"}
+        used_legacy_keys = sorted([k for k in legacy_layer_grad_keys if k in layer_grad_cfg])
+        if used_legacy_keys:
+            raise ValueError(
+                "Legacy output.save_csv.layer_grad keys are not supported: "
+                f"{used_legacy_keys}. Use layer_grad.gradient/reduction schema."
+            )
 
     gt_iou_match_threshold = float(gt_cfg.get("iou_match_threshold", 0.5))
     meta_detect_score_threshold = float(meta_detect_cfg.get("score_threshold", 0.0))
@@ -328,7 +366,7 @@ def parse_output_config(output_cfg):
     layer_pseudo_gt = "cand"
     if uncertainty == "feature_grad":
         if unit not in {"image", "bbox"}:
-            raise ValueError("output.unit must be 'image' or 'bbox' when uncertainty is 'feature_grad'.")
+            raise ValueError("output.save_csv.feature_grad.unit must be 'image' or 'bbox'.")
         target_values = [v.lower() for v in normalize_to_list(feature_grad_cfg.get("target_value", ["obj"]))]
         valid_values = {"obj", "cls", "loss", "obj_loss", "cls_loss", "bbox_loss"}
         invalid_values = [v for v in target_values if v not in valid_values]
@@ -354,19 +392,25 @@ def parse_output_config(output_cfg):
         )
     elif uncertainty == "layer_grad":
         if unit not in {"image", "bbox"}:
-            msg = "Invalid config: output.uncertainty='layer_grad' requires output.unit in {'image','bbox'}."
+            msg = "Invalid config: output.save_csv.layer_grad.unit must be one of {'image','bbox'}."
             warnings.warn(msg)
             raise ValueError(msg)
-        layer_target_value_cfg = layer_grad_cfg.get("target_value", ["loss"])
-        if isinstance(layer_target_value_cfg, dict):
-            raw_layer_target_values = layer_target_value_cfg.get("value", ["loss"])
-            layer_pseudo_gt = str(layer_target_value_cfg.get("pseudo_gt", "cand")).strip().lower()
+        gradient_cfg = layer_grad_cfg.get("gradient", {})
+        reduction_cfg = layer_grad_cfg.get("reduction", {})
+        if not isinstance(gradient_cfg, dict):
+            raise ValueError("output.save_csv.layer_grad.gradient must be a dict.")
+        if not isinstance(reduction_cfg, dict):
+            raise ValueError("output.save_csv.layer_grad.reduction must be a dict.")
+
+        raw_layer_target_values = gradient_cfg.get("scalar", ["loss"])
+        layer_target_raw = gradient_cfg.get("target", "cand")
+        if layer_target_raw is None:
+            layer_target_policy = "null"
         else:
-            raw_layer_target_values = layer_target_value_cfg
-            # Backward compatibility for older config location.
-            layer_pseudo_gt = str(layer_grad_cfg.get("pseudo_gt", "cand")).strip().lower()
-        if layer_pseudo_gt not in {"cand", "uniform"}:
-            raise ValueError("output.save_csv.layer_grad.target_value.pseudo_gt must be 'cand' or 'uniform'.")
+            layer_target_policy = str(layer_target_raw).strip().lower()
+        if layer_target_policy not in {"cand", "null"}:
+            raise ValueError("output.save_csv.layer_grad.gradient.target must be 'cand' or 'null'.")
+        layer_pseudo_gt = "uniform" if layer_target_policy == "null" else "cand"
         layer_target_values = [v.lower() for v in normalize_to_list(raw_layer_target_values)]
         valid_values = {"loss", "obj_loss", "cls_loss", "bbox_loss", "obj", "cls"}
         invalid_values = [v for v in layer_target_values if v not in valid_values]
@@ -382,23 +426,23 @@ def parse_output_config(output_cfg):
                     expanded.append(v)
             # keep order while removing duplicates
             layer_target_values = list(dict.fromkeys(expanded))
-        layer_target_layers = normalize_to_list(layer_grad_cfg.get("target_layer", []))
+        layer_target_layers = normalize_to_list(gradient_cfg.get("layer", []))
         if not layer_target_layers and save_csv_enabled:
-            raise ValueError("output.save_csv.layer_grad.target_layer must contain at least one layer name.")
-        layer_map_reduction = str(layer_grad_cfg.get("map_reduction", "none")).strip().lower()
+            raise ValueError("output.save_csv.layer_grad.gradient.layer must contain at least one layer name.")
+        layer_map_reduction = str(reduction_cfg.get("map", "none")).strip().lower()
         if layer_map_reduction not in {"none", "energy"}:
-            raise ValueError("output.save_csv.layer_grad.map_reduction must be 'none' or 'energy'.")
+            raise ValueError("output.save_csv.layer_grad.reduction.map must be 'none' or 'energy'.")
         layer_vector_reduction = normalize_vector_reduction(
-            layer_grad_cfg.get("vector_reduction", ["L1", "L2", "min", "max", "mean", "std"])
+            reduction_cfg.get("vector", ["L1", "L2", "min", "max", "mean", "std"])
         )
     elif uncertainty == "gt":
         if unit not in {"image", "bbox"}:
-            msg = "Invalid config: output.uncertainty='gt' requires output.unit in {'image','bbox'}."
+            msg = "Invalid config: output.save_csv.gt.unit must be one of {'image','bbox'}."
             warnings.warn(msg)
             raise ValueError(msg)
     elif uncertainty == "score":
         if unit not in {"image", "bbox"}:
-            msg = "Invalid config: output.uncertainty='score' requires output.unit in {'image','bbox'}."
+            msg = "Invalid config: output.save_csv.score.unit must be one of {'image','bbox'}."
             warnings.warn(msg)
             raise ValueError(msg)
         score_vector_reduction = normalize_vector_reduction(
@@ -406,7 +450,7 @@ def parse_output_config(output_cfg):
         )
     elif uncertainty == "meta_detect":
         if unit not in {"image", "bbox"}:
-            msg = "Invalid config: output.uncertainty='meta_detect' requires output.unit in {'image','bbox'}."
+            msg = "Invalid config: output.save_csv.meta_detect.unit must be one of {'image','bbox'}."
             warnings.warn(msg)
             raise ValueError(msg)
         if not (0.0 <= meta_detect_score_threshold <= 1.0):
@@ -418,7 +462,7 @@ def parse_output_config(output_cfg):
         )
     elif uncertainty == "mc_dropout":
         if unit not in {"image", "bbox"}:
-            msg = "Invalid config: output.uncertainty='mc_dropout' requires output.unit in {'image','bbox'}."
+            msg = "Invalid config: output.save_csv.mc_dropout.unit must be one of {'image','bbox'}."
             warnings.warn(msg)
             raise ValueError(msg)
         if mc_num_runs < 1:
@@ -432,7 +476,7 @@ def parse_output_config(output_cfg):
         )
     elif uncertainty == "ensemble":
         if unit not in {"image", "bbox"}:
-            msg = "Invalid config: output.uncertainty='ensemble' requires output.unit in {'image','bbox'}."
+            msg = "Invalid config: output.save_csv.ensemble.unit must be one of {'image','bbox'}."
             warnings.warn(msg)
             raise ValueError(msg)
         ensemble_vector_reduction = normalize_vector_reduction(
@@ -440,7 +484,7 @@ def parse_output_config(output_cfg):
         )
     elif uncertainty == "energy":
         if unit not in {"image", "bbox"}:
-            msg = "Invalid config: output.uncertainty='energy' requires output.unit in {'image','bbox'}."
+            msg = "Invalid config: output.save_csv.energy.unit must be one of {'image','bbox'}."
             warnings.warn(msg)
             raise ValueError(msg)
         energy_vector_reduction = normalize_vector_reduction(
@@ -448,7 +492,7 @@ def parse_output_config(output_cfg):
         )
     elif uncertainty == "entropy":
         if unit not in {"image", "bbox"}:
-            msg = "Invalid config: output.uncertainty='entropy' requires output.unit in {'image','bbox'}."
+            msg = "Invalid config: output.save_csv.entropy.unit must be one of {'image','bbox'}."
             warnings.warn(msg)
             raise ValueError(msg)
         entropy_vector_reduction = normalize_vector_reduction(
@@ -456,7 +500,7 @@ def parse_output_config(output_cfg):
         )
     elif uncertainty == "full_softmax":
         if unit not in {"image", "bbox"}:
-            msg = "Invalid config: output.uncertainty='full_softmax' requires output.unit in {'image','bbox'}."
+            msg = "Invalid config: output.save_csv.full_softmax.unit must be one of {'image','bbox'}."
             warnings.warn(msg)
             raise ValueError(msg)
         full_softmax_vector_reduction = normalize_vector_reduction(
@@ -464,7 +508,7 @@ def parse_output_config(output_cfg):
         )
     elif uncertainty == "feature":
         if unit != "image":
-            raise ValueError("output.uncertainty='feature' currently supports only output.unit='image'.")
+            raise ValueError("output.save_csv.feature.unit currently supports only 'image'.")
         feature_target_layers = normalize_to_list(feature_cfg.get("target_layer", []))
         if not feature_target_layers and save_csv_enabled:
             raise ValueError("output.save_csv.feature.target_layer must contain at least one layer name.")
@@ -479,6 +523,7 @@ def parse_output_config(output_cfg):
         save_image_enabled = save_image_cfg
         gt_image_cfg = {}
         layer_grad_image_cfg = {}
+        layer_grad_ref_cfg = {}
         gt_image_step = 1
         gt_image_max_num = 1
     else:
@@ -489,6 +534,9 @@ def parse_output_config(output_cfg):
         layer_grad_image_cfg = save_image_cfg.get("layer_grad", {})
         if not isinstance(layer_grad_image_cfg, dict):
             layer_grad_image_cfg = {}
+        layer_grad_ref_cfg = save_image_cfg.get("layer_grad_ref", {})
+        if not isinstance(layer_grad_ref_cfg, dict):
+            layer_grad_ref_cfg = {}
 
         # Backward compatibility for legacy flat keys under output.save_image.
         legacy_step = int(save_image_cfg.get("step", 1))
@@ -612,10 +660,10 @@ def parse_output_config(output_cfg):
         "save_image_layer_grad_save_mean_maps": layer_grad_image_save_mean_maps,
         "save_image_layer_grad_save_per_image": layer_grad_image_save_per_image,
         "save_image_layer_grad_save_graph": layer_grad_image_save_graph,
-        "save_csv_layer_grad_ref_enabled": layer_grad_ref_enabled,
-        "save_csv_layer_grad_ref_save_running_log": layer_grad_ref_save_running_log,
-        "save_csv_layer_grad_ref_save_final_raw_map_csv": layer_grad_ref_save_final_raw_map_csv,
-        "save_csv_layer_grad_ref_save_final_norm_map_csv": layer_grad_ref_save_final_norm_map_csv,
+        "save_image_layer_grad_ref_enabled": layer_grad_ref_enabled,
+        "save_image_layer_grad_ref_save_running_log": layer_grad_ref_save_running_log,
+        "save_image_layer_grad_ref_save_final_raw_map_csv": layer_grad_ref_save_final_raw_map_csv,
+        "save_image_layer_grad_ref_save_final_norm_map_csv": layer_grad_ref_save_final_norm_map_csv,
     }
 
 

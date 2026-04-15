@@ -46,67 +46,80 @@ dataloader:
   shuffle_eval: false
 
 output:
-  unit: image   # image | bbox
   uncertainty: layer_grad  # gt | score | full_softmax | entropy | energy | mc_dropout | ensemble | meta_detect | feature | feature_grad | layer_grad
-  pre_nms:
-    enabled: false   # true: use pre-NMS preds | false: use post-NMS preds
-    pre_nms_ratio: 1.0  # keep top ratio (0~1) of pre-NMS candidates
 
   save_csv:
     enabled: false
     gt: # unit:image -> fn | unit:bbox -> tp
+      unit: image  # image | bbox
+      pre_nms: false
       iou_match_threshold: 0.45
 
     score:
+      unit: image  # image | bbox
+      pre_nms: false
       vector_reduction: [L1, L2, min, max, mean, std]  # only for unit: image
 
     full_softmax:
+      unit: image  # image | bbox
+      pre_nms: false
       vector_reduction: [L1, L2, min, max, mean, std]  # only for unit: image
     
     entropy:
+      unit: image  # image | bbox
+      pre_nms: false
       vector_reduction: [L1, L2, min, max, mean, std]  # only for unit: image
 
     energy:
+      unit: image  # image | bbox
+      pre_nms: false
       vector_reduction: [L1, L2, min, max, mean, std]  # only for unit: image
 
     mc_dropout:
+      unit: image  # image | bbox
+      pre_nms: false
       num_runs: 30
       dropout_rate: 0.5
       queue_maxsize: 2
       vector_reduction: [L1, L2, min, max, mean, std]  # only for unit: image
 
     ensemble:
+      unit: image  # image | bbox
+      pre_nms: false
       vector_reduction: [L1, L2, min, max, mean, std]  # only for unit: image
     
     meta_detect:
+      unit: image  # image | bbox
+      pre_nms: false
       score_threshold: 0.0
       iou_threshold: 0.45
       vector_reduction: [L1, L2, min, max, mean, std]  # only for unit: image
 
     feature:
+      unit: image  # image only
+      pre_nms: false
       target_layer: ["model.24.m.0", "model.24.m.1", "model.24.m.2"]
       map_reduction: none  # none | energy
       vector_reduction: [L1, L2, min, max, mean, std]  # empty list [] means save raw vector
 
     feature_grad:
+      unit: image  # image | bbox
+      pre_nms: false
       target_value: [obj, cls]  # loss | obj_loss | cls_loss | bbox_loss | obj | cls
       target_layer: ["model.24.m.0", "model.24.m.1", "model.24.m.2"]
       map_reduction: none   # none | energy
       vector_reduction: [L1, L2, min, max, mean, std]  # empty list [] means save raw vector
 
     layer_grad:
-      target_value:
-        value: [loss]  # loss | obj_loss | cls_loss | bbox_loss | obj | cls
-        pseudo_gt: uniform  # cand | uniform
-      target_layer: ["model.24.m.0", "model.24.m.1", "model.24.m.2"]  # "model.17.cv3.conv", "model.20.cv3.conv", "model.23.cv3.conv"
-      map_reduction: none   # none | energy
-      vector_reduction: [L1, L2, min, max, mean, std]  # empty list [] means save raw vector
-    
-    layer_grad_ref:
-      enabled: false
-      save_running_log: true
-      save_final_raw_map_csv: true
-      save_final_norm_map_csv: true
+      unit: image  # image | bbox
+      pre_nms: false
+      gradient:
+        scalar: [loss]  # loss | obj_loss | cls_loss | bbox_loss | obj | cls
+        layer: ["model.24.m.0", "model.24.m.1", "model.24.m.2"]  # "model.17.cv3.conv", "model.20.cv3.conv", "model.23.cv3.conv"
+        target: null  # cand | null (null == legacy uniform)
+      reduction:
+        map: none   # none | energy
+        vector: [L1, L2, min, max, mean, std]  # empty list [] means save raw vector
   
   save_image:
     enabled: true
@@ -131,3 +144,9 @@ output:
       save_mean_maps: true
       save_graph: true
       save_per_image: false
+
+    layer_grad_ref:
+      enabled: false
+      save_running_log: true
+      save_final_raw_map_csv: true
+      save_final_norm_map_csv: true
