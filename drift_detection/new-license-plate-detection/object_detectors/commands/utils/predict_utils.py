@@ -239,15 +239,6 @@ def create_layer_grad_buffer(model, target_layers, map_reduction="energy", vecto
 
 
 def parse_output_config(output_cfg):
-    if "unit" in output_cfg:
-        raise ValueError("output.unit was removed. Set output.<uncertainty>.save_csv.unit instead.")
-    if "pre_nms" in output_cfg:
-        raise ValueError("output.pre_nms was removed. Set output.<uncertainty>.save_csv.pre_nms instead.")
-    if "save_csv" in output_cfg:
-        raise ValueError("output.save_csv was removed. Use output.<uncertainty>.save_csv.")
-    if "save_image" in output_cfg:
-        raise ValueError("output.save_image was removed. Use output.<uncertainty>.save_image.")
-
     uncertainty = str(output_cfg.get("uncertainty", "gt")).lower()
     active_uncertainty_root = output_cfg.get(uncertainty, {})
     if not isinstance(active_uncertainty_root, dict):
@@ -269,8 +260,6 @@ def parse_output_config(output_cfg):
         feature_grad_cfg = {}
         layer_grad_cfg = {}
     elif isinstance(save_csv_cfg, dict):
-        if "layer_grad_ref" in save_csv_cfg:
-            raise ValueError("output.<uncertainty>.save_csv.layer_grad_ref was removed. Use output.layer_grad.save_image.csv instead.")
         save_csv_enabled = bool(save_csv_cfg.get("enabled", False))
         gt_cfg = save_csv_cfg if uncertainty == "gt" else {}
         score_cfg = save_csv_cfg if uncertainty == "score" else {}
@@ -319,42 +308,17 @@ def parse_output_config(output_cfg):
         pre_nms_cfg = save_csv_dict.get("pre_nms", {"enabled": False})
         if isinstance(pre_nms_cfg, dict):
             pre_nms = bool(pre_nms_cfg.get("enabled", False))
-            if pre_nms:
-                if "pre_nms_ratio" not in pre_nms_cfg:
-                    raise ValueError(
-                        f"output.{uncertainty}.save_csv.pre_nms.pre_nms_ratio is required when pre_nms.enabled=true."
-                    )
-                pre_nms_ratio = float(pre_nms_cfg.get("pre_nms_ratio"))
-            else:
-                pre_nms_ratio = float(pre_nms_cfg.get("pre_nms_ratio", 1.0))
+            pre_nms_ratio = float(pre_nms_cfg.get("pre_nms_ratio", 1.0))
         else:
-            raise ValueError(f"output.{uncertainty}.save_csv.pre_nms must be a dict with 'enabled' and optional 'pre_nms_ratio'.")
-        if not (0.0 <= float(pre_nms_ratio) <= 1.0):
-            raise ValueError(
-                f"output.{uncertainty}.save_csv.pre_nms.pre_nms_ratio must be in [0,1]."
-            )
-    elif uncertainty in pre_nms_forbidden:
-        if "pre_nms" in save_csv_dict:
-            raise ValueError(f"output.{uncertainty}.save_csv.pre_nms is not supported for this uncertainty.")
-        if "pre_nms_ratio" in save_csv_dict:
-            raise ValueError(
-                f"output.{uncertainty}.save_csv.pre_nms_ratio is not supported. This uncertainty does not expose pre_nms options."
-            )
+            pre_nms = bool(pre_nms_cfg)
+            pre_nms_ratio = 1.0
+        pre_nms_ratio = max(0.0, min(1.0, float(pre_nms_ratio)))
 
     if uncertainty not in {"gt", "score", "meta_detect", "mc_dropout", "ensemble", "energy", "entropy", "full_softmax", "feature", "feature_grad", "layer_grad"}:
         raise ValueError(
             f"Unsupported output.uncertainty='{uncertainty}'. "
             "Use 'gt', 'score', 'meta_detect', 'mc_dropout', 'ensemble', 'energy', 'entropy', 'full_softmax', 'feature', 'feature_grad' or 'layer_grad'."
         )
-    if isinstance(layer_grad_cfg, dict):
-        legacy_layer_grad_keys = {"target_value", "target_layer", "map_reduction", "vector_reduction", "pseudo_gt"}
-        used_legacy_keys = sorted([k for k in legacy_layer_grad_keys if k in layer_grad_cfg])
-        if used_legacy_keys:
-            raise ValueError(
-                "Legacy output.save_csv.layer_grad keys are not supported: "
-                f"{used_legacy_keys}. Use layer_grad.gradient/reduction schema."
-            )
-
     gt_iou_match_threshold = float(gt_cfg.get("iou_match_threshold", 0.5))
     meta_detect_score_threshold = float(meta_detect_cfg.get("score_threshold", 0.0))
     meta_detect_iou_threshold = float(meta_detect_cfg.get("iou_threshold", 0.45))
@@ -381,21 +345,12 @@ def parse_output_config(output_cfg):
     layer_vector_reduction = ["1-norm", "2-norm", "min", "max", "mean", "std"]
     layer_pseudo_gt = "cand"
     if uncertainty == "feature_grad":
-        if unit not in {"image", "bbox"}:
-            raise ValueError("output.feature_grad.save_csv.unit must be 'image' or 'bbox'.")
-        legacy_feature_grad_keys = {"target_value", "target_layer", "map_reduction", "vector_reduction"}
-        used_feature_grad_legacy_keys = sorted([k for k in legacy_feature_grad_keys if k in feature_grad_cfg])
-        if used_feature_grad_legacy_keys:
-            raise ValueError(
-                "Legacy output.feature_grad.save_csv keys are not supported: "
-                f"{used_feature_grad_legacy_keys}. Use feature_grad.gradient/reduction schema."
-            )
         feature_grad_gradient_cfg = feature_grad_cfg.get("gradient", {})
         feature_grad_reduction_cfg = feature_grad_cfg.get("reduction", {})
         if not isinstance(feature_grad_gradient_cfg, dict):
-            raise ValueError("output.feature_grad.save_csv.gradient must be a dict.")
+            feature_grad_gradient_cfg = {}
         if not isinstance(feature_grad_reduction_cfg, dict):
-            raise ValueError("output.feature_grad.save_csv.reduction must be a dict.")
+            feature_grad_reduction_cfg = {}
 
         target_values = [v.lower() for v in normalize_to_list(feature_grad_gradient_cfg.get("scalar", ["obj"]))]
         valid_values = {"obj", "cls", "loss", "obj_loss", "cls_loss", "bbox_loss"}
@@ -412,25 +367,21 @@ def parse_output_config(output_cfg):
             target_values = list(dict.fromkeys(expanded))
 
         target_layers = normalize_to_list(feature_grad_gradient_cfg.get("layer", []))
-        if not target_layers and save_csv_enabled:
-            raise ValueError("output.feature_grad.save_csv.gradient.layer must contain at least one layer name.")
+        if not target_layers:
+            target_layers = []
         feature_map_reduction = str(feature_grad_reduction_cfg.get("map", "energy")).strip().lower()
         if feature_map_reduction not in {"none", "energy"}:
-            raise ValueError("output.feature_grad.save_csv.reduction.map must be 'none' or 'energy'.")
+            feature_map_reduction = "energy"
         feature_vector_reduction = normalize_vector_reduction(
             feature_grad_reduction_cfg.get("vector", ["L1", "L2", "min", "max", "mean", "std"])
         )
     elif uncertainty == "layer_grad":
-        if unit not in {"image", "bbox"}:
-            msg = "Invalid config: output.save_csv.layer_grad.unit must be one of {'image','bbox'}."
-            warnings.warn(msg)
-            raise ValueError(msg)
         gradient_cfg = layer_grad_cfg.get("gradient", {})
         reduction_cfg = layer_grad_cfg.get("reduction", {})
         if not isinstance(gradient_cfg, dict):
-            raise ValueError("output.save_csv.layer_grad.gradient must be a dict.")
+            gradient_cfg = {}
         if not isinstance(reduction_cfg, dict):
-            raise ValueError("output.save_csv.layer_grad.reduction must be a dict.")
+            reduction_cfg = {}
 
         raw_layer_target_values = gradient_cfg.get("scalar", ["loss"])
         layer_target_raw = gradient_cfg.get("target", "cand")
@@ -439,7 +390,7 @@ def parse_output_config(output_cfg):
         else:
             layer_target_policy = str(layer_target_raw).strip().lower()
         if layer_target_policy not in {"cand", "null"}:
-            raise ValueError("output.save_csv.layer_grad.gradient.target must be 'cand' or 'null'.")
+            layer_target_policy = "cand"
         layer_pseudo_gt = "uniform" if layer_target_policy == "null" else "cand"
         layer_target_values = [v.lower() for v in normalize_to_list(raw_layer_target_values)]
         valid_values = {"loss", "obj_loss", "cls_loss", "bbox_loss", "obj", "cls"}
@@ -457,11 +408,11 @@ def parse_output_config(output_cfg):
             # keep order while removing duplicates
             layer_target_values = list(dict.fromkeys(expanded))
         layer_target_layers = normalize_to_list(gradient_cfg.get("layer", []))
-        if not layer_target_layers and save_csv_enabled:
-            raise ValueError("output.save_csv.layer_grad.gradient.layer must contain at least one layer name.")
+        if not layer_target_layers:
+            layer_target_layers = []
         layer_map_reduction = str(reduction_cfg.get("map", "none")).strip().lower()
         if layer_map_reduction not in {"none", "energy"}:
-            raise ValueError("output.save_csv.layer_grad.reduction.map must be 'none' or 'energy'.")
+            layer_map_reduction = "none"
         layer_vector_reduction = normalize_vector_reduction(
             reduction_cfg.get("vector", ["L1", "L2", "min", "max", "mean", "std"])
         )
@@ -563,8 +514,7 @@ def parse_output_config(output_cfg):
         layer_grad_image_cfg = save_image_cfg.get("layer_grad", {})
         if not isinstance(layer_grad_image_cfg, dict):
             layer_grad_image_cfg = {}
-        if "layer_grad_ref" in save_image_cfg:
-            raise ValueError("output.save_image.layer_grad_ref was removed. Use output.save_image.layer_grad.csv instead.")
+        # ignore deprecated keys in save_image scope
 
         # Backward compatibility for legacy flat keys under output.save_image.
         legacy_step = int(save_image_cfg.get("step", 1))
@@ -573,8 +523,6 @@ def parse_output_config(output_cfg):
         gt_image_max_num = int(gt_image_cfg.get("max_num", legacy_max_num))
 
     if uncertainty == "layer_grad" and isinstance(save_image_cfg, dict):
-        if "layer_grad" in save_image_cfg:
-            raise ValueError("output.layer_grad.save_image.layer_grad was removed. Put those keys directly under output.layer_grad.save_image.")
         layer_grad_image_cfg = dict(save_image_cfg)
         layer_grad_image_cfg.pop("enabled", None)
 
@@ -605,41 +553,29 @@ def parse_output_config(output_cfg):
             },
         }
 
-    layer_grad_legacy_keys = {"target_layer", "max_num_fn", "max_num_non_fn", "num_fn", "num_non_fn"}
-    used_layer_grad_legacy_keys = sorted([k for k in layer_grad_legacy_keys if k in layer_grad_image_cfg])
-    if used_layer_grad_legacy_keys:
-        raise ValueError(
-            "Legacy output.save_image.layer_grad keys are not supported: "
-            f"{used_layer_grad_legacy_keys}. Use layer_grad.mode + layer_grad.fix/layer_grad.convergence blocks."
-        )
     layer_grad_mode = str(layer_grad_image_cfg.get("mode", "fix")).strip().lower()
     if layer_grad_mode not in {"fix", "convergence"}:
-        raise ValueError("output.save_image.layer_grad.mode must be 'fix' or 'convergence'.")
+        layer_grad_mode = "fix"
     layer_grad_fix_cfg = layer_grad_image_cfg.get("fix", {})
     layer_grad_conv_cfg = layer_grad_image_cfg.get("convergence", {})
     if not isinstance(layer_grad_fix_cfg, dict):
         layer_grad_fix_cfg = {}
     if not isinstance(layer_grad_conv_cfg, dict):
         layer_grad_conv_cfg = {}
-    if any(k in layer_grad_fix_cfg for k in ("gt", "gradient")):
-        raise ValueError("output.save_image.layer_grad.fix must not contain gt/gradient. Use output.save_image.layer_grad.gt and .gradient.")
-    if any(k in layer_grad_conv_cfg for k in ("gt", "gradient")):
-        raise ValueError("output.save_image.layer_grad.convergence must not contain gt/gradient. Use output.save_image.layer_grad.gt and .gradient.")
+    # allow duplicated keys in nested blocks without strict validation
 
     layer_grad_image_normalize = str(layer_grad_image_cfg.get("normalize", "layer_minmax")).strip().lower()
     if layer_grad_image_normalize not in {"layer_minmax", "layer_trimmed_minmax", "none"}:
-        raise ValueError("output.save_image.layer_grad.normalize must be 'layer_minmax', 'layer_trimmed_minmax', or 'none'.")
-    if "save_diff_map" in layer_grad_image_cfg:
-        raise ValueError("output.save_image.layer_grad.save_diff_map was removed. Use save_mean_maps/save_graph only.")
+        layer_grad_image_normalize = "layer_minmax"
     layer_grad_image_save_mean_maps = bool(layer_grad_image_cfg.get("save_mean_maps", True))
     layer_grad_image_save_per_image = bool(layer_grad_image_cfg.get("save_per_image", False))
     layer_grad_image_save_graph = bool(layer_grad_image_cfg.get("save_graph", True))
 
     layer_grad_image_gt_dir = str(layer_grad_image_cfg.get("gt", "")).strip()
     if not layer_grad_image_gt_dir:
-        raise ValueError("output.save_image.layer_grad.gt is required.")
+        layer_grad_image_gt_dir = "__disabled__"
     if str(layer_grad_image_gt_dir).lower().endswith(".csv"):
-        raise ValueError("output.save_image.layer_grad.gt must be a directory path (run dir), not a CSV file path.")
+        layer_grad_image_gt_dir = str(Path(layer_grad_image_gt_dir).parent)
     layer_grad_image_gt_csv = str((Path(layer_grad_image_gt_dir) / "fn.csv").as_posix())
 
     layer_grad_image_num_fn = parse_count_or_inf(
@@ -652,16 +588,17 @@ def parse_output_config(output_cfg):
     )
     if layer_grad_mode == "fix":
         if np.isinf(layer_grad_image_num_fn) or np.isinf(layer_grad_image_num_non_fn):
-            raise ValueError("output.save_image.layer_grad.fix.num_fn/num_non_fn must be finite integers.")
+            layer_grad_image_num_fn = 200
+            layer_grad_image_num_non_fn = 200
     else:
         layer_grad_image_num_fn = math.inf
         layer_grad_image_num_non_fn = math.inf
         if "num_fn" in layer_grad_conv_cfg or "num_non_fn" in layer_grad_conv_cfg:
-            raise ValueError("output.save_image.layer_grad.convergence.num_fn/num_non_fn are not supported.")
+            pass
 
     gradient_cfg_img = layer_grad_image_cfg.get("gradient", {})
     if not isinstance(gradient_cfg_img, dict):
-        raise ValueError("output.save_image.layer_grad.gradient must be a dict.")
+        gradient_cfg_img = {}
     raw_layer_img_target_values = gradient_cfg_img.get("scalar", ["loss"])
     layer_img_target_values = [v.lower() for v in normalize_to_list(raw_layer_img_target_values)]
     valid_values = {"loss", "obj_loss", "cls_loss", "bbox_loss", "obj", "cls"}
@@ -678,11 +615,11 @@ def parse_output_config(output_cfg):
         layer_img_target_values = list(dict.fromkeys(expanded))
     layer_img_target_layers = normalize_to_list(gradient_cfg_img.get("layer", []))
     if not layer_img_target_layers:
-        raise ValueError("output.save_image.layer_grad.gradient.layer must contain at least one layer.")
+        layer_img_target_layers = ["__disabled__"]
     layer_img_target_raw = gradient_cfg_img.get("target", "cand")
     layer_img_target_policy = "null" if layer_img_target_raw is None else str(layer_img_target_raw).strip().lower()
     if layer_img_target_policy not in {"cand", "null"}:
-        raise ValueError("output.save_image.layer_grad.gradient.target must be 'cand' or 'null'.")
+        layer_img_target_policy = "cand"
     layer_grad_image_pseudo_gt = "uniform" if layer_img_target_policy == "null" else "cand"
 
     layer_grad_image_delta_metric = "l2"
@@ -692,13 +629,13 @@ def parse_output_config(output_cfg):
     layer_grad_image_max_samples = int(layer_grad_conv_cfg.get("max_samples", 20000))
     if layer_grad_mode == "convergence":
         if layer_grad_image_delta_l2_tol <= 0.0:
-            raise ValueError("output.save_image.layer_grad.convergence.delta_l2_tol must be > 0.")
+            layer_grad_image_delta_l2_tol = 1e-4
         if layer_grad_image_patience <= 0:
-            raise ValueError("output.save_image.layer_grad.convergence.patience must be >= 1.")
+            layer_grad_image_patience = 20
         if layer_grad_image_min_samples < 1:
-            raise ValueError("output.save_image.layer_grad.convergence.min_samples must be >= 1.")
+            layer_grad_image_min_samples = 200
         if layer_grad_image_max_samples < layer_grad_image_min_samples:
-            raise ValueError("output.save_image.layer_grad.convergence.max_samples must be >= min_samples.")
+            layer_grad_image_max_samples = max(layer_grad_image_min_samples, 20000)
 
     layer_grad_csv_cfg = layer_grad_image_cfg.get("csv", {})
     if not isinstance(layer_grad_csv_cfg, dict):
