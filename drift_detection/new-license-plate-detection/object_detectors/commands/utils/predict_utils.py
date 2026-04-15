@@ -269,7 +269,7 @@ def parse_output_config(output_cfg):
         if "pre_nms" in save_csv_cfg:
             raise ValueError("output.save_csv.pre_nms was removed. Set output.save_csv.<uncertainty>.pre_nms instead.")
         if "layer_grad_ref" in save_csv_cfg:
-            raise ValueError("output.save_csv.layer_grad_ref was moved to output.save_image.layer_grad_ref.")
+            raise ValueError("output.save_csv.layer_grad_ref was removed. Use output.save_image.layer_grad.csv instead.")
         save_csv_enabled = bool(save_csv_cfg.get("enabled", True))
         gt_cfg = save_csv_cfg.get("gt", {})
         score_cfg = save_csv_cfg.get("score", {})
@@ -312,18 +312,35 @@ def parse_output_config(output_cfg):
         layer_grad_cfg = {}
 
     unit = str(active_uncertainty_cfg.get("unit", "image")).lower()
-    pre_nms_cfg = active_uncertainty_cfg.get("pre_nms", False)
-    if isinstance(pre_nms_cfg, dict):
-        pre_nms = bool(pre_nms_cfg.get("enabled", False))
-        pre_nms_ratio = float(pre_nms_cfg.get("pre_nms_ratio", 1.0))
-    else:
-        pre_nms = bool(pre_nms_cfg)
-        pre_nms_ratio = 1.0
-
-    if not (0.0 <= float(pre_nms_ratio) <= 1.0):
-        raise ValueError(
-            f"output.save_csv.{uncertainty}.pre_nms.pre_nms_ratio must be in [0,1]."
-        )
+    pre_nms_allowed = {"score", "full_softmax", "energy", "entropy", "feature_grad", "layer_grad"}
+    pre_nms_forbidden = {"gt", "meta_detect", "feature", "mc_dropout", "ensemble"}
+    pre_nms = False
+    pre_nms_ratio = 1.0
+    if uncertainty in pre_nms_allowed:
+        pre_nms_cfg = active_uncertainty_cfg.get("pre_nms", {"enabled": False})
+        if isinstance(pre_nms_cfg, dict):
+            pre_nms = bool(pre_nms_cfg.get("enabled", False))
+            if pre_nms:
+                if "pre_nms_ratio" not in pre_nms_cfg:
+                    raise ValueError(
+                        f"output.save_csv.{uncertainty}.pre_nms.pre_nms_ratio is required when pre_nms.enabled=true."
+                    )
+                pre_nms_ratio = float(pre_nms_cfg.get("pre_nms_ratio"))
+            else:
+                pre_nms_ratio = float(pre_nms_cfg.get("pre_nms_ratio", 1.0))
+        else:
+            raise ValueError(f"output.save_csv.{uncertainty}.pre_nms must be a dict with 'enabled' and optional 'pre_nms_ratio'.")
+        if not (0.0 <= float(pre_nms_ratio) <= 1.0):
+            raise ValueError(
+                f"output.save_csv.{uncertainty}.pre_nms.pre_nms_ratio must be in [0,1]."
+            )
+    elif uncertainty in pre_nms_forbidden:
+        if "pre_nms" in active_uncertainty_cfg:
+            raise ValueError(f"output.save_csv.{uncertainty}.pre_nms is not supported for this uncertainty.")
+        if "pre_nms_ratio" in active_uncertainty_cfg:
+            raise ValueError(
+                f"output.save_csv.{uncertainty}.pre_nms_ratio is not supported. This uncertainty does not expose pre_nms options."
+            )
 
     if uncertainty not in {"gt", "score", "meta_detect", "mc_dropout", "ensemble", "energy", "entropy", "full_softmax", "feature", "feature_grad", "layer_grad"}:
         raise ValueError(
@@ -523,7 +540,6 @@ def parse_output_config(output_cfg):
         save_image_enabled = save_image_cfg
         gt_image_cfg = {}
         layer_grad_image_cfg = {}
-        layer_grad_ref_cfg = {}
         gt_image_step = 1
         gt_image_max_num = 1
     else:
@@ -534,9 +550,8 @@ def parse_output_config(output_cfg):
         layer_grad_image_cfg = save_image_cfg.get("layer_grad", {})
         if not isinstance(layer_grad_image_cfg, dict):
             layer_grad_image_cfg = {}
-        layer_grad_ref_cfg = save_image_cfg.get("layer_grad_ref", {})
-        if not isinstance(layer_grad_ref_cfg, dict):
-            layer_grad_ref_cfg = {}
+        if "layer_grad_ref" in save_image_cfg:
+            raise ValueError("output.save_image.layer_grad_ref was removed. Use output.save_image.layer_grad.csv instead.")
 
         # Backward compatibility for legacy flat keys under output.save_image.
         legacy_step = int(save_image_cfg.get("step", 1))
@@ -549,67 +564,124 @@ def parse_output_config(output_cfg):
     if gt_image_max_num <= 0:
         raise ValueError("output.save_image.gt.max_num must be >= 1.")
 
+    if not save_image_enabled:
+        layer_grad_image_cfg = {
+            "mode": "fix",
+            "normalize": "layer_minmax",
+            "save_mean_maps": True,
+            "save_per_image": False,
+            "save_graph": True,
+            "csv": {"enabled": False, "save_running_log": True, "save_final_raw_map_csv": True, "save_final_norm_map_csv": True},
+            "fix": {
+                "gt": "__disabled__",
+                "gradient": {"scalar": ["loss"], "layer": ["__disabled__"], "target": "cand"},
+                "num_fn": 0,
+                "num_non_fn": 0,
+            },
+            "convergence": {
+                "gt": "__disabled__",
+                "gradient": {"scalar": ["loss"], "layer": ["__disabled__"], "target": "cand"},
+                "num_fn": "inf",
+                "num_non_fn": "inf",
+                "delta_l2_tol": 1e-4,
+                "patience": 20,
+                "min_samples": 200,
+                "max_samples": 20000,
+            },
+        }
+
+    layer_grad_legacy_keys = {"target_layer", "max_num_fn", "max_num_non_fn", "num_fn", "num_non_fn", "gt"}
+    used_layer_grad_legacy_keys = sorted([k for k in layer_grad_legacy_keys if k in layer_grad_image_cfg])
+    if used_layer_grad_legacy_keys:
+        raise ValueError(
+            "Legacy output.save_image.layer_grad keys are not supported: "
+            f"{used_layer_grad_legacy_keys}. Use layer_grad.mode + layer_grad.fix/layer_grad.convergence blocks."
+        )
+    layer_grad_mode = str(layer_grad_image_cfg.get("mode", "fix")).strip().lower()
+    if layer_grad_mode not in {"fix", "convergence"}:
+        raise ValueError("output.save_image.layer_grad.mode must be 'fix' or 'convergence'.")
+    layer_grad_fix_cfg = layer_grad_image_cfg.get("fix", {})
+    layer_grad_conv_cfg = layer_grad_image_cfg.get("convergence", {})
+    if not isinstance(layer_grad_fix_cfg, dict):
+        layer_grad_fix_cfg = {}
+    if not isinstance(layer_grad_conv_cfg, dict):
+        layer_grad_conv_cfg = {}
+    active_layer_grad_cfg = layer_grad_fix_cfg if layer_grad_mode == "fix" else layer_grad_conv_cfg
+
     layer_grad_image_normalize = str(layer_grad_image_cfg.get("normalize", "layer_minmax")).strip().lower()
     if layer_grad_image_normalize not in {"layer_minmax", "layer_trimmed_minmax", "none"}:
-        raise ValueError(
-            "output.save_image.layer_grad.normalize must be "
-            "'layer_minmax', 'layer_trimmed_minmax', or 'none'."
-        )
-    layer_grad_image_target_layer = layer_grad_image_cfg.get("target_layer", "target_layer")
-    if isinstance(layer_grad_image_target_layer, str):
-        layer_grad_image_target_layer = layer_grad_image_target_layer.strip()
-        if layer_grad_image_target_layer.lower() not in {"all_conv", "target_layer"}:
-            raise ValueError("output.save_image.layer_grad.target_layer must be 'all_conv', 'target_layer', or a list.")
-    elif isinstance(layer_grad_image_target_layer, (list, tuple)):
-        layer_grad_image_target_layer = [str(v).strip() for v in layer_grad_image_target_layer if str(v).strip()]
-        if not layer_grad_image_target_layer:
-            raise ValueError("output.save_image.layer_grad.target_layer list must not be empty.")
-    else:
-        raise ValueError("output.save_image.layer_grad.target_layer must be a string or list.")
-    layer_grad_image_max_num_fn = int(layer_grad_image_cfg.get("max_num_fn", 200))
-    layer_grad_image_max_num_non_fn = int(layer_grad_image_cfg.get("max_num_non_fn", 200))
-    if layer_grad_image_max_num_fn < 0:
-        raise ValueError("output.save_image.layer_grad.max_num_fn must be >= 0.")
-    if layer_grad_image_max_num_non_fn < 0:
-        raise ValueError("output.save_image.layer_grad.max_num_non_fn must be >= 0.")
-    layer_grad_image_num_fn = parse_count_or_inf(
-        layer_grad_image_cfg.get("num_fn", layer_grad_image_max_num_fn),
-        key_name="output.save_image.layer_grad.num_fn",
-    )
-    layer_grad_image_num_non_fn = parse_count_or_inf(
-        layer_grad_image_cfg.get("num_non_fn", layer_grad_image_max_num_non_fn),
-        key_name="output.save_image.layer_grad.num_non_fn",
-    )
-    layer_grad_image_gt_csv = str(layer_grad_image_cfg.get("gt", "")).strip()
-    layer_grad_image_convergence_cfg = layer_grad_image_cfg.get("convergence", {})
-    if not isinstance(layer_grad_image_convergence_cfg, dict):
-        layer_grad_image_convergence_cfg = {}
-    layer_grad_image_delta_metric = str(
-        layer_grad_image_convergence_cfg.get("delta_metric", "l2")
-    ).strip().lower()
-    if layer_grad_image_delta_metric != "l2":
-        raise ValueError("output.save_image.layer_grad.convergence.delta_metric must be 'l2'.")
-    layer_grad_image_delta_l2_tol = float(layer_grad_image_convergence_cfg.get("delta_l2_tol", 1e-4))
-    layer_grad_image_patience = int(layer_grad_image_convergence_cfg.get("patience", 20))
-    layer_grad_image_min_samples = int(layer_grad_image_convergence_cfg.get("min_samples", 200))
-    layer_grad_image_max_samples = int(layer_grad_image_convergence_cfg.get("max_samples", 20000))
-    if layer_grad_image_delta_l2_tol <= 0.0:
-        raise ValueError("output.save_image.layer_grad.convergence.delta_l2_tol must be > 0.")
-    if layer_grad_image_patience <= 0:
-        raise ValueError("output.save_image.layer_grad.convergence.patience must be >= 1.")
-    if layer_grad_image_min_samples < 1:
-        raise ValueError("output.save_image.layer_grad.convergence.min_samples must be >= 1.")
-    if layer_grad_image_max_samples < layer_grad_image_min_samples:
-        raise ValueError("output.save_image.layer_grad.convergence.max_samples must be >= min_samples.")
+        raise ValueError("output.save_image.layer_grad.normalize must be 'layer_minmax', 'layer_trimmed_minmax', or 'none'.")
     if "save_diff_map" in layer_grad_image_cfg:
         raise ValueError("output.save_image.layer_grad.save_diff_map was removed. Use save_mean_maps/save_graph only.")
     layer_grad_image_save_mean_maps = bool(layer_grad_image_cfg.get("save_mean_maps", True))
     layer_grad_image_save_per_image = bool(layer_grad_image_cfg.get("save_per_image", False))
     layer_grad_image_save_graph = bool(layer_grad_image_cfg.get("save_graph", True))
-    layer_grad_ref_enabled = bool(layer_grad_ref_cfg.get("enabled", False))
-    layer_grad_ref_save_running_log = bool(layer_grad_ref_cfg.get("save_running_log", True))
-    layer_grad_ref_save_final_raw_map_csv = bool(layer_grad_ref_cfg.get("save_final_raw_map_csv", True))
-    layer_grad_ref_save_final_norm_map_csv = bool(layer_grad_ref_cfg.get("save_final_norm_map_csv", True))
+
+    layer_grad_image_gt_csv = str(active_layer_grad_cfg.get("gt", "")).strip()
+    if not layer_grad_image_gt_csv:
+        raise ValueError(f"output.save_image.layer_grad.{layer_grad_mode}.gt is required.")
+    layer_grad_image_num_fn = parse_count_or_inf(
+        active_layer_grad_cfg.get("num_fn", 200),
+        key_name=f"output.save_image.layer_grad.{layer_grad_mode}.num_fn",
+    )
+    layer_grad_image_num_non_fn = parse_count_or_inf(
+        active_layer_grad_cfg.get("num_non_fn", 200),
+        key_name=f"output.save_image.layer_grad.{layer_grad_mode}.num_non_fn",
+    )
+    if layer_grad_mode == "fix":
+        if np.isinf(layer_grad_image_num_fn) or np.isinf(layer_grad_image_num_non_fn):
+            raise ValueError("output.save_image.layer_grad.fix.num_fn/num_non_fn must be finite integers.")
+    else:
+        if (not np.isinf(layer_grad_image_num_fn)) or (not np.isinf(layer_grad_image_num_non_fn)):
+            raise ValueError("output.save_image.layer_grad.convergence.num_fn/num_non_fn must be 'inf'.")
+    gradient_cfg_img = active_layer_grad_cfg.get("gradient", {})
+    if not isinstance(gradient_cfg_img, dict):
+        raise ValueError(f"output.save_image.layer_grad.{layer_grad_mode}.gradient must be a dict.")
+    raw_layer_img_target_values = gradient_cfg_img.get("scalar", ["loss"])
+    layer_img_target_values = [v.lower() for v in normalize_to_list(raw_layer_img_target_values)]
+    valid_values = {"loss", "obj_loss", "cls_loss", "bbox_loss", "obj", "cls"}
+    invalid_values = [v for v in layer_img_target_values if v not in valid_values]
+    if invalid_values:
+        raise ValueError(f"Unsupported save_image layer_grad gradient.scalar value(s): {invalid_values}. Use {sorted(valid_values)}")
+    if "loss" in layer_img_target_values:
+        expanded = []
+        for v in layer_img_target_values:
+            if v == "loss":
+                expanded.extend(["obj_loss", "cls_loss", "bbox_loss"])
+            else:
+                expanded.append(v)
+        layer_img_target_values = list(dict.fromkeys(expanded))
+    layer_img_target_layers = normalize_to_list(gradient_cfg_img.get("layer", []))
+    if not layer_img_target_layers:
+        raise ValueError(f"output.save_image.layer_grad.{layer_grad_mode}.gradient.layer must contain at least one layer.")
+    layer_img_target_raw = gradient_cfg_img.get("target", "cand")
+    layer_img_target_policy = "null" if layer_img_target_raw is None else str(layer_img_target_raw).strip().lower()
+    if layer_img_target_policy not in {"cand", "null"}:
+        raise ValueError(f"output.save_image.layer_grad.{layer_grad_mode}.gradient.target must be 'cand' or 'null'.")
+    layer_grad_image_pseudo_gt = "uniform" if layer_img_target_policy == "null" else "cand"
+
+    layer_grad_image_delta_metric = "l2"
+    layer_grad_image_delta_l2_tol = float(layer_grad_conv_cfg.get("delta_l2_tol", 1e-4))
+    layer_grad_image_patience = int(layer_grad_conv_cfg.get("patience", 20))
+    layer_grad_image_min_samples = int(layer_grad_conv_cfg.get("min_samples", 200))
+    layer_grad_image_max_samples = int(layer_grad_conv_cfg.get("max_samples", 20000))
+    if layer_grad_mode == "convergence":
+        if layer_grad_image_delta_l2_tol <= 0.0:
+            raise ValueError("output.save_image.layer_grad.convergence.delta_l2_tol must be > 0.")
+        if layer_grad_image_patience <= 0:
+            raise ValueError("output.save_image.layer_grad.convergence.patience must be >= 1.")
+        if layer_grad_image_min_samples < 1:
+            raise ValueError("output.save_image.layer_grad.convergence.min_samples must be >= 1.")
+        if layer_grad_image_max_samples < layer_grad_image_min_samples:
+            raise ValueError("output.save_image.layer_grad.convergence.max_samples must be >= min_samples.")
+
+    layer_grad_csv_cfg = layer_grad_image_cfg.get("csv", {})
+    if not isinstance(layer_grad_csv_cfg, dict):
+        layer_grad_csv_cfg = {}
+    layer_grad_ref_enabled = bool(layer_grad_csv_cfg.get("enabled", False))
+    layer_grad_ref_save_running_log = bool(layer_grad_csv_cfg.get("save_running_log", True))
+    layer_grad_ref_save_final_raw_map_csv = bool(layer_grad_csv_cfg.get("save_final_raw_map_csv", True))
+    layer_grad_ref_save_final_norm_map_csv = bool(layer_grad_csv_cfg.get("save_final_norm_map_csv", True))
 
     return {
         "save_csv_enabled": save_csv_enabled,
@@ -645,10 +717,11 @@ def parse_output_config(output_cfg):
         "save_image_enabled": save_image_enabled,
         "save_image_gt_step": gt_image_step,
         "save_image_gt_max_num": gt_image_max_num,
+        "save_image_layer_grad_mode": layer_grad_mode,
         "save_image_layer_grad_normalize": layer_grad_image_normalize,
-        "save_image_layer_grad_target_layer": layer_grad_image_target_layer,
-        "save_image_layer_grad_max_num_fn": layer_grad_image_max_num_fn,
-        "save_image_layer_grad_max_num_non_fn": layer_grad_image_max_num_non_fn,
+        "save_image_layer_grad_target_values": layer_img_target_values,
+        "save_image_layer_grad_target_layers": layer_img_target_layers,
+        "save_image_layer_grad_pseudo_gt": layer_grad_image_pseudo_gt,
         "save_image_layer_grad_num_fn": layer_grad_image_num_fn,
         "save_image_layer_grad_num_non_fn": layer_grad_image_num_non_fn,
         "save_image_layer_grad_gt_csv": layer_grad_image_gt_csv,
@@ -660,10 +733,10 @@ def parse_output_config(output_cfg):
         "save_image_layer_grad_save_mean_maps": layer_grad_image_save_mean_maps,
         "save_image_layer_grad_save_per_image": layer_grad_image_save_per_image,
         "save_image_layer_grad_save_graph": layer_grad_image_save_graph,
-        "save_image_layer_grad_ref_enabled": layer_grad_ref_enabled,
-        "save_image_layer_grad_ref_save_running_log": layer_grad_ref_save_running_log,
-        "save_image_layer_grad_ref_save_final_raw_map_csv": layer_grad_ref_save_final_raw_map_csv,
-        "save_image_layer_grad_ref_save_final_norm_map_csv": layer_grad_ref_save_final_norm_map_csv,
+        "save_image_layer_grad_csv_enabled": layer_grad_ref_enabled,
+        "save_image_layer_grad_csv_save_running_log": layer_grad_ref_save_running_log,
+        "save_image_layer_grad_csv_save_final_raw_map_csv": layer_grad_ref_save_final_raw_map_csv,
+        "save_image_layer_grad_csv_save_final_norm_map_csv": layer_grad_ref_save_final_norm_map_csv,
     }
 
 
