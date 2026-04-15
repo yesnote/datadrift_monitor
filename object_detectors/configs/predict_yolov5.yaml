@@ -101,6 +101,12 @@ output:
       target_layer: ["model.24.m.0", "model.24.m.1", "model.24.m.2"]  # "model.17.cv3.conv", "model.20.cv3.conv", "model.23.cv3.conv"
       map_reduction: none   # none | energy
       vector_reduction: [L1, L2, min, max, mean, std]  # empty list [] means save raw vector
+    
+    layer_grad_ref:
+      enabled: false
+      save_running_log: true
+      save_final_raw_map_csv: true
+      save_final_norm_map_csv: true
   
   save_image:
     enabled: true
@@ -109,11 +115,19 @@ output:
       max_num: 10
     
     layer_grad:
+      gt: object_detectors/runs/fn_detectors/04-07-2026_14;09_gt/fn.csv
       target_layer: all_conv   # all_conv | target_layer | [layer names]
       normalize: layer_minmax  # layer_minmax | layer_trimmed_minmax | none
       max_num_fn: 20
       max_num_non_fn: 20
+      num_fn: 20         # int or "inf"
+      num_non_fn: 20     # int or "inf"
+      convergence:
+        delta_metric: l2
+        delta_l2_tol: 1.0e-4
+        patience: 20
+        min_samples: 200
+        max_samples: 20000
       save_mean_maps: true
-      save_diff_map: true
       save_graph: true
       save_per_image: false
