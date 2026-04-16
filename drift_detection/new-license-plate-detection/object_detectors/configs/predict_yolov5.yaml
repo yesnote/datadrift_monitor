@@ -35,7 +35,7 @@ dataset:
     min_gt_boxes: 1  # keep only images with at least this many GT boxes
 
   null_image:
-    num_samples: 64
+    num_samples: 20000
     # seed: 1234  # optional
 
 dataloader:
