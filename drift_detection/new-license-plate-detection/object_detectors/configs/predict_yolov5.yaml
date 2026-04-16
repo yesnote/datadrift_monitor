@@ -111,11 +111,11 @@ output:
       vector_reduction: [L1, L2, min, max, mean, std]
 
   meta_detect:
+    unit: image  # image | bbox
+    score_threshold: 0.0
+    iou_threshold: 0.45
     save_csv:
       enabled: false
-      unit: image  # image | bbox
-      score_threshold: 0.0
-      iou_threshold: 0.45
       vector_reduction: [L1, L2, min, max, mean, std]
 
   feature:
