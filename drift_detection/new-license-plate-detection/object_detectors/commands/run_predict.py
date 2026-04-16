@@ -2485,7 +2485,7 @@ def run_layer_grad_csv(config, run_dir):
     viz_save_progress_raw_map = bool(parsed.get("save_image_layer_grad_save_progress_raw_map", False))
     viz_save_progress_norm_map = bool(parsed.get("save_image_layer_grad_save_progress_norm_map", False))
     viz_progress_step = max(1, int(parsed.get("save_image_layer_grad_progress_step", 10)))
-    layer_grad_ref_enabled = bool(reference_enabled)
+    layer_grad_ref_csv_enabled = bool(parsed.get("save_image_layer_grad_csv_reference_enabled", False))
     layer_grad_ref_save_running_log = bool(parsed.get("save_image_layer_grad_csv_save_running_log", True))
     layer_grad_ref_save_final_raw_map_csv = bool(parsed.get("save_image_layer_grad_csv_save_final_raw_map_csv", True))
     layer_grad_ref_save_final_norm_map_csv = bool(parsed.get("save_image_layer_grad_csv_save_final_norm_map_csv", True))
@@ -2596,7 +2596,7 @@ def run_layer_grad_csv(config, run_dir):
     if viz_enabled and reference_enabled and (viz_save_progress_raw_map or viz_save_progress_norm_map):
         (viz_dir / "reference_progress" / "fn").mkdir(parents=True, exist_ok=True)
         (viz_dir / "reference_progress" / "non_fn").mkdir(parents=True, exist_ok=True)
-    if viz_enabled and layer_grad_ref_enabled and layer_grad_ref_save_running_log:
+    if viz_enabled and reference_enabled and layer_grad_ref_csv_enabled and layer_grad_ref_save_running_log:
         tb_log_dir = run_dir / "ref_maps" / "tensorboard"
         tb_log_dir.mkdir(parents=True, exist_ok=True)
         tb_writer = SummaryWriter(log_dir=str(tb_log_dir))
@@ -2754,7 +2754,7 @@ def run_layer_grad_csv(config, run_dir):
                             if _is_group_done(group_key):
                                 if st["stop_reason"] == "":
                                     st["stop_reason"] = "target_reached"
-                            if layer_grad_ref_enabled and layer_grad_ref_save_running_log and tb_writer is not None:
+                            if layer_grad_ref_csv_enabled and layer_grad_ref_save_running_log and tb_writer is not None:
                                 step_val = int(st["count"])
                                 tb_writer.add_scalar(f"layer_grad/{group_key}/delta_l2", float(delta_l2), step_val)
                                 tb_writer.add_scalar(f"layer_grad/{group_key}/converged", int(bool(st["converged"])), step_val)
@@ -2770,7 +2770,7 @@ def run_layer_grad_csv(config, run_dir):
                                             out_norm = viz_dir / "reference_progress" / group_key / f"norm_{progress_idx:05d}.png"
                                             _save_heatmap_png(_normalize_layer_map(st["mean_raw"], mode=viz_normalize), out_norm)
                                         ref_progress_image_saved[group_key] += 1
-                            if layer_grad_ref_save_progress_raw_map_csv or layer_grad_ref_save_progress_norm_map_csv:
+                            if layer_grad_ref_csv_enabled and (layer_grad_ref_save_progress_raw_map_csv or layer_grad_ref_save_progress_norm_map_csv):
                                 should_save_progress_csv = ((int(st["count"]) % int(layer_grad_ref_progress_step)) == 0)
                                 if should_save_progress_csv:
                                     progress_idx = int(ref_progress_csv_saved[group_key])
@@ -2844,7 +2844,7 @@ def run_layer_grad_csv(config, run_dir):
                     out_path=viz_dir / "profile_mean_std_log.png",
                     log_scale=False,
                 )
-            if layer_grad_ref_enabled:
+            if layer_grad_ref_csv_enabled:
                 ref_dir = run_dir / "ref_maps"
                 ref_dir.mkdir(parents=True, exist_ok=True)
                 if layer_grad_ref_save_final_raw_map_csv:
@@ -2884,6 +2884,7 @@ def run_layer_grad_csv(config, run_dir):
             },
             "reference_enabled": bool(reference_enabled),
             "reference_groups": active_reference_groups,
+            "reference_csv_enabled": bool(layer_grad_ref_csv_enabled),
             "reference_progress_image": {
                 "save_raw": bool(viz_save_progress_raw_map),
                 "save_norm": bool(viz_save_progress_norm_map),

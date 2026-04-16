@@ -157,6 +157,7 @@ output:
         map: none
         vector: [L1, L2, min, max, mean, std]
       reference:
+        enabled: false
         progress:
           log: true # tensorboard event log
           raw_map: false
