@@ -156,7 +156,7 @@ output:
         save_final_norm_map_csv: true # layer min-max normalization
     
     save_image:
-      gt: object_detectors/runs/fn_detectors/04-07-2026_14;09_gt
+      gt: object_detectors/runs/fn_detectors/04-08-2026_14;10_gt
       gradient:
         scalar: [loss]
         layer: all_conv # all_conv | ["model.24.m.0", "model.24.m.1", "model.24.m.2"]
