@@ -2453,7 +2453,7 @@ def run_layer_grad_csv(config, run_dir):
     pre_nms_ratio = float(parsed.get("pre_nms_ratio", 1.0))
     save_image_enabled = bool(parsed.get("save_image_enabled", False))
     viz_enabled = bool(save_image_enabled and unit == "image")
-    viz_normalize = str(parsed.get("save_image_layer_grad_normalize", "layer_minmax")).strip().lower()
+    viz_normalize = "layer_minmax"
     viz_target_values = list(parsed.get("save_image_layer_grad_target_values", target_values))
     viz_target_layers = list(parsed.get("save_image_layer_grad_target_layers", target_layers))
     viz_pseudo_gt = str(parsed.get("save_image_layer_grad_pseudo_gt", layer_pseudo_gt)).strip().lower()

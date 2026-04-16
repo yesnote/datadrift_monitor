@@ -162,7 +162,6 @@ output:
         scalar: [loss]
         layer: ["model.24.m.0", "model.24.m.1", "model.24.m.2"]
         target: null
-      normalize: layer_minmax  # layer_minmax | layer_trimmed_minmax | none
       save_final_raw_map: true
       save_final_norm_map: true
       save_profile: true
