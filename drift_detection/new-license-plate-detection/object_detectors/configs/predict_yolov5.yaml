@@ -154,6 +154,10 @@ output:
         save_running_log: true # tensorboard event log
         save_final_raw_map_csv: true
         save_final_norm_map_csv: true # layer min-max normalization
+        save_progress_raw_map_csv: false
+        save_progress_norm_map_csv: false
+        progress_step: 50
+        progress_max_num: 20
     
     save_image:
       gt: object_detectors/runs/fn_detectors/04-08-2026_14;10_gt
@@ -167,6 +171,10 @@ output:
         save_final_raw_map: true
         save_final_norm_map: true # layer min-max normalization
         save_profile: true
+        save_progress_raw_map: false
+        save_progress_norm_map: false
+        progress_step: 50
+        progress_max_num: 20
         delta: 1.0e-4
         patience: 20
         min_samples: 200
