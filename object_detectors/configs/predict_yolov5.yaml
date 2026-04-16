@@ -11,13 +11,13 @@ model:
 dataset:
   used_dataset:   # coco | voc | openimages | null_image
     - coco
-    - null_image
+    # - null_image
   split:  # train | val | test
     - val
-    - val
+    # - val
   
   coco:
-    root: D:/SEONGJIN/datasets/COCO
+    root: D:/DataDrift/datasets/COCO
     train_split: train2017
     val_split: val2017
     test_split: test2017
@@ -159,7 +159,7 @@ output:
       gt: object_detectors/runs/fn_detectors/04-07-2026_14;09_gt
       gradient:
         scalar: [loss]
-        layer: ["model.24.m.0", "model.24.m.1", "model.24.m.2"] # [all_conv]
+        layer: all_conv # [all_conv]
         target: null_target
       per_image:
         enabled: false
