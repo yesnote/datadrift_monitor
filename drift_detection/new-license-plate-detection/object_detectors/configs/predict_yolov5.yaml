@@ -154,7 +154,7 @@ output:
         enabled: false
         save_running_log: true
         save_final_raw_map_csv: true
-        save_final_norm_map_csv: true
+        save_final_norm_map_csv: true # layer min-max normalization
     
     save_image:
       gt: object_detectors/runs/fn_detectors/04-07-2026_14;09_gt
@@ -163,7 +163,7 @@ output:
         layer: ["model.24.m.0", "model.24.m.1", "model.24.m.2"]
         target: null
       save_final_raw_map: true
-      save_final_norm_map: true
+      save_final_norm_map: true # layer min-max normalization
       save_profile: true
       delta: 1.0e-4
       patience: 20
