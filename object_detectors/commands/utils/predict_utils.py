@@ -339,19 +339,16 @@ def parse_output_config(output_cfg):
         t = g.get("target", "cand")
         layer_pseudo_gt = "uniform" if (t is None or str(t).strip().lower() == "null") else "cand"
 
-    save_image_enabled = bool(save_image_cfg.get("enabled", False))
+    save_image_enabled = bool(save_image_cfg.get("enabled", bool(save_image_cfg)))
     gt_image_cfg = as_dict(save_image_cfg.get("gt", {}))
     gt_image_step = as_int(gt_image_cfg.get("step", 1), 1)
     gt_image_max_num = as_int(gt_image_cfg.get("max_num", 1), 1)
 
-    layer_grad_mode = "fix"
     layer_grad_image_normalize = "layer_minmax"
-    layer_grad_image_save_mean_maps = True
-    layer_grad_image_save_per_image = False
-    layer_grad_image_save_graph = True
+    layer_grad_image_save_final_raw_map = True
+    layer_grad_image_save_final_norm_map = True
+    layer_grad_image_save_profile = True
     layer_grad_image_gt_csv = ""
-    layer_grad_image_num_fn = 200
-    layer_grad_image_num_non_fn = 200
     layer_img_target_values = ["obj_loss", "cls_loss", "bbox_loss"]
     layer_img_target_layers = []
     layer_grad_image_pseudo_gt = "cand"
@@ -367,23 +364,18 @@ def parse_output_config(output_cfg):
 
     if uncertainty == "layer_grad":
         lg = save_image_cfg
-        layer_grad_mode = str(lg.get("mode", "fix")).strip().lower()
-        fix_cfg = as_dict(lg.get("fix", {}))
-        conv_cfg = as_dict(lg.get("convergence", {}))
+        conv_cfg = lg
         layer_grad_image_normalize = str(lg.get("normalize", "layer_minmax")).strip().lower()
-        layer_grad_image_save_mean_maps = bool(lg.get("save_mean_maps", True))
-        layer_grad_image_save_per_image = bool(lg.get("save_per_image", False))
-        layer_grad_image_save_graph = bool(lg.get("save_graph", True))
+        layer_grad_image_save_final_raw_map = bool(lg.get("save_final_raw_map", True))
+        layer_grad_image_save_final_norm_map = bool(lg.get("save_final_norm_map", True))
+        layer_grad_image_save_profile = bool(lg.get("save_profile", True))
 
         gt_dir = str(lg.get("gt", "")).strip()
         if gt_dir:
             layer_grad_image_gt_csv = str((Path(gt_dir) / "fn.csv").as_posix())
 
-        layer_grad_image_num_fn = as_count_or_inf(fix_cfg.get("num_fn", 200), 200)
-        layer_grad_image_num_non_fn = as_count_or_inf(fix_cfg.get("num_non_fn", 200), 200)
-        if layer_grad_mode == "convergence":
-            layer_grad_image_num_fn = math.inf
-            layer_grad_image_num_non_fn = math.inf
+        layer_grad_image_num_fn = math.inf
+        layer_grad_image_num_non_fn = math.inf
 
         g = as_dict(lg.get("gradient", {}))
         layer_img_target_values = [v.lower() for v in normalize_to_list(g.get("scalar", ["loss"]))]
@@ -396,7 +388,7 @@ def parse_output_config(output_cfg):
         t = g.get("target", "cand")
         layer_grad_image_pseudo_gt = "uniform" if (t is None or str(t).strip().lower() == "null") else "cand"
 
-        layer_grad_image_delta_l2_tol = as_float(conv_cfg.get("delta_l2_tol", 1e-4), 1e-4)
+        layer_grad_image_delta_l2_tol = as_float(conv_cfg.get("delta", 1e-4), 1e-4)
         layer_grad_image_patience = as_int(conv_cfg.get("patience", 20), 20)
         layer_grad_image_min_samples = as_int(conv_cfg.get("min_samples", 200), 200)
         layer_grad_image_max_samples = as_int(conv_cfg.get("max_samples", 20000), 20000)
@@ -439,7 +431,6 @@ def parse_output_config(output_cfg):
         "save_image_enabled": save_image_enabled,
         "save_image_gt_step": gt_image_step,
         "save_image_gt_max_num": gt_image_max_num,
-        "save_image_layer_grad_mode": layer_grad_mode,
         "save_image_layer_grad_normalize": layer_grad_image_normalize,
         "save_image_layer_grad_target_values": layer_img_target_values,
         "save_image_layer_grad_target_layers": layer_img_target_layers,
@@ -452,9 +443,9 @@ def parse_output_config(output_cfg):
         "save_image_layer_grad_convergence_patience": layer_grad_image_patience,
         "save_image_layer_grad_convergence_min_samples": layer_grad_image_min_samples,
         "save_image_layer_grad_convergence_max_samples": layer_grad_image_max_samples,
-        "save_image_layer_grad_save_mean_maps": layer_grad_image_save_mean_maps,
-        "save_image_layer_grad_save_per_image": layer_grad_image_save_per_image,
-        "save_image_layer_grad_save_graph": layer_grad_image_save_graph,
+        "save_image_layer_grad_save_final_raw_map": layer_grad_image_save_final_raw_map,
+        "save_image_layer_grad_save_final_norm_map": layer_grad_image_save_final_norm_map,
+        "save_image_layer_grad_save_profile": layer_grad_image_save_profile,
         "save_image_layer_grad_csv_enabled": layer_grad_ref_enabled,
         "save_image_layer_grad_csv_save_running_log": layer_grad_ref_save_running_log,
         "save_image_layer_grad_csv_save_final_raw_map_csv": layer_grad_ref_save_final_raw_map_csv,

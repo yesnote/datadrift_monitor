@@ -2453,26 +2453,25 @@ def run_layer_grad_csv(config, run_dir):
     pre_nms_ratio = float(parsed.get("pre_nms_ratio", 1.0))
     save_image_enabled = bool(parsed.get("save_image_enabled", False))
     viz_enabled = bool(save_image_enabled and unit == "image")
-    viz_mode = str(parsed.get("save_image_layer_grad_mode", "fix")).strip().lower()
     viz_normalize = str(parsed.get("save_image_layer_grad_normalize", "layer_minmax")).strip().lower()
     viz_target_values = list(parsed.get("save_image_layer_grad_target_values", target_values))
     viz_target_layers = list(parsed.get("save_image_layer_grad_target_layers", target_layers))
     viz_pseudo_gt = str(parsed.get("save_image_layer_grad_pseudo_gt", layer_pseudo_gt)).strip().lower()
     viz_num_by_group = {
-        "fn": parsed.get("save_image_layer_grad_num_fn", 200),
-        "non_fn": parsed.get("save_image_layer_grad_num_non_fn", 200),
+        "fn": math.inf,
+        "non_fn": math.inf,
     }
     viz_gt_csv = str(parsed.get("save_image_layer_grad_gt_csv", "")).strip()
     conv_delta_l2_tol = float(parsed.get("save_image_layer_grad_convergence_delta_l2_tol", 1e-4))
     conv_patience = int(parsed.get("save_image_layer_grad_convergence_patience", 20))
     conv_min_samples = int(parsed.get("save_image_layer_grad_convergence_min_samples", 200))
     conv_max_samples = int(parsed.get("save_image_layer_grad_convergence_max_samples", 20000))
-    convergence_mode = (viz_mode == "convergence")
-    if convergence_mode and not viz_gt_csv:
+    convergence_mode = True
+    if not viz_gt_csv:
         raise ValueError("output.save_image.layer_grad.gt is required when num_fn/num_non_fn is 'inf'.")
-    viz_save_mean_maps = bool(parsed.get("save_image_layer_grad_save_mean_maps", True))
-    viz_save_per_image = bool(parsed.get("save_image_layer_grad_save_per_image", False))
-    viz_save_graph = bool(parsed.get("save_image_layer_grad_save_graph", True))
+    viz_save_final_raw_map = bool(parsed.get("save_image_layer_grad_save_final_raw_map", True))
+    viz_save_final_norm_map = bool(parsed.get("save_image_layer_grad_save_final_norm_map", True))
+    viz_save_profile = bool(parsed.get("save_image_layer_grad_save_profile", True))
     layer_grad_ref_enabled = bool(parsed.get("save_image_layer_grad_csv_enabled", False))
     layer_grad_ref_save_running_log = bool(parsed.get("save_image_layer_grad_csv_save_running_log", True))
     layer_grad_ref_save_final_raw_map_csv = bool(parsed.get("save_image_layer_grad_csv_save_final_raw_map_csv", True))
@@ -2509,7 +2508,6 @@ def run_layer_grad_csv(config, run_dir):
                 layer_param_shapes[layer_name] = None
     catid_to_name = load_gt_category_maps(config, split) if viz_enabled else {}
     iou_match_threshold = parsed["gt_iou_match_threshold"] if viz_enabled else 0.45
-    viz_saved_per_image = {"fn": 0, "non_fn": 0}
     running_log_rows = []
     gt_match_stats = {"id_match": 0, "path_fallback": 0, "unmatched": 0}
     gt_by_id, gt_by_base = {}, {}
@@ -2558,9 +2556,6 @@ def run_layer_grad_csv(config, run_dir):
     viz_dir = run_dir / "images"
     if viz_enabled:
         viz_dir.mkdir(parents=True, exist_ok=True)
-    if viz_enabled and viz_save_per_image:
-        (viz_dir / "per_image" / "fn").mkdir(parents=True, exist_ok=True)
-        (viz_dir / "per_image" / "non_fn").mkdir(parents=True, exist_ok=True)
 
     csv_file_handle = None
     csv_writer = None
@@ -2727,15 +2722,6 @@ def run_layer_grad_csv(config, run_dir):
                                     "converged": bool(st["converged"]),
                                 }
                             )
-                        if viz_save_per_image:
-                            out_path = (
-                                viz_dir
-                                / "per_image"
-                                / group_key
-                                / f"{image_id}_{viz_saved_per_image[group_key]:05d}.png"
-                            )
-                            _save_heatmap_png(_normalize_layer_map(grad_map_raw, mode=viz_normalize), out_path)
-                            viz_saved_per_image[group_key] += 1
                     del grad_stats_all
             del infer_batch
             if batch_preds is not None:
@@ -2760,12 +2746,17 @@ def run_layer_grad_csv(config, run_dir):
         non_fn_mean = _normalize_layer_map(non_fn_mean_raw, mode=viz_normalize)
         has_fn = bool(fn_mean.size > 0)
         has_non_fn = bool(non_fn_mean.size > 0)
-        if viz_save_mean_maps:
+        if viz_save_final_raw_map:
+            if group_states["fn"]["mean_raw"] is not None:
+                _save_heatmap_png(group_states["fn"]["mean_raw"], viz_dir / "fn_final_raw_map.png")
+            if group_states["non_fn"]["mean_raw"] is not None:
+                _save_heatmap_png(group_states["non_fn"]["mean_raw"], viz_dir / "non_fn_final_raw_map.png")
+        if viz_save_final_norm_map:
             if has_fn:
-                _save_heatmap_png(fn_mean, viz_dir / "fn_mean_map.png")
+                _save_heatmap_png(fn_mean, viz_dir / "fn_final_norm_map.png")
             if has_non_fn:
-                _save_heatmap_png(non_fn_mean, viz_dir / "non_fn_mean_map.png")
-        if viz_save_graph and (has_fn or has_non_fn):
+                _save_heatmap_png(non_fn_mean, viz_dir / "non_fn_final_norm_map.png")
+        if viz_save_profile and (has_fn or has_non_fn):
             _save_layer_profile_plot(
                 fn_mean_map=fn_mean,
                 non_fn_mean_map=non_fn_mean,
@@ -2787,7 +2778,7 @@ def run_layer_grad_csv(config, run_dir):
             print(f"[layer_grad] unmatched GT rows: {int(gt_match_stats['unmatched'])}")
         viz_summary = {
             "normalize": viz_normalize,
-            "mode": "convergence" if convergence_mode else "fixed",
+            "mode": "convergence",
             "num_fn": "inf" if np.isinf(viz_num_by_group["fn"]) else int(viz_num_by_group["fn"]),
             "num_non_fn": "inf" if np.isinf(viz_num_by_group["non_fn"]) else int(viz_num_by_group["non_fn"]),
             "convergence": {
@@ -2806,8 +2797,9 @@ def run_layer_grad_csv(config, run_dir):
             "group_stable_steps": {k: int(group_states[k]["stable_steps"]) for k in ("fn", "non_fn")},
             "group_stop_reason": {k: str(group_states[k]["stop_reason"]) for k in ("fn", "non_fn")},
             "target_layers_for_map": viz_target_layers,
-            "save_mean_maps": bool(viz_save_mean_maps),
-            "save_per_image": bool(viz_save_per_image),
+            "save_final_raw_map": bool(viz_save_final_raw_map),
+            "save_final_norm_map": bool(viz_save_final_norm_map),
+            "save_profile": bool(viz_save_profile),
             "gt_match_stats": gt_match_stats,
         }
         with open(viz_dir / "summary.json", "w", encoding="utf-8") as f:
