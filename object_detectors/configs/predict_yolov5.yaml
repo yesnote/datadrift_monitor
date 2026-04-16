@@ -137,17 +137,23 @@ output:
 
   layer_grad:
     save_csv:
-      enabled: false
-      unit: image  # image | bbox
-      pre_nms:
+      data:
         enabled: false
-      gradient:
-        scalar: [loss]
-        layer: ["model.24.m.0", "model.24.m.1", "model.24.m.2"]
-        target: null
-      reduction:
-        map: none
-        vector: [L1, L2, min, max, mean, std]
+        unit: image  # image | bbox
+        pre_nms:
+          enabled: false
+        gradient:
+          scalar: [loss]
+          layer: ["model.24.m.0", "model.24.m.1", "model.24.m.2"]
+          target: null
+        reduction:
+          map: none
+          vector: [L1, L2, min, max, mean, std]
+      reference:
+        enabled: false
+        save_running_log: true
+        save_final_raw_map_csv: true
+        save_final_norm_map_csv: true
     save_image:
       enabled: true
       mode: fix  # fix | convergence
@@ -160,11 +166,6 @@ output:
       save_mean_maps: true
       save_graph: true
       save_per_image: false
-      csv:
-        enabled: false
-        save_running_log: true
-        save_final_raw_map_csv: true
-        save_final_norm_map_csv: true
       fix:
         num_fn: 20
         num_non_fn: 20
