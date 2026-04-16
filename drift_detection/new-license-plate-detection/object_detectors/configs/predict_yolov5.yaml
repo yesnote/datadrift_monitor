@@ -169,7 +169,7 @@ output:
       reference:
         enabled: true
         group: [fn, non_fn]
-        delta: 1.0e-4
+        delta: 5.0e-4
         patience: 20
         min_samples: 200
         max_samples: 20000
