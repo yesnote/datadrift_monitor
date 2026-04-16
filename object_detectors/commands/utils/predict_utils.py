@@ -237,6 +237,22 @@ def create_layer_grad_buffer(model, target_layers, map_reduction="energy", vecto
     )
 
 
+def expand_layer_names(model, layer_names):
+    resolved = []
+    for name in normalize_to_list(layer_names):
+        token = str(name).strip()
+        if not token:
+            continue
+        if token.lower() == "all_conv":
+            for mod_name, mod in model.named_modules():
+                if mod_name and isinstance(mod, nn.Conv2d) and mod_name not in resolved:
+                    resolved.append(mod_name)
+            continue
+        if token not in resolved:
+            resolved.append(token)
+    return resolved
+
+
 def parse_output_config(output_cfg):
     def as_dict(v):
         return v if isinstance(v, dict) else {}
@@ -349,6 +365,7 @@ def parse_output_config(output_cfg):
     layer_grad_image_per_image_step = 1
     layer_grad_image_per_image_max_num = 0
     layer_grad_image_ref_enabled = False
+    layer_grad_image_ref_groups = ["fn", "non_fn"]
     layer_grad_image_save_final_raw_map = True
     layer_grad_image_save_final_norm_map = True
     layer_grad_image_save_profile = True
@@ -376,6 +393,7 @@ def parse_output_config(output_cfg):
         layer_grad_image_per_image_step = as_int(per_image_cfg.get("step", 1), 1)
         layer_grad_image_per_image_max_num = as_int(per_image_cfg.get("max_num", 0), 0)
         layer_grad_image_ref_enabled = bool(ref_img_cfg.get("enabled", False))
+        layer_grad_image_ref_groups = [g.lower() for g in normalize_to_list(ref_img_cfg.get("group", ["fn", "non_fn"]))]
         layer_grad_image_save_final_raw_map = bool(ref_img_cfg.get("save_final_raw_map", True))
         layer_grad_image_save_final_norm_map = bool(ref_img_cfg.get("save_final_norm_map", True))
         layer_grad_image_save_profile = bool(ref_img_cfg.get("save_profile", True))
@@ -448,6 +466,7 @@ def parse_output_config(output_cfg):
         "save_image_layer_grad_per_image_step": layer_grad_image_per_image_step,
         "save_image_layer_grad_per_image_max_num": layer_grad_image_per_image_max_num,
         "save_image_layer_grad_reference_enabled": layer_grad_image_ref_enabled,
+        "save_image_layer_grad_reference_groups": layer_grad_image_ref_groups,
         "save_image_layer_grad_convergence_delta_metric": layer_grad_image_delta_metric,
         "save_image_layer_grad_convergence_delta_l2_tol": layer_grad_image_delta_l2_tol,
         "save_image_layer_grad_convergence_patience": layer_grad_image_patience,

@@ -145,7 +145,7 @@ output:
           enabled: false
         gradient:
           scalar: [loss]
-          layer: ["model.24.m.0", "model.24.m.1", "model.24.m.2"]
+          layer: ["model.24.m.0", "model.24.m.1", "model.24.m.2"] # [all_conv]
           target: null_target
         reduction:
           map: none
@@ -159,7 +159,7 @@ output:
       gt: object_detectors/runs/fn_detectors/04-07-2026_14;09_gt
       gradient:
         scalar: [loss]
-        layer: ["model.24.m.0", "model.24.m.1", "model.24.m.2"]
+        layer: ["model.24.m.0", "model.24.m.1", "model.24.m.2"] # [all_conv]
         target: null_target
       per_image:
         enabled: false
@@ -167,6 +167,7 @@ output:
         max_num: 10
       reference:
         enabled: true
+        group: [fn, non_fn]
         save_final_raw_map: true
         save_final_norm_map: true # layer min-max normalization
         save_profile: true
