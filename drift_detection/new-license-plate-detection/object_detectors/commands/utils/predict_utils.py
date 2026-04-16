@@ -1239,6 +1239,11 @@ def collect_batch_image_layer_grads_per_target(
     pre_nms_ratio=1.0,
     pseudo_gt="cand",
 ):
+    if not hasattr(torch, "func") or not hasattr(torch.func, "vmap") or not hasattr(torch.func, "grad"):
+        raise RuntimeError(
+            "layer_grad requires torch.func.vmap and torch.func.grad. "
+            "Please use a PyTorch version that supports torch.func."
+        )
     layer_params = [resolve_layer_parameter(detector.model, layer_name) for layer_name in target_layers]
     original_requires_grad = [bool(p.requires_grad) for p in layer_params]
     for param in layer_params:
@@ -1282,15 +1287,16 @@ def collect_batch_image_layer_grads_per_target(
                 )
 
         iou_threshold = float(getattr(detector, "iou_thresh", 0.45))
-        scalar_jobs = []
-        for b in range(batch_size):
-            pred_img = raw_prediction[b]
-            logit_img = raw_logits[b] if raw_logits is not None else pred_img[:, 5:]
-            anchor_img = raw_anchor_priors[b] if raw_anchor_priors is not None else None
-            raw_keep_indices = raw_keep_indices_by_sample[b]
-
-            for target_value in target_values:
+        for target_idx, target_value in enumerate(target_values):
+            scalar_list = []
+            valid_mask = []
+            for b in range(batch_size):
+                pred_img = raw_prediction[b]
+                logit_img = raw_logits[b] if raw_logits is not None else pred_img[:, 5:]
+                anchor_img = raw_anchor_priors[b] if raw_anchor_priors is not None else None
+                raw_keep_indices = raw_keep_indices_by_sample[b]
                 target_scalar = None
+
                 if target_value in {"obj", "cls"}:
                     if pre_nms:
                         keep_idx = get_pre_nms_keep_indices(pred_img, logit_img, pre_nms_ratio=pre_nms_ratio)
@@ -1332,29 +1338,46 @@ def collect_batch_image_layer_grads_per_target(
                     if loss_terms:
                         target_scalar = torch.stack(loss_terms).mean()
 
-                if target_scalar is not None:
-                    scalar_jobs.append((b, target_value, target_scalar))
-
-        for job_idx, (b, target_value, target_scalar) in enumerate(scalar_jobs):
-            grads = torch.autograd.grad(
-                target_scalar,
-                layer_params,
-                retain_graph=(job_idx < len(scalar_jobs) - 1),
-                allow_unused=True,
-            )
-            row = all_grad_stats[b]
-            for layer_idx, layer_name in enumerate(target_layers):
-                key = f"{target_value}_{layer_name}"
-                grad_tensor = grads[layer_idx]
-                if grad_tensor is None:
-                    row[key] = zero_grad_numbers() if vector_reduction else []
+                if target_scalar is None:
+                    target_scalar = pred_img.reshape(-1).sum() * 0.0
+                    valid_mask.append(False)
                 else:
-                    row[key] = format_gradient_output(
-                        grad_tensor,
-                        vector_reduction=vector_reduction,
-                        map_reduction=map_reduction,
-                    )
-            del grads
+                    valid_mask.append(True)
+                scalar_list.append(target_scalar)
+
+            if not any(valid_mask):
+                continue
+
+            scalar_vec = torch.stack(scalar_list, dim=0)
+            eye = torch.eye(batch_size, dtype=scalar_vec.dtype, device=scalar_vec.device)
+            retain_flag = (target_idx < len(target_values) - 1)
+
+            def _single_vjp(grad_output):
+                return torch.autograd.grad(
+                    outputs=scalar_vec,
+                    inputs=layer_params,
+                    grad_outputs=grad_output,
+                    retain_graph=retain_flag,
+                    allow_unused=True,
+                )
+
+            batched_grads = torch.func.vmap(_single_vjp)(eye)
+            for b in range(batch_size):
+                if not valid_mask[b]:
+                    continue
+                row = all_grad_stats[b]
+                for layer_idx, layer_name in enumerate(target_layers):
+                    key = f"{target_value}_{layer_name}"
+                    grad_tensor = batched_grads[layer_idx][b]
+                    if grad_tensor is None:
+                        row[key] = zero_grad_numbers() if vector_reduction else []
+                    else:
+                        row[key] = format_gradient_output(
+                            grad_tensor,
+                            vector_reduction=vector_reduction,
+                            map_reduction=map_reduction,
+                        )
+            del batched_grads, scalar_vec, eye
 
         del model_output, raw_prediction, raw_logits, raw_anchor_priors
     finally:
