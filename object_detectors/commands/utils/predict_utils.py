@@ -289,12 +289,12 @@ def parse_output_config(output_cfg):
         save_csv_enabled = bool(layer_grad_data_cfg.get("enabled", False))
     else:
         save_csv_enabled = bool(save_csv.get("enabled", bool(save_csv_cfg) if isinstance(save_csv_cfg, bool) else False))
-    if uncertainty in {"layer_grad", "gt", "score", "full_softmax", "entropy", "energy", "mc_dropout", "ensemble", "meta_detect", "feature"}:
+    if uncertainty in {"layer_grad", "gt", "score", "full_softmax", "entropy", "energy", "mc_dropout", "ensemble", "meta_detect", "feature", "feature_grad"}:
         unit_cfg = active
     else:
         unit_cfg = layer_grad_common_cfg
     unit = str(unit_cfg.get("unit", "image")).lower()
-    if uncertainty in {"layer_grad", "score", "full_softmax", "entropy", "energy"}:
+    if uncertainty in {"layer_grad", "score", "full_softmax", "entropy", "energy", "feature_grad"}:
         pre_nms_source_cfg = active
     else:
         pre_nms_source_cfg = layer_grad_common_cfg
@@ -314,7 +314,8 @@ def parse_output_config(output_cfg):
     full_softmax_cfg = save_csv if uncertainty == "full_softmax" else {}
     feature_cfg = active if uncertainty == "feature" else {}
     feature_csv_cfg = save_csv if uncertainty == "feature" else {}
-    feature_grad_cfg = save_csv if uncertainty == "feature_grad" else {}
+    feature_grad_cfg = active if uncertainty == "feature_grad" else {}
+    feature_grad_csv_cfg = save_csv if uncertainty == "feature_grad" else {}
     layer_grad_cfg = layer_grad_common_cfg if uncertainty == "layer_grad" else {}
 
     gt_iou_match_threshold = as_float(gt_cfg.get("iou_match_threshold", 0.5), 0.5)
@@ -348,7 +349,7 @@ def parse_output_config(output_cfg):
 
     if uncertainty == "feature_grad":
         g = as_dict(feature_grad_cfg.get("gradient", {}))
-        r = as_dict(feature_grad_cfg.get("reduction", {}))
+        r = as_dict(feature_grad_csv_cfg.get("reduction", {}))
         target_values = [v.lower() for v in normalize_to_list(g.get("scalar", ["obj"]))]
         if "loss" in target_values:
             exp = []
