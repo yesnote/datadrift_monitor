@@ -2459,24 +2459,32 @@ def run_layer_grad_csv(config, run_dir):
     per_image_step = max(1, int(parsed.get("save_image_layer_grad_per_image_step", 1)))
     per_image_max_num = max(0, int(parsed.get("save_image_layer_grad_per_image_max_num", 0)))
     image_reference_enabled = bool(parsed.get("save_image_layer_grad_reference_enabled", False))
-    image_reference_groups = [g for g in parsed.get("save_image_layer_grad_reference_groups", ["fn", "non_fn"]) if g in {"fn", "non_fn"}]
+    image_reference_groups = [g for g in parsed.get("save_image_layer_grad_reference_groups", ["fn", "non_fn"]) if g in {"fn", "non_fn", "noise"}]
     if not image_reference_groups:
         image_reference_groups = ["fn", "non_fn"]
     csv_reference_enabled = bool(parsed.get("save_image_layer_grad_csv_reference_enabled", False))
-    csv_reference_groups = [g for g in parsed.get("save_image_layer_grad_csv_reference_groups", ["fn", "non_fn"]) if g in {"fn", "non_fn"}]
+    csv_reference_groups = [g for g in parsed.get("save_image_layer_grad_csv_reference_groups", ["fn", "non_fn"]) if g in {"fn", "non_fn", "noise"}]
     if not csv_reference_groups:
         csv_reference_groups = ["fn", "non_fn"]
     reference_enabled = bool(image_reference_enabled or csv_reference_enabled)
     reference_groups = image_reference_groups if image_reference_enabled else csv_reference_groups
+    used_raw = dataset_cfg.get("used_dataset", [])
+    if isinstance(used_raw, str):
+        used_list = [used_raw.strip().lower()]
+    elif isinstance(used_raw, (list, tuple)):
+        used_list = [str(v).strip().lower() for v in used_raw if str(v).strip()]
+    else:
+        used_list = []
+    null_image_mode = "null_image" in used_list
+    all_groups = ["noise"] if null_image_mode else ["fn", "non_fn"]
+    if null_image_mode:
+        reference_groups = ["noise"]
     viz_enabled = bool(unit == "image" and (per_image_enabled or reference_enabled))
     viz_normalize = "layer_minmax"
     viz_target_values = list(parsed.get("save_image_layer_grad_target_values", target_values))
     viz_target_layers = list(parsed.get("save_image_layer_grad_target_layers", target_layers))
     viz_pseudo_gt = str(parsed.get("save_image_layer_grad_pseudo_gt", layer_pseudo_gt)).strip().lower()
-    viz_num_by_group = {
-        "fn": math.inf,
-        "non_fn": math.inf,
-    }
+    viz_num_by_group = {g: math.inf for g in all_groups}
     viz_gt_csv = str(parsed.get("save_image_layer_grad_gt_csv", "")).strip()
     if image_reference_enabled:
         conv_delta_l2_tol = float(parsed.get("save_image_layer_grad_convergence_delta_l2_tol", 1e-4))
@@ -2489,6 +2497,8 @@ def run_layer_grad_csv(config, run_dir):
         conv_min_samples = int(parsed.get("save_image_layer_grad_csv_convergence_min_samples", 200))
         conv_max_samples = int(parsed.get("save_image_layer_grad_csv_convergence_max_samples", 20000))
     convergence_mode = bool(reference_enabled)
+    if null_image_mode:
+        viz_gt_csv = ""
     if reference_enabled and ("fn" in reference_groups) and not viz_gt_csv:
         raise ValueError("output.layer_grad.reference.gt is required when reference.group includes 'fn'.")
     viz_save_final_raw_map = bool(parsed.get("save_image_layer_grad_save_final_raw_map", True))
@@ -2539,10 +2549,10 @@ def run_layer_grad_csv(config, run_dir):
                 layer_param_shapes[layer_name] = None
     catid_to_name = load_gt_category_maps(config, split) if viz_enabled else {}
     iou_match_threshold = parsed["gt_iou_match_threshold"] if viz_enabled else 0.45
-    per_image_seen = {"fn": 0, "non_fn": 0}
-    per_image_saved = {"fn": 0, "non_fn": 0}
-    ref_progress_image_saved = {"fn": 0, "non_fn": 0}
-    ref_progress_csv_saved = {"fn": 0, "non_fn": 0}
+    per_image_seen = {g: 0 for g in all_groups}
+    per_image_saved = {g: 0 for g in all_groups}
+    ref_progress_image_saved = {g: 0 for g in all_groups}
+    ref_progress_csv_saved = {g: 0 for g in all_groups}
     tb_writer = None
     tb_log_dir = None
     gt_match_stats = {"id_match": 0, "path_fallback": 0, "unmatched": 0}
@@ -2566,8 +2576,8 @@ def run_layer_grad_csv(config, run_dir):
             "stop_reason": "",
         }
 
-    group_states = {"fn": _make_group_state(), "non_fn": _make_group_state()}
-    active_reference_groups = [g for g in ("fn", "non_fn") if g in reference_groups]
+    group_states = {g: _make_group_state() for g in all_groups}
+    active_reference_groups = [g for g in all_groups if g in reference_groups]
 
     def _is_group_done(group_key):
         if reference_enabled:
@@ -2597,17 +2607,17 @@ def run_layer_grad_csv(config, run_dir):
     def _all_done():
         if reference_enabled:
             return all(_is_group_done(g) for g in active_reference_groups)
-        return _is_group_done("fn") and _is_group_done("non_fn")
+        return all(_is_group_done(g) for g in all_groups)
 
     viz_dir = run_dir / "images"
     if viz_enabled:
         viz_dir.mkdir(parents=True, exist_ok=True)
     if viz_enabled and per_image_enabled:
-        (viz_dir / "per_image" / "fn").mkdir(parents=True, exist_ok=True)
-        (viz_dir / "per_image" / "non_fn").mkdir(parents=True, exist_ok=True)
+        for g in all_groups:
+            (viz_dir / "per_image" / g).mkdir(parents=True, exist_ok=True)
     if viz_enabled and reference_enabled and (viz_save_progress_raw_map or viz_save_progress_norm_map):
-        (viz_dir / "reference_progress" / "fn").mkdir(parents=True, exist_ok=True)
-        (viz_dir / "reference_progress" / "non_fn").mkdir(parents=True, exist_ok=True)
+        for g in all_groups:
+            (viz_dir / "reference_progress" / g).mkdir(parents=True, exist_ok=True)
     if viz_enabled and reference_enabled and layer_grad_ref_csv_enabled and layer_grad_ref_save_running_log:
         tb_log_dir = run_dir / "ref_maps" / "tensorboard"
         tb_log_dir.mkdir(parents=True, exist_ok=True)
@@ -2671,37 +2681,40 @@ def run_layer_grad_csv(config, run_dir):
                     fn_flag = None
                     st = None
                     if viz_enabled:
-                        if viz_gt_csv:
-                            if image_id in gt_by_id:
-                                fn_flag = int(gt_by_id[image_id])
-                                gt_match_stats["id_match"] += 1
-                            else:
-                                base_name = Path(str(image_path)).name
-                                if base_name in gt_by_base:
-                                    fn_flag = int(gt_by_base[base_name])
-                                    gt_match_stats["path_fallback"] += 1
+                        if null_image_mode:
+                            group_key = "noise"
+                        else:
+                            if viz_gt_csv:
+                                if image_id in gt_by_id:
+                                    fn_flag = int(gt_by_id[image_id])
+                                    gt_match_stats["id_match"] += 1
                                 else:
-                                    gt_match_stats["unmatched"] += 1
-                                    if convergence_mode:
-                                        continue
-                        if fn_flag is None:
-                            if batch_preds is None:
-                                detector.zero_grad(set_to_none=True)
-                                with torch.no_grad():
-                                    batch_preds, _bz_logits, _bz_obj, _bz_feat = detector(infer_batch)
-                            pred_boxes = batch_preds[0][sample_idx]
-                            pred_class_names = batch_preds[2][sample_idx]
-                            gt_boxes = map_boxes_to_letterbox(target["boxes"], ratios[sample_idx], pads[sample_idx])
-                            gt_class_names = _resolve_gt_class_names(target, catid_to_name)
-                            is_fn = has_fn_for_image(
-                                gt_boxes=gt_boxes,
-                                gt_class_names=gt_class_names,
-                                pred_boxes=pred_boxes,
-                                pred_class_names=pred_class_names,
-                                iou_match_threshold=iou_match_threshold,
-                            )
-                            fn_flag = int(is_fn)
-                        group_key = "fn" if int(fn_flag) == 1 else "non_fn"
+                                    base_name = Path(str(image_path)).name
+                                    if base_name in gt_by_base:
+                                        fn_flag = int(gt_by_base[base_name])
+                                        gt_match_stats["path_fallback"] += 1
+                                    else:
+                                        gt_match_stats["unmatched"] += 1
+                                        if convergence_mode:
+                                            continue
+                            if fn_flag is None:
+                                if batch_preds is None:
+                                    detector.zero_grad(set_to_none=True)
+                                    with torch.no_grad():
+                                        batch_preds, _bz_logits, _bz_obj, _bz_feat = detector(infer_batch)
+                                pred_boxes = batch_preds[0][sample_idx]
+                                pred_class_names = batch_preds[2][sample_idx]
+                                gt_boxes = map_boxes_to_letterbox(target["boxes"], ratios[sample_idx], pads[sample_idx])
+                                gt_class_names = _resolve_gt_class_names(target, catid_to_name)
+                                is_fn = has_fn_for_image(
+                                    gt_boxes=gt_boxes,
+                                    gt_class_names=gt_class_names,
+                                    pred_boxes=pred_boxes,
+                                    pred_class_names=pred_class_names,
+                                    iou_match_threshold=iou_match_threshold,
+                                )
+                                fn_flag = int(is_fn)
+                            group_key = "fn" if int(fn_flag) == 1 else "non_fn"
                         st = group_states[group_key]
                         if reference_enabled and (group_key in active_reference_groups) and _is_group_done(group_key):
                             continue
@@ -2824,7 +2837,7 @@ def run_layer_grad_csv(config, run_dir):
         has_fn = False
         has_non_fn = False
         if reference_enabled:
-            for g in ("fn", "non_fn"):
+            for g in all_groups:
                 st = group_states[g]
                 if st["stop_reason"] == "":
                     if st["converged"]:
@@ -2833,23 +2846,26 @@ def run_layer_grad_csv(config, run_dir):
                         st["stop_reason"] = "target_reached"
                     else:
                         st["stop_reason"] = "dataloader_exhausted"
-            fn_mean_raw = group_states["fn"]["mean_raw"] if group_states["fn"]["mean_raw"] is not None else np.zeros((0, 0), dtype=np.float32)
-            non_fn_mean_raw = group_states["non_fn"]["mean_raw"] if group_states["non_fn"]["mean_raw"] is not None else np.zeros((0, 0), dtype=np.float32)
-            fn_mean = _normalize_layer_map(fn_mean_raw, mode=viz_normalize)
-            non_fn_mean = _normalize_layer_map(non_fn_mean_raw, mode=viz_normalize)
-            has_fn = bool(fn_mean.size > 0)
-            has_non_fn = bool(non_fn_mean.size > 0)
+            if "fn" in group_states:
+                fn_mean_raw = group_states["fn"]["mean_raw"] if group_states["fn"]["mean_raw"] is not None else np.zeros((0, 0), dtype=np.float32)
+                fn_mean = _normalize_layer_map(fn_mean_raw, mode=viz_normalize)
+                has_fn = bool(fn_mean.size > 0)
+            if "non_fn" in group_states:
+                non_fn_mean_raw = group_states["non_fn"]["mean_raw"] if group_states["non_fn"]["mean_raw"] is not None else np.zeros((0, 0), dtype=np.float32)
+                non_fn_mean = _normalize_layer_map(non_fn_mean_raw, mode=viz_normalize)
+                has_non_fn = bool(non_fn_mean.size > 0)
             if viz_save_final_raw_map:
-                if group_states["fn"]["mean_raw"] is not None:
-                    _save_heatmap_png(group_states["fn"]["mean_raw"], viz_dir / "fn_final_raw_map.png")
-                if group_states["non_fn"]["mean_raw"] is not None:
-                    _save_heatmap_png(group_states["non_fn"]["mean_raw"], viz_dir / "non_fn_final_raw_map.png")
+                for g in all_groups:
+                    if group_states[g]["mean_raw"] is not None:
+                        _save_heatmap_png(group_states[g]["mean_raw"], viz_dir / f"{g}_final_raw_map.png")
             if viz_save_final_norm_map:
-                if has_fn:
-                    _save_heatmap_png(fn_mean, viz_dir / "fn_final_norm_map.png")
-                if has_non_fn:
-                    _save_heatmap_png(non_fn_mean, viz_dir / "non_fn_final_norm_map.png")
-            if viz_save_profile and (has_fn or has_non_fn):
+                for g in all_groups:
+                    if group_states[g]["mean_raw"] is not None:
+                        _save_heatmap_png(
+                            _normalize_layer_map(group_states[g]["mean_raw"], mode=viz_normalize),
+                            viz_dir / f"{g}_final_norm_map.png",
+                        )
+            if (not null_image_mode) and viz_save_profile and (has_fn or has_non_fn):
                 _save_layer_profile_plot(
                     fn_mean_map=fn_mean,
                     non_fn_mean_map=non_fn_mean,
@@ -2860,18 +2876,20 @@ def run_layer_grad_csv(config, run_dir):
                 ref_dir = run_dir / "ref_maps"
                 ref_dir.mkdir(parents=True, exist_ok=True)
                 if layer_grad_ref_save_final_raw_map_csv:
-                    _save_map_nodes_csv(fn_mean_raw, ref_dir / "fn_raw_map.csv")
-                    _save_map_nodes_csv(non_fn_mean_raw, ref_dir / "non_fn_raw_map.csv")
+                    for g in all_groups:
+                        m = group_states[g]["mean_raw"] if group_states[g]["mean_raw"] is not None else np.zeros((0, 0), dtype=np.float32)
+                        _save_map_nodes_csv(m, ref_dir / f"{g}_raw_map.csv")
                 if layer_grad_ref_save_final_norm_map_csv:
-                    _save_map_nodes_csv(fn_mean, ref_dir / "fn_norm_map.csv")
-                    _save_map_nodes_csv(non_fn_mean, ref_dir / "non_fn_norm_map.csv")
+                    for g in all_groups:
+                        m = group_states[g]["mean_raw"]
+                        norm = _normalize_layer_map(m, mode=viz_normalize) if m is not None else np.zeros((0, 0), dtype=np.float32)
+                        _save_map_nodes_csv(norm, ref_dir / f"{g}_norm_map.csv")
         if gt_match_stats.get("unmatched", 0) > 0:
             print(f"[layer_grad] unmatched GT rows: {int(gt_match_stats['unmatched'])}")
         viz_summary = {
             "normalize": viz_normalize,
             "mode": "reference" if reference_enabled else "per_image",
-            "num_fn": "inf" if np.isinf(viz_num_by_group["fn"]) else int(viz_num_by_group["fn"]),
-            "num_non_fn": "inf" if np.isinf(viz_num_by_group["non_fn"]) else int(viz_num_by_group["non_fn"]),
+            "num_by_group": {k: ("inf" if np.isinf(viz_num_by_group[k]) else int(viz_num_by_group[k])) for k in all_groups},
             "convergence": {
                 "delta_metric": "l2",
                 "delta_l2_tol": conv_delta_l2_tol,
@@ -2879,20 +2897,21 @@ def run_layer_grad_csv(config, run_dir):
                 "min_samples": conv_min_samples,
                 "max_samples": conv_max_samples,
             },
-            "group_total_counts": {k: int(group_states[k]["count"]) for k in ("fn", "non_fn")},
-            "group_converged": {k: bool(group_states[k]["converged"]) for k in ("fn", "non_fn")},
+            "null_image_mode": bool(null_image_mode),
+            "group_total_counts": {k: int(group_states[k]["count"]) for k in all_groups},
+            "group_converged": {k: bool(group_states[k]["converged"]) for k in all_groups},
             "group_final_delta_l2": {
                 k: float(group_states[k]["final_delta_l2"]) if np.isfinite(group_states[k]["final_delta_l2"]) else None
-                for k in ("fn", "non_fn")
+                for k in all_groups
             },
-            "group_stable_steps": {k: int(group_states[k]["stable_steps"]) for k in ("fn", "non_fn")},
-            "group_stop_reason": {k: str(group_states[k]["stop_reason"]) for k in ("fn", "non_fn")},
+            "group_stable_steps": {k: int(group_states[k]["stable_steps"]) for k in all_groups},
+            "group_stop_reason": {k: str(group_states[k]["stop_reason"]) for k in all_groups},
             "target_layers_for_map": viz_target_layers,
             "per_image": {
                 "enabled": bool(per_image_enabled),
                 "step": int(per_image_step),
                 "max_num": int(per_image_max_num),
-                "saved": {k: int(per_image_saved[k]) for k in ("fn", "non_fn")},
+                "saved": {k: int(per_image_saved[k]) for k in all_groups},
             },
             "reference_enabled": bool(reference_enabled),
             "reference_groups": active_reference_groups,
@@ -2901,13 +2920,13 @@ def run_layer_grad_csv(config, run_dir):
                 "save_raw": bool(viz_save_progress_raw_map),
                 "save_norm": bool(viz_save_progress_norm_map),
                 "step": int(viz_progress_step),
-                "saved": {k: int(ref_progress_image_saved[k]) for k in ("fn", "non_fn")},
+                "saved": {k: int(ref_progress_image_saved[k]) for k in all_groups},
             },
             "reference_progress_csv": {
                 "save_raw_csv": bool(layer_grad_ref_save_progress_raw_map_csv),
                 "save_norm_csv": bool(layer_grad_ref_save_progress_norm_map_csv),
                 "step": int(layer_grad_ref_progress_step),
-                "saved": {k: int(ref_progress_csv_saved[k]) for k in ("fn", "non_fn")},
+                "saved": {k: int(ref_progress_csv_saved[k]) for k in all_groups},
             },
             "tensorboard_log_dir": str(tb_log_dir) if tb_log_dir is not None else "",
             "save_final_raw_map": bool(viz_save_final_raw_map),
