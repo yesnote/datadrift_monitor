@@ -169,13 +169,15 @@ output:
       reference:
         enabled: true
         group: [fn, non_fn]
-        save_final_raw_map: true
-        save_final_norm_map: true # layer min-max normalization
-        save_profile: true
-        save_progress_raw_map: false
-        save_progress_norm_map: false
-        progress_step: 50
         delta: 1.0e-4
         patience: 20
         min_samples: 200
         max_samples: 20000
+        progress:
+          raw_map: false
+          norm_map: false
+          step: 50
+        final:
+          raw_map: true
+          norm_map: true # layer min-max normalization
+          profile: true

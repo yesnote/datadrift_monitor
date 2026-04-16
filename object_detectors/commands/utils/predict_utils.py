@@ -394,18 +394,20 @@ def parse_output_config(output_cfg):
         lg = save_image_cfg
         per_image_cfg = as_dict(lg.get("per_image", {}))
         ref_img_cfg = as_dict(lg.get("reference", {}))
+        ref_img_progress_cfg = as_dict(ref_img_cfg.get("progress", {}))
+        ref_img_final_cfg = as_dict(ref_img_cfg.get("final", {}))
         conv_cfg = ref_img_cfg
         layer_grad_image_per_image_enabled = bool(per_image_cfg.get("enabled", False))
         layer_grad_image_per_image_step = as_int(per_image_cfg.get("step", 1), 1)
         layer_grad_image_per_image_max_num = as_int(per_image_cfg.get("max_num", 0), 0)
         layer_grad_image_ref_enabled = bool(ref_img_cfg.get("enabled", False))
         layer_grad_image_ref_groups = [g.lower() for g in normalize_to_list(ref_img_cfg.get("group", ["fn", "non_fn"]))]
-        layer_grad_image_save_final_raw_map = bool(ref_img_cfg.get("save_final_raw_map", True))
-        layer_grad_image_save_final_norm_map = bool(ref_img_cfg.get("save_final_norm_map", True))
-        layer_grad_image_save_profile = bool(ref_img_cfg.get("save_profile", True))
-        layer_grad_image_save_progress_raw_map = bool(ref_img_cfg.get("save_progress_raw_map", False))
-        layer_grad_image_save_progress_norm_map = bool(ref_img_cfg.get("save_progress_norm_map", False))
-        layer_grad_image_progress_step = as_int(ref_img_cfg.get("progress_step", 10), 10)
+        layer_grad_image_save_final_raw_map = bool(ref_img_final_cfg.get("raw_map", True))
+        layer_grad_image_save_final_norm_map = bool(ref_img_final_cfg.get("norm_map", True))
+        layer_grad_image_save_profile = bool(ref_img_final_cfg.get("profile", True))
+        layer_grad_image_save_progress_raw_map = bool(ref_img_progress_cfg.get("raw_map", False))
+        layer_grad_image_save_progress_norm_map = bool(ref_img_progress_cfg.get("norm_map", False))
+        layer_grad_image_progress_step = as_int(ref_img_progress_cfg.get("step", 10), 10)
 
         gt_dir = str(lg.get("gt", "")).strip()
         if gt_dir:
