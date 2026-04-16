@@ -93,6 +93,8 @@ def main():
             grad_cfg = layer_grad_cfg.get("gradient", {})
             ref_img_cfg = layer_grad_cfg.get("save_image", {}).get("reference", {})
             ref_csv_cfg = layer_grad_cfg.get("save_csv", {}).get("reference", {})
+            ref_img_progress_cfg = ref_img_cfg.get("progress", {})
+            ref_img_final_cfg = ref_img_cfg.get("final", {})
             ref_csv_progress_cfg = ref_csv_cfg.get("progress", {})
             ref_csv_final_cfg = ref_csv_cfg.get("final", {})
 
@@ -103,7 +105,13 @@ def main():
             scalar_list = [str(v).strip().lower() for v in (raw_vals if isinstance(raw_vals, list) else [raw_vals]) if str(v).strip()]
             scalar_tag = "-".join(scalar_list) if scalar_list else "loss"
 
-            ref_img_enabled = bool(ref_img_cfg.get("enabled", False))
+            ref_img_enabled = any(
+                bool(ref_img_progress_cfg.get(k, False))
+                for k in ("raw_map", "norm_map")
+            ) or any(
+                bool(ref_img_final_cfg.get(k, False))
+                for k in ("raw_map", "norm_map", "profile")
+            )
             ref_csv_enabled = any(
                 bool(ref_csv_progress_cfg.get(k, False))
                 for k in ("log", "raw_map", "norm_map")

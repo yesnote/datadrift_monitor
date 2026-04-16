@@ -2458,11 +2458,17 @@ def run_layer_grad_csv(config, run_dir):
     per_image_enabled = bool(parsed.get("save_image_layer_grad_per_image_enabled", False))
     per_image_step = max(1, int(parsed.get("save_image_layer_grad_per_image_step", 1)))
     per_image_max_num = max(0, int(parsed.get("save_image_layer_grad_per_image_max_num", 0)))
-    reference_enabled = bool(parsed.get("save_image_layer_grad_reference_enabled", False))
-    reference_groups = [g for g in parsed.get("save_image_layer_grad_reference_groups", ["fn", "non_fn"]) if g in {"fn", "non_fn"}]
-    if not reference_groups:
-        reference_groups = ["fn", "non_fn"]
-    viz_enabled = bool(save_image_enabled and unit == "image" and (per_image_enabled or reference_enabled))
+    image_reference_enabled = bool(parsed.get("save_image_layer_grad_reference_enabled", False))
+    image_reference_groups = [g for g in parsed.get("save_image_layer_grad_reference_groups", ["fn", "non_fn"]) if g in {"fn", "non_fn"}]
+    if not image_reference_groups:
+        image_reference_groups = ["fn", "non_fn"]
+    csv_reference_enabled = bool(parsed.get("save_image_layer_grad_csv_reference_enabled", False))
+    csv_reference_groups = [g for g in parsed.get("save_image_layer_grad_csv_reference_groups", ["fn", "non_fn"]) if g in {"fn", "non_fn"}]
+    if not csv_reference_groups:
+        csv_reference_groups = ["fn", "non_fn"]
+    reference_enabled = bool(image_reference_enabled or csv_reference_enabled)
+    reference_groups = image_reference_groups if image_reference_enabled else csv_reference_groups
+    viz_enabled = bool(unit == "image" and (per_image_enabled or reference_enabled))
     viz_normalize = "layer_minmax"
     viz_target_values = list(parsed.get("save_image_layer_grad_target_values", target_values))
     viz_target_layers = list(parsed.get("save_image_layer_grad_target_layers", target_layers))
@@ -2472,10 +2478,16 @@ def run_layer_grad_csv(config, run_dir):
         "non_fn": math.inf,
     }
     viz_gt_csv = str(parsed.get("save_image_layer_grad_gt_csv", "")).strip()
-    conv_delta_l2_tol = float(parsed.get("save_image_layer_grad_convergence_delta_l2_tol", 1e-4))
-    conv_patience = int(parsed.get("save_image_layer_grad_convergence_patience", 20))
-    conv_min_samples = int(parsed.get("save_image_layer_grad_convergence_min_samples", 200))
-    conv_max_samples = int(parsed.get("save_image_layer_grad_convergence_max_samples", 20000))
+    if image_reference_enabled:
+        conv_delta_l2_tol = float(parsed.get("save_image_layer_grad_convergence_delta_l2_tol", 1e-4))
+        conv_patience = int(parsed.get("save_image_layer_grad_convergence_patience", 20))
+        conv_min_samples = int(parsed.get("save_image_layer_grad_convergence_min_samples", 200))
+        conv_max_samples = int(parsed.get("save_image_layer_grad_convergence_max_samples", 20000))
+    else:
+        conv_delta_l2_tol = float(parsed.get("save_image_layer_grad_csv_convergence_delta_l2_tol", 1e-4))
+        conv_patience = int(parsed.get("save_image_layer_grad_csv_convergence_patience", 20))
+        conv_min_samples = int(parsed.get("save_image_layer_grad_csv_convergence_min_samples", 200))
+        conv_max_samples = int(parsed.get("save_image_layer_grad_csv_convergence_max_samples", 20000))
     convergence_mode = bool(reference_enabled)
     if reference_enabled and ("fn" in reference_groups) and not viz_gt_csv:
         raise ValueError("output.layer_grad.save_image.gt is required when reference.group includes 'fn'.")
