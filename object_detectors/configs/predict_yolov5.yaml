@@ -10,11 +10,11 @@ model:
 
 dataset:
   used_dataset:   # coco | voc | openimages | null_image
-    - coco
-    # - null_image
+    # - coco
+    - null_image
   split:  # train | val | test
-    - train
-    # - val
+    # - train
+    - val
   
   coco:
     root: D:/DataDrift/datasets/COCO
@@ -39,7 +39,7 @@ dataset:
     # seed: 1234  # optional
 
 dataloader:
-  batch_size: 32
+  batch_size: 4
   num_workers: 4
   pin_memory: false
   shuffle_train: false
@@ -144,8 +144,8 @@ output:
   layer_grad:
     unit: image  # image | bbox
     pre_nms:
-      enabled: false
-      ratio: 1.0
+      enabled: true
+      ratio: 0.0001
     gradient:
       scalar: [loss]
       layer: all_conv # all_conv | ["model.24.m.0", "model.24.m.1", "model.24.m.2"]
