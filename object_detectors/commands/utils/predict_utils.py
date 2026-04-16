@@ -1350,6 +1350,143 @@ def collect_image_layer_grads_per_target(
     return grad_stats
 
 
+def collect_batch_image_layer_grads_per_target(
+    detector,
+    input_tensor,
+    target_values,
+    target_layers,
+    map_reduction="none",
+    vector_reduction=None,
+    pre_nms=True,
+    pre_nms_ratio=1.0,
+    pseudo_gt="cand",
+):
+    layer_params = [resolve_layer_parameter(detector.model, layer_name) for layer_name in target_layers]
+    original_requires_grad = [bool(p.requires_grad) for p in layer_params]
+    for param in layer_params:
+        param.requires_grad_(True)
+
+    batch_size = int(input_tensor.shape[0])
+    all_grad_stats = []
+    for _ in range(batch_size):
+        row = {}
+        for target_value in target_values:
+            for layer_name in target_layers:
+                row[f"{target_value}_{layer_name}"] = zero_grad_numbers() if vector_reduction else []
+        all_grad_stats.append(row)
+
+    try:
+        detector.zero_grad(set_to_none=True)
+        model_output = detector.model(input_tensor.detach(), augment=False)
+        raw_prediction = model_output[0] if isinstance(model_output, (tuple, list)) else model_output
+        raw_logits = model_output[1] if isinstance(model_output, (tuple, list)) and len(model_output) > 1 else None
+        raw_anchor_priors = model_output[3] if isinstance(model_output, (tuple, list)) and len(model_output) > 3 else None
+
+        with torch.no_grad():
+            _selected_preds, _selected_logits, _selected_objectness, selected_indices = detector.non_max_suppression(
+                raw_prediction.detach(),
+                raw_logits.detach() if raw_logits is not None else raw_logits,
+                detector.confidence,
+                detector.iou_thresh,
+                classes=None,
+                agnostic=detector.agnostic,
+                return_indices=True,
+            )
+        if selected_indices is None:
+            selected_indices = []
+        raw_keep_indices_by_sample = []
+        for b in range(batch_size):
+            if b < len(selected_indices) and selected_indices[b] is not None:
+                raw_keep_indices_by_sample.append(selected_indices[b])
+            else:
+                raw_keep_indices_by_sample.append(
+                    torch.zeros((0,), dtype=torch.long, device=input_tensor.device)
+                )
+
+        iou_threshold = float(getattr(detector, "iou_thresh", 0.45))
+        scalar_jobs = []
+        for b in range(batch_size):
+            pred_img = raw_prediction[b]
+            logit_img = raw_logits[b] if raw_logits is not None else pred_img[:, 5:]
+            anchor_img = raw_anchor_priors[b] if raw_anchor_priors is not None else None
+            raw_keep_indices = raw_keep_indices_by_sample[b]
+
+            for target_value in target_values:
+                target_scalar = None
+                if target_value in {"obj", "cls"}:
+                    if pre_nms:
+                        keep_idx = get_pre_nms_keep_indices(pred_img, logit_img, pre_nms_ratio=pre_nms_ratio)
+                        if int(keep_idx.shape[0]) > 0:
+                            if target_value == "obj":
+                                target_scalar = pred_img[keep_idx, 4].sum()
+                            elif logit_img is not None and logit_img.numel() > 0:
+                                target_scalar = logit_img[keep_idx].max(dim=1).values.sum()
+                    else:
+                        if int(raw_keep_indices.shape[0]) > 0:
+                            if target_value == "obj":
+                                target_scalar = pred_img[raw_keep_indices, 4].sum()
+                            elif logit_img is not None and logit_img.numel() > 0:
+                                target_scalar = logit_img[raw_keep_indices].max(dim=1).values.sum()
+                else:
+                    loss_terms = []
+                    if pseudo_gt == "uniform":
+                        if pre_nms:
+                            idx_tensor = get_pre_nms_keep_indices(pred_img, logit_img, pre_nms_ratio=pre_nms_ratio)
+                        else:
+                            idx_tensor = raw_keep_indices
+                    else:
+                        idx_tensor = raw_keep_indices
+
+                    for bbox_idx in range(int(idx_tensor.shape[0])):
+                        raw_idx = int(idx_tensor[bbox_idx].detach().cpu().item())
+                        anchor_row = anchor_img[raw_idx] if (anchor_img is not None and raw_idx < anchor_img.shape[0]) else None
+                        scalar = build_layer_target_scalar_bbox(
+                            target_value=target_value,
+                            pred_img=pred_img,
+                            logit_img=logit_img,
+                            raw_idx=raw_idx,
+                            iou_threshold=iou_threshold,
+                            pseudo_gt=pseudo_gt,
+                            anchor_xywh=anchor_row,
+                        )
+                        if scalar is not None:
+                            loss_terms.append(scalar)
+                    if loss_terms:
+                        target_scalar = torch.stack(loss_terms).mean()
+
+                if target_scalar is not None:
+                    scalar_jobs.append((b, target_value, target_scalar))
+
+        for job_idx, (b, target_value, target_scalar) in enumerate(scalar_jobs):
+            grads = torch.autograd.grad(
+                target_scalar,
+                layer_params,
+                retain_graph=(job_idx < len(scalar_jobs) - 1),
+                allow_unused=True,
+            )
+            row = all_grad_stats[b]
+            for layer_idx, layer_name in enumerate(target_layers):
+                key = f"{target_value}_{layer_name}"
+                grad_tensor = grads[layer_idx]
+                if grad_tensor is None:
+                    row[key] = zero_grad_numbers() if vector_reduction else []
+                else:
+                    row[key] = format_gradient_output(
+                        grad_tensor,
+                        vector_reduction=vector_reduction,
+                        map_reduction=map_reduction,
+                    )
+            del grads
+
+        del model_output, raw_prediction, raw_logits, raw_anchor_priors
+    finally:
+        for param, req_grad in zip(layer_params, original_requires_grad):
+            param.requires_grad_(req_grad)
+        detector.zero_grad(set_to_none=True)
+
+    return all_grad_stats
+
+
 def get_feature_grad_stats(grad_tensor, map_reduction="energy", vector_reduction=None):
     # Expect [B, C, H, W] from conv feature maps.
     grad_tensor = grad_tensor.detach().float()
