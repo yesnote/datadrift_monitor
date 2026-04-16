@@ -96,12 +96,12 @@ output:
       vector_reduction: [L1, L2, min, max, mean, std]
 
   mc_dropout:
+    unit: image  # image | bbox
+    num_runs: 30
+    dropout_rate: 0.5
+    queue_maxsize: 2
     save_csv:
       enabled: false
-      unit: image  # image | bbox
-      num_runs: 30
-      dropout_rate: 0.5
-      queue_maxsize: 2
       vector_reduction: [L1, L2, min, max, mean, std]
 
   ensemble:
