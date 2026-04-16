@@ -164,7 +164,7 @@ output:
       per_image:
         enabled: false
         step: 10
-        max_num: 20
+        max_num: 10
       reference:
         enabled: true
         save_final_raw_map: true
