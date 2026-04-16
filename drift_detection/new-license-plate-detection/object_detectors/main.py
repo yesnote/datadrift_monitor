@@ -124,7 +124,17 @@ def main():
 
             target_tag = f"{grad_target}_{scalar_tag}_save_reference{save_reference}"
             if save_reference == 1:
-                groups = [str(v).strip().lower() for v in ref_common_cfg.get("group", []) if str(v).strip()]
+                used_raw = config.get("dataset", {}).get("used_dataset", [])
+                if isinstance(used_raw, str):
+                    used_list = [used_raw.strip().lower()]
+                elif isinstance(used_raw, (list, tuple)):
+                    used_list = [str(v).strip().lower() for v in used_raw if str(v).strip()]
+                else:
+                    used_list = []
+                if "null_image" in used_list:
+                    groups = ["noise"]
+                else:
+                    groups = [str(v).strip().lower() for v in ref_common_cfg.get("group", []) if str(v).strip()]
                 if groups:
                     target_tag += f"_{'-'.join(groups)}"
 
