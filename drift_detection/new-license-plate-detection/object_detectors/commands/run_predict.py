@@ -27,7 +27,7 @@ from commands.utils.predict_utils import (
     collect_bbox_layer_grads_per_target,
     collect_image_features_per_layer,
     collect_gradients_per_target,
-    collect_image_layer_grads_per_target,
+    collect_batch_image_layer_grads_per_target,
     create_layer_grad_buffer,
     draw_predictions,
     get_fn_gt_indices,
@@ -2639,6 +2639,28 @@ def run_layer_grad_csv(config, run_dir):
             image_list = _as_image_list(images)
             infer_batch, ratios, pads, _resized_chws = _prepare_infer_batch(detector, image_list, device, auto=False)
             batch_preds = None
+            batch_grad_stats_all = None
+            required_layers = []
+            if unit != "bbox":
+                if csv_writer is not None:
+                    required_layers.extend(target_layers)
+                if viz_enabled:
+                    required_layers.extend(viz_target_layers)
+                required_layers = list(dict.fromkeys(required_layers))
+                if required_layers:
+                    batch_grad_stats_all = collect_batch_image_layer_grads_per_target(
+                        detector=detector,
+                        input_tensor=infer_batch,
+                        target_values=collect_target_values,
+                        target_layers=required_layers,
+                        map_reduction=layer_map_reduction,
+                        vector_reduction=[],
+                        pre_nms=pre_nms,
+                        pre_nms_ratio=pre_nms_ratio,
+                        pseudo_gt=viz_pseudo_gt if viz_enabled else layer_pseudo_gt,
+                    )
+                else:
+                    batch_grad_stats_all = [{} for _ in range(len(image_list))]
 
             for sample_idx in range(len(image_list)):
                 if _all_done():
@@ -2718,26 +2740,7 @@ def run_layer_grad_csv(config, run_dir):
                         st = group_states[group_key]
                         if reference_enabled and (group_key in active_reference_groups) and _is_group_done(group_key):
                             continue
-                    required_layers = []
-                    if csv_writer is not None:
-                        required_layers.extend(target_layers)
-                    if viz_enabled:
-                        required_layers.extend(viz_target_layers)
-                    required_layers = list(dict.fromkeys(required_layers))
-
-                    grad_stats_all = {}
-                    if required_layers:
-                        grad_stats_all = collect_image_layer_grads_per_target(
-                            detector=detector,
-                            input_tensor=infer_tensor,
-                            target_values=collect_target_values,
-                            target_layers=required_layers,
-                            map_reduction=layer_map_reduction,
-                            vector_reduction=[],
-                            pre_nms=pre_nms,
-                            pre_nms_ratio=pre_nms_ratio,
-                            pseudo_gt=viz_pseudo_gt if viz_enabled else layer_pseudo_gt,
-                        )
+                    grad_stats_all = batch_grad_stats_all[sample_idx] if batch_grad_stats_all is not None else {}
 
                     if csv_writer is not None:
                         row = {"image_id": image_id, "image_path": image_path}
@@ -2821,6 +2824,8 @@ def run_layer_grad_csv(config, run_dir):
             del infer_batch
             if batch_preds is not None:
                 del batch_preds
+            if batch_grad_stats_all is not None:
+                del batch_grad_stats_all
     finally:
         if csv_file_handle is not None:
             csv_file_handle.close()
