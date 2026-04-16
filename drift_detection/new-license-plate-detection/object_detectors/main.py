@@ -89,13 +89,30 @@ def main():
                 vals = parsed_output.get("target_values", [])
                 target_tag = "-".join([str(v).strip().lower() for v in vals if str(v).strip()])
         elif uncertainty == "layer_grad":
-            raw_vals = config.get("output", {}).get("layer_grad", {}).get("gradient", {}).get("scalar", [])
-            raw_list = [str(v).strip().lower() for v in (raw_vals if isinstance(raw_vals, list) else [raw_vals]) if str(v).strip()]
-            if raw_list == ["loss"]:
-                target_tag = "loss"
-            else:
-                vals = parsed_output.get("layer_target_values", [])
-                target_tag = "-".join([str(v).strip().lower() for v in vals if str(v).strip()])
+            layer_grad_cfg = config.get("output", {}).get("layer_grad", {})
+            grad_cfg = layer_grad_cfg.get("gradient", {})
+            ref_img_cfg = layer_grad_cfg.get("save_image", {}).get("reference", {})
+            ref_csv_cfg = layer_grad_cfg.get("save_csv", {}).get("reference", {})
+
+            raw_target = grad_cfg.get("target", "cand_target")
+            grad_target = str(raw_target).strip().lower() if raw_target is not None else "null_target"
+
+            raw_vals = grad_cfg.get("scalar", [])
+            scalar_list = [str(v).strip().lower() for v in (raw_vals if isinstance(raw_vals, list) else [raw_vals]) if str(v).strip()]
+            scalar_tag = "-".join(scalar_list) if scalar_list else "loss"
+
+            ref_img_enabled = bool(ref_img_cfg.get("enabled", False))
+            ref_csv_enabled = any(
+                bool(ref_csv_cfg.get(k, False))
+                for k in ("save_running_log", "save_final_raw_map_csv", "save_final_norm_map_csv")
+            )
+            save_reference = 1 if (ref_img_enabled or ref_csv_enabled) else 0
+
+            target_tag = f"{grad_target}_{scalar_tag}_save_reference{save_reference}"
+            if save_reference == 1:
+                groups = [str(v).strip().lower() for v in ref_img_cfg.get("group", []) if str(v).strip()]
+                if groups:
+                    target_tag += f"_{'-'.join(groups)}"
 
         if args.run_dir:
             run_dir = _resolve_run_dir(args.run_dir)
