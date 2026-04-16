@@ -2482,10 +2482,18 @@ def run_layer_grad_csv(config, run_dir):
     viz_save_final_raw_map = bool(parsed.get("save_image_layer_grad_save_final_raw_map", True))
     viz_save_final_norm_map = bool(parsed.get("save_image_layer_grad_save_final_norm_map", True))
     viz_save_profile = bool(parsed.get("save_image_layer_grad_save_profile", True))
+    viz_save_progress_raw_map = bool(parsed.get("save_image_layer_grad_save_progress_raw_map", False))
+    viz_save_progress_norm_map = bool(parsed.get("save_image_layer_grad_save_progress_norm_map", False))
+    viz_progress_step = max(1, int(parsed.get("save_image_layer_grad_progress_step", 10)))
+    viz_progress_max_num = max(0, int(parsed.get("save_image_layer_grad_progress_max_num", 20)))
     layer_grad_ref_enabled = bool(reference_enabled)
     layer_grad_ref_save_running_log = bool(parsed.get("save_image_layer_grad_csv_save_running_log", True))
     layer_grad_ref_save_final_raw_map_csv = bool(parsed.get("save_image_layer_grad_csv_save_final_raw_map_csv", True))
     layer_grad_ref_save_final_norm_map_csv = bool(parsed.get("save_image_layer_grad_csv_save_final_norm_map_csv", True))
+    layer_grad_ref_save_progress_raw_map_csv = bool(parsed.get("save_image_layer_grad_csv_save_progress_raw_map_csv", False))
+    layer_grad_ref_save_progress_norm_map_csv = bool(parsed.get("save_image_layer_grad_csv_save_progress_norm_map_csv", False))
+    layer_grad_ref_progress_step = max(1, int(parsed.get("save_image_layer_grad_csv_progress_step", 10)))
+    layer_grad_ref_progress_max_num = max(0, int(parsed.get("save_image_layer_grad_csv_progress_max_num", 20)))
 
     if not save_csv and not viz_enabled:
         return
@@ -2523,6 +2531,8 @@ def run_layer_grad_csv(config, run_dir):
     iou_match_threshold = parsed["gt_iou_match_threshold"] if viz_enabled else 0.45
     per_image_seen = {"fn": 0, "non_fn": 0}
     per_image_saved = {"fn": 0, "non_fn": 0}
+    ref_progress_image_saved = {"fn": 0, "non_fn": 0}
+    ref_progress_csv_saved = {"fn": 0, "non_fn": 0}
     tb_writer = None
     tb_log_dir = None
     gt_match_stats = {"id_match": 0, "path_fallback": 0, "unmatched": 0}
@@ -2585,6 +2595,9 @@ def run_layer_grad_csv(config, run_dir):
     if viz_enabled and per_image_enabled:
         (viz_dir / "per_image" / "fn").mkdir(parents=True, exist_ok=True)
         (viz_dir / "per_image" / "non_fn").mkdir(parents=True, exist_ok=True)
+    if viz_enabled and reference_enabled and (viz_save_progress_raw_map or viz_save_progress_norm_map):
+        (viz_dir / "reference_progress" / "fn").mkdir(parents=True, exist_ok=True)
+        (viz_dir / "reference_progress" / "non_fn").mkdir(parents=True, exist_ok=True)
     if viz_enabled and layer_grad_ref_enabled and layer_grad_ref_save_running_log:
         tb_log_dir = run_dir / "ref_maps" / "tensorboard"
         tb_log_dir.mkdir(parents=True, exist_ok=True)
@@ -2747,6 +2760,38 @@ def run_layer_grad_csv(config, run_dir):
                                 step_val = int(st["count"])
                                 tb_writer.add_scalar(f"layer_grad/{group_key}/delta_l2", float(delta_l2), step_val)
                                 tb_writer.add_scalar(f"layer_grad/{group_key}/converged", int(bool(st["converged"])), step_val)
+                            if viz_save_progress_raw_map or viz_save_progress_norm_map:
+                                should_save_progress_img = ((int(st["count"]) % int(viz_progress_step)) == 0)
+                                if should_save_progress_img and (
+                                    viz_progress_max_num <= 0 or ref_progress_image_saved[group_key] < viz_progress_max_num
+                                ):
+                                    progress_idx = int(ref_progress_image_saved[group_key])
+                                    if st.get("mean_raw") is not None:
+                                        if viz_save_progress_raw_map:
+                                            out_raw = viz_dir / "reference_progress" / group_key / f"raw_{progress_idx:05d}.png"
+                                            _save_heatmap_png(st["mean_raw"], out_raw)
+                                        if viz_save_progress_norm_map:
+                                            out_norm = viz_dir / "reference_progress" / group_key / f"norm_{progress_idx:05d}.png"
+                                            _save_heatmap_png(_normalize_layer_map(st["mean_raw"], mode=viz_normalize), out_norm)
+                                        ref_progress_image_saved[group_key] += 1
+                            if layer_grad_ref_save_progress_raw_map_csv or layer_grad_ref_save_progress_norm_map_csv:
+                                should_save_progress_csv = ((int(st["count"]) % int(layer_grad_ref_progress_step)) == 0)
+                                if should_save_progress_csv and (
+                                    layer_grad_ref_progress_max_num <= 0
+                                    or ref_progress_csv_saved[group_key] < layer_grad_ref_progress_max_num
+                                ):
+                                    progress_idx = int(ref_progress_csv_saved[group_key])
+                                    ref_prog_dir = run_dir / "ref_maps" / "progress" / group_key
+                                    ref_prog_dir.mkdir(parents=True, exist_ok=True)
+                                    if st.get("mean_raw") is not None:
+                                        if layer_grad_ref_save_progress_raw_map_csv:
+                                            _save_map_nodes_csv(st["mean_raw"], ref_prog_dir / f"raw_{progress_idx:05d}.csv")
+                                        if layer_grad_ref_save_progress_norm_map_csv:
+                                            _save_map_nodes_csv(
+                                                _normalize_layer_map(st["mean_raw"], mode=viz_normalize),
+                                                ref_prog_dir / f"norm_{progress_idx:05d}.csv",
+                                            )
+                                        ref_progress_csv_saved[group_key] += 1
                         if per_image_enabled:
                             per_image_seen[group_key] += 1
                             should_save = ((per_image_seen[group_key] - 1) % per_image_step == 0)
@@ -2846,6 +2891,20 @@ def run_layer_grad_csv(config, run_dir):
             },
             "reference_enabled": bool(reference_enabled),
             "reference_groups": active_reference_groups,
+            "reference_progress_image": {
+                "save_raw": bool(viz_save_progress_raw_map),
+                "save_norm": bool(viz_save_progress_norm_map),
+                "step": int(viz_progress_step),
+                "max_num": int(viz_progress_max_num),
+                "saved": {k: int(ref_progress_image_saved[k]) for k in ("fn", "non_fn")},
+            },
+            "reference_progress_csv": {
+                "save_raw_csv": bool(layer_grad_ref_save_progress_raw_map_csv),
+                "save_norm_csv": bool(layer_grad_ref_save_progress_norm_map_csv),
+                "step": int(layer_grad_ref_progress_step),
+                "max_num": int(layer_grad_ref_progress_max_num),
+                "saved": {k: int(ref_progress_csv_saved[k]) for k in ("fn", "non_fn")},
+            },
             "tensorboard_log_dir": str(tb_log_dir) if tb_log_dir is not None else "",
             "save_final_raw_map": bool(viz_save_final_raw_map),
             "save_final_norm_map": bool(viz_save_final_norm_map),
