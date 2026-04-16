@@ -283,8 +283,12 @@ def parse_output_config(output_cfg):
     save_image_cfg = as_dict(active.get("save_image", {}))
     save_csv = as_dict(save_csv_cfg)
     layer_grad_common_cfg = active if uncertainty == "layer_grad" else save_csv
+    layer_grad_data_cfg = as_dict(save_csv.get("data", {})) if uncertainty == "layer_grad" else {}
 
-    save_csv_enabled = bool(save_csv.get("enabled", bool(save_csv_cfg) if isinstance(save_csv_cfg, bool) else False))
+    if uncertainty == "layer_grad":
+        save_csv_enabled = bool(layer_grad_data_cfg.get("enabled", False))
+    else:
+        save_csv_enabled = bool(save_csv.get("enabled", bool(save_csv_cfg) if isinstance(save_csv_cfg, bool) else False))
     unit = str(layer_grad_common_cfg.get("unit", "image")).lower()
     pre_nms_cfg = as_dict(layer_grad_common_cfg.get("pre_nms", {}))
     pre_nms = bool(pre_nms_cfg.get("enabled", False))
@@ -342,7 +346,7 @@ def parse_output_config(output_cfg):
         feature_vector_reduction = normalize_vector_reduction(r.get("vector", ["L1", "L2", "min", "max", "mean", "std"]))
     elif uncertainty == "layer_grad":
         g = as_dict(layer_grad_cfg.get("gradient", {}))
-        r = as_dict(save_csv.get("reduction", {}))
+        r = as_dict(layer_grad_data_cfg.get("reduction", {}))
         layer_target_values = [v.lower() for v in normalize_to_list(g.get("scalar", ["loss"]))]
         if "loss" in layer_target_values:
             exp = []
@@ -383,9 +387,9 @@ def parse_output_config(output_cfg):
     layer_grad_image_patience = 20
     layer_grad_image_min_samples = 200
     layer_grad_image_max_samples = 20000
-    layer_grad_ref_save_running_log = True
-    layer_grad_ref_save_final_raw_map_csv = True
-    layer_grad_ref_save_final_norm_map_csv = True
+    layer_grad_ref_save_running_log = False
+    layer_grad_ref_save_final_raw_map_csv = False
+    layer_grad_ref_save_final_norm_map_csv = False
     layer_grad_ref_save_progress_raw_map_csv = False
     layer_grad_ref_save_progress_norm_map_csv = False
     layer_grad_ref_progress_step = 10
@@ -434,13 +438,19 @@ def parse_output_config(output_cfg):
         ref_csv_cfg = as_dict(save_csv.get("reference", {}))
         ref_csv_progress_cfg = as_dict(ref_csv_cfg.get("progress", {}))
         ref_csv_final_cfg = as_dict(ref_csv_cfg.get("final", {}))
-        layer_grad_ref_csv_enabled = bool(ref_csv_cfg.get("enabled", False))
         layer_grad_ref_save_running_log = bool(ref_csv_progress_cfg.get("log", True))
         layer_grad_ref_save_progress_raw_map_csv = bool(ref_csv_progress_cfg.get("raw_map", False))
         layer_grad_ref_save_progress_norm_map_csv = bool(ref_csv_progress_cfg.get("norm_map", False))
         layer_grad_ref_progress_step = as_int(ref_csv_progress_cfg.get("step", 10), 10)
         layer_grad_ref_save_final_raw_map_csv = bool(ref_csv_final_cfg.get("raw_map", True))
         layer_grad_ref_save_final_norm_map_csv = bool(ref_csv_final_cfg.get("norm_map", True))
+        layer_grad_ref_csv_enabled = any([
+            bool(layer_grad_ref_save_running_log),
+            bool(layer_grad_ref_save_progress_raw_map_csv),
+            bool(layer_grad_ref_save_progress_norm_map_csv),
+            bool(layer_grad_ref_save_final_raw_map_csv),
+            bool(layer_grad_ref_save_final_norm_map_csv),
+        ])
 
     return {
         "save_csv_enabled": save_csv_enabled,

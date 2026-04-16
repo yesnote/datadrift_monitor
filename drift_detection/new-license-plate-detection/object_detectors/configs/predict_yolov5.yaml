@@ -152,12 +152,12 @@ output:
       target: null_target # cand_target | null_target
 
     save_csv:
-      enabled: false
-      reduction:
-        map: none
-        vector: [L1, L2, min, max, mean, std]
-      reference:
+      data:
         enabled: false
+        reduction:
+          map: none
+          vector: [L1, L2, min, max, mean, std]
+      reference:
         progress:
           log: true # tensorboard event log
           raw_map: false
