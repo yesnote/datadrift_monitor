@@ -2871,6 +2871,10 @@ def run_predict(config, run_dir):
     parsed = parse_output_config(config.get("output", {}))
     uncertainty = parsed["uncertainty"]
     unit = parsed["unit"]
+    device = str(config.get("model", {}).get("device", "cuda")).lower()
+    if device == "cuda" and not torch.cuda.is_available():
+        device = "cpu"
+    print(f"[INFO] device={device}")
 
     if uncertainty == "gt":
         if unit == "image":
