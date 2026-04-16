@@ -415,16 +415,17 @@ def parse_output_config(output_cfg):
     layer_grad_ref_progress_step = 10
 
     if uncertainty == "layer_grad":
-        lg = save_image_cfg
-        per_image_cfg = as_dict(lg.get("per_image", {}))
-        ref_img_cfg = as_dict(lg.get("reference", {}))
+        lg = layer_grad_cfg
+        common_ref_cfg = as_dict(lg.get("reference", {}))
+        per_image_cfg = as_dict(save_image_cfg.get("per_image", {}))
+        ref_img_cfg = as_dict(save_image_cfg.get("reference", {}))
         ref_img_progress_cfg = as_dict(ref_img_cfg.get("progress", {}))
         ref_img_final_cfg = as_dict(ref_img_cfg.get("final", {}))
-        conv_cfg = ref_img_cfg
+        conv_cfg = common_ref_cfg
         layer_grad_image_per_image_enabled = bool(per_image_cfg.get("enabled", False))
         layer_grad_image_per_image_step = as_int(per_image_cfg.get("step", 1), 1)
         layer_grad_image_per_image_max_num = as_int(per_image_cfg.get("max_num", 0), 0)
-        layer_grad_image_ref_groups = [g.lower() for g in normalize_to_list(ref_img_cfg.get("group", ["fn", "non_fn"]))]
+        layer_grad_image_ref_groups = [g.lower() for g in normalize_to_list(common_ref_cfg.get("group", ["fn", "non_fn"]))]
         layer_grad_image_save_final_raw_map = bool(ref_img_final_cfg.get("raw_map", False))
         layer_grad_image_save_final_norm_map = bool(ref_img_final_cfg.get("norm_map", False))
         layer_grad_image_save_profile = bool(ref_img_final_cfg.get("profile", False))
@@ -439,7 +440,7 @@ def parse_output_config(output_cfg):
             bool(layer_grad_image_save_profile),
         ])
 
-        gt_dir = str(lg.get("gt", "")).strip()
+        gt_dir = str(common_ref_cfg.get("gt", "")).strip()
         if gt_dir:
             layer_grad_image_gt_csv = str((Path(gt_dir) / "fn.csv").as_posix())
 
@@ -463,11 +464,11 @@ def parse_output_config(output_cfg):
         ref_csv_cfg = as_dict(save_csv.get("reference", {}))
         ref_csv_progress_cfg = as_dict(ref_csv_cfg.get("progress", {}))
         ref_csv_final_cfg = as_dict(ref_csv_cfg.get("final", {}))
-        layer_grad_ref_groups = [g.lower() for g in normalize_to_list(ref_csv_cfg.get("group", ["fn", "non_fn"]))]
-        layer_grad_ref_delta_l2_tol = as_float(ref_csv_cfg.get("delta", 1e-4), 1e-4)
-        layer_grad_ref_patience = as_int(ref_csv_cfg.get("patience", 20), 20)
-        layer_grad_ref_min_samples = as_int(ref_csv_cfg.get("min_samples", 200), 200)
-        layer_grad_ref_max_samples = as_int(ref_csv_cfg.get("max_samples", 20000), 20000)
+        layer_grad_ref_groups = [g.lower() for g in normalize_to_list(common_ref_cfg.get("group", ["fn", "non_fn"]))]
+        layer_grad_ref_delta_l2_tol = as_float(common_ref_cfg.get("delta", 1e-4), 1e-4)
+        layer_grad_ref_patience = as_int(common_ref_cfg.get("patience", 20), 20)
+        layer_grad_ref_min_samples = as_int(common_ref_cfg.get("min_samples", 200), 200)
+        layer_grad_ref_max_samples = as_int(common_ref_cfg.get("max_samples", 20000), 20000)
         layer_grad_ref_save_running_log = bool(ref_csv_progress_cfg.get("log", True))
         layer_grad_ref_save_progress_raw_map_csv = bool(ref_csv_progress_cfg.get("raw_map", False))
         layer_grad_ref_save_progress_norm_map_csv = bool(ref_csv_progress_cfg.get("norm_map", False))

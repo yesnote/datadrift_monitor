@@ -150,6 +150,13 @@ output:
       scalar: [loss]
       layer: all_conv # all_conv | ["model.24.m.0", "model.24.m.1", "model.24.m.2"]
       target: null_target # cand_target | null_target
+    reference:
+      gt: object_detectors/runs/fn_detectors/04-08-2026_14;10_gt
+      group: [fn, non_fn]
+      delta: 5.0e-4
+      patience: 20
+      min_samples: 200
+      max_samples: 20000
 
     save_csv:
       data:
@@ -158,11 +165,6 @@ output:
           map: none
           vector: [L1, L2, min, max, mean, std]
       reference:
-        group: [fn, non_fn]
-        delta: 5.0e-4
-        patience: 20
-        min_samples: 200
-        max_samples: 20000
         progress:
           log: true # tensorboard event log
           raw_map: false
@@ -173,17 +175,11 @@ output:
           norm_map: true # layer min-max normalization
     
     save_image:
-      gt: object_detectors/runs/fn_detectors/04-08-2026_14;10_gt
       per_image:
         enabled: false
         step: 10
         max_num: 10
       reference:
-        group: [fn, non_fn]
-        delta: 5.0e-4
-        patience: 20
-        min_samples: 200
-        max_samples: 20000
         progress:
           raw_map: false
           norm_map: false

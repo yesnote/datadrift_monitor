@@ -91,6 +91,7 @@ def main():
         elif uncertainty == "layer_grad":
             layer_grad_cfg = config.get("output", {}).get("layer_grad", {})
             grad_cfg = layer_grad_cfg.get("gradient", {})
+            ref_common_cfg = layer_grad_cfg.get("reference", {})
             ref_img_cfg = layer_grad_cfg.get("save_image", {}).get("reference", {})
             ref_csv_cfg = layer_grad_cfg.get("save_csv", {}).get("reference", {})
             ref_img_progress_cfg = ref_img_cfg.get("progress", {})
@@ -123,7 +124,7 @@ def main():
 
             target_tag = f"{grad_target}_{scalar_tag}_save_reference{save_reference}"
             if save_reference == 1:
-                groups = [str(v).strip().lower() for v in ref_img_cfg.get("group", []) if str(v).strip()]
+                groups = [str(v).strip().lower() for v in ref_common_cfg.get("group", []) if str(v).strip()]
                 if groups:
                     target_tag += f"_{'-'.join(groups)}"
 
