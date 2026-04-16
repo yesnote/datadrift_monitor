@@ -289,12 +289,12 @@ def parse_output_config(output_cfg):
         save_csv_enabled = bool(layer_grad_data_cfg.get("enabled", False))
     else:
         save_csv_enabled = bool(save_csv.get("enabled", bool(save_csv_cfg) if isinstance(save_csv_cfg, bool) else False))
-    if uncertainty in {"layer_grad", "gt", "score"}:
+    if uncertainty in {"layer_grad", "gt", "score", "full_softmax"}:
         unit_cfg = active
     else:
         unit_cfg = layer_grad_common_cfg
     unit = str(unit_cfg.get("unit", "image")).lower()
-    if uncertainty in {"layer_grad", "score"}:
+    if uncertainty in {"layer_grad", "score", "full_softmax"}:
         pre_nms_source_cfg = active
     else:
         pre_nms_source_cfg = layer_grad_common_cfg
