@@ -336,8 +336,9 @@ def parse_output_config(output_cfg):
         layer_target_layers = normalize_to_list(g.get("layer", []))
         layer_map_reduction = str(r.get("map", "none")).strip().lower()
         layer_vector_reduction = normalize_vector_reduction(r.get("vector", ["L1", "L2", "min", "max", "mean", "std"]))
-        t = g.get("target", "cand")
-        layer_pseudo_gt = "uniform" if (t is None or str(t).strip().lower() == "null") else "cand"
+        t = g.get("target", "cand_target")
+        t_policy = str(t).strip().lower() if t is not None else "null_target"
+        layer_pseudo_gt = "uniform" if t_policy in {"null_target", "null"} else "cand"
 
     save_image_enabled = bool(save_image_cfg.get("enabled", bool(save_image_cfg)))
     gt_image_cfg = as_dict(save_image_cfg.get("gt", {}))
@@ -383,8 +384,9 @@ def parse_output_config(output_cfg):
                 exp.extend(["obj_loss", "cls_loss", "bbox_loss"] if v == "loss" else [v])
             layer_img_target_values = list(dict.fromkeys(exp))
         layer_img_target_layers = normalize_to_list(g.get("layer", []))
-        t = g.get("target", "cand")
-        layer_grad_image_pseudo_gt = "uniform" if (t is None or str(t).strip().lower() == "null") else "cand"
+        t = g.get("target", "cand_target")
+        t_policy = str(t).strip().lower() if t is not None else "null_target"
+        layer_grad_image_pseudo_gt = "uniform" if t_policy in {"null_target", "null"} else "cand"
 
         layer_grad_image_delta_l2_tol = as_float(conv_cfg.get("delta", 1e-4), 1e-4)
         layer_grad_image_patience = as_int(conv_cfg.get("patience", 20), 20)
