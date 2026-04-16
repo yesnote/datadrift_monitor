@@ -158,6 +158,11 @@ output:
           map: none
           vector: [L1, L2, min, max, mean, std]
       reference:
+        group: [fn, non_fn]
+        delta: 5.0e-4
+        patience: 20
+        min_samples: 200
+        max_samples: 20000
         progress:
           log: true # tensorboard event log
           raw_map: false
@@ -174,7 +179,6 @@ output:
         step: 10
         max_num: 10
       reference:
-        enabled: true
         group: [fn, non_fn]
         delta: 5.0e-4
         patience: 20
