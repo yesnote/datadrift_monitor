@@ -94,6 +94,11 @@ def _resolve_gt_class_names(target, catid_to_name):
 
 
 def _vector_from_grad_value(grad_value):
+    if isinstance(grad_value, torch.Tensor):
+        if grad_value.numel() == 0:
+            return np.zeros((0,), dtype=np.float32)
+        arr = grad_value.detach().float().reshape(-1).cpu().numpy()
+        return np.abs(arr.astype(np.float32, copy=False))
     if isinstance(grad_value, list):
         if len(grad_value) == 0:
             return np.zeros((0,), dtype=np.float32)
@@ -2756,6 +2761,8 @@ def run_layer_grad_csv(config, run_dir):
                                         separators=(",", ":"),
                                     )
                                 else:
+                                    if isinstance(grad_value, torch.Tensor):
+                                        grad_value = grad_value.detach().float().cpu().tolist()
                                     row[grad_key] = json.dumps(grad_value, separators=(",", ":"))
                         csv_writer.writerow(row)
 

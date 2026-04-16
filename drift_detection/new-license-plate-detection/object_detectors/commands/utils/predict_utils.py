@@ -1372,11 +1372,27 @@ def collect_batch_image_layer_grads_per_target(
                     if grad_tensor is None:
                         row[key] = zero_grad_numbers() if vector_reduction else []
                     else:
-                        row[key] = format_gradient_output(
-                            grad_tensor,
-                            vector_reduction=vector_reduction,
-                            map_reduction=map_reduction,
-                        )
+                        if vector_reduction:
+                            row[key] = format_gradient_output(
+                                grad_tensor,
+                                vector_reduction=vector_reduction,
+                                map_reduction=map_reduction,
+                            )
+                        else:
+                            map_mode = str(map_reduction).strip().lower()
+                            grad_tensor = grad_tensor.detach().float()
+                            if map_mode == "energy":
+                                if grad_tensor.ndim == 0:
+                                    reduced = grad_tensor.abs().reshape(1)
+                                elif grad_tensor.ndim == 1:
+                                    reduced = grad_tensor.abs()
+                                else:
+                                    first_dim = int(grad_tensor.shape[0])
+                                    reduced = grad_tensor.reshape(first_dim, -1).abs().mean(dim=1)
+                            else:
+                                reduced = grad_tensor.reshape(-1)
+                            # Keep tensor form to avoid huge Python list materialization.
+                            row[key] = reduced.detach()
             del batched_grads, scalar_vec, eye
 
         del model_output, raw_prediction, raw_logits, raw_anchor_priors
