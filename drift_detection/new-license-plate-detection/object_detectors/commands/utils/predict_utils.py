@@ -344,7 +344,6 @@ def parse_output_config(output_cfg):
     gt_image_step = as_int(gt_image_cfg.get("step", 1), 1)
     gt_image_max_num = as_int(gt_image_cfg.get("max_num", 1), 1)
 
-    layer_grad_image_normalize = "layer_minmax"
     layer_grad_image_save_final_raw_map = True
     layer_grad_image_save_final_norm_map = True
     layer_grad_image_save_profile = True
@@ -365,7 +364,6 @@ def parse_output_config(output_cfg):
     if uncertainty == "layer_grad":
         lg = save_image_cfg
         conv_cfg = lg
-        layer_grad_image_normalize = str(lg.get("normalize", "layer_minmax")).strip().lower()
         layer_grad_image_save_final_raw_map = bool(lg.get("save_final_raw_map", True))
         layer_grad_image_save_final_norm_map = bool(lg.get("save_final_norm_map", True))
         layer_grad_image_save_profile = bool(lg.get("save_profile", True))
@@ -431,7 +429,6 @@ def parse_output_config(output_cfg):
         "save_image_enabled": save_image_enabled,
         "save_image_gt_step": gt_image_step,
         "save_image_gt_max_num": gt_image_max_num,
-        "save_image_layer_grad_normalize": layer_grad_image_normalize,
         "save_image_layer_grad_target_values": layer_img_target_values,
         "save_image_layer_grad_target_layers": layer_img_target_layers,
         "save_image_layer_grad_pseudo_gt": layer_grad_image_pseudo_gt,
