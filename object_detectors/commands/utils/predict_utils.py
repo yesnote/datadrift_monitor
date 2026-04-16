@@ -289,7 +289,7 @@ def parse_output_config(output_cfg):
         save_csv_enabled = bool(layer_grad_data_cfg.get("enabled", False))
     else:
         save_csv_enabled = bool(save_csv.get("enabled", bool(save_csv_cfg) if isinstance(save_csv_cfg, bool) else False))
-    if uncertainty in {"layer_grad", "gt", "score", "full_softmax", "entropy", "energy", "mc_dropout"}:
+    if uncertainty in {"layer_grad", "gt", "score", "full_softmax", "entropy", "energy", "mc_dropout", "ensemble"}:
         unit_cfg = active
     else:
         unit_cfg = layer_grad_common_cfg

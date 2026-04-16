@@ -105,9 +105,9 @@ output:
       vector_reduction: [L1, L2, min, max, mean, std]
 
   ensemble:
+    unit: image  # image | bbox
     save_csv:
       enabled: false
-      unit: image  # image | bbox
       vector_reduction: [L1, L2, min, max, mean, std]
 
   meta_detect:
