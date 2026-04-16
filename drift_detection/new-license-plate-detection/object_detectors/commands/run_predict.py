@@ -36,6 +36,7 @@ from commands.utils.predict_utils import (
     map_grad_tensor_to_numbers,
     parse_output_config,
     preprocess_with_letterbox,
+    expand_layer_names,
     resolve_layer_parameter,
 )
 
@@ -2456,6 +2457,9 @@ def run_layer_grad_csv(config, run_dir):
     per_image_step = max(1, int(parsed.get("save_image_layer_grad_per_image_step", 1)))
     per_image_max_num = max(0, int(parsed.get("save_image_layer_grad_per_image_max_num", 0)))
     reference_enabled = bool(parsed.get("save_image_layer_grad_reference_enabled", False))
+    reference_groups = [g for g in parsed.get("save_image_layer_grad_reference_groups", ["fn", "non_fn"]) if g in {"fn", "non_fn"}]
+    if not reference_groups:
+        reference_groups = ["fn", "non_fn"]
     viz_enabled = bool(save_image_enabled and unit == "image" and (per_image_enabled or reference_enabled))
     viz_normalize = "layer_minmax"
     viz_target_values = list(parsed.get("save_image_layer_grad_target_values", target_values))
@@ -2485,23 +2489,26 @@ def run_layer_grad_csv(config, run_dir):
         return
 
     output_csv = run_dir / "layer_grad.csv"
-    fieldnames = ["image_id", "image_path"]
-    if unit == "bbox":
-        fieldnames.extend(["pred_idx", "raw_pred_idx", "xmin", "ymin", "xmax", "ymax", "score", "pred_class"])
-    for target_value in target_values:
-        for layer_name in target_layers:
-            fieldnames.append(f"{target_value}_{layer_name}")
 
     dataloader = create_dataloader(config, split=split)
     if len(dataloader.dataset) == 0:
         raise ValueError("Loaded 0 images. Check dataset root/image_dir/split configuration in YAML.")
 
     detector, device = build_detector(config)
+    target_layers = expand_layer_names(detector.model, target_layers)
     if not viz_target_values:
         viz_target_values = list(target_values)
     if not viz_target_layers:
         viz_target_layers = list(target_layers)
+    viz_target_layers = expand_layer_names(detector.model, viz_target_layers)
     collect_target_values = list(dict.fromkeys(list(target_values) + list(viz_target_values)))
+
+    fieldnames = ["image_id", "image_path"]
+    if unit == "bbox":
+        fieldnames.extend(["pred_idx", "raw_pred_idx", "xmin", "ymin", "xmax", "ymax", "score", "pred_class"])
+    for target_value in target_values:
+        for layer_name in target_layers:
+            fieldnames.append(f"{target_value}_{layer_name}")
 
     layer_param_shapes = {}
     if unit == "image" and viz_enabled:
@@ -2537,6 +2544,7 @@ def run_layer_grad_csv(config, run_dir):
         }
 
     group_states = {"fn": _make_group_state(), "non_fn": _make_group_state()}
+    active_reference_groups = [g for g in ("fn", "non_fn") if g in reference_groups]
 
     def _is_group_done(group_key):
         if reference_enabled:
@@ -2563,6 +2571,11 @@ def run_layer_grad_csv(config, run_dir):
             return per_image_saved[group_key] >= per_image_max_num
         return False
 
+    def _all_done():
+        if reference_enabled:
+            return all(_is_group_done(g) for g in active_reference_groups)
+        return _is_group_done("fn") and _is_group_done("non_fn")
+
     viz_dir = run_dir / "images"
     if viz_enabled:
         viz_dir.mkdir(parents=True, exist_ok=True)
@@ -2581,14 +2594,14 @@ def run_layer_grad_csv(config, run_dir):
         for images, targets in tqdm(
             dataloader, desc=f"Object Detector ({mode} - {uncertainty})", total=len(dataloader)
         ):
-            if _is_group_done("fn") and _is_group_done("non_fn"):
+            if _all_done():
                 break
             image_list = _as_image_list(images)
             infer_batch, ratios, pads, _resized_chws = _prepare_infer_batch(detector, image_list, device, auto=False)
             batch_preds = None
 
             for sample_idx in range(len(image_list)):
-                if _is_group_done("fn") and _is_group_done("non_fn"):
+                if _all_done():
                     break
                 target = targets[sample_idx]
                 image_id = int(target["image_id"][0].item())
@@ -2660,7 +2673,7 @@ def run_layer_grad_csv(config, run_dir):
                             fn_flag = int(is_fn)
                         group_key = "fn" if int(fn_flag) == 1 else "non_fn"
                         st = group_states[group_key]
-                        if _is_group_done(group_key):
+                        if reference_enabled and (group_key in active_reference_groups) and _is_group_done(group_key):
                             continue
                     required_layers = []
                     if csv_writer is not None:
@@ -2707,7 +2720,7 @@ def run_layer_grad_csv(config, run_dir):
                             target_layers=viz_target_layers,
                             layer_param_shapes=layer_param_shapes,
                         )
-                        if reference_enabled:
+                        if reference_enabled and (group_key in active_reference_groups):
                             delta_l2 = _update_running_mean_map(st, grad_map_raw)
                             if np.isinf(viz_num_by_group[group_key]):
                                 if (
@@ -2832,6 +2845,7 @@ def run_layer_grad_csv(config, run_dir):
                 "saved": {k: int(per_image_saved[k]) for k in ("fn", "non_fn")},
             },
             "reference_enabled": bool(reference_enabled),
+            "reference_groups": active_reference_groups,
             "save_final_raw_map": bool(viz_save_final_raw_map),
             "save_final_norm_map": bool(viz_save_final_norm_map),
             "save_profile": bool(viz_save_profile),
