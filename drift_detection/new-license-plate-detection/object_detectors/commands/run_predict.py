@@ -2475,8 +2475,8 @@ def run_layer_grad_csv(config, run_dir):
     conv_min_samples = int(parsed.get("save_image_layer_grad_convergence_min_samples", 200))
     conv_max_samples = int(parsed.get("save_image_layer_grad_convergence_max_samples", 20000))
     convergence_mode = bool(reference_enabled)
-    if reference_enabled and not viz_gt_csv:
-        raise ValueError("output.layer_grad.save_image.gt is required when reference.enabled=true.")
+    if reference_enabled and ("fn" in reference_groups) and not viz_gt_csv:
+        raise ValueError("output.layer_grad.save_image.gt is required when reference.group includes 'fn'.")
     viz_save_final_raw_map = bool(parsed.get("save_image_layer_grad_save_final_raw_map", True))
     viz_save_final_norm_map = bool(parsed.get("save_image_layer_grad_save_final_norm_map", True))
     viz_save_profile = bool(parsed.get("save_image_layer_grad_save_profile", True))
