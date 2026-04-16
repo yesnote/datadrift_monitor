@@ -2485,7 +2485,6 @@ def run_layer_grad_csv(config, run_dir):
     viz_save_progress_raw_map = bool(parsed.get("save_image_layer_grad_save_progress_raw_map", False))
     viz_save_progress_norm_map = bool(parsed.get("save_image_layer_grad_save_progress_norm_map", False))
     viz_progress_step = max(1, int(parsed.get("save_image_layer_grad_progress_step", 10)))
-    viz_progress_max_num = max(0, int(parsed.get("save_image_layer_grad_progress_max_num", 20)))
     layer_grad_ref_enabled = bool(reference_enabled)
     layer_grad_ref_save_running_log = bool(parsed.get("save_image_layer_grad_csv_save_running_log", True))
     layer_grad_ref_save_final_raw_map_csv = bool(parsed.get("save_image_layer_grad_csv_save_final_raw_map_csv", True))
@@ -2493,7 +2492,6 @@ def run_layer_grad_csv(config, run_dir):
     layer_grad_ref_save_progress_raw_map_csv = bool(parsed.get("save_image_layer_grad_csv_save_progress_raw_map_csv", False))
     layer_grad_ref_save_progress_norm_map_csv = bool(parsed.get("save_image_layer_grad_csv_save_progress_norm_map_csv", False))
     layer_grad_ref_progress_step = max(1, int(parsed.get("save_image_layer_grad_csv_progress_step", 10)))
-    layer_grad_ref_progress_max_num = max(0, int(parsed.get("save_image_layer_grad_csv_progress_max_num", 20)))
 
     if not save_csv and not viz_enabled:
         return
@@ -2762,9 +2760,7 @@ def run_layer_grad_csv(config, run_dir):
                                 tb_writer.add_scalar(f"layer_grad/{group_key}/converged", int(bool(st["converged"])), step_val)
                             if viz_save_progress_raw_map or viz_save_progress_norm_map:
                                 should_save_progress_img = ((int(st["count"]) % int(viz_progress_step)) == 0)
-                                if should_save_progress_img and (
-                                    viz_progress_max_num <= 0 or ref_progress_image_saved[group_key] < viz_progress_max_num
-                                ):
+                                if should_save_progress_img:
                                     progress_idx = int(ref_progress_image_saved[group_key])
                                     if st.get("mean_raw") is not None:
                                         if viz_save_progress_raw_map:
@@ -2776,10 +2772,7 @@ def run_layer_grad_csv(config, run_dir):
                                         ref_progress_image_saved[group_key] += 1
                             if layer_grad_ref_save_progress_raw_map_csv or layer_grad_ref_save_progress_norm_map_csv:
                                 should_save_progress_csv = ((int(st["count"]) % int(layer_grad_ref_progress_step)) == 0)
-                                if should_save_progress_csv and (
-                                    layer_grad_ref_progress_max_num <= 0
-                                    or ref_progress_csv_saved[group_key] < layer_grad_ref_progress_max_num
-                                ):
+                                if should_save_progress_csv:
                                     progress_idx = int(ref_progress_csv_saved[group_key])
                                     ref_prog_dir = run_dir / "ref_maps" / "progress" / group_key
                                     ref_prog_dir.mkdir(parents=True, exist_ok=True)
@@ -2895,14 +2888,12 @@ def run_layer_grad_csv(config, run_dir):
                 "save_raw": bool(viz_save_progress_raw_map),
                 "save_norm": bool(viz_save_progress_norm_map),
                 "step": int(viz_progress_step),
-                "max_num": int(viz_progress_max_num),
                 "saved": {k: int(ref_progress_image_saved[k]) for k in ("fn", "non_fn")},
             },
             "reference_progress_csv": {
                 "save_raw_csv": bool(layer_grad_ref_save_progress_raw_map_csv),
                 "save_norm_csv": bool(layer_grad_ref_save_progress_norm_map_csv),
                 "step": int(layer_grad_ref_progress_step),
-                "max_num": int(layer_grad_ref_progress_max_num),
                 "saved": {k: int(ref_progress_csv_saved[k]) for k in ("fn", "non_fn")},
             },
             "tensorboard_log_dir": str(tb_log_dir) if tb_log_dir is not None else "",
