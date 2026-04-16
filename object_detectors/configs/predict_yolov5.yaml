@@ -167,9 +167,9 @@ output:
       reference:
         progress:
           log: true # tensorboard event log
-          raw_map: false
-          norm_map: false
-          step: 50
+          raw_map: true
+          norm_map: true
+          step: 10
         final:
           raw_map: true
           norm_map: true # layer min-max normalization
@@ -181,9 +181,9 @@ output:
         max_num: 10
       reference:
         progress:
-          raw_map: false
-          norm_map: false
-          step: 50
+          raw_map: true
+          norm_map: true
+          step: 10
         final:
           raw_map: true
           norm_map: true # layer min-max normalization
