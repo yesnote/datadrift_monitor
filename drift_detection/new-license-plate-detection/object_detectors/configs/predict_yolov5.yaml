@@ -150,6 +150,10 @@ output:
         reduction:
           map: none
           vector: [L1, L2, min, max, mean, std]
+      reference:
+        save_running_log: true
+        save_final_raw_map_csv: true
+        save_final_norm_map_csv: true # layer min-max normalization
     
     save_image:
       gt: object_detectors/runs/fn_detectors/04-07-2026_14;09_gt
@@ -166,9 +170,6 @@ output:
         save_final_raw_map: true
         save_final_norm_map: true # layer min-max normalization
         save_profile: true
-        save_running_log: true
-        save_final_raw_map_csv: true
-        save_final_norm_map_csv: true # layer min-max normalization
         delta: 1.0e-4
         patience: 20
         min_samples: 200

@@ -401,9 +401,10 @@ def parse_output_config(output_cfg):
         layer_grad_image_min_samples = as_int(conv_cfg.get("min_samples", 200), 200)
         layer_grad_image_max_samples = as_int(conv_cfg.get("max_samples", 20000), 20000)
 
-        layer_grad_ref_save_running_log = bool(ref_img_cfg.get("save_running_log", True))
-        layer_grad_ref_save_final_raw_map_csv = bool(ref_img_cfg.get("save_final_raw_map_csv", True))
-        layer_grad_ref_save_final_norm_map_csv = bool(ref_img_cfg.get("save_final_norm_map_csv", True))
+        ref_csv_cfg = as_dict(save_csv.get("reference", {}))
+        layer_grad_ref_save_running_log = bool(ref_csv_cfg.get("save_running_log", True))
+        layer_grad_ref_save_final_raw_map_csv = bool(ref_csv_cfg.get("save_final_raw_map_csv", True))
+        layer_grad_ref_save_final_norm_map_csv = bool(ref_csv_cfg.get("save_final_norm_map_csv", True))
 
     return {
         "save_csv_enabled": save_csv_enabled,
