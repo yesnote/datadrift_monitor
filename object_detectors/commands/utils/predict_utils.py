@@ -429,12 +429,14 @@ def parse_output_config(output_cfg):
         layer_grad_image_max_samples = as_int(conv_cfg.get("max_samples", 20000), 20000)
 
         ref_csv_cfg = as_dict(save_csv.get("reference", {}))
-        layer_grad_ref_save_running_log = bool(ref_csv_cfg.get("save_running_log", True))
-        layer_grad_ref_save_final_raw_map_csv = bool(ref_csv_cfg.get("save_final_raw_map_csv", True))
-        layer_grad_ref_save_final_norm_map_csv = bool(ref_csv_cfg.get("save_final_norm_map_csv", True))
-        layer_grad_ref_save_progress_raw_map_csv = bool(ref_csv_cfg.get("save_progress_raw_map_csv", False))
-        layer_grad_ref_save_progress_norm_map_csv = bool(ref_csv_cfg.get("save_progress_norm_map_csv", False))
-        layer_grad_ref_progress_step = as_int(ref_csv_cfg.get("progress_step", 10), 10)
+        ref_csv_progress_cfg = as_dict(ref_csv_cfg.get("progress", {}))
+        ref_csv_final_cfg = as_dict(ref_csv_cfg.get("final", {}))
+        layer_grad_ref_save_running_log = bool(ref_csv_progress_cfg.get("log", True))
+        layer_grad_ref_save_progress_raw_map_csv = bool(ref_csv_progress_cfg.get("raw_map", False))
+        layer_grad_ref_save_progress_norm_map_csv = bool(ref_csv_progress_cfg.get("norm_map", False))
+        layer_grad_ref_progress_step = as_int(ref_csv_progress_cfg.get("step", 10), 10)
+        layer_grad_ref_save_final_raw_map_csv = bool(ref_csv_final_cfg.get("raw_map", True))
+        layer_grad_ref_save_final_norm_map_csv = bool(ref_csv_final_cfg.get("norm_map", True))
 
     return {
         "save_csv_enabled": save_csv_enabled,
