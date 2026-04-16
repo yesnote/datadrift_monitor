@@ -93,6 +93,8 @@ def main():
             grad_cfg = layer_grad_cfg.get("gradient", {})
             ref_img_cfg = layer_grad_cfg.get("save_image", {}).get("reference", {})
             ref_csv_cfg = layer_grad_cfg.get("save_csv", {}).get("reference", {})
+            ref_csv_progress_cfg = ref_csv_cfg.get("progress", {})
+            ref_csv_final_cfg = ref_csv_cfg.get("final", {})
 
             raw_target = grad_cfg.get("target", "cand_target")
             grad_target = str(raw_target).strip().lower() if raw_target is not None else "null_target"
@@ -103,8 +105,11 @@ def main():
 
             ref_img_enabled = bool(ref_img_cfg.get("enabled", False))
             ref_csv_enabled = any(
-                bool(ref_csv_cfg.get(k, False))
-                for k in ("save_running_log", "save_final_raw_map_csv", "save_final_norm_map_csv")
+                bool(ref_csv_progress_cfg.get(k, False))
+                for k in ("log", "raw_map", "norm_map")
+            ) or any(
+                bool(ref_csv_final_cfg.get(k, False))
+                for k in ("raw_map", "norm_map")
             )
             save_reference = 1 if (ref_img_enabled or ref_csv_enabled) else 0
 
