@@ -289,7 +289,7 @@ def parse_output_config(output_cfg):
         save_csv_enabled = bool(layer_grad_data_cfg.get("enabled", False))
     else:
         save_csv_enabled = bool(save_csv.get("enabled", bool(save_csv_cfg) if isinstance(save_csv_cfg, bool) else False))
-    if uncertainty in {"layer_grad", "gt", "score", "full_softmax", "entropy", "energy", "mc_dropout", "ensemble", "meta_detect"}:
+    if uncertainty in {"layer_grad", "gt", "score", "full_softmax", "entropy", "energy", "mc_dropout", "ensemble", "meta_detect", "feature"}:
         unit_cfg = active
     else:
         unit_cfg = layer_grad_common_cfg
@@ -312,7 +312,8 @@ def parse_output_config(output_cfg):
     energy_cfg = save_csv if uncertainty == "energy" else {}
     entropy_cfg = save_csv if uncertainty == "entropy" else {}
     full_softmax_cfg = save_csv if uncertainty == "full_softmax" else {}
-    feature_cfg = save_csv if uncertainty == "feature" else {}
+    feature_cfg = active if uncertainty == "feature" else {}
+    feature_csv_cfg = save_csv if uncertainty == "feature" else {}
     feature_grad_cfg = save_csv if uncertainty == "feature_grad" else {}
     layer_grad_cfg = layer_grad_common_cfg if uncertainty == "layer_grad" else {}
 
@@ -330,9 +331,12 @@ def parse_output_config(output_cfg):
     entropy_vector_reduction = normalize_vector_reduction(entropy_cfg.get("vector_reduction", ["L1", "L2", "min", "max", "mean", "std"]))
     full_softmax_vector_reduction = normalize_vector_reduction(full_softmax_cfg.get("vector_reduction", ["L1", "L2", "min", "max", "mean", "std"]))
 
-    feature_target_layers = normalize_to_list(feature_cfg.get("target_layer", []))
-    feature_map_reduction = str(feature_cfg.get("map_reduction", "energy")).strip().lower()
-    feature_vector_reduction = normalize_vector_reduction(feature_cfg.get("vector_reduction", ["L1", "L2", "min", "max", "mean", "std"]))
+    feature_target_layers = normalize_to_list(feature_cfg.get("layer", []))
+    feature_reduction_cfg = as_dict(feature_csv_cfg.get("reduction", {}))
+    feature_map_reduction = str(feature_reduction_cfg.get("map", "energy")).strip().lower()
+    feature_vector_reduction = normalize_vector_reduction(
+        feature_reduction_cfg.get("vector", ["L1", "L2", "min", "max", "mean", "std"])
+    )
 
     target_values = []
     target_layers = []
