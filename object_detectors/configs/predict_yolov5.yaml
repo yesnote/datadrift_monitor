@@ -60,12 +60,12 @@ output:
       max_num: 10
 
   score:
+    unit: image  # image | bbox
+    pre_nms:
+      enabled: false
+      ratio: 1.0
     save_csv:
       enabled: false
-      unit: image  # image | bbox
-      pre_nms:
-        enabled: false
-        ratio: 1.0
       vector_reduction: [L1, L2, min, max, mean, std]
 
   full_softmax:
