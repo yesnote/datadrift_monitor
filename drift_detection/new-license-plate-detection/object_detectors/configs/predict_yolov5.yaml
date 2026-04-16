@@ -53,6 +53,7 @@ output:
       enabled: false
       unit: image  # image | bbox
       iou_match_threshold: 0.45
+    
     save_image:
       enabled: true
       gt:
@@ -154,6 +155,7 @@ output:
         save_running_log: true
         save_final_raw_map_csv: true
         save_final_norm_map_csv: true
+    
     save_image:
       gt: object_detectors/runs/fn_detectors/04-07-2026_14;09_gt
       gradient:
