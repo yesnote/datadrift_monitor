@@ -289,7 +289,7 @@ def parse_output_config(output_cfg):
         save_csv_enabled = bool(layer_grad_data_cfg.get("enabled", False))
     else:
         save_csv_enabled = bool(save_csv.get("enabled", bool(save_csv_cfg) if isinstance(save_csv_cfg, bool) else False))
-    if uncertainty in {"layer_grad", "gt", "score", "full_softmax", "entropy", "energy", "mc_dropout", "ensemble"}:
+    if uncertainty in {"layer_grad", "gt", "score", "full_softmax", "entropy", "energy", "mc_dropout", "ensemble", "meta_detect"}:
         unit_cfg = active
     else:
         unit_cfg = layer_grad_common_cfg
@@ -304,7 +304,8 @@ def parse_output_config(output_cfg):
 
     gt_cfg = active if uncertainty == "gt" else {}
     score_cfg = save_csv if uncertainty == "score" else {}
-    meta_detect_cfg = save_csv if uncertainty == "meta_detect" else {}
+    meta_detect_cfg = active if uncertainty == "meta_detect" else {}
+    meta_detect_csv_cfg = save_csv if uncertainty == "meta_detect" else {}
     mc_dropout_cfg = active if uncertainty == "mc_dropout" else {}
     mc_dropout_csv_cfg = save_csv if uncertainty == "mc_dropout" else {}
     ensemble_cfg = save_csv if uncertainty == "ensemble" else {}
@@ -318,7 +319,7 @@ def parse_output_config(output_cfg):
     gt_iou_match_threshold = as_float(gt_cfg.get("iou_match_threshold", 0.5), 0.5)
     meta_detect_score_threshold = as_float(meta_detect_cfg.get("score_threshold", 0.0), 0.0)
     meta_detect_iou_threshold = as_float(meta_detect_cfg.get("iou_threshold", 0.45), 0.45)
-    meta_detect_vector_reduction = normalize_vector_reduction(meta_detect_cfg.get("vector_reduction", ["L1", "L2", "min", "max", "mean", "std"]))
+    meta_detect_vector_reduction = normalize_vector_reduction(meta_detect_csv_cfg.get("vector_reduction", ["L1", "L2", "min", "max", "mean", "std"]))
     mc_num_runs = as_int(mc_dropout_cfg.get("num_runs", 30), 30)
     mc_dropout_rate = as_float(mc_dropout_cfg.get("dropout_rate", 0.5), 0.5)
     mc_queue_maxsize = as_int(mc_dropout_cfg.get("queue_maxsize", 8), 8)
