@@ -2746,7 +2746,6 @@ def run_layer_grad_csv(config, run_dir):
                             if layer_grad_ref_enabled and layer_grad_ref_save_running_log and tb_writer is not None:
                                 step_val = int(st["count"])
                                 tb_writer.add_scalar(f"layer_grad/{group_key}/delta_l2", float(delta_l2), step_val)
-                                tb_writer.add_scalar(f"layer_grad/{group_key}/stable_steps", int(st["stable_steps"]), step_val)
                                 tb_writer.add_scalar(f"layer_grad/{group_key}/converged", int(bool(st["converged"])), step_val)
                         if per_image_enabled:
                             per_image_seen[group_key] += 1
