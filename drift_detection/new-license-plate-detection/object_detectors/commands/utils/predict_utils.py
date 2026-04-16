@@ -289,12 +289,16 @@ def parse_output_config(output_cfg):
         save_csv_enabled = bool(layer_grad_data_cfg.get("enabled", False))
     else:
         save_csv_enabled = bool(save_csv.get("enabled", bool(save_csv_cfg) if isinstance(save_csv_cfg, bool) else False))
-    unit = str(layer_grad_common_cfg.get("unit", "image")).lower()
+    if uncertainty in {"layer_grad", "gt"}:
+        unit_cfg = active
+    else:
+        unit_cfg = layer_grad_common_cfg
+    unit = str(unit_cfg.get("unit", "image")).lower()
     pre_nms_cfg = as_dict(layer_grad_common_cfg.get("pre_nms", {}))
     pre_nms = bool(pre_nms_cfg.get("enabled", False))
     pre_nms_ratio = as_float(pre_nms_cfg.get("ratio", 1.0), 1.0)
 
-    gt_cfg = save_csv if uncertainty == "gt" else {}
+    gt_cfg = active if uncertainty == "gt" else {}
     score_cfg = save_csv if uncertainty == "score" else {}
     meta_detect_cfg = save_csv if uncertainty == "meta_detect" else {}
     mc_dropout_cfg = save_csv if uncertainty == "mc_dropout" else {}
@@ -361,18 +365,17 @@ def parse_output_config(output_cfg):
         layer_pseudo_gt = "uniform" if t_policy in {"null_target", "null"} else "cand"
 
     save_image_enabled = bool(save_image_cfg.get("enabled", bool(save_image_cfg)))
-    gt_image_cfg = as_dict(save_image_cfg.get("gt", {}))
-    gt_image_step = as_int(gt_image_cfg.get("step", 1), 1)
-    gt_image_max_num = as_int(gt_image_cfg.get("max_num", 1), 1)
+    gt_image_step = as_int(save_image_cfg.get("step", 1), 1)
+    gt_image_max_num = as_int(save_image_cfg.get("max_num", 1), 1)
 
     layer_grad_image_per_image_enabled = False
     layer_grad_image_per_image_step = 1
     layer_grad_image_per_image_max_num = 0
     layer_grad_image_ref_enabled = False
     layer_grad_image_ref_groups = ["fn", "non_fn"]
-    layer_grad_image_save_final_raw_map = True
-    layer_grad_image_save_final_norm_map = True
-    layer_grad_image_save_profile = True
+    layer_grad_image_save_final_raw_map = False
+    layer_grad_image_save_final_norm_map = False
+    layer_grad_image_save_profile = False
     layer_grad_image_save_progress_raw_map = False
     layer_grad_image_save_progress_norm_map = False
     layer_grad_image_progress_step = 10
@@ -411,9 +414,9 @@ def parse_output_config(output_cfg):
         layer_grad_image_per_image_step = as_int(per_image_cfg.get("step", 1), 1)
         layer_grad_image_per_image_max_num = as_int(per_image_cfg.get("max_num", 0), 0)
         layer_grad_image_ref_groups = [g.lower() for g in normalize_to_list(ref_img_cfg.get("group", ["fn", "non_fn"]))]
-        layer_grad_image_save_final_raw_map = bool(ref_img_final_cfg.get("raw_map", True))
-        layer_grad_image_save_final_norm_map = bool(ref_img_final_cfg.get("norm_map", True))
-        layer_grad_image_save_profile = bool(ref_img_final_cfg.get("profile", True))
+        layer_grad_image_save_final_raw_map = bool(ref_img_final_cfg.get("raw_map", False))
+        layer_grad_image_save_final_norm_map = bool(ref_img_final_cfg.get("norm_map", False))
+        layer_grad_image_save_profile = bool(ref_img_final_cfg.get("profile", False))
         layer_grad_image_save_progress_raw_map = bool(ref_img_progress_cfg.get("raw_map", False))
         layer_grad_image_save_progress_norm_map = bool(ref_img_progress_cfg.get("norm_map", False))
         layer_grad_image_progress_step = as_int(ref_img_progress_cfg.get("step", 10), 10)
