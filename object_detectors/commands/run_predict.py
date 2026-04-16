@@ -11,6 +11,7 @@ import numpy as np
 import pandas as pd
 import torch
 from torch.utils.data import DataLoader
+from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm
 
 matplotlib.use("Agg")
@@ -2519,9 +2520,10 @@ def run_layer_grad_csv(config, run_dir):
                 layer_param_shapes[layer_name] = None
     catid_to_name = load_gt_category_maps(config, split) if viz_enabled else {}
     iou_match_threshold = parsed["gt_iou_match_threshold"] if viz_enabled else 0.45
-    running_log_rows = []
     per_image_seen = {"fn": 0, "non_fn": 0}
     per_image_saved = {"fn": 0, "non_fn": 0}
+    tb_writer = None
+    tb_log_dir = None
     gt_match_stats = {"id_match": 0, "path_fallback": 0, "unmatched": 0}
     gt_by_id, gt_by_base = {}, {}
     if viz_gt_csv:
@@ -2582,6 +2584,10 @@ def run_layer_grad_csv(config, run_dir):
     if viz_enabled and per_image_enabled:
         (viz_dir / "per_image" / "fn").mkdir(parents=True, exist_ok=True)
         (viz_dir / "per_image" / "non_fn").mkdir(parents=True, exist_ok=True)
+    if viz_enabled and layer_grad_ref_enabled and layer_grad_ref_save_running_log:
+        tb_log_dir = run_dir / "ref_maps" / "tensorboard"
+        tb_log_dir.mkdir(parents=True, exist_ok=True)
+        tb_writer = SummaryWriter(log_dir=str(tb_log_dir))
 
     csv_file_handle = None
     csv_writer = None
@@ -2736,19 +2742,11 @@ def run_layer_grad_csv(config, run_dir):
                             if _is_group_done(group_key):
                                 if st["stop_reason"] == "":
                                     st["stop_reason"] = "target_reached"
-                            if layer_grad_ref_enabled and layer_grad_ref_save_running_log:
-                                running_log_rows.append(
-                                    {
-                                        "step": int(len(running_log_rows) + 1),
-                                        "group": group_key,
-                                        "image_id": image_id,
-                                        "image_path": image_path,
-                                        "count": int(st["count"]),
-                                        "delta_l2": float(delta_l2),
-                                        "stable_steps": int(st["stable_steps"]),
-                                        "converged": bool(st["converged"]),
-                                    }
-                                )
+                            if layer_grad_ref_enabled and layer_grad_ref_save_running_log and tb_writer is not None:
+                                step_val = int(st["count"])
+                                tb_writer.add_scalar(f"layer_grad/{group_key}/delta_l2", float(delta_l2), step_val)
+                                tb_writer.add_scalar(f"layer_grad/{group_key}/stable_steps", int(st["stable_steps"]), step_val)
+                                tb_writer.add_scalar(f"layer_grad/{group_key}/converged", int(bool(st["converged"])), step_val)
                         if per_image_enabled:
                             per_image_seen[group_key] += 1
                             should_save = ((per_image_seen[group_key] - 1) % per_image_step == 0)
@@ -2763,6 +2761,10 @@ def run_layer_grad_csv(config, run_dir):
     finally:
         if csv_file_handle is not None:
             csv_file_handle.close()
+        if tb_writer is not None:
+            tb_writer.flush()
+            tb_writer.close()
+            tb_writer = None
 
     if viz_enabled:
         fn_mean_raw = np.zeros((0, 0), dtype=np.float32)
@@ -2813,8 +2815,6 @@ def run_layer_grad_csv(config, run_dir):
                 if layer_grad_ref_save_final_norm_map_csv:
                     _save_map_nodes_csv(fn_mean, ref_dir / "fn_norm_map.csv")
                     _save_map_nodes_csv(non_fn_mean, ref_dir / "non_fn_norm_map.csv")
-                if layer_grad_ref_save_running_log:
-                    pd.DataFrame(running_log_rows).to_csv(ref_dir / "running_log.csv", index=False)
         if gt_match_stats.get("unmatched", 0) > 0:
             print(f"[layer_grad] unmatched GT rows: {int(gt_match_stats['unmatched'])}")
         viz_summary = {
@@ -2846,6 +2846,7 @@ def run_layer_grad_csv(config, run_dir):
             },
             "reference_enabled": bool(reference_enabled),
             "reference_groups": active_reference_groups,
+            "tensorboard_log_dir": str(tb_log_dir) if tb_log_dir is not None else "",
             "save_final_raw_map": bool(viz_save_final_raw_map),
             "save_final_norm_map": bool(viz_save_final_norm_map),
             "save_profile": bool(viz_save_profile),
@@ -2853,7 +2854,6 @@ def run_layer_grad_csv(config, run_dir):
         }
         with open(viz_dir / "summary.json", "w", encoding="utf-8") as f:
             json.dump(viz_summary, f, ensure_ascii=False, indent=2)
-
     del detector
     if device.type == "cuda":
         torch.cuda.empty_cache()
@@ -2862,6 +2862,8 @@ def run_layer_grad_csv(config, run_dir):
         print(f"Saved results CSV: {output_csv}")
     if viz_enabled:
         print(f"Saved layer-grad maps: {viz_dir}")
+        if tb_log_dir is not None:
+            print(f"Saved layer-grad TensorBoard logs: {tb_log_dir}")
 
 
 def run_predict(config, run_dir):

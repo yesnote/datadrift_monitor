@@ -151,7 +151,7 @@ output:
           map: none
           vector: [L1, L2, min, max, mean, std]
       reference:
-        save_running_log: true
+        save_running_log: true # tensorboard event log
         save_final_raw_map_csv: true
         save_final_norm_map_csv: true # layer min-max normalization
     
