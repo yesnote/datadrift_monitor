@@ -104,6 +104,7 @@ def main():
             scalar_tag = "-".join(scalar_list) if scalar_list else "loss"
 
             ref_img_enabled = bool(ref_img_cfg.get("enabled", False))
+            ref_csv_enabled_flag = bool(ref_csv_cfg.get("enabled", False))
             ref_csv_enabled = any(
                 bool(ref_csv_progress_cfg.get(k, False))
                 for k in ("log", "raw_map", "norm_map")
@@ -111,7 +112,7 @@ def main():
                 bool(ref_csv_final_cfg.get(k, False))
                 for k in ("raw_map", "norm_map")
             )
-            save_reference = 1 if (ref_img_enabled or ref_csv_enabled) else 0
+            save_reference = 1 if (ref_img_enabled or (ref_csv_enabled_flag and ref_csv_enabled)) else 0
 
             target_tag = f"{grad_target}_{scalar_tag}_save_reference{save_reference}"
             if save_reference == 1:
