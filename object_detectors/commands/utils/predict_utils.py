@@ -282,11 +282,11 @@ def parse_output_config(output_cfg):
     save_csv_cfg = active.get("save_csv", {})
     save_image_cfg = as_dict(active.get("save_image", {}))
     save_csv = as_dict(save_csv_cfg)
-    layer_grad_data_cfg = as_dict(save_csv.get("data", {})) if uncertainty == "layer_grad" else save_csv
+    layer_grad_common_cfg = active if uncertainty == "layer_grad" else save_csv
 
-    save_csv_enabled = bool(layer_grad_data_cfg.get("enabled", bool(save_csv_cfg) if isinstance(save_csv_cfg, bool) else False))
-    unit = str(layer_grad_data_cfg.get("unit", "image")).lower()
-    pre_nms_cfg = as_dict(layer_grad_data_cfg.get("pre_nms", {}))
+    save_csv_enabled = bool(save_csv.get("enabled", bool(save_csv_cfg) if isinstance(save_csv_cfg, bool) else False))
+    unit = str(layer_grad_common_cfg.get("unit", "image")).lower()
+    pre_nms_cfg = as_dict(layer_grad_common_cfg.get("pre_nms", {}))
     pre_nms = bool(pre_nms_cfg.get("enabled", False))
     pre_nms_ratio = as_float(pre_nms_cfg.get("pre_nms_ratio", 1.0), 1.0)
 
@@ -300,7 +300,7 @@ def parse_output_config(output_cfg):
     full_softmax_cfg = save_csv if uncertainty == "full_softmax" else {}
     feature_cfg = save_csv if uncertainty == "feature" else {}
     feature_grad_cfg = save_csv if uncertainty == "feature_grad" else {}
-    layer_grad_cfg = layer_grad_data_cfg if uncertainty == "layer_grad" else {}
+    layer_grad_cfg = layer_grad_common_cfg if uncertainty == "layer_grad" else {}
 
     gt_iou_match_threshold = as_float(gt_cfg.get("iou_match_threshold", 0.5), 0.5)
     meta_detect_score_threshold = as_float(meta_detect_cfg.get("score_threshold", 0.0), 0.0)
@@ -342,7 +342,7 @@ def parse_output_config(output_cfg):
         feature_vector_reduction = normalize_vector_reduction(r.get("vector", ["L1", "L2", "min", "max", "mean", "std"]))
     elif uncertainty == "layer_grad":
         g = as_dict(layer_grad_cfg.get("gradient", {}))
-        r = as_dict(layer_grad_cfg.get("reduction", {}))
+        r = as_dict(save_csv.get("reduction", {}))
         layer_target_values = [v.lower() for v in normalize_to_list(g.get("scalar", ["loss"]))]
         if "loss" in layer_target_values:
             exp = []
@@ -402,7 +402,7 @@ def parse_output_config(output_cfg):
         if gt_dir:
             layer_grad_image_gt_csv = str((Path(gt_dir) / "fn.csv").as_posix())
 
-        g = as_dict(lg.get("gradient", {}))
+        g = as_dict(layer_grad_cfg.get("gradient", {}))
         layer_img_target_values = [v.lower() for v in normalize_to_list(g.get("scalar", ["loss"]))]
         if "loss" in layer_img_target_values:
             exp = []

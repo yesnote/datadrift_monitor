@@ -137,19 +137,19 @@ output:
         vector: [L1, L2, min, max, mean, std]
 
   layer_grad:
+    unit: image  # image | bbox
+    pre_nms:
+      enabled: false
+    gradient:
+      scalar: [loss]
+      layer: all_conv # all_conv | ["model.24.m.0", "model.24.m.1", "model.24.m.2"]
+      target: null_target # cand_target | null_target
+
     save_csv:
-      data:
-        enabled: false
-        unit: image  # image | bbox
-        pre_nms:
-          enabled: false
-        gradient:
-          scalar: [loss]
-          layer: ["model.24.m.0", "model.24.m.1", "model.24.m.2"] #  # all_conv | ["model.24.m.0", "model.24.m.1", "model.24.m.2"]
-          target: null_target # cand_target | null_target
-        reduction:
-          map: none
-          vector: [L1, L2, min, max, mean, std]
+      enabled: false
+      reduction:
+        map: none
+        vector: [L1, L2, min, max, mean, std]
       reference:
         save_running_log: true # tensorboard event log
         save_final_raw_map_csv: true
@@ -157,10 +157,6 @@ output:
     
     save_image:
       gt: object_detectors/runs/fn_detectors/04-08-2026_14;10_gt
-      gradient:
-        scalar: [loss]
-        layer: all_conv # all_conv | ["model.24.m.0", "model.24.m.1", "model.24.m.2"]
-        target: null_target # cand_target | null_target
       per_image:
         enabled: false
         step: 10
