@@ -87,12 +87,12 @@ output:
       vector_reduction: [L1, L2, min, max, mean, std]
 
   energy:
+    unit: image  # image | bbox
+    pre_nms:
+      enabled: false
+      ratio: 1.0
     save_csv:
       enabled: false
-      unit: image  # image | bbox
-      pre_nms:
-        enabled: false
-        ratio: 1.0
       vector_reduction: [L1, L2, min, max, mean, std]
 
   mc_dropout:
