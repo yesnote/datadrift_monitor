@@ -146,7 +146,7 @@ output:
         gradient:
           scalar: [loss]
           layer: ["model.24.m.0", "model.24.m.1", "model.24.m.2"]
-          target: null
+          target: null_target
         reduction:
           map: none
           vector: [L1, L2, min, max, mean, std]
@@ -161,7 +161,7 @@ output:
       gradient:
         scalar: [loss]
         layer: ["model.24.m.0", "model.24.m.1", "model.24.m.2"]
-        target: null
+        target: null_target
       save_final_raw_map: true
       save_final_norm_map: true # layer min-max normalization
       save_profile: true
