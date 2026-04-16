@@ -288,7 +288,7 @@ def parse_output_config(output_cfg):
     unit = str(layer_grad_common_cfg.get("unit", "image")).lower()
     pre_nms_cfg = as_dict(layer_grad_common_cfg.get("pre_nms", {}))
     pre_nms = bool(pre_nms_cfg.get("enabled", False))
-    pre_nms_ratio = as_float(pre_nms_cfg.get("pre_nms_ratio", 1.0), 1.0)
+    pre_nms_ratio = as_float(pre_nms_cfg.get("ratio", 1.0), 1.0)
 
     gt_cfg = save_csv if uncertainty == "gt" else {}
     score_cfg = save_csv if uncertainty == "score" else {}
