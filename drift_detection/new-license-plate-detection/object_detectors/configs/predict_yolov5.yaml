@@ -119,12 +119,13 @@ output:
       vector_reduction: [L1, L2, min, max, mean, std]
 
   feature:
+    unit: image  # image only
+    layer: ["model.24.m.0", "model.24.m.1", "model.24.m.2"]
     save_csv:
       enabled: false
-      unit: image  # image only
-      target_layer: ["model.24.m.0", "model.24.m.1", "model.24.m.2"]
-      map_reduction: none  # none | energy
-      vector_reduction: [L1, L2, min, max, mean, std]
+      reduction:
+        map: none  # none | energy
+        vector: [L1, L2, min, max, mean, std]
 
   feature_grad:
     save_csv:
