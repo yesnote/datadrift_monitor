@@ -973,6 +973,104 @@ def collect_bbox_gradients_per_target(
     return rows
 
 
+def collect_batch_bbox_gradients_per_target(
+    detector,
+    input_tensor,
+    target_values,
+    target_layers,
+    layer_buffer,
+):
+    detector.zero_grad(set_to_none=True)
+    layer_buffer.clear()
+
+    grad_input = input_tensor.detach().requires_grad_(True)
+    model_output = detector.model(grad_input, augment=False)
+    raw_prediction = model_output[0] if isinstance(model_output, (tuple, list)) else model_output
+    raw_logits = model_output[1] if isinstance(model_output, (tuple, list)) and len(model_output) > 1 else None
+
+    with torch.no_grad():
+        selected_preds, _selected_logits, _selected_objectness, selected_indices = detector.non_max_suppression(
+            raw_prediction.detach(),
+            raw_logits.detach() if raw_logits is not None else raw_logits,
+            detector.confidence,
+            detector.iou_thresh,
+            classes=None,
+            agnostic=detector.agnostic,
+            return_indices=True,
+        )
+
+    batch_size = int(input_tensor.shape[0])
+    rows_by_sample = [[] for _ in range(batch_size)]
+    iou_threshold = float(getattr(detector, "iou_thresh", 0.45))
+    jobs = []
+
+    for b in range(batch_size):
+        det = selected_preds[b] if selected_preds and b < len(selected_preds) else torch.zeros((0, 6), device=input_tensor.device)
+        raw_keep_indices = selected_indices[b] if selected_indices and b < len(selected_indices) else torch.zeros((0,), dtype=torch.long, device=input_tensor.device)
+        pred_img = raw_prediction[b]
+        logit_img = raw_logits[b] if raw_logits is not None else pred_img[:, 5:]
+        num_boxes = int(det.shape[0])
+
+        for bbox_idx in range(num_boxes):
+            raw_idx = int(raw_keep_indices[bbox_idx].detach().cpu().item())
+            cls_idx = int(det[bbox_idx, 5].detach().cpu().item()) if det.shape[1] > 5 else -1
+            row = {
+                "pred_idx": bbox_idx,
+                "raw_pred_idx": raw_idx,
+                "xmin": float(det[bbox_idx, 0].detach().cpu().item()),
+                "ymin": float(det[bbox_idx, 1].detach().cpu().item()),
+                "xmax": float(det[bbox_idx, 2].detach().cpu().item()),
+                "ymax": float(det[bbox_idx, 3].detach().cpu().item()),
+                "score": float(det[bbox_idx, 4].detach().cpu().item()) if det.shape[1] > 4 else 0.0,
+                "pred_class": detector.names[cls_idx] if detector.names is not None and cls_idx >= 0 else cls_idx,
+                "grad_stats": {},
+            }
+            row_idx = len(rows_by_sample[b])
+            rows_by_sample[b].append(row)
+
+            for target_value in target_values:
+                target_scalar = None
+                if raw_idx < pred_img.shape[0]:
+                    if target_value == "obj":
+                        target_scalar = pred_img[raw_idx, 4]
+                    elif target_value == "cls":
+                        target_scalar = logit_img[raw_idx].max()
+                    else:
+                        losses = build_pseudo_label_losses_for_candidates(
+                            pred_img=pred_img,
+                            raw_idx=raw_idx,
+                            iou_threshold=iou_threshold,
+                        )
+                        if losses is not None and target_value in losses:
+                            target_scalar = losses[target_value]
+
+                if target_scalar is None:
+                    for layer_name in target_layers:
+                        row["grad_stats"][f"{target_value}_{layer_name}"] = []
+                else:
+                    jobs.append((b, row_idx, target_value, target_scalar))
+
+    try:
+        for job_idx, (b, row_idx, target_value, target_scalar) in enumerate(jobs):
+            detector.zero_grad(set_to_none=True)
+            layer_buffer.clear()
+            target_scalar.backward(retain_graph=(job_idx < len(jobs) - 1))
+            layer_stats = list(layer_buffer.gradients["value"])
+            layer_stats.reverse()
+            row = rows_by_sample[b][row_idx]
+            for layer_idx, layer_name in enumerate(target_layers):
+                key = f"{target_value}_{layer_name}"
+                row["grad_stats"][key] = layer_stats[layer_idx] if layer_idx < len(layer_stats) else []
+    finally:
+        layer_buffer.clear()
+        detector.zero_grad(set_to_none=True)
+        if grad_input.grad is not None:
+            grad_input.grad = None
+        del grad_input, model_output, raw_prediction, raw_logits
+
+    return rows_by_sample
+
+
 def map_grad_tensor_to_numbers(v):
     if v is None:
         return {"1-norm": 0.0, "2-norm": 0.0, "min": 0.0, "max": 0.0, "mean": 0.0, "std": 0.0}
