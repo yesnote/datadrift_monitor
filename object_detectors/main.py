@@ -79,6 +79,7 @@ def main():
         parsed_output = parse_output_config(config.get("output", {}))
         uncertainty = str(parsed_output.get("uncertainty", ""))
         target_tag = ""
+        run_base_subdir = None
         save_csv_cfg = config.get("output", {}).get("save_csv", {})
         if uncertainty == "feature_grad":
             raw_vals = save_csv_cfg.get("feature_grad", {}).get("target_value", [])
@@ -121,6 +122,8 @@ def main():
                 for k in ("raw_map", "norm_map")
             )
             save_reference = 1 if (ref_img_enabled or ref_csv_enabled) else 0
+            if save_reference == 1:
+                run_base_subdir = "references"
 
             target_tag = f"{grad_target}_{scalar_tag}_save_reference{save_reference}"
             if save_reference == 1:
@@ -145,6 +148,7 @@ def main():
                 uncertainty=parsed_output.get("uncertainty"),
                 unit=parsed_output.get("unit"),
                 target_value=target_tag,
+                base_subdir=run_base_subdir,
             ).resolve()
         run_dir.mkdir(parents=True, exist_ok=True)
         save_used_config(config_path, run_dir)
