@@ -23,7 +23,7 @@ from commands.utils.predict_utils import (
     assign_tp_to_predictions,
     build_detector,
     enable_forced_mc_dropout_on_yolov5_head,
-    collect_batch_bbox_gradients_per_target,
+    collect_bbox_gradients_per_target,
     collect_bbox_layer_grads_per_target,
     collect_batch_feature_gradients_per_target,
     collect_image_features_per_layer,
@@ -649,20 +649,19 @@ def run_feature_grad_csv(config, run_dir):
                         pre_nms=pre_nms,
                         pre_nms_ratio=pre_nms_ratio,
                     )
-                else:
-                    batch_bbox_rows = collect_batch_bbox_gradients_per_target(
-                        detector=detector,
-                        input_tensor=infer_batch,
-                        target_values=target_values,
-                        target_layers=target_layers,
-                        layer_buffer=layer_buffer,
-                    )
                 for sample_idx in range(len(image_list)):
                     target = targets[sample_idx]
                     image_id = int(target["image_id"][0].item())
                     image_path = target["path"]
                     if unit == "bbox":
-                        bbox_rows = batch_bbox_rows[sample_idx]
+                        infer_tensor = infer_batch[sample_idx: sample_idx + 1]
+                        bbox_rows = collect_bbox_gradients_per_target(
+                            detector=detector,
+                            input_tensor=infer_tensor,
+                            target_values=target_values,
+                            target_layers=target_layers,
+                            layer_buffer=layer_buffer,
+                        )
                         for bbox_row in bbox_rows:
                             row = {
                                 "image_id": image_id,
@@ -689,8 +688,6 @@ def run_feature_grad_csv(config, run_dir):
                         del grad_stats
                 if batch_grad_stats is not None:
                     del batch_grad_stats
-                if unit == "bbox":
-                    del batch_bbox_rows
                 del infer_batch
         finally:
             if layer_buffer is not None:
