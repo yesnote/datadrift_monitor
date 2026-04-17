@@ -252,13 +252,22 @@ def load_training_dataframe(dataset_cfg: dict[str, Any]) -> tuple[pd.DataFrame, 
         if not gt_csv.is_file():
             raise FileNotFoundError(f"tp.csv not found: {gt_csv}")
         gt_df = pd.read_csv(gt_csv)
-        if {"image_id", "image_path", "pred_idx", label_col}.issubset(gt_df.columns):
+        pred_key_set = {"image_id", "image_path", "pred_idx", label_col}
+        bbox_key_set = {"image_id", "image_path", "xmin", "ymin", "xmax", "ymax", label_col}
+        has_pred_keys = pred_key_set.issubset(gt_df.columns)
+        has_bbox_keys = bbox_key_set.issubset(gt_df.columns)
+        if has_pred_keys:
             base_merge_keys = ["image_id", "image_path", "pred_idx"]
-        elif {"image_id", "image_path", "xmin", "ymin", "xmax", "ymax", label_col}.issubset(gt_df.columns):
+        elif has_bbox_keys:
             base_merge_keys = ["image_id", "image_path", "xmin", "ymin", "xmax", "ymax"]
         else:
             raise ValueError("tp.csv missing required join keys.")
-        gt_df = gt_df[list(dict.fromkeys(base_merge_keys + [label_col]))]
+        keep_cols = list(base_merge_keys) + [label_col]
+        if has_bbox_keys:
+            keep_cols.extend(["image_id", "image_path", "xmin", "ymin", "xmax", "ymax"])
+        if has_pred_keys:
+            keep_cols.extend(["image_id", "image_path", "pred_idx"])
+        gt_df = gt_df[list(dict.fromkeys(keep_cols))]
     else:
         raise ValueError(
             "Unsupported model group from dataset roots: "
@@ -285,32 +294,24 @@ def load_training_dataframe(dataset_cfg: dict[str, Any]) -> tuple[pd.DataFrame, 
             merge_keys = ["image_id", "image_path"]
             meta_columns = {"image_id", "image_path", "num_preds", label_col}
         else:
-            if {"image_id", "image_path", "pred_idx"}.issubset(feature_df.columns) and set(base_merge_keys) == {
-                "image_id",
-                "image_path",
-                "pred_idx",
-            }:
-                merge_keys = ["image_id", "image_path", "pred_idx"]
-            elif {
-                "image_id",
-                "image_path",
-                "xmin",
-                "ymin",
-                "xmax",
-                "ymax",
-            }.issubset(feature_df.columns) and set(base_merge_keys) == {
-                "image_id",
-                "image_path",
-                "xmin",
-                "ymin",
-                "xmax",
-                "ymax",
-            }:
-                merge_keys = ["image_id", "image_path", "xmin", "ymin", "xmax", "ymax"]
+            pred_merge_keys = ["image_id", "image_path", "pred_idx"]
+            bbox_merge_keys = ["image_id", "image_path", "xmin", "ymin", "xmax", "ymax"]
+            has_feature_pred = set(pred_merge_keys).issubset(feature_df.columns)
+            has_feature_bbox = set(bbox_merge_keys).issubset(feature_df.columns)
+            has_merged_bbox = set(bbox_merge_keys).issubset(merged.columns)
+            has_merged_pred = set(pred_merge_keys).issubset(merged.columns)
+            prefer_pred = set(base_merge_keys) == set(pred_merge_keys)
+
+            if prefer_pred and has_feature_pred and has_merged_pred:
+                merge_keys = pred_merge_keys
+            elif has_feature_bbox and has_merged_bbox:
+                merge_keys = bbox_merge_keys
+            elif has_feature_pred and has_merged_pred:
+                merge_keys = pred_merge_keys
             else:
                 raise ValueError(
-                    f"Cannot match {input_csv_name} to tp.csv using keys {base_merge_keys}. "
-                    "All inputs must use the same tp key type."
+                    f"Cannot match {input_csv_name} to tp.csv using keys available in current merged dataframe. "
+                    f"base={base_merge_keys}, feature_has_pred={has_feature_pred}, feature_has_bbox={has_feature_bbox}."
                 )
             meta_columns = {
                 "image_id",
@@ -335,8 +336,29 @@ def load_training_dataframe(dataset_cfg: dict[str, Any]) -> tuple[pd.DataFrame, 
         suffix_target = f"_{input_target}" if input_target else ""
         prefix = f"{input_cue}{suffix_target}__"
         rename_map = {c: f"{prefix}{c}" for c in feature_columns}
-        feature_df = feature_df[list(dict.fromkeys(merge_keys + feature_columns))].rename(columns=rename_map)
-        merged = merged.merge(feature_df, on=merge_keys, how="inner")
+        tp_candidate_keys = [
+            "image_id",
+            "image_path",
+            "pred_idx",
+            "xmin",
+            "ymin",
+            "xmax",
+            "ymax",
+        ]
+        candidate_present = [c for c in tp_candidate_keys if c in feature_df.columns]
+        feature_df = feature_df[list(dict.fromkeys(candidate_present + feature_columns))].rename(columns=rename_map)
+
+        merged_next = merged.merge(feature_df, on=merge_keys, how="inner")
+        if (
+            input_group == "tp_classifiers"
+            and merged_next.empty
+            and merge_keys == ["image_id", "image_path", "pred_idx"]
+            and set(["image_id", "image_path", "xmin", "ymin", "xmax", "ymax"]).issubset(feature_df.columns)
+            and set(["image_id", "image_path", "xmin", "ymin", "xmax", "ymax"]).issubset(merged.columns)
+        ):
+            fallback_keys = ["image_id", "image_path", "xmin", "ymin", "xmax", "ymax"]
+            merged_next = merged.merge(feature_df, on=fallback_keys, how="inner")
+        merged = merged_next
         prefixed_feature_columns.extend(rename_map.values())
         input_uncertainties.append(input_cue)
         input_targets.append(input_target)
