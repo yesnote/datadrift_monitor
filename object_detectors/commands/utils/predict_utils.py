@@ -1483,7 +1483,6 @@ def collect_bbox_layer_grads_per_target(
             param.requires_grad_(req_grad)
         detector.zero_grad(set_to_none=True)
 
-    del selected_preds, selected_indices, det, raw_keep_indices, raw_anchor_priors
     return rows
 
 
