@@ -6,13 +6,15 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 
-def create_run_dir(uncertainty=None, unit=None, target_value=None):
+def create_run_dir(uncertainty=None, unit=None, target_value=None, base_subdir=None):
     run_name = datetime.now().strftime("%m-%d-%Y_%H;%M")
     uncertainty_name = str(uncertainty or "predict").lower()
     unit_name = str(unit or "").lower()
     target_name = str(target_value or "").strip().lower()
 
-    if unit_name == "image":
+    if base_subdir:
+        base_dir = PROJECT_ROOT / "runs" / str(base_subdir)
+    elif unit_name == "image":
         base_dir = PROJECT_ROOT / "runs" / "fn_detectors"
     elif unit_name == "bbox":
         base_dir = PROJECT_ROOT / "runs" / "tp_classifiers"
