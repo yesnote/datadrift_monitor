@@ -711,6 +711,167 @@ def collect_gradients_per_target(
         detector.zero_grad(set_to_none=True)
         layer_buffer.clear()
     return grad_stats
+
+
+def collect_batch_feature_gradients_per_target(
+    detector,
+    input_tensor,
+    target_values,
+    target_layers,
+    map_reduction="energy",
+    vector_reduction=None,
+    pre_nms=True,
+    pre_nms_ratio=1.0,
+):
+    if not hasattr(torch, "func") or not hasattr(torch.func, "vmap") or not hasattr(torch.func, "grad"):
+        raise RuntimeError(
+            "feature_grad requires torch.func.vmap and torch.func.grad. "
+            "Please use a PyTorch version that supports torch.func."
+        )
+
+    modules = [resolve_module_by_name(detector.model, layer_name) for layer_name in target_layers]
+    collected = [None for _ in target_layers]
+    handles = []
+
+    batch_size = int(input_tensor.shape[0])
+    all_grad_stats = []
+    for _ in range(batch_size):
+        row = {}
+        for target_value in target_values:
+            for layer_name in target_layers:
+                row[f"{target_value}_{layer_name}"] = zero_grad_numbers() if vector_reduction else []
+        all_grad_stats.append(row)
+
+    def _make_hook(layer_idx):
+        def _hook(_module, _inputs, output):
+            out = output[0] if isinstance(output, (tuple, list)) else output
+            collected[layer_idx] = out
+        return _hook
+
+    try:
+        for i, m in enumerate(modules):
+            handles.append(m.register_forward_hook(_make_hook(i)))
+
+        detector.zero_grad(set_to_none=True)
+        model_output = detector.model(input_tensor.detach(), augment=False)
+        raw_prediction = model_output[0] if isinstance(model_output, (tuple, list)) else model_output
+        raw_logits = model_output[1] if isinstance(model_output, (tuple, list)) and len(model_output) > 1 else None
+
+        if any(v is None for v in collected):
+            missing = [target_layers[i] for i, v in enumerate(collected) if v is None]
+            raise RuntimeError(f"feature_grad forward hooks did not capture outputs for layers: {missing}")
+
+        with torch.no_grad():
+            _selected_preds, _selected_logits, _selected_objectness, selected_indices = detector.non_max_suppression(
+                raw_prediction.detach(),
+                raw_logits.detach() if raw_logits is not None else raw_logits,
+                detector.confidence,
+                detector.iou_thresh,
+                classes=None,
+                agnostic=detector.agnostic,
+                return_indices=True,
+            )
+        if selected_indices is None:
+            selected_indices = []
+        raw_keep_indices_by_sample = []
+        for b in range(batch_size):
+            if b < len(selected_indices) and selected_indices[b] is not None:
+                raw_keep_indices_by_sample.append(selected_indices[b])
+            else:
+                raw_keep_indices_by_sample.append(
+                    torch.zeros((0,), dtype=torch.long, device=input_tensor.device)
+                )
+
+        iou_threshold = float(getattr(detector, "iou_thresh", 0.45))
+        for target_idx, target_value in enumerate(target_values):
+            scalar_list = []
+            valid_mask = []
+            for b in range(batch_size):
+                pred_img = raw_prediction[b]
+                logit_img = raw_logits[b] if raw_logits is not None else pred_img[:, 5:]
+                target_scalar = None
+
+                if target_value in {"obj", "cls"}:
+                    if pre_nms:
+                        keep_idx = get_pre_nms_keep_indices(pred_img, logit_img, pre_nms_ratio=pre_nms_ratio)
+                        if int(keep_idx.shape[0]) > 0:
+                            if target_value == "obj":
+                                target_scalar = pred_img[keep_idx, 4].sum()
+                            else:
+                                logits_for_cls = logit_img if logit_img is not None else pred_img[:, 5:]
+                                if logits_for_cls is not None and logits_for_cls.numel() > 0:
+                                    target_scalar = logits_for_cls[keep_idx].max(dim=1).values.sum()
+                    else:
+                        raw_keep_indices = raw_keep_indices_by_sample[b]
+                        if int(raw_keep_indices.shape[0]) > 0:
+                            if target_value == "obj":
+                                target_scalar = pred_img[raw_keep_indices, 4].sum()
+                            else:
+                                if logit_img is not None and logit_img.numel() > 0:
+                                    target_scalar = logit_img[raw_keep_indices].max(dim=1).values.sum()
+                else:
+                    raw_keep_indices = raw_keep_indices_by_sample[b]
+                    loss_terms = []
+                    for bbox_idx in range(int(raw_keep_indices.shape[0])):
+                        raw_idx = int(raw_keep_indices[bbox_idx].detach().cpu().item())
+                        losses = build_pseudo_label_losses_for_candidates(
+                            pred_img=pred_img,
+                            raw_idx=raw_idx,
+                            iou_threshold=iou_threshold,
+                        )
+                        if losses is not None and target_value in losses:
+                            loss_terms.append(losses[target_value])
+                    if loss_terms:
+                        target_scalar = torch.stack(loss_terms).mean()
+
+                if target_scalar is None:
+                    target_scalar = pred_img.reshape(-1).sum() * 0.0
+                    valid_mask.append(False)
+                else:
+                    valid_mask.append(True)
+                scalar_list.append(target_scalar)
+
+            if not any(valid_mask):
+                continue
+
+            scalar_vec = torch.stack(scalar_list, dim=0)
+            eye = torch.eye(batch_size, dtype=scalar_vec.dtype, device=scalar_vec.device)
+            retain_flag = (target_idx < len(target_values) - 1)
+
+            def _single_vjp(grad_output):
+                return torch.autograd.grad(
+                    outputs=scalar_vec,
+                    inputs=collected,
+                    grad_outputs=grad_output,
+                    retain_graph=retain_flag,
+                    allow_unused=True,
+                )
+
+            batched_grads = torch.func.vmap(_single_vjp)(eye)
+            for b in range(batch_size):
+                if not valid_mask[b]:
+                    continue
+                row = all_grad_stats[b]
+                for layer_idx, layer_name in enumerate(target_layers):
+                    key = f"{target_value}_{layer_name}"
+                    grad_tensor = batched_grads[layer_idx][b]
+                    if grad_tensor is None:
+                        row[key] = zero_grad_numbers() if vector_reduction else []
+                    else:
+                        row[key] = get_feature_grad_stats(
+                            grad_tensor,
+                            map_reduction=map_reduction,
+                            vector_reduction=vector_reduction,
+                        )
+            del batched_grads, scalar_vec, eye
+
+        del model_output, raw_prediction, raw_logits
+    finally:
+        for h in handles:
+            h.remove()
+        detector.zero_grad(set_to_none=True)
+
+    return all_grad_stats
 def collect_bbox_gradients_per_target(
     detector,
     input_tensor,

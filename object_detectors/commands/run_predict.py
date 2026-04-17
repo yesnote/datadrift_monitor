@@ -25,8 +25,8 @@ from commands.utils.predict_utils import (
     enable_forced_mc_dropout_on_yolov5_head,
     collect_bbox_gradients_per_target,
     collect_bbox_layer_grads_per_target,
+    collect_batch_feature_gradients_per_target,
     collect_image_features_per_layer,
-    collect_gradients_per_target,
     collect_batch_image_layer_grads_per_target,
     create_layer_grad_buffer,
     draw_predictions,
@@ -619,12 +619,14 @@ def run_feature_grad_csv(config, run_dir):
         raise ValueError("Loaded 0 images. Check dataset root/image_dir/split configuration in YAML.")
 
     detector, device = build_detector(config)
-    layer_buffer = create_layer_grad_buffer(
-        detector.model,
-        target_layers,
-        map_reduction=feature_map_reduction,
-        vector_reduction=feature_vector_reduction,
-    )
+    layer_buffer = None
+    if unit == "bbox":
+        layer_buffer = create_layer_grad_buffer(
+            detector.model,
+            target_layers,
+            map_reduction=feature_map_reduction,
+            vector_reduction=feature_vector_reduction,
+        )
 
     with open(output_csv, "w", newline="", encoding="utf-8") as output_file:
         writer = csv.DictWriter(output_file, fieldnames=fieldnames)
@@ -635,6 +637,18 @@ def run_feature_grad_csv(config, run_dir):
             ):
                 image_list = _as_image_list(images)
                 infer_batch, _ratios, _pads, _resized_chws = _prepare_infer_batch(detector, image_list, device, auto=False)
+                batch_grad_stats = None
+                if unit != "bbox":
+                    batch_grad_stats = collect_batch_feature_gradients_per_target(
+                        detector=detector,
+                        input_tensor=infer_batch,
+                        target_values=target_values,
+                        target_layers=target_layers,
+                        map_reduction=feature_map_reduction,
+                        vector_reduction=feature_vector_reduction,
+                        pre_nms=pre_nms,
+                        pre_nms_ratio=pre_nms_ratio,
+                    )
                 for sample_idx in range(len(image_list)):
                     target = targets[sample_idx]
                     image_id = int(target["image_id"][0].item())
@@ -667,24 +681,18 @@ def run_feature_grad_csv(config, run_dir):
                             writer.writerow(row)
                         del bbox_rows
                     else:
-                        grad_stats = collect_gradients_per_target(
-                            detector=detector,
-                            input_tensor=infer_tensor,
-                            target_values=target_values,
-                            target_layers=target_layers,
-                            layer_buffer=layer_buffer,
-                            pre_nms=pre_nms,
-                            pre_nms_ratio=pre_nms_ratio,
-                        )
-
+                        grad_stats = batch_grad_stats[sample_idx]
                         row = {"image_id": image_id, "image_path": image_path}
                         for grad_key, grad_value in grad_stats.items():
                             row[grad_key] = json.dumps(grad_value, separators=(",", ":"))
                         writer.writerow(row)
                         del grad_stats
+                if batch_grad_stats is not None:
+                    del batch_grad_stats
                 del infer_batch
         finally:
-            layer_buffer.remove()
+            if layer_buffer is not None:
+                layer_buffer.remove()
 
     del detector
     if device.type == "cuda":
