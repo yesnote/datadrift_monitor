@@ -125,7 +125,7 @@ def main():
             if save_reference == 1:
                 run_base_subdir = "references"
 
-            target_tag = f"{grad_target}_{scalar_tag}_save_reference{save_reference}"
+            target_tag = f"{grad_target}_{scalar_tag}"
             if save_reference == 1:
                 used_raw = config.get("dataset", {}).get("used_dataset", [])
                 if isinstance(used_raw, str):
