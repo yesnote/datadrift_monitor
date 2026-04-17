@@ -39,7 +39,7 @@ dataset:
     # seed: 1234  # optional
 
 dataloader:
-  batch_size: 4
+  batch_size: 6
   num_workers: 4
   pin_memory: false
   shuffle_train: false
