@@ -749,11 +749,6 @@ def run_feature_csv(config, run_dir):
         raise ValueError("Loaded 0 images. Check dataset root/image_dir/split configuration in YAML.")
 
     detector, device = build_detector(config)
-    nms_kwargs = _resolve_detector_nms_kwargs(detector)
-    num_classes_hint = len(detector.names) if detector.names is not None else 80
-    num_classes_hint = len(detector.names) if detector.names is not None else 80
-    nms_kwargs = _resolve_detector_nms_kwargs(detector)
-    nms_kwargs = _resolve_detector_nms_kwargs(detector)
 
     with open(output_csv, "w", newline="", encoding="utf-8") as output_file:
         writer = csv.DictWriter(output_file, fieldnames=fieldnames)
@@ -1198,7 +1193,7 @@ def run_score_csv(config, run_dir):
                         if isinstance(model_output, (tuple, list)) and len(model_output) > 1
                         else None
                     )
-                    nms_logits = _resolve_nms_logits(raw_prediction, raw_logits, num_classes_hint=num_classes_hint)
+                    nms_logits = _resolve_nms_logits(raw_prediction, raw_logits)
                     selected_preds, selected_indices = detector.non_max_suppression(
                         prediction=raw_prediction,
                         logits=nms_logits,
@@ -1359,7 +1354,7 @@ def run_full_softmax_csv(config, run_dir):
                         if isinstance(model_output, (tuple, list)) and len(model_output) > 1
                         else None
                     )
-                    nms_logits = _resolve_nms_logits(raw_prediction, raw_logits, num_classes_hint=num_classes)
+                    nms_logits = _resolve_nms_logits(raw_prediction, raw_logits)
                     selected_preds, selected_indices = detector.non_max_suppression(
                         prediction=raw_prediction,
                         logits=nms_logits,
@@ -1561,7 +1556,7 @@ def run_energy_csv(config, run_dir):
                         if isinstance(model_output, (tuple, list)) and len(model_output) > 1
                         else None
                     )
-                    nms_logits = _resolve_nms_logits(raw_prediction, raw_logits, num_classes_hint=num_classes)
+                    nms_logits = _resolve_nms_logits(raw_prediction, raw_logits)
                     selected_preds, selected_indices = detector.non_max_suppression(
                         prediction=raw_prediction,
                         logits=nms_logits,
@@ -1791,7 +1786,7 @@ def run_entropy_csv(config, run_dir):
                         if isinstance(model_output, (tuple, list)) and len(model_output) > 1
                         else None
                     )
-                    nms_logits = _resolve_nms_logits(raw_prediction, raw_logits, num_classes_hint=num_classes)
+                    nms_logits = _resolve_nms_logits(raw_prediction, raw_logits)
                     selected_preds, selected_indices = detector.non_max_suppression(
                         prediction=raw_prediction,
                         logits=nms_logits,
