@@ -95,6 +95,18 @@ def _resolve_detector_nms_kwargs(detector):
     }
 
 
+def _resolve_nms_logits(raw_prediction, raw_logits, num_classes_hint=80):
+    if raw_logits is not None:
+        return raw_logits
+    if raw_prediction is None:
+        return None
+    if raw_prediction.ndim == 3 and raw_prediction.shape[2] > 5:
+        return raw_prediction[:, :, 5:]
+    b = int(raw_prediction.shape[0]) if raw_prediction.ndim >= 1 else 0
+    n = int(raw_prediction.shape[1]) if raw_prediction.ndim >= 2 else 0
+    return torch.zeros((b, n, int(num_classes_hint)), dtype=raw_prediction.dtype, device=raw_prediction.device)
+
+
 def _resolve_gt_class_names(target, catid_to_name):
     gt_names = target.get("gt_class_names")
     if gt_names is not None:
@@ -738,6 +750,7 @@ def run_feature_csv(config, run_dir):
 
     detector, device = build_detector(config)
     nms_kwargs = _resolve_detector_nms_kwargs(detector)
+    num_classes_hint = len(detector.names) if detector.names is not None else 80
     nms_kwargs = _resolve_detector_nms_kwargs(detector)
     nms_kwargs = _resolve_detector_nms_kwargs(detector)
 
@@ -1172,14 +1185,22 @@ def run_score_csv(config, run_dir):
             detector.zero_grad(set_to_none=True)
             infer_batch, _ratios, _pads, _resized_chws = _prepare_infer_batch(detector, image_list, device, auto=False)
             raw_prediction = None
+            raw_logits = None
             selected_preds = None
             selected_indices = None
             with torch.no_grad():
                 if unit == "bbox":
                     model_output = detector.model(infer_batch, augment=False)
                     raw_prediction = model_output[0] if isinstance(model_output, (tuple, list)) else model_output
+                    raw_logits = (
+                        model_output[1]
+                        if isinstance(model_output, (tuple, list)) and len(model_output) > 1
+                        else None
+                    )
+                    nms_logits = _resolve_nms_logits(raw_prediction, raw_logits, num_classes_hint=num_classes_hint)
                     selected_preds, selected_indices = detector.non_max_suppression(
                         prediction=raw_prediction,
+                        logits=nms_logits,
                         conf_thres=nms_kwargs["conf_thres"],
                         iou_thres=nms_kwargs["iou_thres"],
                         classes=nms_kwargs["classes"],
@@ -1260,7 +1281,7 @@ def run_score_csv(config, run_dir):
                         row[metric_name] = float(stat_all[metric_name])
                     writer.writerow(row)
             if unit == "bbox":
-                del infer_batch, raw_prediction, selected_preds, selected_indices
+                del infer_batch, raw_prediction, raw_logits, selected_preds, selected_indices
             else:
                 del infer_batch, preds, _logits, _objectness, _features, raw_prediction
 
@@ -1337,8 +1358,10 @@ def run_full_softmax_csv(config, run_dir):
                         if isinstance(model_output, (tuple, list)) and len(model_output) > 1
                         else None
                     )
+                    nms_logits = _resolve_nms_logits(raw_prediction, raw_logits, num_classes_hint=num_classes)
                     selected_preds, selected_indices = detector.non_max_suppression(
                         prediction=raw_prediction,
+                        logits=nms_logits,
                         conf_thres=nms_kwargs["conf_thres"],
                         iou_thres=nms_kwargs["iou_thres"],
                         classes=nms_kwargs["classes"],
@@ -1537,8 +1560,10 @@ def run_energy_csv(config, run_dir):
                         if isinstance(model_output, (tuple, list)) and len(model_output) > 1
                         else None
                     )
+                    nms_logits = _resolve_nms_logits(raw_prediction, raw_logits, num_classes_hint=num_classes)
                     selected_preds, selected_indices = detector.non_max_suppression(
                         prediction=raw_prediction,
+                        logits=nms_logits,
                         conf_thres=nms_kwargs["conf_thres"],
                         iou_thres=nms_kwargs["iou_thres"],
                         classes=nms_kwargs["classes"],
@@ -1765,8 +1790,10 @@ def run_entropy_csv(config, run_dir):
                         if isinstance(model_output, (tuple, list)) and len(model_output) > 1
                         else None
                     )
+                    nms_logits = _resolve_nms_logits(raw_prediction, raw_logits, num_classes_hint=num_classes)
                     selected_preds, selected_indices = detector.non_max_suppression(
                         prediction=raw_prediction,
+                        logits=nms_logits,
                         conf_thres=nms_kwargs["conf_thres"],
                         iou_thres=nms_kwargs["iou_thres"],
                         classes=nms_kwargs["classes"],
