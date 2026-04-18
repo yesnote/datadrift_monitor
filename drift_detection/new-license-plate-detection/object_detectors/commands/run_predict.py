@@ -780,6 +780,7 @@ def run_tp_csv(config, run_dir):
         "image_id",
         "image_path",
         "pred_idx",
+        "raw_pred_idx",
         "xmin",
         "ymin",
         "xmax",
@@ -808,16 +809,35 @@ def run_tp_csv(config, run_dir):
             detector.zero_grad(set_to_none=True)
             infer_batch, ratios, pads, _resized_chws = _prepare_infer_batch(detector, image_list, device, auto=False)
             with torch.no_grad():
-                preds, _logits, _objectness, _features = detector(infer_batch)
+                model_output = detector.model(infer_batch, augment=False)
+                raw_prediction = model_output[0] if isinstance(model_output, (tuple, list)) else model_output
+                raw_logits = model_output[1] if isinstance(model_output, (tuple, list)) and len(model_output) > 1 else None
+                selected_preds, _selected_logits, _selected_objectness, selected_indices = detector.non_max_suppression(
+                    raw_prediction,
+                    raw_logits,
+                    detector.confidence,
+                    detector.iou_thresh,
+                    classes=None,
+                    agnostic=detector.agnostic,
+                    return_indices=True,
+                )
 
             for sample_idx in range(len(image_list)):
                 target = targets[sample_idx]
                 image_id = int(target["image_id"][0].item())
                 image_path = target["path"]
 
-                pred_boxes = preds[0][sample_idx]
-                pred_class_names = preds[2][sample_idx]
-                pred_scores = preds[3][sample_idx]
+                det_b = selected_preds[sample_idx] if selected_preds and sample_idx < len(selected_preds) else torch.zeros((0, 6), device=device)
+                raw_keep_b = selected_indices[sample_idx] if selected_indices and sample_idx < len(selected_indices) else torch.zeros((0,), dtype=torch.long, device=device)
+                pred_boxes_t = det_b[:, :4]
+                pred_scores_t = det_b[:, 4] if det_b.shape[1] > 4 else torch.zeros((det_b.shape[0],), device=device)
+                pred_cls_ids = det_b[:, 5].long() if det_b.shape[1] > 5 else torch.zeros((det_b.shape[0],), dtype=torch.long, device=device)
+                pred_boxes = pred_boxes_t.detach().cpu().tolist()
+                pred_scores = pred_scores_t.detach().cpu().tolist()
+                pred_class_names = [
+                    detector.names[int(c.item())] if detector.names is not None else int(c.item())
+                    for c in pred_cls_ids
+                ]
                 gt_boxes_tensor = target["boxes"]
                 gt_boxes = map_boxes_to_letterbox(gt_boxes_tensor, ratios[sample_idx], pads[sample_idx])
                 gt_class_names = _resolve_gt_class_names(target, catid_to_name)
@@ -834,11 +854,13 @@ def run_tp_csv(config, run_dir):
                 for pred_idx, (box, score, pred_class) in enumerate(
                     zip(pred_boxes, pred_scores, pred_class_names)
                 ):
+                    raw_pred_idx = int(raw_keep_b[pred_idx].detach().cpu().item()) if pred_idx < int(raw_keep_b.shape[0]) else pred_idx
                     writer.writerow(
                         {
                             "image_id": image_id,
                             "image_path": image_path,
                             "pred_idx": pred_idx,
+                            "raw_pred_idx": raw_pred_idx,
                             "xmin": float(box[0]),
                             "ymin": float(box[1]),
                             "xmax": float(box[2]),
@@ -849,7 +871,7 @@ def run_tp_csv(config, run_dir):
                             "tp": int(tp_flags[pred_idx]),
                         }
                     )
-            del infer_batch, preds, _logits, _objectness, _features
+            del infer_batch, model_output, raw_prediction, raw_logits, selected_preds, selected_indices
 
     del detector
     if device.type == "cuda":
@@ -910,7 +932,7 @@ def run_meta_detect_csv(config, run_dir):
     ]
     if unit == "bbox":
         fieldnames = [
-            "image_id", "image_path", "pred_idx", "xmin", "ymin", "xmax", "ymax", "score", "pred_class",
+            "image_id", "image_path", "pred_idx", "raw_pred_idx", "xmin", "ymin", "xmax", "ymax", "score", "pred_class",
             *meta_feature_names,
         ]
     else:
@@ -934,19 +956,33 @@ def run_meta_detect_csv(config, run_dir):
             image_list = _as_image_list(images)
             infer_batch, _ratios, _pads, _resized_chws = _prepare_infer_batch(detector, image_list, device, auto=False)
             with torch.no_grad():
-                preds, _logits, _objectness, _features = detector(infer_batch)
                 model_output = detector.model(infer_batch, augment=False)
                 raw_prediction = model_output[0] if isinstance(model_output, (tuple, list)) else model_output
+                raw_logits = model_output[1] if isinstance(model_output, (tuple, list)) and len(model_output) > 1 else None
+                selected_preds, _selected_logits, _selected_objectness, selected_indices = detector.non_max_suppression(
+                    raw_prediction,
+                    raw_logits,
+                    detector.confidence,
+                    detector.iou_thresh,
+                    classes=None,
+                    agnostic=detector.agnostic,
+                    return_indices=True,
+                )
 
             for sample_idx in range(len(image_list)):
                 target = targets[sample_idx]
                 image_id = int(target["image_id"][0].item())
                 image_path = target["path"]
 
-                pred_boxes = preds[0][sample_idx]
-                pred_scores = preds[3][sample_idx]
-                pred_class_names = preds[2][sample_idx]
-                pred_class_ids = preds[1][sample_idx] if len(preds) > 1 else []
+                det_b = selected_preds[sample_idx] if selected_preds and sample_idx < len(selected_preds) else torch.zeros((0, 6), device=device)
+                raw_keep_b = selected_indices[sample_idx] if selected_indices and sample_idx < len(selected_indices) else torch.zeros((0,), dtype=torch.long, device=device)
+                pred_boxes = det_b[:, :4].detach().cpu().tolist()
+                pred_scores = det_b[:, 4].detach().cpu().tolist() if det_b.shape[1] > 4 else []
+                pred_class_ids = det_b[:, 5].long().detach().cpu().tolist() if det_b.shape[1] > 5 else []
+                pred_class_names = [
+                    detector.names[int(cls_id)] if detector.names is not None else int(cls_id)
+                    for cls_id in pred_class_ids
+                ]
 
                 raw = raw_prediction[sample_idx].detach().float()
                 if raw.numel() == 0:
@@ -964,6 +1000,7 @@ def run_meta_detect_csv(config, run_dir):
                 image_feature_rows = []
                 for pred_idx, (box, score, pred_class_name) in enumerate(zip(pred_boxes, pred_scores, pred_class_names)):
                     fbox = torch.tensor(box, dtype=torch.float32, device=device)
+                    raw_pred_idx = int(raw_keep_b[pred_idx].detach().cpu().item()) if pred_idx < int(raw_keep_b.shape[0]) else pred_idx
                     cls_idx = int(pred_class_ids[pred_idx]) if pred_idx < len(pred_class_ids) else -1
                     ious = _iou_1vN(fbox, raw_xyxy)
                     class_mask = (raw_cls_idx == cls_idx) if cls_idx >= 0 else torch.ones_like(raw_score, dtype=torch.bool)
@@ -1022,6 +1059,7 @@ def run_meta_detect_csv(config, run_dir):
                                 "image_id": image_id,
                                 "image_path": image_path,
                                 "pred_idx": pred_idx,
+                                "raw_pred_idx": raw_pred_idx,
                                 "xmin": fx1,
                                 "ymin": fy1,
                                 "xmax": fx2,
@@ -1059,7 +1097,7 @@ def run_meta_detect_csv(config, run_dir):
                         for metric_name in vector_reduction:
                             row[f"{feature_name}_{metric_name}"] = float(stats[metric_name])
                     writer.writerow(row)
-            del infer_batch, preds, _logits, _objectness, _features, raw_prediction
+            del infer_batch, model_output, raw_prediction, raw_logits, selected_preds, selected_indices
 
     del detector
     if device.type == "cuda":
@@ -1090,6 +1128,7 @@ def run_score_csv(config, run_dir):
         fieldnames.extend(
             [
                 "pred_idx",
+                "raw_pred_idx",
                 "xmin",
                 "ymin",
                 "xmax",
@@ -1119,38 +1158,60 @@ def run_score_csv(config, run_dir):
             detector.zero_grad(set_to_none=True)
             infer_batch, _ratios, _pads, _resized_chws = _prepare_infer_batch(detector, image_list, device, auto=False)
             raw_prediction = None
+            selected_preds = None
+            selected_indices = None
             with torch.no_grad():
-                preds, _logits, _objectness, _features = detector(infer_batch)
-                if unit == "image" and pre_nms:
+                if unit == "bbox":
                     model_output = detector.model(infer_batch, augment=False)
                     raw_prediction = model_output[0] if isinstance(model_output, (tuple, list)) else model_output
+                    selected_preds, selected_indices = detector.non_max_suppression(
+                        prediction=raw_prediction,
+                        conf_thres=detector.conf_thresh,
+                        iou_thres=detector.iou_thresh,
+                        classes=detector.filter_classes,
+                        agnostic=detector.agnostic_nms,
+                        max_det=detector.max_det,
+                        return_indices=True,
+                    )
+                else:
+                    preds, _logits, _objectness, _features = detector(infer_batch)
+                    if pre_nms:
+                        model_output = detector.model(infer_batch, augment=False)
+                        raw_prediction = model_output[0] if isinstance(model_output, (tuple, list)) else model_output
 
             for sample_idx in range(len(image_list)):
                 target = targets[sample_idx]
                 image_id = int(target["image_id"][0].item())
                 image_path = target["path"]
-                pred_boxes = preds[0][sample_idx]
-                pred_class_names = preds[2][sample_idx]
-                pred_scores = preds[3][sample_idx]
 
                 if unit == "bbox":
-                    for pred_idx, (box, score, pred_class) in enumerate(
-                        zip(pred_boxes, pred_scores, pred_class_names)
-                    ):
+                    det = selected_preds[sample_idx]
+                    raw_keep_b = selected_indices[sample_idx]
+                    for pred_idx, box in enumerate(det):
+                        raw_pred_idx = int(raw_keep_b[pred_idx].detach().cpu().item()) if pred_idx < int(raw_keep_b.shape[0]) else pred_idx
+                        cls_idx = int(box[5].detach().cpu().item()) if box.shape[0] > 5 else 0
+                        if isinstance(detector.names, dict):
+                            pred_class = detector.names.get(cls_idx, str(cls_idx))
+                        elif isinstance(detector.names, list) and 0 <= cls_idx < len(detector.names):
+                            pred_class = detector.names[cls_idx]
+                        else:
+                            pred_class = str(cls_idx)
                         writer.writerow(
                             {
                                 "image_id": image_id,
                                 "image_path": image_path,
                                 "pred_idx": pred_idx,
+                                "raw_pred_idx": raw_pred_idx,
                                 "xmin": float(box[0]),
                                 "ymin": float(box[1]),
                                 "xmax": float(box[2]),
                                 "ymax": float(box[3]),
-                                "score": float(score),
+                                "score": float(box[4]),
                                 "pred_class": pred_class,
                             }
                         )
                 else:
+                    pred_scores = preds[3][sample_idx]
                     if pre_nms and raw_prediction is not None:
                         pre = raw_prediction[sample_idx].detach().float()
                         if pre.numel() == 0:
@@ -1184,7 +1245,10 @@ def run_score_csv(config, run_dir):
                     for metric_name in score_vector_reduction:
                         row[metric_name] = float(stat_all[metric_name])
                     writer.writerow(row)
-            del infer_batch, preds, _logits, _objectness, _features, raw_prediction
+            if unit == "bbox":
+                del infer_batch, raw_prediction, selected_preds, selected_indices
+            else:
+                del infer_batch, preds, _logits, _objectness, _features, raw_prediction
 
     del detector
     if device.type == "cuda":
@@ -1224,6 +1288,7 @@ def run_full_softmax_csv(config, run_dir):
             "image_id",
             "image_path",
             "pred_idx",
+            "raw_pred_idx",
             "xmin",
             "ymin",
             "xmax",
@@ -1246,9 +1311,10 @@ def run_full_softmax_csv(config, run_dir):
             infer_batch, _ratios, _pads, _resized_chws = _prepare_infer_batch(detector, image_list, device, auto=False)
             raw_prediction = None
             raw_logits = None
+            selected_preds = None
+            selected_indices = None
             with torch.no_grad():
-                preds, logits, _objectness, _features = detector(infer_batch)
-                if unit == "image" and pre_nms:
+                if unit == "bbox":
                     model_output = detector.model(infer_batch, augment=False)
                     raw_prediction = model_output[0] if isinstance(model_output, (tuple, list)) else model_output
                     raw_logits = (
@@ -1256,30 +1322,66 @@ def run_full_softmax_csv(config, run_dir):
                         if isinstance(model_output, (tuple, list)) and len(model_output) > 1
                         else None
                     )
+                    selected_preds, selected_indices = detector.non_max_suppression(
+                        prediction=raw_prediction,
+                        conf_thres=detector.conf_thresh,
+                        iou_thres=detector.iou_thresh,
+                        classes=detector.filter_classes,
+                        agnostic=detector.agnostic_nms,
+                        max_det=detector.max_det,
+                        return_indices=True,
+                    )
+                else:
+                    preds, logits, _objectness, _features = detector(infer_batch)
+                    if pre_nms:
+                        model_output = detector.model(infer_batch, augment=False)
+                        raw_prediction = model_output[0] if isinstance(model_output, (tuple, list)) else model_output
+                        raw_logits = (
+                            model_output[1]
+                            if isinstance(model_output, (tuple, list)) and len(model_output) > 1
+                            else None
+                        )
 
             for sample_idx in range(len(image_list)):
                 target = targets[sample_idx]
                 image_id = int(target["image_id"][0].item())
                 image_path = target["path"]
-                pred_boxes = preds[0][sample_idx]
-                pred_class_names = preds[2][sample_idx]
-                pred_scores = preds[3][sample_idx]
-                pred_logits = logits[sample_idx] if logits else torch.zeros((0, num_classes), device=device)
-                pred_probs = torch.softmax(pred_logits, dim=-1) if pred_logits.numel() else pred_logits
 
                 if unit == "bbox":
-                    for pred_idx, (box, score, pred_class) in enumerate(
-                        zip(pred_boxes, pred_scores, pred_class_names)
-                    ):
+                    det = selected_preds[sample_idx]
+                    raw_keep_b = selected_indices[sample_idx]
+                    if raw_logits is not None:
+                        selected_logits = (
+                            raw_logits[sample_idx][raw_keep_b]
+                            if int(raw_keep_b.shape[0]) > 0
+                            else torch.zeros((0, num_classes), dtype=torch.float32, device=device)
+                        )
+                    else:
+                        selected_logits = (
+                            raw_prediction[sample_idx][raw_keep_b, 5:]
+                            if int(raw_keep_b.shape[0]) > 0 and raw_prediction[sample_idx].shape[1] > 5
+                            else torch.zeros((0, num_classes), dtype=torch.float32, device=device)
+                        )
+                    pred_probs = torch.softmax(selected_logits, dim=-1) if selected_logits.numel() else selected_logits
+                    for pred_idx, box in enumerate(det):
+                        raw_pred_idx = int(raw_keep_b[pred_idx].detach().cpu().item()) if pred_idx < int(raw_keep_b.shape[0]) else pred_idx
+                        cls_idx = int(box[5].detach().cpu().item()) if box.shape[0] > 5 else 0
+                        if isinstance(detector.names, dict):
+                            pred_class = detector.names.get(cls_idx, str(cls_idx))
+                        elif isinstance(detector.names, list) and 0 <= cls_idx < len(detector.names):
+                            pred_class = detector.names[cls_idx]
+                        else:
+                            pred_class = str(cls_idx)
                         row = {
                             "image_id": image_id,
                             "image_path": image_path,
                             "pred_idx": pred_idx,
+                            "raw_pred_idx": raw_pred_idx,
                             "xmin": float(box[0]),
                             "ymin": float(box[1]),
                             "xmax": float(box[2]),
                             "ymax": float(box[3]),
-                            "score": float(score),
+                            "score": float(box[4]),
                             "pred_class": pred_class,
                         }
                         if pred_idx < pred_probs.shape[0]:
@@ -1290,6 +1392,8 @@ def run_full_softmax_csv(config, run_dir):
                             row[f"prob_{class_idx}"] = float(probs[class_idx]) if class_idx < len(probs) else 0.0
                         writer.writerow(row)
                 else:
+                    pred_logits = logits[sample_idx] if logits else torch.zeros((0, num_classes), device=device)
+                    pred_probs = torch.softmax(pred_logits, dim=-1) if pred_logits.numel() else pred_logits
                     if pre_nms and raw_prediction is not None:
                         if raw_logits is not None:
                             pre_logits = raw_logits[sample_idx].detach().float()
@@ -1337,7 +1441,10 @@ def run_full_softmax_csv(config, run_dir):
                             vec = [0.0] * num_classes
                         row[f"{metric_name}_vector"] = json.dumps(vec, separators=(",", ":"))
                     writer.writerow(row)
-            del infer_batch, preds, logits, _objectness, _features, raw_prediction, raw_logits
+            if unit == "bbox":
+                del infer_batch, raw_prediction, raw_logits, selected_preds, selected_indices
+            else:
+                del infer_batch, preds, logits, _objectness, _features, raw_prediction, raw_logits
 
     del detector
     if device.type == "cuda":
@@ -1377,6 +1484,7 @@ def run_energy_csv(config, run_dir):
         fieldnames.extend(
             [
                 "pred_idx",
+                "raw_pred_idx",
                 "xmin",
                 "ymin",
                 "xmax",
@@ -1402,9 +1510,10 @@ def run_energy_csv(config, run_dir):
             infer_batch, _ratios, _pads, _resized_chws = _prepare_infer_batch(detector, image_list, device, auto=False)
             raw_prediction = None
             raw_logits = None
+            selected_preds = None
+            selected_indices = None
             with torch.no_grad():
-                preds, logits, _objectness, _features = detector(infer_batch)
-                if unit == "image" and pre_nms:
+                if unit == "bbox":
                     model_output = detector.model(infer_batch, augment=False)
                     raw_prediction = model_output[0] if isinstance(model_output, (tuple, list)) else model_output
                     raw_logits = (
@@ -1412,32 +1521,67 @@ def run_energy_csv(config, run_dir):
                         if isinstance(model_output, (tuple, list)) and len(model_output) > 1
                         else None
                     )
+                    selected_preds, selected_indices = detector.non_max_suppression(
+                        prediction=raw_prediction,
+                        conf_thres=detector.conf_thresh,
+                        iou_thres=detector.iou_thresh,
+                        classes=detector.filter_classes,
+                        agnostic=detector.agnostic_nms,
+                        max_det=detector.max_det,
+                        return_indices=True,
+                    )
+                else:
+                    preds, logits, _objectness, _features = detector(infer_batch)
+                    if pre_nms:
+                        model_output = detector.model(infer_batch, augment=False)
+                        raw_prediction = model_output[0] if isinstance(model_output, (tuple, list)) else model_output
+                        raw_logits = (
+                            model_output[1]
+                            if isinstance(model_output, (tuple, list)) and len(model_output) > 1
+                            else None
+                        )
 
             for sample_idx in range(len(image_list)):
                 target = targets[sample_idx]
                 image_id = int(target["image_id"][0].item())
                 image_path = target["path"]
-                pred_boxes = preds[0][sample_idx]
-                pred_class_names = preds[2][sample_idx]
-                pred_scores = preds[3][sample_idx]
-                pred_logits = logits[sample_idx] if logits else torch.zeros((0, num_classes), device=device)
-                pred_probs = torch.softmax(pred_logits, dim=-1) if pred_logits.numel() else pred_logits
-                if pred_probs.numel():
-                    probs_clipped = pred_probs.clamp(min=1e-8, max=1.0 - 1e-8)
-                    pseudo_logits = torch.log(probs_clipped / (1.0 - probs_clipped))
-                    pred_energy = -100.0 * torch.log(
-                        torch.clamp(
-                            torch.sum(torch.exp(pseudo_logits / 100.0), dim=-1),
-                            min=1e-8,
-                        )
-                    )
-                else:
-                    pred_energy = torch.zeros((0,), device=device)
 
                 if unit == "bbox":
-                    for pred_idx, (box, score, pred_class) in enumerate(
-                        zip(pred_boxes, pred_scores, pred_class_names)
-                    ):
+                    det = selected_preds[sample_idx]
+                    raw_keep_b = selected_indices[sample_idx]
+                    if raw_logits is not None:
+                        selected_logits = (
+                            raw_logits[sample_idx][raw_keep_b]
+                            if int(raw_keep_b.shape[0]) > 0
+                            else torch.zeros((0, num_classes), dtype=torch.float32, device=device)
+                        )
+                    else:
+                        selected_logits = (
+                            raw_prediction[sample_idx][raw_keep_b, 5:]
+                            if int(raw_keep_b.shape[0]) > 0 and raw_prediction[sample_idx].shape[1] > 5
+                            else torch.zeros((0, num_classes), dtype=torch.float32, device=device)
+                        )
+                    selected_probs = torch.softmax(selected_logits, dim=-1) if selected_logits.numel() else selected_logits
+                    if selected_probs.numel():
+                        probs_clipped = selected_probs.clamp(min=1e-8, max=1.0 - 1e-8)
+                        pseudo_logits = torch.log(probs_clipped / (1.0 - probs_clipped))
+                        pred_energy = -100.0 * torch.log(
+                            torch.clamp(
+                                torch.sum(torch.exp(pseudo_logits / 100.0), dim=-1),
+                                min=1e-8,
+                            )
+                        )
+                    else:
+                        pred_energy = torch.zeros((0,), device=device)
+                    for pred_idx, box in enumerate(det):
+                        raw_pred_idx = int(raw_keep_b[pred_idx].detach().cpu().item()) if pred_idx < int(raw_keep_b.shape[0]) else pred_idx
+                        cls_idx = int(box[5].detach().cpu().item()) if box.shape[0] > 5 else 0
+                        if isinstance(detector.names, dict):
+                            pred_class = detector.names.get(cls_idx, str(cls_idx))
+                        elif isinstance(detector.names, list) and 0 <= cls_idx < len(detector.names):
+                            pred_class = detector.names[cls_idx]
+                        else:
+                            pred_class = str(cls_idx)
                         energy_val = (
                             float(pred_energy[pred_idx].detach().cpu().item())
                             if pred_idx < pred_energy.shape[0]
@@ -1448,16 +1592,30 @@ def run_energy_csv(config, run_dir):
                                 "image_id": image_id,
                                 "image_path": image_path,
                                 "pred_idx": pred_idx,
+                                "raw_pred_idx": raw_pred_idx,
                                 "xmin": float(box[0]),
                                 "ymin": float(box[1]),
                                 "xmax": float(box[2]),
                                 "ymax": float(box[3]),
-                                "score": float(score),
+                                "score": float(box[4]),
                                 "pred_class": pred_class,
                                 "energy": energy_val,
                             }
                         )
                 else:
+                    pred_logits = logits[sample_idx] if logits else torch.zeros((0, num_classes), device=device)
+                    pred_probs = torch.softmax(pred_logits, dim=-1) if pred_logits.numel() else pred_logits
+                    if pred_probs.numel():
+                        probs_clipped = pred_probs.clamp(min=1e-8, max=1.0 - 1e-8)
+                        pseudo_logits = torch.log(probs_clipped / (1.0 - probs_clipped))
+                        pred_energy = -100.0 * torch.log(
+                            torch.clamp(
+                                torch.sum(torch.exp(pseudo_logits / 100.0), dim=-1),
+                                min=1e-8,
+                            )
+                        )
+                    else:
+                        pred_energy = torch.zeros((0,), device=device)
                     if pre_nms and raw_prediction is not None:
                         if raw_logits is not None:
                             pre_logits = raw_logits[sample_idx].detach().float()
@@ -1510,7 +1668,10 @@ def run_energy_csv(config, run_dir):
                     for metric_name in energy_vector_reduction:
                         row[metric_name] = float(stat_all[metric_name])
                     writer.writerow(row)
-            del infer_batch, preds, logits, _objectness, _features, raw_prediction, raw_logits
+            if unit == "bbox":
+                del infer_batch, raw_prediction, raw_logits, selected_preds, selected_indices
+            else:
+                del infer_batch, preds, logits, _objectness, _features, raw_prediction, raw_logits
 
     del detector
     if device.type == "cuda":
@@ -1550,6 +1711,7 @@ def run_entropy_csv(config, run_dir):
         fieldnames.extend(
             [
                 "pred_idx",
+                "raw_pred_idx",
                 "xmin",
                 "ymin",
                 "xmax",
@@ -1575,9 +1737,10 @@ def run_entropy_csv(config, run_dir):
             infer_batch, _ratios, _pads, _resized_chws = _prepare_infer_batch(detector, image_list, device, auto=False)
             raw_prediction = None
             raw_logits = None
+            selected_preds = None
+            selected_indices = None
             with torch.no_grad():
-                preds, logits, _objectness, _features = detector(infer_batch)
-                if unit == "image" and pre_nms:
+                if unit == "bbox":
                     model_output = detector.model(infer_batch, augment=False)
                     raw_prediction = model_output[0] if isinstance(model_output, (tuple, list)) else model_output
                     raw_logits = (
@@ -1585,25 +1748,60 @@ def run_entropy_csv(config, run_dir):
                         if isinstance(model_output, (tuple, list)) and len(model_output) > 1
                         else None
                     )
+                    selected_preds, selected_indices = detector.non_max_suppression(
+                        prediction=raw_prediction,
+                        conf_thres=detector.conf_thresh,
+                        iou_thres=detector.iou_thresh,
+                        classes=detector.filter_classes,
+                        agnostic=detector.agnostic_nms,
+                        max_det=detector.max_det,
+                        return_indices=True,
+                    )
+                else:
+                    preds, logits, _objectness, _features = detector(infer_batch)
+                    if pre_nms:
+                        model_output = detector.model(infer_batch, augment=False)
+                        raw_prediction = model_output[0] if isinstance(model_output, (tuple, list)) else model_output
+                        raw_logits = (
+                            model_output[1]
+                            if isinstance(model_output, (tuple, list)) and len(model_output) > 1
+                            else None
+                        )
 
             for sample_idx in range(len(image_list)):
                 target = targets[sample_idx]
                 image_id = int(target["image_id"][0].item())
                 image_path = target["path"]
-                pred_boxes = preds[0][sample_idx]
-                pred_class_names = preds[2][sample_idx]
-                pred_scores = preds[3][sample_idx]
-                pred_logits = logits[sample_idx] if logits else torch.zeros((0, num_classes), device=device)
-                pred_probs = torch.softmax(pred_logits, dim=-1) if pred_logits.numel() else pred_logits
-                if pred_probs.numel():
-                    pred_entropy = -torch.sum(pred_probs * torch.log(pred_probs.clamp(min=1e-12)), dim=-1)
-                else:
-                    pred_entropy = torch.zeros((0,), device=device)
 
                 if unit == "bbox":
-                    for pred_idx, (box, score, pred_class) in enumerate(
-                        zip(pred_boxes, pred_scores, pred_class_names)
-                    ):
+                    det = selected_preds[sample_idx]
+                    raw_keep_b = selected_indices[sample_idx]
+                    if raw_logits is not None:
+                        selected_logits = (
+                            raw_logits[sample_idx][raw_keep_b]
+                            if int(raw_keep_b.shape[0]) > 0
+                            else torch.zeros((0, num_classes), dtype=torch.float32, device=device)
+                        )
+                    else:
+                        selected_logits = (
+                            raw_prediction[sample_idx][raw_keep_b, 5:]
+                            if int(raw_keep_b.shape[0]) > 0 and raw_prediction[sample_idx].shape[1] > 5
+                            else torch.zeros((0, num_classes), dtype=torch.float32, device=device)
+                        )
+                    selected_probs = torch.softmax(selected_logits, dim=-1) if selected_logits.numel() else selected_logits
+                    if selected_probs.numel():
+                        pred_entropy = -torch.sum(selected_probs * torch.log(selected_probs.clamp(min=1e-12)), dim=-1)
+                    else:
+                        pred_entropy = torch.zeros((0,), device=device)
+                    for pred_idx, box in enumerate(det):
+                        raw_pred_idx = int(raw_keep_b[pred_idx].detach().cpu().item()) if pred_idx < int(raw_keep_b.shape[0]) else pred_idx
+                        cls_idx = int(box[5].detach().cpu().item()) if box.shape[0] > 5 else 0
+                        if isinstance(detector.names, dict):
+                            pred_class = detector.names.get(cls_idx, str(cls_idx))
+                        elif isinstance(detector.names, list) and 0 <= cls_idx < len(detector.names):
+                            pred_class = detector.names[cls_idx]
+                        else:
+                            pred_class = str(cls_idx)
                         entropy_val = (
                             float(pred_entropy[pred_idx].detach().cpu().item())
                             if pred_idx < pred_entropy.shape[0]
@@ -1614,16 +1812,23 @@ def run_entropy_csv(config, run_dir):
                                 "image_id": image_id,
                                 "image_path": image_path,
                                 "pred_idx": pred_idx,
+                                "raw_pred_idx": raw_pred_idx,
                                 "xmin": float(box[0]),
                                 "ymin": float(box[1]),
                                 "xmax": float(box[2]),
                                 "ymax": float(box[3]),
-                                "score": float(score),
+                                "score": float(box[4]),
                                 "pred_class": pred_class,
                                 "entropy": entropy_val,
                             }
                         )
                 else:
+                    pred_logits = logits[sample_idx] if logits else torch.zeros((0, num_classes), device=device)
+                    pred_probs = torch.softmax(pred_logits, dim=-1) if pred_logits.numel() else pred_logits
+                    if pred_probs.numel():
+                        pred_entropy = -torch.sum(pred_probs * torch.log(pred_probs.clamp(min=1e-12)), dim=-1)
+                    else:
+                        pred_entropy = torch.zeros((0,), device=device)
                     if pre_nms and raw_prediction is not None:
                         if raw_logits is not None:
                             pre_logits = raw_logits[sample_idx].detach().float()
@@ -1665,7 +1870,10 @@ def run_entropy_csv(config, run_dir):
                     for metric_name in entropy_vector_reduction:
                         row[metric_name] = float(stat_all[metric_name])
                     writer.writerow(row)
-            del infer_batch, preds, logits, _objectness, _features, raw_prediction, raw_logits
+            if unit == "bbox":
+                del infer_batch, raw_prediction, raw_logits, selected_preds, selected_indices
+            else:
+                del infer_batch, preds, logits, _objectness, _features, raw_prediction, raw_logits
 
     del detector
     if device.type == "cuda":
