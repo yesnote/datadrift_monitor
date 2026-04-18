@@ -1194,7 +1194,7 @@ def run_score_csv(config, run_dir):
                         else None
                     )
                     nms_logits = _resolve_nms_logits(raw_prediction, raw_logits)
-                    selected_preds, selected_indices = detector.non_max_suppression(
+                    selected_preds, _selected_logits, _selected_objectness, selected_indices = detector.non_max_suppression(
                         prediction=raw_prediction,
                         logits=nms_logits,
                         conf_thres=nms_kwargs["conf_thres"],
@@ -1355,7 +1355,7 @@ def run_full_softmax_csv(config, run_dir):
                         else None
                     )
                     nms_logits = _resolve_nms_logits(raw_prediction, raw_logits)
-                    selected_preds, selected_indices = detector.non_max_suppression(
+                    selected_preds, _selected_logits, _selected_objectness, selected_indices = detector.non_max_suppression(
                         prediction=raw_prediction,
                         logits=nms_logits,
                         conf_thres=nms_kwargs["conf_thres"],
@@ -1557,7 +1557,7 @@ def run_energy_csv(config, run_dir):
                         else None
                     )
                     nms_logits = _resolve_nms_logits(raw_prediction, raw_logits)
-                    selected_preds, selected_indices = detector.non_max_suppression(
+                    selected_preds, _selected_logits, _selected_objectness, selected_indices = detector.non_max_suppression(
                         prediction=raw_prediction,
                         logits=nms_logits,
                         conf_thres=nms_kwargs["conf_thres"],
@@ -1787,7 +1787,7 @@ def run_entropy_csv(config, run_dir):
                         else None
                     )
                     nms_logits = _resolve_nms_logits(raw_prediction, raw_logits)
-                    selected_preds, selected_indices = detector.non_max_suppression(
+                    selected_preds, _selected_logits, _selected_objectness, selected_indices = detector.non_max_suppression(
                         prediction=raw_prediction,
                         logits=nms_logits,
                         conf_thres=nms_kwargs["conf_thres"],
