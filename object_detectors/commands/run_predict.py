@@ -751,6 +751,7 @@ def run_feature_csv(config, run_dir):
     detector, device = build_detector(config)
     nms_kwargs = _resolve_detector_nms_kwargs(detector)
     num_classes_hint = len(detector.names) if detector.names is not None else 80
+    num_classes_hint = len(detector.names) if detector.names is not None else 80
     nms_kwargs = _resolve_detector_nms_kwargs(detector)
     nms_kwargs = _resolve_detector_nms_kwargs(detector)
 
