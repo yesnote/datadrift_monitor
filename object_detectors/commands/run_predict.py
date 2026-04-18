@@ -85,6 +85,16 @@ def _prepare_infer_batch(detector, images, device, auto=False):
     return infer_batch, ratios, pads, resized_chws
 
 
+def _resolve_detector_nms_kwargs(detector):
+    return {
+        "conf_thres": float(getattr(detector, "conf_thresh", getattr(detector, "confidence", 0.25))),
+        "iou_thres": float(getattr(detector, "iou_thresh", 0.45)),
+        "classes": getattr(detector, "filter_classes", None),
+        "agnostic": bool(getattr(detector, "agnostic_nms", getattr(detector, "agnostic", False))),
+        "max_det": int(getattr(detector, "max_det", 300)),
+    }
+
+
 def _resolve_gt_class_names(target, catid_to_name):
     gt_names = target.get("gt_class_names")
     if gt_names is not None:
@@ -727,6 +737,7 @@ def run_feature_csv(config, run_dir):
         raise ValueError("Loaded 0 images. Check dataset root/image_dir/split configuration in YAML.")
 
     detector, device = build_detector(config)
+    nms_kwargs = _resolve_detector_nms_kwargs(detector)
 
     with open(output_csv, "w", newline="", encoding="utf-8") as output_file:
         writer = csv.DictWriter(output_file, fieldnames=fieldnames)
@@ -1166,11 +1177,11 @@ def run_score_csv(config, run_dir):
                     raw_prediction = model_output[0] if isinstance(model_output, (tuple, list)) else model_output
                     selected_preds, selected_indices = detector.non_max_suppression(
                         prediction=raw_prediction,
-                        conf_thres=detector.conf_thresh,
-                        iou_thres=detector.iou_thresh,
-                        classes=detector.filter_classes,
-                        agnostic=detector.agnostic_nms,
-                        max_det=detector.max_det,
+                        conf_thres=nms_kwargs["conf_thres"],
+                        iou_thres=nms_kwargs["iou_thres"],
+                        classes=nms_kwargs["classes"],
+                        agnostic=nms_kwargs["agnostic"],
+                        max_det=nms_kwargs["max_det"],
                         return_indices=True,
                     )
                 else:
@@ -1281,6 +1292,7 @@ def run_full_softmax_csv(config, run_dir):
         raise ValueError("Loaded 0 images. Check dataset root/image_dir/split configuration in YAML.")
 
     detector, device = build_detector(config)
+    nms_kwargs = _resolve_detector_nms_kwargs(detector)
     num_classes = len(detector.names) if detector.names is not None else 80
     output_csv = run_dir / "full_softmax.csv"
     if unit == "bbox":
@@ -1324,11 +1336,11 @@ def run_full_softmax_csv(config, run_dir):
                     )
                     selected_preds, selected_indices = detector.non_max_suppression(
                         prediction=raw_prediction,
-                        conf_thres=detector.conf_thresh,
-                        iou_thres=detector.iou_thresh,
-                        classes=detector.filter_classes,
-                        agnostic=detector.agnostic_nms,
-                        max_det=detector.max_det,
+                        conf_thres=nms_kwargs["conf_thres"],
+                        iou_thres=nms_kwargs["iou_thres"],
+                        classes=nms_kwargs["classes"],
+                        agnostic=nms_kwargs["agnostic"],
+                        max_det=nms_kwargs["max_det"],
                         return_indices=True,
                     )
                 else:
@@ -1477,6 +1489,7 @@ def run_energy_csv(config, run_dir):
         raise ValueError("Loaded 0 images. Check dataset root/image_dir/split configuration in YAML.")
 
     detector, device = build_detector(config)
+    nms_kwargs = _resolve_detector_nms_kwargs(detector)
     num_classes = len(detector.names) if detector.names is not None else 80
     output_csv = run_dir / "energy.csv"
     fieldnames = ["image_id", "image_path"]
@@ -1523,11 +1536,11 @@ def run_energy_csv(config, run_dir):
                     )
                     selected_preds, selected_indices = detector.non_max_suppression(
                         prediction=raw_prediction,
-                        conf_thres=detector.conf_thresh,
-                        iou_thres=detector.iou_thresh,
-                        classes=detector.filter_classes,
-                        agnostic=detector.agnostic_nms,
-                        max_det=detector.max_det,
+                        conf_thres=nms_kwargs["conf_thres"],
+                        iou_thres=nms_kwargs["iou_thres"],
+                        classes=nms_kwargs["classes"],
+                        agnostic=nms_kwargs["agnostic"],
+                        max_det=nms_kwargs["max_det"],
                         return_indices=True,
                     )
                 else:
@@ -1704,6 +1717,7 @@ def run_entropy_csv(config, run_dir):
         raise ValueError("Loaded 0 images. Check dataset root/image_dir/split configuration in YAML.")
 
     detector, device = build_detector(config)
+    nms_kwargs = _resolve_detector_nms_kwargs(detector)
     num_classes = len(detector.names) if detector.names is not None else 80
     output_csv = run_dir / "entropy.csv"
     fieldnames = ["image_id", "image_path"]
@@ -1750,11 +1764,11 @@ def run_entropy_csv(config, run_dir):
                     )
                     selected_preds, selected_indices = detector.non_max_suppression(
                         prediction=raw_prediction,
-                        conf_thres=detector.conf_thresh,
-                        iou_thres=detector.iou_thresh,
-                        classes=detector.filter_classes,
-                        agnostic=detector.agnostic_nms,
-                        max_det=detector.max_det,
+                        conf_thres=nms_kwargs["conf_thres"],
+                        iou_thres=nms_kwargs["iou_thres"],
+                        classes=nms_kwargs["classes"],
+                        agnostic=nms_kwargs["agnostic"],
+                        max_det=nms_kwargs["max_det"],
                         return_indices=True,
                     )
                 else:
