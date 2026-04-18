@@ -739,6 +739,7 @@ def run_feature_csv(config, run_dir):
     detector, device = build_detector(config)
     nms_kwargs = _resolve_detector_nms_kwargs(detector)
     nms_kwargs = _resolve_detector_nms_kwargs(detector)
+    nms_kwargs = _resolve_detector_nms_kwargs(detector)
 
     with open(output_csv, "w", newline="", encoding="utf-8") as output_file:
         writer = csv.DictWriter(output_file, fieldnames=fieldnames)
@@ -1158,6 +1159,7 @@ def run_score_csv(config, run_dir):
         raise ValueError("Loaded 0 images. Check dataset root/image_dir/split configuration in YAML.")
 
     detector, device = build_detector(config)
+    nms_kwargs = _resolve_detector_nms_kwargs(detector)
 
     with open(output_csv, "w", newline="", encoding="utf-8") as output_file:
         writer = csv.DictWriter(output_file, fieldnames=fieldnames)
