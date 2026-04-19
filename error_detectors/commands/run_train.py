@@ -13,7 +13,7 @@ import pandas as pd
 from sklearn.model_selection import GridSearchCV, StratifiedKFold, train_test_split
 from tqdm import tqdm
 
-from error_detectors.losses.loss import evaluate_classifier
+from error_detectors.losses.loss import compute_ace, compute_ece, evaluate_classifier
 from error_detectors.models.error_detector import build_estimator, param_grid
 from error_detectors.commands.utils.plot_utils import save_eval_plots
 
@@ -469,7 +469,9 @@ def run_train(config: dict[str, Any], run_dir: Path) -> Path:
             y_pred = estimator.predict_proba(x_test)[:, 1]
 
             auroc, ap = evaluate_classifier(y_test, y_pred)
-            eval_rows.append({"auroc": float(auroc), "ap": float(ap)})
+            ece = compute_ece(y_test, y_pred)
+            ace = compute_ace(y_test, y_pred)
+            eval_rows.append({"auroc": float(auroc), "ap": float(ap), "ece": float(ece), "ace": float(ace)})
 
             pd.DataFrame({"y_test": y_test, "y_pred": y_pred}).to_csv(results_dir / f"eval_data_{i}.csv", index=False)
             save_eval_plots(y_test, y_pred, out_dir=out_dir, model_name=f"model_{i}", label_col=label_col)
@@ -500,7 +502,9 @@ def run_train(config: dict[str, Any], run_dir: Path) -> Path:
             y_pred = estimator.predict_proba(x_test)[:, 1]
 
             auroc, ap = evaluate_classifier(y_test, y_pred)
-            eval_rows.append({"auroc": float(auroc), "ap": float(ap)})
+            ece = compute_ece(y_test, y_pred)
+            ace = compute_ace(y_test, y_pred)
+            eval_rows.append({"auroc": float(auroc), "ap": float(ap), "ece": float(ece), "ace": float(ace)})
 
             pd.DataFrame({"y_test": y_test, "y_pred": y_pred}).to_csv(results_dir / f"eval_data_{i}.csv", index=False)
             save_eval_plots(y_test, y_pred, out_dir=out_dir, model_name=f"model_{i}", label_col=label_col)

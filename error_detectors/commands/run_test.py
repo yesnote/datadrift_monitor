@@ -9,7 +9,7 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
-from error_detectors.losses.loss import evaluate_classifier
+from error_detectors.losses.loss import compute_ace, compute_ece, evaluate_classifier
 from error_detectors.commands.utils.plot_utils import save_eval_plots
 from error_detectors.commands.run_train import (
     FeatureSpec,
@@ -97,6 +97,8 @@ def run_test(config: dict[str, Any], run_dir: Path) -> Path:
         estimator = load_object(model_path)
         y_pred = estimator.predict_proba(x)[:, 1]
         auroc, ap = evaluate_classifier(y, y_pred)
+        ece = compute_ece(y, y_pred)
+        ace = compute_ace(y, y_pred)
         model_name = model_path.stem
         eval_rows.append(
             {
@@ -104,6 +106,8 @@ def run_test(config: dict[str, Any], run_dir: Path) -> Path:
                 "model_index": int(_parse_model_index(model_path)) if _parse_model_index(model_path) < 10**9 else -1,
                 "auroc": float(auroc),
                 "ap": float(ap),
+                "ece": float(ece),
+                "ace": float(ace),
             }
         )
         pd.DataFrame({"y_test": y, "y_pred": y_pred}).to_csv(
@@ -119,12 +123,16 @@ def run_test(config: dict[str, Any], run_dir: Path) -> Path:
         "model_index": -1,
         "auroc": float(eval_df["auroc"].mean()),
         "ap": float(eval_df["ap"].mean()),
+        "ece": float(eval_df["ece"].mean()),
+        "ace": float(eval_df["ace"].mean()),
     }
     summary_std = {
         "model_file": "std",
         "model_index": -1,
         "auroc": float(eval_df["auroc"].std(ddof=0)),
         "ap": float(eval_df["ap"].std(ddof=0)),
+        "ece": float(eval_df["ece"].std(ddof=0)),
+        "ace": float(eval_df["ace"].std(ddof=0)),
     }
     eval_df = pd.concat([eval_df, pd.DataFrame([summary, summary_std])], ignore_index=True)
     eval_df.to_csv(results_dir / "evaluation_results.csv", index=False)
