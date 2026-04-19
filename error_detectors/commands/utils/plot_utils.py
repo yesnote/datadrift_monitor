@@ -4,6 +4,7 @@ from pathlib import Path
 
 import matplotlib
 import numpy as np
+import seaborn as sns
 from sklearn.metrics import average_precision_score, precision_recall_curve, roc_curve
 
 matplotlib.use("Agg")
@@ -64,10 +65,29 @@ def _save_score_distribution(
     neg_scores = y_score[y_true == 0]
 
     bins = 40
+    sns.set_theme(style="whitegrid")
     if neg_scores.size > 0:
-        ax.hist(neg_scores, bins=bins, alpha=0.6, density=True, label=f"{neg_name} (n={neg_scores.size})")
+        sns.histplot(
+            neg_scores,
+            bins=bins,
+            stat="density",
+            alpha=0.5,
+            element="step",
+            fill=True,
+            ax=ax,
+            label=f"{neg_name} (n={neg_scores.size})",
+        )
     if pos_scores.size > 0:
-        ax.hist(pos_scores, bins=bins, alpha=0.6, density=True, label=f"{pos_name} (n={pos_scores.size})")
+        sns.histplot(
+            pos_scores,
+            bins=bins,
+            stat="density",
+            alpha=0.5,
+            element="step",
+            fill=True,
+            ax=ax,
+            label=f"{pos_name} (n={pos_scores.size})",
+        )
     if pos_scores.size == 0 and neg_scores.size == 0:
         ax.text(0.5, 0.5, "No scores to plot", ha="center", va="center")
 
