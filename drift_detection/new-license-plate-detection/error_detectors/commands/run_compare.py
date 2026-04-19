@@ -167,12 +167,71 @@ def _plot_pr_compare(a: RunBundle, b: RunBundle, out_path: Path) -> None:
 def _plot_score_distribution_compare(a: RunBundle, b: RunBundle, out_path: Path) -> None:
     with sns.axes_style("whitegrid"):
         fig, ax = plt.subplots(figsize=(6, 5))
-        sns.histplot(a.y_score, bins=40, stat="density", alpha=0.35, element="step", fill=True, color="#4C78A8", label=a.name, ax=ax)
-        sns.histplot(b.y_score, bins=40, stat="density", alpha=0.35, element="step", fill=True, color="#E45756", label=b.name, ax=ax)
-        ax.set_title("Predicted Score Distribution Compare")
+        a_pos = a.y_score[a.y_true == 1]
+        a_neg = a.y_score[a.y_true == 0]
+        b_pos = b.y_score[b.y_true == 1]
+        b_neg = b.y_score[b.y_true == 0]
+
+        label_pos = "FP"
+        label_neg = "non-FP"
+
+        if a_neg.size > 0:
+            sns.histplot(
+                a_neg,
+                bins=40,
+                stat="density",
+                alpha=0.25,
+                element="step",
+                fill=True,
+                color="#1f77b4",
+                linestyle="-",
+                label=f"{a.name} {label_neg}",
+                ax=ax,
+            )
+        if a_pos.size > 0:
+            sns.histplot(
+                a_pos,
+                bins=40,
+                stat="density",
+                alpha=0.35,
+                element="step",
+                fill=True,
+                color="#1f77b4",
+                linestyle="--",
+                label=f"{a.name} {label_pos}",
+                ax=ax,
+            )
+        if b_neg.size > 0:
+            sns.histplot(
+                b_neg,
+                bins=40,
+                stat="density",
+                alpha=0.25,
+                element="step",
+                fill=True,
+                color="#d62728",
+                linestyle="-",
+                label=f"{b.name} {label_neg}",
+                ax=ax,
+            )
+        if b_pos.size > 0:
+            sns.histplot(
+                b_pos,
+                bins=40,
+                stat="density",
+                alpha=0.35,
+                element="step",
+                fill=True,
+                color="#d62728",
+                linestyle="--",
+                label=f"{b.name} {label_pos}",
+                ax=ax,
+            )
+
+        ax.set_title("Predicted Score Distribution Compare (FP / non-FP)")
         ax.set_xlabel("Predicted Score")
         ax.set_ylabel("Density")
-        ax.legend(loc="upper center")
+        ax.legend(loc="upper center", ncol=2)
         fig.tight_layout()
         fig.savefig(out_path, dpi=150)
         plt.close(fig)
