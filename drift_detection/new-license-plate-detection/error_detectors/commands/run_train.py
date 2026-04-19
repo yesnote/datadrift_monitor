@@ -514,7 +514,7 @@ def run_train(config: dict[str, Any], run_dir: Path) -> Path:
 
     eval_df = pd.DataFrame(eval_rows)
     eval_df.loc["mean"] = eval_df.mean(numeric_only=True)
-    eval_df.loc["std"] = eval_df.std(numeric_only=True)
+    eval_df.loc["std"] = eval_df.std(numeric_only=True, ddof=1)
     eval_df.to_csv(results_dir / "evaluation_results.csv", index=True)
 
     metadata = {
