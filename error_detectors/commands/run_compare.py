@@ -24,7 +24,7 @@ def _resolve_path_value(raw_path: str) -> Path:
     path = Path(str(raw_path).strip())
     if path.is_absolute():
         return path.resolve()
-    return (PROJECT_ROOT.parent / path).resolve()
+    return (PROJECT_ROOT / path).resolve()
 
 
 def _sanitize_name(text: str) -> str:
