@@ -277,6 +277,28 @@ def _plot_confidence_conditional_precision_compare(a: RunBundle, b: RunBundle, o
     plt.close(fig)
 
 
+def _plot_fp_score_conditional_precision_compare(a: RunBundle, b: RunBundle, out_path: Path) -> None:
+    fig, ax = plt.subplots(figsize=(6, 5))
+    a_fp_score = 1.0 - np.clip(a.y_score, 0.0, 1.0)
+    b_fp_score = 1.0 - np.clip(b.y_score, 0.0, 1.0)
+    xa, ya = _conditional_precision_curve(a.y_true, a_fp_score, bins=20)
+    xb, yb = _conditional_precision_curve(b.y_true, b_fp_score, bins=20)
+    ax.plot([0.0, 1.0], [0.0, 1.0], color="gray", linestyle="--", linewidth=1.5, label="Oracle")
+    if xa.size:
+        ax.plot(xa, ya, color="#4C78A8", marker="o", markersize=3.5, linewidth=2.0, label=a.name)
+    if xb.size:
+        ax.plot(xb, yb, color="#E45756", marker="o", markersize=3.5, linewidth=2.0, label=b.name)
+    ax.set_xlim(0.0, 1.0)
+    ax.set_ylim(0.0, 1.0)
+    ax.set_title("FP Score vs Conditional Precision Compare")
+    ax.set_xlabel("FP score")
+    ax.set_ylabel("Conditional Precision")
+    ax.legend(loc="upper left")
+    fig.tight_layout()
+    fig.savefig(out_path, dpi=150)
+    plt.close(fig)
+
+
 def run_compare(config: dict[str, Any], run_dir: Path) -> Path:
     compare_cfg = config.get("compare", {})
     raw_runs = compare_cfg.get("run_roots", [])
@@ -324,6 +346,11 @@ def run_compare(config: dict[str, Any], run_dir: Path) -> Path:
         bundle_a,
         bundle_b,
         plots_dir / "confidence_vs_conditional_precision_compare.png",
+    )
+    _plot_fp_score_conditional_precision_compare(
+        bundle_a,
+        bundle_b,
+        plots_dir / "fp_score_vs_conditional_precision_compare.png",
     )
 
     summary = {
