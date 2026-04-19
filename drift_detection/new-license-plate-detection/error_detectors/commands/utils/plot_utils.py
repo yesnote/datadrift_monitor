@@ -139,6 +139,41 @@ def _save_precision_at_k(y_true: np.ndarray, y_score: np.ndarray, out_path: Path
     plt.close(fig)
 
 
+def _save_confidence_vs_conditional_precision(y_true: np.ndarray, y_score: np.ndarray, out_path: Path) -> None:
+    fig, ax = plt.subplots(figsize=(6, 5))
+    scores = np.clip(np.asarray(y_score, dtype=np.float64).reshape(-1), 0.0, 1.0)
+    labels = np.asarray(y_true, dtype=np.float64).reshape(-1)
+    bins = np.linspace(0.0, 1.0, 21, dtype=np.float64)
+    centers: list[float] = []
+    precision_vals: list[float] = []
+    for i in range(len(bins) - 1):
+        lo = bins[i]
+        hi = bins[i + 1]
+        if i == len(bins) - 2:
+            mask = (scores >= lo) & (scores <= hi)
+        else:
+            mask = (scores >= lo) & (scores < hi)
+        if not np.any(mask):
+            continue
+        centers.append(float((lo + hi) * 0.5))
+        precision_vals.append(float(labels[mask].mean()))
+
+    ax.plot([0.0, 1.0], [0.0, 1.0], color="gray", linestyle="--", linewidth=1.5, label="Oracle")
+    if centers:
+        ax.plot(centers, precision_vals, color="#1f77b4", linewidth=2.0, marker="o", markersize=3.5, label="Observed")
+    else:
+        ax.text(0.5, 0.5, "No samples", ha="center", va="center")
+    ax.set_xlim(0.0, 1.0)
+    ax.set_ylim(0.0, 1.0)
+    ax.set_title("Confidence vs Conditional Precision")
+    ax.set_xlabel("Confidence")
+    ax.set_ylabel("Conditional Precision")
+    ax.legend(loc="upper left")
+    fig.tight_layout()
+    fig.savefig(out_path, dpi=150)
+    plt.close(fig)
+
+
 def save_eval_plots(
     y_true: np.ndarray,
     y_score: np.ndarray,
@@ -161,3 +196,9 @@ def save_eval_plots(
     _save_curve_pr(y_true, y_score, plot_dir / "pr_curve.png")
     _save_score_distribution(y_true, y_score, plot_dir / dist_name, pos_name=pos_name, neg_name=neg_name)
     _save_precision_at_k(y_true, y_score, plot_dir / "precision_at_k.png")
+    if label_key == "tp":
+        _save_confidence_vs_conditional_precision(
+            y_true,
+            y_score,
+            plot_dir / "confidence_vs_conditional_precision.png",
+        )
