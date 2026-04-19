@@ -1,0 +1,8 @@
+mode: compare
+
+compare:
+  run_roots:
+    - error_detectors/runs/tp_classifiers/04-19-2026_16;36_layer_grad_cand_target_loss
+    - error_detectors/runs/tp_classifiers/04-19-2026_16;39_feature_grad_obj_loss-cls_loss-bbox_loss
+  name_a: layer_grad
+  name_b: feature_grad

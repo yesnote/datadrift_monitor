@@ -13,6 +13,7 @@ if str(REPO_ROOT) not in sys.path:
 
 from error_detectors.commands.run_train import run_train
 from error_detectors.commands.run_test import run_test
+from error_detectors.commands.run_compare import run_compare
 from error_detectors.commands.utils.run_utils import create_run_dir, save_used_config
 
 
@@ -92,8 +93,24 @@ def main() -> None:
     config = load_config(config_path)
 
     mode = str(config.get("mode", "train")).strip().lower()
-    if mode not in {"train", "test"}:
-        raise ValueError(f"Unsupported mode: {mode}. Use 'train' or 'test'.")
+    if mode not in {"train", "test", "compare"}:
+        raise ValueError(f"Unsupported mode: {mode}. Use 'train', 'test', or 'compare'.")
+
+    if mode == "compare":
+        compare_cfg = config.get("compare", {})
+        run_roots = compare_cfg.get("run_roots", [])
+        if not isinstance(run_roots, (list, tuple)) or len(run_roots) != 2:
+            raise ValueError("compare.run_roots must be a list of exactly two paths.")
+        run_a = resolve_path_value(str(run_roots[0]))
+        run_b = resolve_path_value(str(run_roots[1]))
+        name_a = str(compare_cfg.get("name_a", "")).strip() or run_a.name
+        name_b = str(compare_cfg.get("name_b", "")).strip() or run_b.name
+        safe_a = "".join(ch if ch.isalnum() or ch in {"-", "_"} else "_" for ch in name_a).strip("_").lower() or "a"
+        safe_b = "".join(ch if ch.isalnum() or ch in {"-", "_"} else "_" for ch in name_b).strip("_").lower() or "b"
+        run_dir = create_run_dir(model_group="comparisons", cue="tp_classifier_compare", target_value=f"{safe_a}_vs_{safe_b}").resolve()
+        save_used_config(config_path, run_dir)
+        run_compare(config, run_dir)
+        return
 
     dataset_cfg = config.get("dataset", {})
     input_root_raw_list = normalize_input_roots(dataset_cfg.get("input_root", ""))
