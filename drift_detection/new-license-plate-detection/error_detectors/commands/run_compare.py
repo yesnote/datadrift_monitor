@@ -281,8 +281,10 @@ def _plot_fp_score_conditional_precision_compare(a: RunBundle, b: RunBundle, out
     fig, ax = plt.subplots(figsize=(6, 5))
     a_fp_score = 1.0 - np.clip(a.y_score, 0.0, 1.0)
     b_fp_score = 1.0 - np.clip(b.y_score, 0.0, 1.0)
-    xa, ya = _conditional_precision_curve(a.y_true, a_fp_score, bins=20)
-    xb, yb = _conditional_precision_curve(b.y_true, b_fp_score, bins=20)
+    a_fp_true = 1.0 - np.asarray(a.y_true, dtype=np.float64)
+    b_fp_true = 1.0 - np.asarray(b.y_true, dtype=np.float64)
+    xa, ya = _conditional_precision_curve(a_fp_true, a_fp_score, bins=20)
+    xb, yb = _conditional_precision_curve(b_fp_true, b_fp_score, bins=20)
     ax.plot([0.0, 1.0], [0.0, 1.0], color="gray", linestyle="--", linewidth=1.5, label="Oracle")
     if xa.size:
         ax.plot(xa, ya, color="#4C78A8", marker="o", markersize=3.5, linewidth=2.0, label=a.name)
