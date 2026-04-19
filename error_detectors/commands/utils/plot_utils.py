@@ -60,44 +60,50 @@ def _save_score_distribution(
     pos_name: str,
     neg_name: str,
 ) -> None:
-    fig, ax = plt.subplots(figsize=(6, 5))
-    pos_scores = y_score[y_true == 1]
-    neg_scores = y_score[y_true == 0]
+    with sns.axes_style("whitegrid"):
+        fig, ax = plt.subplots(figsize=(6, 5))
+        pos_scores = y_score[y_true == 1]
+        neg_scores = y_score[y_true == 0]
 
-    bins = 40
-    sns.set_theme(style="whitegrid")
-    if neg_scores.size > 0:
-        sns.histplot(
-            neg_scores,
-            bins=bins,
-            stat="density",
-            alpha=0.5,
-            element="step",
-            fill=True,
-            ax=ax,
-            label=f"{neg_name} (n={neg_scores.size})",
-        )
-    if pos_scores.size > 0:
-        sns.histplot(
-            pos_scores,
-            bins=bins,
-            stat="density",
-            alpha=0.5,
-            element="step",
-            fill=True,
-            ax=ax,
-            label=f"{pos_name} (n={pos_scores.size})",
-        )
-    if pos_scores.size == 0 and neg_scores.size == 0:
-        ax.text(0.5, 0.5, "No scores to plot", ha="center", va="center")
+        bins = 40
+        color_neg = "#4C78A8"
+        color_pos = "#E45756"
+        if neg_scores.size > 0:
+            sns.histplot(
+                neg_scores,
+                bins=bins,
+                stat="density",
+                alpha=0.45,
+                element="step",
+                fill=True,
+                color=color_neg,
+                ax=ax,
+                label=f"{neg_name} (n={neg_scores.size})",
+            )
+        if pos_scores.size > 0:
+            sns.histplot(
+                pos_scores,
+                bins=bins,
+                stat="density",
+                alpha=0.45,
+                element="step",
+                fill=True,
+                color=color_pos,
+                ax=ax,
+                label=f"{pos_name} (n={pos_scores.size})",
+            )
+        if pos_scores.size == 0 and neg_scores.size == 0:
+            ax.text(0.5, 0.5, "No scores to plot", ha="center", va="center")
 
-    ax.set_title(f"{pos_name} vs {neg_name} Score Distribution")
-    ax.set_xlabel(f"Predicted {pos_name} score")
-    ax.set_ylabel("Density")
-    ax.legend(loc="upper center")
-    fig.tight_layout()
-    fig.savefig(out_path, dpi=150)
-    plt.close(fig)
+        ax.set_facecolor("#f7f7f7")
+        ax.grid(True, which="major", axis="both", color="#d9d9d9", linewidth=0.8, alpha=0.8)
+        ax.set_title(f"{pos_name} vs {neg_name} Score Distribution")
+        ax.set_xlabel(f"Predicted {pos_name} score")
+        ax.set_ylabel("Density")
+        ax.legend(loc="upper center")
+        fig.tight_layout()
+        fig.savefig(out_path, dpi=150)
+        plt.close(fig)
 
 
 def _save_precision_at_k(y_true: np.ndarray, y_score: np.ndarray, out_path: Path) -> None:
