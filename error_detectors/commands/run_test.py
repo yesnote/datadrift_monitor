@@ -129,10 +129,10 @@ def run_test(config: dict[str, Any], run_dir: Path) -> Path:
     summary_std = {
         "model_file": "std",
         "model_index": -1,
-        "auroc": float(eval_df["auroc"].std(ddof=0)),
-        "ap": float(eval_df["ap"].std(ddof=0)),
-        "ece": float(eval_df["ece"].std(ddof=0)),
-        "ace": float(eval_df["ace"].std(ddof=0)),
+        "auroc": float(eval_df["auroc"].std(ddof=1)),
+        "ap": float(eval_df["ap"].std(ddof=1)),
+        "ece": float(eval_df["ece"].std(ddof=1)),
+        "ace": float(eval_df["ace"].std(ddof=1)),
     }
     eval_df = pd.concat([eval_df, pd.DataFrame([summary, summary_std])], ignore_index=True)
     eval_df.to_csv(results_dir / "evaluation_results.csv", index=False)
