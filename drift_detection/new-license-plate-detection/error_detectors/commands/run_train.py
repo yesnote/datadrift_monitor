@@ -472,7 +472,7 @@ def run_train(config: dict[str, Any], run_dir: Path) -> Path:
             eval_rows.append({"auroc": float(auroc), "ap": float(ap)})
 
             pd.DataFrame({"y_test": y_test, "y_pred": y_pred}).to_csv(results_dir / f"eval_data_{i}.csv", index=False)
-            save_eval_plots(y_test, y_pred, out_dir=out_dir, model_name=f"model_{i}")
+            save_eval_plots(y_test, y_pred, out_dir=out_dir, model_name=f"model_{i}", label_col=label_col)
             save_object(estimator, models_dir / f"model_{i}")
     elif process == "repeat":
         repeat_cfg = exp_cfg.get("repeat", {})
@@ -503,7 +503,7 @@ def run_train(config: dict[str, Any], run_dir: Path) -> Path:
             eval_rows.append({"auroc": float(auroc), "ap": float(ap)})
 
             pd.DataFrame({"y_test": y_test, "y_pred": y_pred}).to_csv(results_dir / f"eval_data_{i}.csv", index=False)
-            save_eval_plots(y_test, y_pred, out_dir=out_dir, model_name=f"model_{i}")
+            save_eval_plots(y_test, y_pred, out_dir=out_dir, model_name=f"model_{i}", label_col=label_col)
             save_object(estimator, models_dir / f"model_{i}")
     else:
         raise ValueError("experiment.process must be 'kfold' or 'repeat'.")

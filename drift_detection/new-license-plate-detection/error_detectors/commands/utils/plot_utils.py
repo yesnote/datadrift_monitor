@@ -52,21 +52,27 @@ def _save_curve_pr(y_true: np.ndarray, y_score: np.ndarray, out_path: Path) -> N
     plt.close(fig)
 
 
-def _save_score_distribution(y_true: np.ndarray, y_score: np.ndarray, out_path: Path) -> None:
+def _save_score_distribution(
+    y_true: np.ndarray,
+    y_score: np.ndarray,
+    out_path: Path,
+    pos_name: str,
+    neg_name: str,
+) -> None:
     fig, ax = plt.subplots(figsize=(6, 5))
-    fn_scores = y_score[y_true == 1]
-    non_fn_scores = y_score[y_true == 0]
+    pos_scores = y_score[y_true == 1]
+    neg_scores = y_score[y_true == 0]
 
     bins = 40
-    if non_fn_scores.size > 0:
-        ax.hist(non_fn_scores, bins=bins, alpha=0.6, density=True, label=f"non-FN (n={non_fn_scores.size})")
-    if fn_scores.size > 0:
-        ax.hist(fn_scores, bins=bins, alpha=0.6, density=True, label=f"FN (n={fn_scores.size})")
-    if fn_scores.size == 0 and non_fn_scores.size == 0:
+    if neg_scores.size > 0:
+        ax.hist(neg_scores, bins=bins, alpha=0.6, density=True, label=f"{neg_name} (n={neg_scores.size})")
+    if pos_scores.size > 0:
+        ax.hist(pos_scores, bins=bins, alpha=0.6, density=True, label=f"{pos_name} (n={pos_scores.size})")
+    if pos_scores.size == 0 and neg_scores.size == 0:
         ax.text(0.5, 0.5, "No scores to plot", ha="center", va="center")
 
-    ax.set_title("FN vs non-FN Score Distribution")
-    ax.set_xlabel("Predicted FN score")
+    ax.set_title(f"{pos_name} vs {neg_name} Score Distribution")
+    ax.set_xlabel(f"Predicted {pos_name} score")
     ax.set_ylabel("Density")
     ax.legend(loc="upper center")
     fig.tight_layout()
@@ -107,11 +113,25 @@ def _save_precision_at_k(y_true: np.ndarray, y_score: np.ndarray, out_path: Path
     plt.close(fig)
 
 
-def save_eval_plots(y_true: np.ndarray, y_score: np.ndarray, out_dir: Path, model_name: str) -> None:
+def save_eval_plots(
+    y_true: np.ndarray,
+    y_score: np.ndarray,
+    out_dir: Path,
+    model_name: str,
+    label_col: str = "fn",
+) -> None:
     plot_dir = out_dir / "plots" / model_name
     plot_dir.mkdir(parents=True, exist_ok=True)
+    label_key = str(label_col).strip().lower()
+    if label_key == "tp":
+        pos_name = "FP"
+        neg_name = "non-FP"
+        dist_name = "score_distribution_fp_vs_nonfp.png"
+    else:
+        pos_name = "FN"
+        neg_name = "non-FN"
+        dist_name = "score_distribution_fn_vs_nonfn.png"
     _save_curve_roc(y_true, y_score, plot_dir / "roc_curve.png")
     _save_curve_pr(y_true, y_score, plot_dir / "pr_curve.png")
-    _save_score_distribution(y_true, y_score, plot_dir / "score_distribution_fn_vs_nonfn.png")
+    _save_score_distribution(y_true, y_score, plot_dir / dist_name, pos_name=pos_name, neg_name=neg_name)
     _save_precision_at_k(y_true, y_score, plot_dir / "precision_at_k.png")
-
