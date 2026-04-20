@@ -2989,7 +2989,7 @@ def run_layer_grad_csv(config, run_dir):
         target_layers = list(selected_layers)
         viz_target_layers = list(selected_layers)
         print(
-            "[INFO] layer_grad disc_layers selected "
+            "[INFO] discriminative layers "
             f"(rule={disc_rule}, used_grad={disc_used_grad}, score={disc_separation_score}, topk={int(disc_topk)}): "
             + ", ".join(selected_layers)
         )
