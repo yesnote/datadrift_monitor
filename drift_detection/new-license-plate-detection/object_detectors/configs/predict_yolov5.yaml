@@ -155,6 +155,8 @@ output:
         used_grad: raw # raw | norm
         separation_score: effect_size # effect_size | fisher_ratio
         topk: 3
+        fn_non_fn_map: object_detectors/runs/references/04-19-2026_21;35_layer_grad_null_target_loss_fn-non_fn
+        ref_map: object_detectors/runs/references/04-19-2026_21;10_layer_grad_null_target_loss_noise
     reference:
       gt: object_detectors/runs/fn_detectors/04-08-2026_14;10_gt
       group: [fn, non_fn]

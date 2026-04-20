@@ -456,6 +456,46 @@ def _save_map_nodes_csv(map_2d, out_path):
                 writer.writerow({"layer_idx": layer_idx, "filter_idx": filter_idx, "value": val})
 
 
+def _load_map_nodes_csv(csv_path):
+    csv_path = Path(csv_path)
+    if not csv_path.is_file():
+        raise FileNotFoundError(f"Map CSV not found: {csv_path}")
+    df = pd.read_csv(csv_path)
+    required = {"layer_idx", "filter_idx", "value"}
+    if not required.issubset(df.columns):
+        raise ValueError(f"Map CSV must contain columns {sorted(required)}: {csv_path}")
+    if df.empty:
+        return np.zeros((0, 0), dtype=np.float32)
+    li = df["layer_idx"].astype(int).to_numpy()
+    fi = df["filter_idx"].astype(int).to_numpy()
+    vv = df["value"].astype(float).to_numpy()
+    h = int(li.max()) + 1
+    w = int(fi.max()) + 1
+    out = np.full((h, w), np.nan, dtype=np.float32)
+    out[li, fi] = vv.astype(np.float32, copy=False)
+    return out
+
+
+def _resolve_ref_map_path(root_path, map_name):
+    root = Path(root_path)
+    if not root.is_absolute():
+        root = (Path.cwd() / root).resolve()
+    return root / "ref_maps" / f"{map_name}.csv"
+
+
+def _load_disc_source_maps(fn_non_fn_root, ref_root):
+    paths = {
+        "fn_raw": _resolve_ref_map_path(fn_non_fn_root, "fn_raw_map"),
+        "non_fn_raw": _resolve_ref_map_path(fn_non_fn_root, "non_fn_raw_map"),
+        "fn_norm": _resolve_ref_map_path(fn_non_fn_root, "fn_norm_map"),
+        "non_fn_norm": _resolve_ref_map_path(fn_non_fn_root, "non_fn_norm_map"),
+        "noise_raw": _resolve_ref_map_path(ref_root, "noise_raw_map"),
+        "noise_norm": _resolve_ref_map_path(ref_root, "noise_norm_map"),
+    }
+    maps = {k: _load_map_nodes_csv(v) for k, v in paths.items()}
+    return maps, {k: str(v) for k, v in paths.items()}
+
+
 def _compute_disc_layer_scores(
     layer_names,
     fn_map,
@@ -2777,6 +2817,8 @@ def run_layer_grad_csv(config, run_dir):
     disc_used_grad = str(parsed.get("layer_disc_used_grad", "raw")).strip().lower()
     disc_separation_score = str(parsed.get("layer_disc_separation_score", "effect_size")).strip().lower()
     disc_topk = max(1, int(parsed.get("layer_disc_topk", 3)))
+    disc_fn_non_fn_map_root = str(parsed.get("layer_disc_fn_non_fn_map_root", "")).strip()
+    disc_ref_map_root = str(parsed.get("layer_disc_ref_map_root", "")).strip()
     layer_map_reduction = parsed["layer_map_reduction"]
     layer_vector_reduction = parsed["layer_vector_reduction"]
     layer_pseudo_gt = parsed.get("layer_pseudo_gt", "cand")
@@ -2870,163 +2912,68 @@ def run_layer_grad_csv(config, run_dir):
             "used_grad": disc_used_grad,
             "separation_score": disc_separation_score,
             "topk": int(disc_topk),
+            "fn_non_fn_map": disc_fn_non_fn_map_root,
+            "ref_map": disc_ref_map_root,
         },
         "selected_layers": [],
     }
     disc_rows = []
+    disc_noise_map_for_selected = None
 
     if disc_enabled:
         if unit != "image":
             raise ValueError("gradient.layer='disc_layers' requires output.layer_grad.unit='image'.")
-        if not reference_enabled:
-            raise ValueError("gradient.layer='disc_layers' requires layer_grad reference settings to be enabled.")
-        if null_image_mode:
-            raise ValueError("gradient.layer='disc_layers' requires fn/non_fn groups, but null_image mode has only noise.")
-        if "fn" not in active_reference_groups or "non_fn" not in active_reference_groups:
-            raise ValueError("gradient.layer='disc_layers' requires reference.group to include both 'fn' and 'non_fn'.")
-        if disc_rule == "ref_corrected":
+        if not disc_fn_non_fn_map_root or not disc_ref_map_root:
             raise ValueError(
-                "gradient.disc_layers.disc_rule='ref_corrected' requires noise reference map, "
-                "which is unavailable in the current fn/non_fn reference run."
+                "gradient.layer='disc_layers' requires gradient.disc_layers.fn_non_fn_map and gradient.disc_layers.ref_map."
             )
         if disc_used_grad not in {"raw", "norm"}:
             raise ValueError("gradient.disc_layers.used_grad must be one of {'raw','norm'}.")
+        if disc_rule not in {"raw", "ref_corrected"}:
+            raise ValueError("gradient.disc_layers.disc_rule must be one of {'raw','ref_corrected'}.")
         if disc_separation_score not in {"effect_size", "fisher_ratio"}:
             raise ValueError("gradient.disc_layers.separation_score must be one of {'effect_size','fisher_ratio'}.")
 
-        disc_layer_param_shapes = {}
-        for layer_name in target_layers:
-            try:
-                disc_layer_param_shapes[layer_name] = tuple(resolve_layer_parameter(detector.model, layer_name).shape)
-            except Exception:
-                disc_layer_param_shapes[layer_name] = None
-        disc_catid_to_name = load_gt_category_maps(config, split)
-        disc_iou_match_threshold = parsed["gt_iou_match_threshold"]
-        disc_gt_by_id, disc_gt_by_base = {}, {}
-        if viz_gt_csv:
-            gt_path = Path(viz_gt_csv)
-            if not gt_path.is_absolute():
-                gt_path = (Path.cwd() / gt_path).resolve()
-            disc_gt_by_id, disc_gt_by_base = _load_layer_grad_gt_lookup(gt_path)
+        disc_maps, disc_map_paths = _load_disc_source_maps(disc_fn_non_fn_map_root, disc_ref_map_root)
+        if disc_used_grad == "norm":
+            fn_map = disc_maps["fn_norm"]
+            non_fn_map = disc_maps["non_fn_norm"]
+            noise_map = disc_maps["noise_norm"]
+        else:
+            fn_map = disc_maps["fn_raw"]
+            non_fn_map = disc_maps["non_fn_raw"]
+            noise_map = disc_maps["noise_raw"]
 
-        def _new_disc_state():
-            return {
-                "count": 0,
-                "mean_raw": None,
-                "obs_count": None,
-                "shape": None,
-                "stable_steps": 0,
-                "converged": False,
-                "done": False,
-                "final_delta_l2": float("inf"),
-            }
-
-        disc_states = {"fn": _new_disc_state(), "non_fn": _new_disc_state()}
-
-        def _disc_group_done(group_key):
-            st = disc_states[group_key]
-            if st["done"]:
-                return True
-            if st["converged"]:
-                st["done"] = True
-                return True
-            if st["count"] >= conv_max_samples:
-                st["done"] = True
-                return True
-            return False
-
-        def _disc_all_done():
-            return all(_disc_group_done(g) for g in ("fn", "non_fn"))
-
-        for images, targets in tqdm(
-            dataloader,
-            desc=f"Object Detector ({mode} - {uncertainty} - disc_layers mining)",
-            total=len(dataloader),
-        ):
-            if _disc_all_done():
-                break
-            image_list = _as_image_list(images)
-            infer_batch, ratios, pads, _resized_chws = _prepare_infer_batch(detector, image_list, device, auto=False)
-            batch_preds = None
-            batch_grad_stats_all = collect_batch_image_layer_grads_per_target(
-                detector=detector,
-                input_tensor=infer_batch,
-                target_values=collect_target_values,
-                target_layers=target_layers,
-                map_reduction=layer_map_reduction,
-                vector_reduction=[],
-                pre_nms=pre_nms,
-                pre_nms_ratio=pre_nms_ratio,
-                pseudo_gt=viz_pseudo_gt if viz_enabled else layer_pseudo_gt,
+        if disc_rule == "ref_corrected":
+            disc_rows = _compute_disc_layer_scores(
+                layer_names=target_layers,
+                fn_map=fn_map,
+                non_fn_map=non_fn_map,
+                ref_map=noise_map,
+                disc_rule=disc_rule,
+                used_grad="raw",
+                separation_score=disc_separation_score,
             )
-            for sample_idx in range(len(image_list)):
-                if _disc_all_done():
-                    break
-                target = targets[sample_idx]
-                image_id = int(target["image_id"][0].item())
-                image_path = target["path"]
-                fn_flag = None
-                if viz_gt_csv:
-                    if image_id in disc_gt_by_id:
-                        fn_flag = int(disc_gt_by_id[image_id])
-                    else:
-                        base_name = Path(str(image_path)).name
-                        if base_name in disc_gt_by_base:
-                            fn_flag = int(disc_gt_by_base[base_name])
-                if fn_flag is None:
-                    if batch_preds is None:
-                        detector.zero_grad(set_to_none=True)
-                        with torch.no_grad():
-                            batch_preds, _bz_logits, _bz_obj, _bz_feat = detector(infer_batch)
-                    pred_boxes = batch_preds[0][sample_idx]
-                    pred_class_names = batch_preds[2][sample_idx]
-                    gt_boxes = map_boxes_to_letterbox(target["boxes"], ratios[sample_idx], pads[sample_idx])
-                    gt_class_names = _resolve_gt_class_names(target, disc_catid_to_name)
-                    fn_flag = int(
-                        has_fn_for_image(
-                            gt_boxes=gt_boxes,
-                            gt_class_names=gt_class_names,
-                            pred_boxes=pred_boxes,
-                            pred_class_names=pred_class_names,
-                            iou_match_threshold=disc_iou_match_threshold,
-                        )
-                    )
-                group_key = "fn" if int(fn_flag) == 1 else "non_fn"
-                if _disc_group_done(group_key):
-                    continue
-                grad_stats_all = batch_grad_stats_all[sample_idx]
-                grad_map_raw = _build_layer_filter_map_from_grad_stats(
-                    grad_stats=grad_stats_all,
-                    target_values=viz_target_values,
-                    target_layers=target_layers,
-                    layer_param_shapes=disc_layer_param_shapes,
-                )
-                st = disc_states[group_key]
-                delta_l2 = _update_running_mean_map(st, grad_map_raw)
-                if st["count"] >= conv_min_samples and np.isfinite(delta_l2) and delta_l2 <= conv_delta_l2_tol:
-                    st["stable_steps"] += 1
-                else:
-                    st["stable_steps"] = 0
-                if st["stable_steps"] >= conv_patience:
-                    st["converged"] = True
-            del infer_batch
-            if batch_preds is not None:
-                del batch_preds
-            del batch_grad_stats_all
-
-        fn_map = disc_states["fn"]["mean_raw"]
-        non_fn_map = disc_states["non_fn"]["mean_raw"]
-        if fn_map is None or non_fn_map is None:
-            raise ValueError("disc_layers mining failed: missing fn/non_fn reference maps.")
-        disc_rows = _compute_disc_layer_scores(
-            layer_names=target_layers,
-            fn_map=fn_map,
-            non_fn_map=non_fn_map,
-            ref_map=None,
-            disc_rule=disc_rule,
-            used_grad=disc_used_grad,
-            separation_score=disc_separation_score,
-        )
+        elif disc_used_grad == "raw":
+            disc_rows = _compute_disc_layer_scores(
+                layer_names=target_layers,
+                fn_map=fn_map,
+                non_fn_map=noise_map,
+                ref_map=None,
+                disc_rule="raw",
+                used_grad="raw",
+                separation_score=disc_separation_score,
+            )
+        else:
+            disc_rows = _compute_disc_layer_scores(
+                layer_names=target_layers,
+                fn_map=fn_map,
+                non_fn_map=non_fn_map,
+                ref_map=None,
+                disc_rule="raw",
+                used_grad="raw",
+                separation_score=disc_separation_score,
+            )
         selected_layers = []
         for row in disc_rows:
             if np.isfinite(float(row["score"])):
@@ -3041,6 +2988,16 @@ def run_layer_grad_csv(config, run_dir):
 
         target_layers = list(selected_layers)
         viz_target_layers = list(selected_layers)
+        selected_indices = [int(row["layer_idx"]) for row in disc_rows if int(row.get("selected", 0)) == 1]
+        if selected_indices:
+            max_idx = max(selected_indices)
+            if noise_map.ndim == 2 and max_idx < int(noise_map.shape[0]):
+                disc_noise_map_for_selected = noise_map[selected_indices, :].astype(np.float32, copy=True)
+            else:
+                disc_noise_map_for_selected = np.zeros((len(selected_indices), 0), dtype=np.float32)
+        else:
+            disc_noise_map_for_selected = np.zeros((0, 0), dtype=np.float32)
+        disc_summary["map_paths"] = disc_map_paths
         disc_summary["selected_layers"] = list(selected_layers)
 
     fieldnames = ["image_id", "image_path"]
@@ -3051,7 +3008,7 @@ def run_layer_grad_csv(config, run_dir):
             fieldnames.append(f"{target_value}_{layer_name}")
 
     layer_param_shapes = {}
-    if unit == "image" and viz_enabled:
+    if unit == "image" and (viz_enabled or (save_csv and disc_enabled)):
         for layer_name in viz_target_layers:
             try:
                 layer_param_shapes[layer_name] = tuple(resolve_layer_parameter(detector.model, layer_name).shape)
@@ -3254,10 +3211,37 @@ def run_layer_grad_csv(config, run_dir):
 
                     if csv_writer is not None:
                         row = {"image_id": image_id, "image_path": image_path}
+                        transformed_maps_by_target = {}
+                        if disc_enabled:
+                            for target_value in target_values:
+                                map_raw_t = _build_layer_filter_map_from_grad_stats(
+                                    grad_stats=grad_stats_all,
+                                    target_values=[target_value],
+                                    target_layers=target_layers,
+                                    layer_param_shapes=layer_param_shapes,
+                                )
+                                map_use_t = map_raw_t
+                                if disc_used_grad == "norm":
+                                    map_use_t = _normalize_layer_map(map_use_t, mode=viz_normalize)
+                                if disc_rule == "ref_corrected" and disc_noise_map_for_selected is not None:
+                                    target_shape = _merge_map_shape(map_use_t.shape, disc_noise_map_for_selected.shape)
+                                    map_use_t = _pad_map_2d(map_use_t, target_shape) - _pad_map_2d(
+                                        disc_noise_map_for_selected, target_shape
+                                    )
+                                transformed_maps_by_target[target_value] = map_use_t
                         for target_value in target_values:
-                            for layer_name in target_layers:
+                            for layer_idx, layer_name in enumerate(target_layers):
                                 grad_key = f"{target_value}_{layer_name}"
-                                grad_value = grad_stats_all.get(grad_key, [])
+                                if disc_enabled:
+                                    map_t = transformed_maps_by_target.get(target_value, np.zeros((0, 0), dtype=np.float32))
+                                    if map_t.ndim == 2 and layer_idx < int(map_t.shape[0]):
+                                        vec_np = map_t[layer_idx]
+                                        vec_np = vec_np[np.isfinite(vec_np)].astype(np.float32, copy=False)
+                                        grad_value = vec_np.tolist()
+                                    else:
+                                        grad_value = []
+                                else:
+                                    grad_value = grad_stats_all.get(grad_key, [])
                                 if layer_vector_reduction:
                                     vec = torch.tensor(_vector_from_grad_value(grad_value), dtype=torch.float32)
                                     stats = map_grad_tensor_to_numbers(vec)
@@ -3401,26 +3385,6 @@ def run_layer_grad_csv(config, run_dir):
                         m = group_states[g]["mean_raw"]
                         norm = _normalize_layer_map(m, mode=viz_normalize) if m is not None else np.zeros((0, 0), dtype=np.float32)
                         _save_map_nodes_csv(norm, ref_dir / f"{g}_norm_map.csv")
-            if disc_enabled:
-                ref_dir = run_dir / "ref_maps"
-                ref_dir.mkdir(parents=True, exist_ok=True)
-                disc_csv_path = ref_dir / "disc_layer_scores.csv"
-                with open(disc_csv_path, "w", newline="", encoding="utf-8") as f:
-                    writer = csv.DictWriter(
-                        f,
-                        fieldnames=["rank", "layer_idx", "layer_name", "score", "selected"],
-                    )
-                    writer.writeheader()
-                    for row in disc_rows:
-                        writer.writerow(
-                            {
-                                "rank": int(row.get("rank", 0)),
-                                "layer_idx": int(row.get("layer_idx", -1)),
-                                "layer_name": str(row.get("layer_name", "")),
-                                "score": float(row.get("score", float("nan"))),
-                                "selected": int(row.get("selected", 0)),
-                            }
-                        )
         if gt_match_stats.get("unmatched", 0) > 0:
             print(f"[layer_grad] unmatched GT rows: {int(gt_match_stats['unmatched'])}")
         viz_summary = {
@@ -3474,6 +3438,26 @@ def run_layer_grad_csv(config, run_dir):
         }
         with open(viz_dir / "summary.json", "w", encoding="utf-8") as f:
             json.dump(viz_summary, f, ensure_ascii=False, indent=2)
+    if disc_enabled:
+        ref_dir = run_dir / "ref_maps"
+        ref_dir.mkdir(parents=True, exist_ok=True)
+        disc_csv_path = ref_dir / "disc_layer_scores.csv"
+        with open(disc_csv_path, "w", newline="", encoding="utf-8") as f:
+            writer = csv.DictWriter(
+                f,
+                fieldnames=["rank", "layer_idx", "layer_name", "score", "selected"],
+            )
+            writer.writeheader()
+            for row in disc_rows:
+                writer.writerow(
+                    {
+                        "rank": int(row.get("rank", 0)),
+                        "layer_idx": int(row.get("layer_idx", -1)),
+                        "layer_name": str(row.get("layer_name", "")),
+                        "score": float(row.get("score", float("nan"))),
+                        "selected": int(row.get("selected", 0)),
+                    }
+                )
     del detector
     if device.type == "cuda":
         torch.cuda.empty_cache()
