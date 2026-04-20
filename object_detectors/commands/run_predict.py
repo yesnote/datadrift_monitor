@@ -2988,6 +2988,11 @@ def run_layer_grad_csv(config, run_dir):
 
         target_layers = list(selected_layers)
         viz_target_layers = list(selected_layers)
+        print(
+            "[INFO] layer_grad disc_layers selected "
+            f"(rule={disc_rule}, used_grad={disc_used_grad}, score={disc_separation_score}, topk={int(disc_topk)}): "
+            + ", ".join(selected_layers)
+        )
         selected_indices = [int(row["layer_idx"]) for row in disc_rows if int(row.get("selected", 0)) == 1]
         if selected_indices:
             max_idx = max(selected_indices)
