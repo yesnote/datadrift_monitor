@@ -350,6 +350,8 @@ def parse_output_config(output_cfg):
     layer_disc_used_grad = "raw"
     layer_disc_separation_score = "effect_size"
     layer_disc_topk = 3
+    layer_disc_fn_non_fn_map_root = ""
+    layer_disc_ref_map_root = ""
 
     if uncertainty == "feature_grad":
         g = as_dict(feature_grad_cfg.get("gradient", {}))
@@ -385,6 +387,8 @@ def parse_output_config(output_cfg):
             str(disc_cfg.get("separation_score", "effect_size")).strip().lower() or "effect_size"
         )
         layer_disc_topk = max(1, as_int(disc_cfg.get("topk", 3), 3))
+        layer_disc_fn_non_fn_map_root = str(disc_cfg.get("fn_non_fn_map", "")).strip()
+        layer_disc_ref_map_root = str(disc_cfg.get("ref_map", "")).strip()
 
     save_image_enabled = bool(save_image_cfg.get("enabled", bool(save_image_cfg)))
     gt_image_step = as_int(save_image_cfg.get("step", 1), 1)
@@ -527,6 +531,8 @@ def parse_output_config(output_cfg):
         "layer_disc_used_grad": layer_disc_used_grad,
         "layer_disc_separation_score": layer_disc_separation_score,
         "layer_disc_topk": layer_disc_topk,
+        "layer_disc_fn_non_fn_map_root": layer_disc_fn_non_fn_map_root,
+        "layer_disc_ref_map_root": layer_disc_ref_map_root,
         "save_image_enabled": save_image_enabled,
         "save_image_gt_step": gt_image_step,
         "save_image_gt_max_num": gt_image_max_num,
