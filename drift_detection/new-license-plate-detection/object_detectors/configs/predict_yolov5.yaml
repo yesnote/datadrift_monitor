@@ -10,14 +10,14 @@ model:
 
 dataset:
   used_dataset:   # coco | voc | openimages | null_image
-    # - coco
-    - null_image
+    - coco
+    # - null_image
   split:  # train | val | test
-    # - train
-    - val
+    - train
+    # - val
   
   coco:
-    root: D:/DataDrift/datasets/COCO
+    root: D:/SEONGJIN/datasets/COCO
     train_split: train2017
     val_split: val2017
     test_split: test2017
@@ -144,20 +144,19 @@ output:
   layer_grad:
     unit: image  # image | bbox
     pre_nms:
-      enabled: true
-      ratio: 0.0001
+      enabled: false
+      ratio: 0.0
     gradient:
       scalar: [loss]
-      layer: all_conv # all_conv | disc_layers | ["model.24.m.0", "model.24.m.1", "model.24.m.2"]
+      layer: disc_layers # all_conv | disc_layers | ["model.24.m.0", "model.24.m.1", "model.24.m.2"]
       target: null_target # cand_target | null_target
       disc_layers:
         fn_non_fn_map: object_detectors/runs/references/04-19-2026_21;35_layer_grad_null_target_loss_fn-non_fn
-        ref_map: object_detectors/runs/references/04-19-2026_21;10_layer_grad_null_target_loss_noise
-        disc_rule: raw # ref_corrected | raw
-        used_grad: raw # raw | norm
+        ref_map: object_detectors/runs/references/04-19-2026_14;24_layer_grad_null_target_loss_noise
+        disc_rule: ref_corrected # ref_corrected | raw
+        used_grad: norm # raw | norm
         separation_score: effect_size # effect_size | fisher_ratio
         topk: 3
-
     reference:
       gt: object_detectors/runs/fn_detectors/04-08-2026_14;10_gt
       group: [fn, non_fn]
@@ -168,19 +167,19 @@ output:
 
     save_csv:
       data:
-        enabled: false
+        enabled: true
         reduction:
           map: none
           vector: [L1, L2, min, max, mean, std]
       reference:
         progress:
-          log: true # tensorboard event log
-          raw_map: true
-          norm_map: true
+          log: false # tensorboard event log
+          raw_map: false
+          norm_map: false
           step: 10
         final:
-          raw_map: true
-          norm_map: true # layer min-max normalization
+          raw_map: false
+          norm_map: false # layer min-max normalization
     
     save_image:
       per_image:
@@ -189,10 +188,10 @@ output:
         max_num: 10
       reference:
         progress:
-          raw_map: true
-          norm_map: true
+          raw_map: false
+          norm_map: false
           step: 10
         final:
-          raw_map: true
-          norm_map: true # layer min-max normalization
-          profile: true
+          raw_map: false
+          norm_map: false # layer min-max normalization
+          profile: false
