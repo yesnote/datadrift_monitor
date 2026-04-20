@@ -148,8 +148,13 @@ output:
       ratio: 0.0001
     gradient:
       scalar: [loss]
-      layer: all_conv # all_conv | ["model.24.m.0", "model.24.m.1", "model.24.m.2"]
+      layer: all_conv # all_conv | disc_layers | ["model.24.m.0", "model.24.m.1", "model.24.m.2"]
       target: null_target # cand_target | null_target
+      disc_layers:
+        disc_rule: raw # ref_corrected | raw
+        used_grad: raw # raw | norm
+        separation_score: effect_size # effect_size | fisher_ratio
+        topk: 3
     reference:
       gt: object_detectors/runs/fn_detectors/04-08-2026_14;10_gt
       group: [fn, non_fn]
