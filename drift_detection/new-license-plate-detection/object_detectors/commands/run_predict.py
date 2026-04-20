@@ -456,6 +456,65 @@ def _save_map_nodes_csv(map_2d, out_path):
                 writer.writerow({"layer_idx": layer_idx, "filter_idx": filter_idx, "value": val})
 
 
+def _compute_disc_layer_scores(
+    layer_names,
+    fn_map,
+    non_fn_map,
+    ref_map=None,
+    *,
+    disc_rule="ref_corrected",
+    used_grad="raw",
+    separation_score="effect_size",
+):
+    fn_use = fn_map if fn_map is not None else np.zeros((0, 0), dtype=np.float32)
+    non_fn_use = non_fn_map if non_fn_map is not None else np.zeros((0, 0), dtype=np.float32)
+    ref_use = ref_map if ref_map is not None else np.zeros((0, 0), dtype=np.float32)
+    if used_grad == "norm":
+        fn_use = _normalize_layer_map(fn_use, mode="layer_minmax")
+        non_fn_use = _normalize_layer_map(non_fn_use, mode="layer_minmax")
+        ref_use = _normalize_layer_map(ref_use, mode="layer_minmax")
+
+    if disc_rule == "ref_corrected":
+        target_shape = _merge_map_shape(fn_use.shape, non_fn_use.shape)
+        target_shape = _merge_map_shape(target_shape, ref_use.shape)
+        fn_use = _pad_map_2d(fn_use, target_shape)
+        non_fn_use = _pad_map_2d(non_fn_use, target_shape)
+        ref_use = _pad_map_2d(ref_use, target_shape)
+        fn_use = fn_use - ref_use
+        non_fn_use = non_fn_use - ref_use
+
+    eps = 1.0e-8
+    rows = []
+    n_layers = int(min(len(layer_names), fn_use.shape[0] if fn_use.ndim == 2 else 0, non_fn_use.shape[0] if non_fn_use.ndim == 2 else 0))
+    for layer_idx in range(n_layers):
+        layer_name = str(layer_names[layer_idx])
+        fn_row = fn_use[layer_idx]
+        non_fn_row = non_fn_use[layer_idx]
+        fn_mask = np.isfinite(fn_row)
+        non_fn_mask = np.isfinite(non_fn_row)
+        common = fn_mask & non_fn_mask
+        if not common.any():
+            score = float("-inf")
+        else:
+            fn_vals = fn_row[common].astype(np.float64, copy=False)
+            non_fn_vals = non_fn_row[common].astype(np.float64, copy=False)
+            diff = fn_vals - non_fn_vals
+            mu_dist_l2 = float(np.sqrt(np.sum(diff * diff)))
+            var_fn = float(np.var(fn_vals)) if fn_vals.size > 0 else 0.0
+            var_non = float(np.var(non_fn_vals)) if non_fn_vals.size > 0 else 0.0
+            std_fn = float(np.sqrt(var_fn))
+            std_non = float(np.sqrt(var_non))
+            if separation_score == "fisher_ratio":
+                score = (mu_dist_l2 * mu_dist_l2) / (var_fn + var_non + eps)
+            else:
+                score = mu_dist_l2 / (std_fn + std_non + eps)
+        rows.append({"layer_idx": layer_idx, "layer_name": layer_name, "score": float(score)})
+    rows = sorted(rows, key=lambda x: x["score"], reverse=True)
+    for rank, row in enumerate(rows, start=1):
+        row["rank"] = int(rank)
+    return rows
+
+
 def _load_layer_grad_gt_lookup(gt_csv_path):
     df = pd.read_csv(gt_csv_path)
     required_cols = {"image_id", "image_path", "fn"}
@@ -2709,6 +2768,15 @@ def run_layer_grad_csv(config, run_dir):
     unit = parsed["unit"]
     target_values = parsed["layer_target_values"]
     target_layers = parsed["layer_target_layers"]
+    if isinstance(target_layers, (list, tuple)):
+        _disc_tokens = [str(v).strip().lower() for v in target_layers]
+    else:
+        _disc_tokens = [str(target_layers).strip().lower()]
+    disc_enabled = any(tok == "disc_layers" for tok in _disc_tokens)
+    disc_rule = str(parsed.get("layer_disc_rule", "ref_corrected")).strip().lower()
+    disc_used_grad = str(parsed.get("layer_disc_used_grad", "raw")).strip().lower()
+    disc_separation_score = str(parsed.get("layer_disc_separation_score", "effect_size")).strip().lower()
+    disc_topk = max(1, int(parsed.get("layer_disc_topk", 3)))
     layer_map_reduction = parsed["layer_map_reduction"]
     layer_vector_reduction = parsed["layer_vector_reduction"]
     layer_pseudo_gt = parsed.get("layer_pseudo_gt", "cand")
@@ -2785,13 +2853,195 @@ def run_layer_grad_csv(config, run_dir):
         raise ValueError("Loaded 0 images. Check dataset root/image_dir/split configuration in YAML.")
 
     detector, device = build_detector(config)
-    target_layers = expand_layer_names(detector.model, target_layers)
+    if disc_enabled:
+        target_layers = expand_layer_names(detector.model, ["all_conv"])
+    else:
+        target_layers = expand_layer_names(detector.model, target_layers)
     if not viz_target_values:
         viz_target_values = list(target_values)
     if not viz_target_layers:
         viz_target_layers = list(target_layers)
     viz_target_layers = expand_layer_names(detector.model, viz_target_layers)
     collect_target_values = list(dict.fromkeys(list(target_values) + list(viz_target_values)))
+    disc_summary = {
+        "enabled": bool(disc_enabled),
+        "config": {
+            "disc_rule": disc_rule,
+            "used_grad": disc_used_grad,
+            "separation_score": disc_separation_score,
+            "topk": int(disc_topk),
+        },
+        "selected_layers": [],
+    }
+    disc_rows = []
+
+    if disc_enabled:
+        if unit != "image":
+            raise ValueError("gradient.layer='disc_layers' requires output.layer_grad.unit='image'.")
+        if not reference_enabled:
+            raise ValueError("gradient.layer='disc_layers' requires layer_grad reference settings to be enabled.")
+        if null_image_mode:
+            raise ValueError("gradient.layer='disc_layers' requires fn/non_fn groups, but null_image mode has only noise.")
+        if "fn" not in active_reference_groups or "non_fn" not in active_reference_groups:
+            raise ValueError("gradient.layer='disc_layers' requires reference.group to include both 'fn' and 'non_fn'.")
+        if disc_rule == "ref_corrected":
+            raise ValueError(
+                "gradient.disc_layers.disc_rule='ref_corrected' requires noise reference map, "
+                "which is unavailable in the current fn/non_fn reference run."
+            )
+        if disc_used_grad not in {"raw", "norm"}:
+            raise ValueError("gradient.disc_layers.used_grad must be one of {'raw','norm'}.")
+        if disc_separation_score not in {"effect_size", "fisher_ratio"}:
+            raise ValueError("gradient.disc_layers.separation_score must be one of {'effect_size','fisher_ratio'}.")
+
+        disc_layer_param_shapes = {}
+        for layer_name in target_layers:
+            try:
+                disc_layer_param_shapes[layer_name] = tuple(resolve_layer_parameter(detector.model, layer_name).shape)
+            except Exception:
+                disc_layer_param_shapes[layer_name] = None
+        disc_catid_to_name = load_gt_category_maps(config, split)
+        disc_iou_match_threshold = parsed["gt_iou_match_threshold"]
+        disc_gt_by_id, disc_gt_by_base = {}, {}
+        if viz_gt_csv:
+            gt_path = Path(viz_gt_csv)
+            if not gt_path.is_absolute():
+                gt_path = (Path.cwd() / gt_path).resolve()
+            disc_gt_by_id, disc_gt_by_base = _load_layer_grad_gt_lookup(gt_path)
+
+        def _new_disc_state():
+            return {
+                "count": 0,
+                "mean_raw": None,
+                "obs_count": None,
+                "shape": None,
+                "stable_steps": 0,
+                "converged": False,
+                "done": False,
+                "final_delta_l2": float("inf"),
+            }
+
+        disc_states = {"fn": _new_disc_state(), "non_fn": _new_disc_state()}
+
+        def _disc_group_done(group_key):
+            st = disc_states[group_key]
+            if st["done"]:
+                return True
+            if st["converged"]:
+                st["done"] = True
+                return True
+            if st["count"] >= conv_max_samples:
+                st["done"] = True
+                return True
+            return False
+
+        def _disc_all_done():
+            return all(_disc_group_done(g) for g in ("fn", "non_fn"))
+
+        for images, targets in tqdm(
+            dataloader,
+            desc=f"Object Detector ({mode} - {uncertainty} - disc_layers mining)",
+            total=len(dataloader),
+        ):
+            if _disc_all_done():
+                break
+            image_list = _as_image_list(images)
+            infer_batch, ratios, pads, _resized_chws = _prepare_infer_batch(detector, image_list, device, auto=False)
+            batch_preds = None
+            batch_grad_stats_all = collect_batch_image_layer_grads_per_target(
+                detector=detector,
+                input_tensor=infer_batch,
+                target_values=collect_target_values,
+                target_layers=target_layers,
+                map_reduction=layer_map_reduction,
+                vector_reduction=[],
+                pre_nms=pre_nms,
+                pre_nms_ratio=pre_nms_ratio,
+                pseudo_gt=viz_pseudo_gt if viz_enabled else layer_pseudo_gt,
+            )
+            for sample_idx in range(len(image_list)):
+                if _disc_all_done():
+                    break
+                target = targets[sample_idx]
+                image_id = int(target["image_id"][0].item())
+                image_path = target["path"]
+                fn_flag = None
+                if viz_gt_csv:
+                    if image_id in disc_gt_by_id:
+                        fn_flag = int(disc_gt_by_id[image_id])
+                    else:
+                        base_name = Path(str(image_path)).name
+                        if base_name in disc_gt_by_base:
+                            fn_flag = int(disc_gt_by_base[base_name])
+                if fn_flag is None:
+                    if batch_preds is None:
+                        detector.zero_grad(set_to_none=True)
+                        with torch.no_grad():
+                            batch_preds, _bz_logits, _bz_obj, _bz_feat = detector(infer_batch)
+                    pred_boxes = batch_preds[0][sample_idx]
+                    pred_class_names = batch_preds[2][sample_idx]
+                    gt_boxes = map_boxes_to_letterbox(target["boxes"], ratios[sample_idx], pads[sample_idx])
+                    gt_class_names = _resolve_gt_class_names(target, disc_catid_to_name)
+                    fn_flag = int(
+                        has_fn_for_image(
+                            gt_boxes=gt_boxes,
+                            gt_class_names=gt_class_names,
+                            pred_boxes=pred_boxes,
+                            pred_class_names=pred_class_names,
+                            iou_match_threshold=disc_iou_match_threshold,
+                        )
+                    )
+                group_key = "fn" if int(fn_flag) == 1 else "non_fn"
+                if _disc_group_done(group_key):
+                    continue
+                grad_stats_all = batch_grad_stats_all[sample_idx]
+                grad_map_raw = _build_layer_filter_map_from_grad_stats(
+                    grad_stats=grad_stats_all,
+                    target_values=viz_target_values,
+                    target_layers=target_layers,
+                    layer_param_shapes=disc_layer_param_shapes,
+                )
+                st = disc_states[group_key]
+                delta_l2 = _update_running_mean_map(st, grad_map_raw)
+                if st["count"] >= conv_min_samples and np.isfinite(delta_l2) and delta_l2 <= conv_delta_l2_tol:
+                    st["stable_steps"] += 1
+                else:
+                    st["stable_steps"] = 0
+                if st["stable_steps"] >= conv_patience:
+                    st["converged"] = True
+            del infer_batch
+            if batch_preds is not None:
+                del batch_preds
+            del batch_grad_stats_all
+
+        fn_map = disc_states["fn"]["mean_raw"]
+        non_fn_map = disc_states["non_fn"]["mean_raw"]
+        if fn_map is None or non_fn_map is None:
+            raise ValueError("disc_layers mining failed: missing fn/non_fn reference maps.")
+        disc_rows = _compute_disc_layer_scores(
+            layer_names=target_layers,
+            fn_map=fn_map,
+            non_fn_map=non_fn_map,
+            ref_map=None,
+            disc_rule=disc_rule,
+            used_grad=disc_used_grad,
+            separation_score=disc_separation_score,
+        )
+        selected_layers = []
+        for row in disc_rows:
+            if np.isfinite(float(row["score"])):
+                selected_layers.append(str(row["layer_name"]))
+            if len(selected_layers) >= int(disc_topk):
+                break
+        if not selected_layers:
+            raise ValueError("disc_layers mining failed: no finite separation score was computed.")
+        selected_set = set(selected_layers)
+        for row in disc_rows:
+            row["selected"] = int(row["layer_name"] in selected_set)
+
+        target_layers = list(selected_layers)
+        viz_target_layers = list(selected_layers)
+        disc_summary["selected_layers"] = list(selected_layers)
 
     fieldnames = ["image_id", "image_path"]
     if unit == "bbox":
@@ -3151,6 +3401,26 @@ def run_layer_grad_csv(config, run_dir):
                         m = group_states[g]["mean_raw"]
                         norm = _normalize_layer_map(m, mode=viz_normalize) if m is not None else np.zeros((0, 0), dtype=np.float32)
                         _save_map_nodes_csv(norm, ref_dir / f"{g}_norm_map.csv")
+            if disc_enabled:
+                ref_dir = run_dir / "ref_maps"
+                ref_dir.mkdir(parents=True, exist_ok=True)
+                disc_csv_path = ref_dir / "disc_layer_scores.csv"
+                with open(disc_csv_path, "w", newline="", encoding="utf-8") as f:
+                    writer = csv.DictWriter(
+                        f,
+                        fieldnames=["rank", "layer_idx", "layer_name", "score", "selected"],
+                    )
+                    writer.writeheader()
+                    for row in disc_rows:
+                        writer.writerow(
+                            {
+                                "rank": int(row.get("rank", 0)),
+                                "layer_idx": int(row.get("layer_idx", -1)),
+                                "layer_name": str(row.get("layer_name", "")),
+                                "score": float(row.get("score", float("nan"))),
+                                "selected": int(row.get("selected", 0)),
+                            }
+                        )
         if gt_match_stats.get("unmatched", 0) > 0:
             print(f"[layer_grad] unmatched GT rows: {int(gt_match_stats['unmatched'])}")
         viz_summary = {
@@ -3200,6 +3470,7 @@ def run_layer_grad_csv(config, run_dir):
             "save_final_norm_map": bool(viz_save_final_norm_map),
             "save_profile": bool(viz_save_profile),
             "gt_match_stats": gt_match_stats,
+            "disc_layers": disc_summary,
         }
         with open(viz_dir / "summary.json", "w", encoding="utf-8") as f:
             json.dump(viz_summary, f, ensure_ascii=False, indent=2)
