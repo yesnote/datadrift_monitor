@@ -346,8 +346,8 @@ def parse_output_config(output_cfg):
     layer_map_reduction = "none"
     layer_vector_reduction = ["1-norm", "2-norm", "min", "max", "mean", "std"]
     layer_pseudo_gt = "cand"
-    layer_disc_used_grad = "ref_corrected"
-    layer_disc_use_norm = False
+    layer_used_grad = "raw"
+    layer_use_norm = False
     layer_disc_separation_score = "effect_size"
     layer_disc_topk = 3
     layer_disc_fn_non_fn_map_root = ""
@@ -377,12 +377,12 @@ def parse_output_config(output_cfg):
         layer_target_layers = normalize_to_list(g.get("layer", []))
         layer_map_reduction = str(r.get("map", "none")).strip().lower()
         layer_vector_reduction = normalize_vector_reduction(r.get("vector", ["L1", "L2", "min", "max", "mean", "std"]))
+        layer_used_grad = str(g.get("used_grad", "raw")).strip().lower() or "raw"
+        layer_use_norm = bool(g.get("use_norm", False))
         t = g.get("target", "cand_target")
         t_policy = str(t).strip().lower() if t is not None else "null_target"
         layer_pseudo_gt = "uniform" if t_policy in {"null_target", "null"} else "cand"
         disc_cfg = as_dict(g.get("disc_layers", {}))
-        layer_disc_used_grad = str(disc_cfg.get("used_grad", "ref_corrected")).strip().lower() or "ref_corrected"
-        layer_disc_use_norm = bool(disc_cfg.get("use_norm", False))
         layer_disc_separation_score = (
             str(disc_cfg.get("separation_score", "effect_size")).strip().lower() or "effect_size"
         )
@@ -527,8 +527,8 @@ def parse_output_config(output_cfg):
         "layer_map_reduction": layer_map_reduction,
         "layer_vector_reduction": layer_vector_reduction,
         "layer_pseudo_gt": layer_pseudo_gt,
-        "layer_disc_used_grad": layer_disc_used_grad,
-        "layer_disc_use_norm": layer_disc_use_norm,
+        "layer_used_grad": layer_used_grad,
+        "layer_use_norm": layer_use_norm,
         "layer_disc_separation_score": layer_disc_separation_score,
         "layer_disc_topk": layer_disc_topk,
         "layer_disc_fn_non_fn_map_root": layer_disc_fn_non_fn_map_root,
