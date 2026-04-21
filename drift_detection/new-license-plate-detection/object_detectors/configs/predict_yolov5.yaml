@@ -151,8 +151,8 @@ output:
       layer: disc_layers # all_conv | disc_layers | ["model.24.m.0", "model.24.m.1", "model.24.m.2"]
       target: null_target # cand_target | null_target
       ref_corrected: true
-      use_norm: true
       ref_map: object_detectors/runs/references/04-19-2026_14;24_layer_grad_null_target_loss_noise
+      use_norm: true
       disc_layers:
         fn_non_fn_map: object_detectors/runs/references/04-19-2026_21;35_layer_grad_null_target_loss_fn-non_fn
         separation_score: effect_size # effect_size | fisher_ratio
