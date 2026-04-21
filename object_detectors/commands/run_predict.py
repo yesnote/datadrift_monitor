@@ -2818,7 +2818,7 @@ def run_layer_grad_csv(config, run_dir):
     disc_separation_score = str(parsed.get("layer_disc_separation_score", "effect_size")).strip().lower()
     disc_topk = max(1, int(parsed.get("layer_disc_topk", 3)))
     disc_fn_non_fn_map_root = str(parsed.get("layer_disc_fn_non_fn_map_root", "")).strip()
-    disc_ref_map_root = str(parsed.get("layer_disc_ref_map_root", "")).strip()
+    layer_ref_map_root = str(parsed.get("layer_ref_map_root", "")).strip()
     layer_map_reduction = parsed["layer_map_reduction"]
     layer_vector_reduction = parsed["layer_vector_reduction"]
     layer_pseudo_gt = parsed.get("layer_pseudo_gt", "cand")
@@ -2913,7 +2913,7 @@ def run_layer_grad_csv(config, run_dir):
             "separation_score": disc_separation_score,
             "topk": int(disc_topk),
             "fn_non_fn_map": disc_fn_non_fn_map_root,
-            "ref_map": disc_ref_map_root,
+            "ref_map": layer_ref_map_root,
         },
         "selected_layers": [],
     }
@@ -2923,16 +2923,16 @@ def run_layer_grad_csv(config, run_dir):
     if disc_enabled:
         if unit != "image":
             raise ValueError("gradient.layer='disc_layers' requires output.layer_grad.unit='image'.")
-        if not disc_fn_non_fn_map_root or not disc_ref_map_root:
+        if not disc_fn_non_fn_map_root or not layer_ref_map_root:
             raise ValueError(
-                "gradient.layer='disc_layers' requires gradient.disc_layers.fn_non_fn_map and gradient.disc_layers.ref_map."
+                "gradient.layer='disc_layers' requires gradient.disc_layers.fn_non_fn_map and gradient.ref_map."
             )
         if grad_used_mode not in {"raw", "ref_corrected"}:
             raise ValueError("gradient.used_grad must be one of {'raw','ref_corrected'}.")
         if disc_separation_score not in {"effect_size", "fisher_ratio"}:
             raise ValueError("gradient.disc_layers.separation_score must be one of {'effect_size','fisher_ratio'}.")
 
-        disc_maps, disc_map_paths = _load_disc_source_maps(disc_fn_non_fn_map_root, disc_ref_map_root)
+        disc_maps, disc_map_paths = _load_disc_source_maps(disc_fn_non_fn_map_root, layer_ref_map_root)
         if grad_use_norm:
             fn_map = disc_maps["fn_norm"]
             non_fn_map = disc_maps["non_fn_norm"]
@@ -2993,13 +2993,13 @@ def run_layer_grad_csv(config, run_dir):
         disc_summary["map_paths"] = disc_map_paths
         disc_summary["selected_layers"] = list(selected_layers)
     elif grad_used_mode == "ref_corrected":
-        if not disc_ref_map_root:
-            raise ValueError("gradient.used_grad='ref_corrected' requires gradient.disc_layers.ref_map.")
+        if not layer_ref_map_root:
+            raise ValueError("gradient.used_grad='ref_corrected' requires gradient.ref_map.")
         all_conv_layers = expand_layer_names(detector.model, ["all_conv"])
         name_to_idx = {name: idx for idx, name in enumerate(all_conv_layers)}
         target_indices = [int(name_to_idx[name]) for name in target_layers if name in name_to_idx]
         noise_map_name = "noise_norm_map" if grad_use_norm else "noise_raw_map"
-        noise_map = _load_map_nodes_csv(_resolve_ref_map_path(disc_ref_map_root, noise_map_name))
+        noise_map = _load_map_nodes_csv(_resolve_ref_map_path(layer_ref_map_root, noise_map_name))
         if target_indices:
             max_idx = max(target_indices)
             if noise_map.ndim == 2 and max_idx < int(noise_map.shape[0]):
