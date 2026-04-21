@@ -2920,6 +2920,11 @@ def run_layer_grad_csv(config, run_dir):
     disc_rows = []
     noise_map_for_target_layers = None
 
+    print(
+        "[INFO] layer_grad gradient options "
+        f"(ref_corrected={int(bool(grad_ref_corrected))}, use_norm={int(bool(grad_use_norm))})"
+    )
+
     if disc_enabled:
         if unit != "image":
             raise ValueError("gradient.layer='disc_layers' requires output.layer_grad.unit='image'.")
