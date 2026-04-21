@@ -2813,8 +2813,8 @@ def run_layer_grad_csv(config, run_dir):
     else:
         _disc_tokens = [str(target_layers).strip().lower()]
     disc_enabled = any(tok == "disc_layers" for tok in _disc_tokens)
-    disc_rule = str(parsed.get("layer_disc_rule", "ref_corrected")).strip().lower()
-    disc_used_grad = str(parsed.get("layer_disc_used_grad", "raw")).strip().lower()
+    disc_used_grad = str(parsed.get("layer_disc_used_grad", "ref_corrected")).strip().lower()
+    disc_use_norm = bool(parsed.get("layer_disc_use_norm", False))
     disc_separation_score = str(parsed.get("layer_disc_separation_score", "effect_size")).strip().lower()
     disc_topk = max(1, int(parsed.get("layer_disc_topk", 3)))
     disc_fn_non_fn_map_root = str(parsed.get("layer_disc_fn_non_fn_map_root", "")).strip()
@@ -2908,8 +2908,8 @@ def run_layer_grad_csv(config, run_dir):
     disc_summary = {
         "enabled": bool(disc_enabled),
         "config": {
-            "disc_rule": disc_rule,
             "used_grad": disc_used_grad,
+            "use_norm": bool(disc_use_norm),
             "separation_score": disc_separation_score,
             "topk": int(disc_topk),
             "fn_non_fn_map": disc_fn_non_fn_map_root,
@@ -2927,15 +2927,13 @@ def run_layer_grad_csv(config, run_dir):
             raise ValueError(
                 "gradient.layer='disc_layers' requires gradient.disc_layers.fn_non_fn_map and gradient.disc_layers.ref_map."
             )
-        if disc_used_grad not in {"raw", "norm"}:
-            raise ValueError("gradient.disc_layers.used_grad must be one of {'raw','norm'}.")
-        if disc_rule not in {"raw", "ref_corrected"}:
-            raise ValueError("gradient.disc_layers.disc_rule must be one of {'raw','ref_corrected'}.")
+        if disc_used_grad not in {"raw", "ref_corrected"}:
+            raise ValueError("gradient.disc_layers.used_grad must be one of {'raw','ref_corrected'}.")
         if disc_separation_score not in {"effect_size", "fisher_ratio"}:
             raise ValueError("gradient.disc_layers.separation_score must be one of {'effect_size','fisher_ratio'}.")
 
         disc_maps, disc_map_paths = _load_disc_source_maps(disc_fn_non_fn_map_root, disc_ref_map_root)
-        if disc_used_grad == "norm":
+        if disc_use_norm:
             fn_map = disc_maps["fn_norm"]
             non_fn_map = disc_maps["non_fn_norm"]
             noise_map = disc_maps["noise_norm"]
@@ -2944,23 +2942,13 @@ def run_layer_grad_csv(config, run_dir):
             non_fn_map = disc_maps["non_fn_raw"]
             noise_map = disc_maps["noise_raw"]
 
-        if disc_rule == "ref_corrected":
+        if disc_used_grad == "ref_corrected":
             disc_rows = _compute_disc_layer_scores(
                 layer_names=target_layers,
                 fn_map=fn_map,
                 non_fn_map=non_fn_map,
                 ref_map=noise_map,
-                disc_rule=disc_rule,
-                used_grad="raw",
-                separation_score=disc_separation_score,
-            )
-        elif disc_used_grad == "raw":
-            disc_rows = _compute_disc_layer_scores(
-                layer_names=target_layers,
-                fn_map=fn_map,
-                non_fn_map=noise_map,
-                ref_map=None,
-                disc_rule="raw",
+                disc_rule="ref_corrected",
                 used_grad="raw",
                 separation_score=disc_separation_score,
             )
@@ -2990,7 +2978,7 @@ def run_layer_grad_csv(config, run_dir):
         viz_target_layers = list(selected_layers)
         print(
             "[INFO] discriminative layers "
-            f"(rule={disc_rule}, used_grad={disc_used_grad}, score={disc_separation_score}, topk={int(disc_topk)}): "
+            f"(used_grad={disc_used_grad}, use_norm={int(bool(disc_use_norm))}, score={disc_separation_score}, topk={int(disc_topk)}): "
             + ", ".join(selected_layers)
         )
         selected_indices = [int(row["layer_idx"]) for row in disc_rows if int(row.get("selected", 0)) == 1]
@@ -3226,9 +3214,9 @@ def run_layer_grad_csv(config, run_dir):
                                     layer_param_shapes=layer_param_shapes,
                                 )
                                 map_use_t = map_raw_t
-                                if disc_used_grad == "norm":
+                                if disc_use_norm:
                                     map_use_t = _normalize_layer_map(map_use_t, mode=viz_normalize)
-                                if disc_rule == "ref_corrected" and disc_noise_map_for_selected is not None:
+                                if disc_used_grad == "ref_corrected" and disc_noise_map_for_selected is not None:
                                     target_shape = _merge_map_shape(map_use_t.shape, disc_noise_map_for_selected.shape)
                                     map_use_t = _pad_map_2d(map_use_t, target_shape) - _pad_map_2d(
                                         disc_noise_map_for_selected, target_shape
