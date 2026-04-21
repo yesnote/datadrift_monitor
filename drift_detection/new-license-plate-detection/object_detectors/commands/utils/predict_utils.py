@@ -346,7 +346,7 @@ def parse_output_config(output_cfg):
     layer_map_reduction = "none"
     layer_vector_reduction = ["1-norm", "2-norm", "min", "max", "mean", "std"]
     layer_pseudo_gt = "cand"
-    layer_used_grad = "raw"
+    layer_ref_corrected = False
     layer_use_norm = False
     layer_disc_separation_score = "effect_size"
     layer_disc_topk = 3
@@ -377,7 +377,7 @@ def parse_output_config(output_cfg):
         layer_target_layers = normalize_to_list(g.get("layer", []))
         layer_map_reduction = str(r.get("map", "none")).strip().lower()
         layer_vector_reduction = normalize_vector_reduction(r.get("vector", ["L1", "L2", "min", "max", "mean", "std"]))
-        layer_used_grad = str(g.get("used_grad", "raw")).strip().lower() or "raw"
+        layer_ref_corrected = bool(g.get("ref_corrected", False))
         layer_use_norm = bool(g.get("use_norm", False))
         t = g.get("target", "cand_target")
         t_policy = str(t).strip().lower() if t is not None else "null_target"
@@ -527,7 +527,7 @@ def parse_output_config(output_cfg):
         "layer_map_reduction": layer_map_reduction,
         "layer_vector_reduction": layer_vector_reduction,
         "layer_pseudo_gt": layer_pseudo_gt,
-        "layer_used_grad": layer_used_grad,
+        "layer_ref_corrected": layer_ref_corrected,
         "layer_use_norm": layer_use_norm,
         "layer_disc_separation_score": layer_disc_separation_score,
         "layer_disc_topk": layer_disc_topk,
