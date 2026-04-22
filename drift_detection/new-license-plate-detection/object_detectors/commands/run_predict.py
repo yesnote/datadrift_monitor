@@ -183,6 +183,25 @@ def _build_layer_filter_map_from_grad_stats(grad_stats, target_values, target_la
     return out
 
 
+def _build_layer_filter_map_by_target_from_grad_stats(grad_stats, target_values, target_layers, layer_param_shapes=None):
+    out = {}
+    for target_value in target_values:
+        out[str(target_value)] = _build_layer_filter_map_from_grad_stats(
+            grad_stats=grad_stats,
+            target_values=[target_value],
+            target_layers=target_layers,
+            layer_param_shapes=layer_param_shapes,
+        )
+    return out
+
+
+def _aggregate_target_maps(target_map_dict):
+    if not target_map_dict:
+        return np.zeros((0, 0), dtype=np.float32)
+    maps = [m for m in target_map_dict.values() if isinstance(m, np.ndarray)]
+    return _stack_nanmean_maps(maps)
+
+
 def _normalize_layer_map(layer_map, mode="layer_minmax"):
     if mode == "none":
         return layer_map.astype(np.float32, copy=True)
@@ -456,6 +475,41 @@ def _save_map_nodes_csv(map_2d, out_path):
                 writer.writerow({"layer_idx": layer_idx, "filter_idx": filter_idx, "value": val})
 
 
+def _save_map_nodes_csv_multi(map_by_target, out_path, target_values):
+    out_path = Path(out_path)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    targets = [str(t) for t in target_values]
+    fieldnames = ["layer_idx", "filter_idx"] + [f"{t}_grad" for t in targets]
+    with open(out_path, "w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        writer.writeheader()
+        if not targets:
+            return
+        shapes = []
+        for t in targets:
+            m = map_by_target.get(t)
+            if isinstance(m, np.ndarray):
+                shapes.append(m.shape)
+        if not shapes:
+            return
+        h = max(int(s[0]) for s in shapes)
+        w = max(int(s[1]) for s in shapes)
+        padded = {}
+        for t in targets:
+            m = map_by_target.get(t)
+            if isinstance(m, np.ndarray):
+                padded[t] = _pad_map_2d(m, (h, w))
+            else:
+                padded[t] = np.full((h, w), np.nan, dtype=np.float32)
+        for li in range(h):
+            for fi in range(w):
+                row = {"layer_idx": li, "filter_idx": fi}
+                for t in targets:
+                    v = padded[t][li, fi]
+                    row[f"{t}_grad"] = float(v) if np.isfinite(v) else float("nan")
+                writer.writerow(row)
+
+
 def _load_map_nodes_csv(csv_path):
     csv_path = Path(csv_path)
     if not csv_path.is_file():
@@ -473,6 +527,43 @@ def _load_map_nodes_csv(csv_path):
     w = int(fi.max()) + 1
     out = np.full((h, w), np.nan, dtype=np.float32)
     out[li, fi] = vv.astype(np.float32, copy=False)
+    return out
+
+
+def _load_map_nodes_csv_multi(csv_path, target_values=None):
+    csv_path = Path(csv_path)
+    if not csv_path.is_file():
+        raise FileNotFoundError(f"Map CSV not found: {csv_path}")
+    df = pd.read_csv(csv_path)
+    required = {"layer_idx", "filter_idx"}
+    if not required.issubset(df.columns):
+        raise ValueError(f"Map CSV must contain columns {sorted(required)}: {csv_path}")
+    grad_cols = [c for c in df.columns if c.endswith("_grad")]
+    if target_values is not None and len(target_values) > 0:
+        expected = [f"{str(t)}_grad" for t in target_values]
+        grad_cols = [c for c in expected if c in df.columns]
+    if not grad_cols:
+        if "value" in df.columns:
+            grad_cols = ["value"]
+        else:
+            return {}
+    if df.empty:
+        out = {}
+        for c in grad_cols:
+            key = "value" if c == "value" else c[: -len("_grad")]
+            out[key] = np.zeros((0, 0), dtype=np.float32)
+        return out
+    li = df["layer_idx"].astype(int).to_numpy()
+    fi = df["filter_idx"].astype(int).to_numpy()
+    h = int(li.max()) + 1
+    w = int(fi.max()) + 1
+    out = {}
+    for c in grad_cols:
+        vv = df[c].astype(float).to_numpy()
+        m = np.full((h, w), np.nan, dtype=np.float32)
+        m[li, fi] = vv.astype(np.float32, copy=False)
+        key = "value" if c == "value" else c[: -len("_grad")]
+        out[key] = m
     return out
 
 
@@ -494,6 +585,20 @@ def _load_disc_source_maps(fn_non_fn_root, ref_root=None):
         paths["noise_raw"] = _resolve_ref_map_path(ref_root, "noise_raw_map")
         paths["noise_norm"] = _resolve_ref_map_path(ref_root, "noise_norm_map")
     maps = {k: _load_map_nodes_csv(v) for k, v in paths.items()}
+    return maps, {k: str(v) for k, v in paths.items()}
+
+
+def _load_disc_source_maps_multi(fn_non_fn_root, ref_root=None, target_values=None):
+    paths = {
+        "fn_raw": _resolve_ref_map_path(fn_non_fn_root, "fn_raw_map"),
+        "non_fn_raw": _resolve_ref_map_path(fn_non_fn_root, "non_fn_raw_map"),
+        "fn_norm": _resolve_ref_map_path(fn_non_fn_root, "fn_norm_map"),
+        "non_fn_norm": _resolve_ref_map_path(fn_non_fn_root, "non_fn_norm_map"),
+    }
+    if ref_root:
+        paths["noise_raw"] = _resolve_ref_map_path(ref_root, "noise_raw_map")
+        paths["noise_norm"] = _resolve_ref_map_path(ref_root, "noise_norm_map")
+    maps = {k: _load_map_nodes_csv_multi(v, target_values=target_values) for k, v in paths.items()}
     return maps, {k: str(v) for k, v in paths.items()}
 
 
@@ -2826,7 +2931,7 @@ def run_layer_grad_csv(config, run_dir):
     parsed = parse_output_config(config.get("output", {}))
     save_csv = parsed["save_csv_enabled"]
     unit = parsed["unit"]
-    target_values = parsed["layer_target_values"]
+    target_values = [str(v) for v in parsed["layer_target_values"]]
     target_layers = parsed["layer_target_layers"]
     if isinstance(target_layers, (list, tuple)):
         _disc_tokens = [str(v).strip().lower() for v in target_layers]
@@ -2871,7 +2976,7 @@ def run_layer_grad_csv(config, run_dir):
         reference_groups = ["noise"]
     viz_enabled = bool(unit == "image" and (per_image_enabled or reference_enabled))
     viz_normalize = "layer_minmax"
-    viz_target_values = list(parsed.get("save_image_layer_grad_target_values", target_values))
+    viz_target_values = [str(v) for v in list(parsed.get("save_image_layer_grad_target_values", target_values))]
     viz_target_layers = list(parsed.get("save_image_layer_grad_target_layers", target_layers))
     viz_pseudo_gt = str(parsed.get("save_image_layer_grad_pseudo_gt", layer_pseudo_gt)).strip().lower()
     viz_num_by_group = {g: math.inf for g in all_groups}
@@ -2925,6 +3030,7 @@ def run_layer_grad_csv(config, run_dir):
         viz_target_layers = list(target_layers)
     viz_target_layers = expand_layer_names(detector.model, viz_target_layers)
     collect_target_values = list(dict.fromkeys(list(target_values) + list(viz_target_values)))
+    active_target_values = list(viz_target_values)
     disc_summary = {
         "enabled": bool(disc_enabled),
         "config": {
@@ -2938,7 +3044,7 @@ def run_layer_grad_csv(config, run_dir):
         "selected_layers": [],
     }
     disc_rows = []
-    noise_map_for_target_layers = None
+    noise_map_for_target_layers_by_target = {}
 
     print(
         "[INFO] layer_grad gradient options "
@@ -2957,27 +3063,47 @@ def run_layer_grad_csv(config, run_dir):
         if disc_separation_score not in {"effect_size", "fisher_ratio"}:
             raise ValueError("gradient.disc_layers.separation_score must be one of {'effect_size','fisher_ratio'}.")
 
-        disc_maps, disc_map_paths = _load_disc_source_maps(
+        disc_maps, disc_map_paths = _load_disc_source_maps_multi(
             disc_fn_non_fn_map_root,
             layer_ref_map_root if ref_mode != "none" else None,
+            target_values=active_target_values,
         )
         if grad_use_norm:
-            fn_map = disc_maps["fn_norm"]
-            non_fn_map = disc_maps["non_fn_norm"]
-            noise_map = disc_maps.get("noise_norm")
+            fn_map_by_target = disc_maps["fn_norm"]
+            non_fn_map_by_target = disc_maps["non_fn_norm"]
+            noise_map_by_target = disc_maps.get("noise_norm", {})
         else:
-            fn_map = disc_maps["fn_raw"]
-            non_fn_map = disc_maps["non_fn_raw"]
-            noise_map = disc_maps.get("noise_raw")
+            fn_map_by_target = disc_maps["fn_raw"]
+            non_fn_map_by_target = disc_maps["non_fn_raw"]
+            noise_map_by_target = disc_maps.get("noise_raw", {})
 
-        disc_rows = _compute_disc_layer_scores(
-            layer_names=target_layers,
-            fn_map=fn_map,
-            non_fn_map=non_fn_map,
-            ref_map=noise_map,
-            ref_mode=ref_mode,
-            separation_score=disc_separation_score,
-        )
+        score_sum_by_layer = {int(i): 0.0 for i in range(len(target_layers))}
+        score_by_target = {}
+        for tv in active_target_values:
+            fn_map_t = fn_map_by_target.get(tv, np.zeros((0, 0), dtype=np.float32))
+            non_fn_map_t = non_fn_map_by_target.get(tv, np.zeros((0, 0), dtype=np.float32))
+            noise_map_t = noise_map_by_target.get(tv, np.zeros((0, 0), dtype=np.float32))
+            rows_t = _compute_disc_layer_scores(
+                layer_names=target_layers,
+                fn_map=fn_map_t,
+                non_fn_map=non_fn_map_t,
+                ref_map=noise_map_t,
+                ref_mode=ref_mode,
+                separation_score=disc_separation_score,
+            )
+            score_by_target[tv] = {int(r["layer_idx"]): float(r["score"]) for r in rows_t}
+            for r in rows_t:
+                li = int(r["layer_idx"])
+                score_sum_by_layer[li] = float(score_sum_by_layer.get(li, 0.0)) + float(r["score"])
+        disc_rows = []
+        for li, layer_name in enumerate(target_layers):
+            row = {"layer_idx": int(li), "layer_name": str(layer_name), "score": float(score_sum_by_layer.get(li, float("-inf")))}
+            for tv in active_target_values:
+                row[f"score_{tv}"] = float(score_by_target.get(tv, {}).get(li, float("-inf")))
+            disc_rows.append(row)
+        disc_rows = sorted(disc_rows, key=lambda x: x["score"], reverse=True)
+        for rank, row in enumerate(disc_rows, start=1):
+            row["rank"] = int(rank)
         selected_layers = []
         for row in disc_rows:
             if np.isfinite(float(row["score"])):
@@ -2998,14 +3124,13 @@ def run_layer_grad_csv(config, run_dir):
             + ", ".join(selected_layers)
         )
         selected_indices = [int(row["layer_idx"]) for row in disc_rows if int(row.get("selected", 0)) == 1]
-        if ref_mode != "none" and noise_map is not None and selected_indices:
-            max_idx = max(selected_indices)
-            if noise_map.ndim == 2 and max_idx < int(noise_map.shape[0]):
-                noise_map_for_target_layers = noise_map[selected_indices, :].astype(np.float32, copy=True)
-            else:
-                noise_map_for_target_layers = np.zeros((len(selected_indices), 0), dtype=np.float32)
-        elif ref_mode != "none":
-            noise_map_for_target_layers = np.zeros((0, 0), dtype=np.float32)
+        if ref_mode != "none":
+            for tv in active_target_values:
+                nm = noise_map_by_target.get(tv, np.zeros((0, 0), dtype=np.float32))
+                if selected_indices and nm.ndim == 2 and max(selected_indices) < int(nm.shape[0]):
+                    noise_map_for_target_layers_by_target[tv] = nm[selected_indices, :].astype(np.float32, copy=True)
+                else:
+                    noise_map_for_target_layers_by_target[tv] = np.zeros((len(selected_indices), 0), dtype=np.float32)
         disc_summary["map_paths"] = disc_map_paths
         disc_summary["selected_layers"] = list(selected_layers)
     elif ref_mode != "none":
@@ -3017,15 +3142,16 @@ def run_layer_grad_csv(config, run_dir):
         name_to_idx = {name: idx for idx, name in enumerate(all_conv_layers)}
         target_indices = [int(name_to_idx[name]) for name in target_layers if name in name_to_idx]
         noise_map_name = "noise_norm_map" if grad_use_norm else "noise_raw_map"
-        noise_map = _load_map_nodes_csv(_resolve_ref_map_path(layer_ref_map_root, noise_map_name))
-        if target_indices:
-            max_idx = max(target_indices)
-            if noise_map.ndim == 2 and max_idx < int(noise_map.shape[0]):
-                noise_map_for_target_layers = noise_map[target_indices, :].astype(np.float32, copy=True)
+        noise_map_by_target = _load_map_nodes_csv_multi(
+            _resolve_ref_map_path(layer_ref_map_root, noise_map_name),
+            target_values=active_target_values,
+        )
+        for tv in active_target_values:
+            nm = noise_map_by_target.get(tv, np.zeros((0, 0), dtype=np.float32))
+            if target_indices and nm.ndim == 2 and max(target_indices) < int(nm.shape[0]):
+                noise_map_for_target_layers_by_target[tv] = nm[target_indices, :].astype(np.float32, copy=True)
             else:
-                noise_map_for_target_layers = np.zeros((len(target_indices), 0), dtype=np.float32)
-        else:
-            noise_map_for_target_layers = np.zeros((0, 0), dtype=np.float32)
+                noise_map_for_target_layers_by_target[tv] = np.zeros((len(target_indices), 0), dtype=np.float32)
 
     fieldnames = ["image_id", "image_path"]
     if unit == "bbox":
@@ -3045,10 +3171,10 @@ def run_layer_grad_csv(config, run_dir):
                 layer_param_shapes[layer_name] = None
     catid_to_name = load_gt_category_maps(config, split) if viz_enabled else {}
     iou_match_threshold = parsed["gt_iou_match_threshold"] if viz_enabled else 0.45
-    per_image_seen = {g: 0 for g in all_groups}
-    per_image_saved = {g: 0 for g in all_groups}
-    ref_progress_image_saved = {g: 0 for g in all_groups}
-    ref_progress_csv_saved = {g: 0 for g in all_groups}
+    per_image_seen = {g: {tv: 0 for tv in active_target_values} for g in all_groups}
+    per_image_saved = {g: {tv: 0 for tv in active_target_values} for g in all_groups}
+    ref_progress_image_saved = {g: {tv: 0 for tv in active_target_values} for g in all_groups}
+    ref_progress_csv_saved = {g: {tv: 0 for tv in active_target_values} for g in all_groups}
     tb_writer = None
     tb_log_dir = None
     gt_match_stats = {"id_match": 0, "path_fallback": 0, "unmatched": 0}
@@ -3059,7 +3185,7 @@ def run_layer_grad_csv(config, run_dir):
             gt_path = (Path.cwd() / gt_path).resolve()
         gt_by_id, gt_by_base = _load_layer_grad_gt_lookup(gt_path)
 
-    def _make_group_state():
+    def _make_target_state():
         return {
             "count": 0,
             "mean_raw": None,
@@ -3072,32 +3198,59 @@ def run_layer_grad_csv(config, run_dir):
             "stop_reason": "",
         }
 
+    def _make_group_state():
+        return {
+            "targets": {tv: _make_target_state() for tv in active_target_values},
+            "done": False,
+            "stop_reason": "",
+        }
+
     group_states = {g: _make_group_state() for g in all_groups}
     active_reference_groups = [g for g in all_groups if g in reference_groups]
 
+    def _is_target_done(group_key, target_key):
+        gst = group_states[group_key]
+        st = gst["targets"][target_key]
+        if st["done"]:
+            return True
+        target_num = viz_num_by_group[group_key]
+        if not np.isinf(target_num):
+            if st["count"] >= int(target_num):
+                st["done"] = True
+                st["stop_reason"] = "target_reached"
+                return True
+            return False
+        if st["converged"]:
+            st["done"] = True
+            st["stop_reason"] = "converged"
+            return True
+        if st["count"] >= conv_max_samples:
+            st["done"] = True
+            st["stop_reason"] = "max_samples_reached"
+            return True
+        return False
+
     def _is_group_done(group_key):
         if reference_enabled:
-            st = group_states[group_key]
-            if st["done"]:
+            gst = group_states[group_key]
+            if gst["done"]:
                 return True
-            target_num = viz_num_by_group[group_key]
-            if not np.isinf(target_num):
-                if st["count"] >= int(target_num):
-                    st["done"] = True
-                    st["stop_reason"] = "target_reached"
-                    return True
-                return False
-            if st["converged"]:
-                st["done"] = True
-                st["stop_reason"] = "converged"
-                return True
-            if st["count"] >= conv_max_samples:
-                st["done"] = True
-                st["stop_reason"] = "max_samples_reached"
+            all_done = True
+            for tv in active_target_values:
+                if not _is_target_done(group_key, tv):
+                    all_done = False
+            if all_done:
+                gst["done"] = True
+                if all(gst["targets"][tv]["stop_reason"] == "converged" for tv in active_target_values):
+                    gst["stop_reason"] = "converged"
+                elif all(gst["targets"][tv]["stop_reason"] == "target_reached" for tv in active_target_values):
+                    gst["stop_reason"] = "target_reached"
+                else:
+                    gst["stop_reason"] = "mixed"
                 return True
             return False
         if per_image_enabled and per_image_max_num > 0:
-            return per_image_saved[group_key] >= per_image_max_num
+            return all(per_image_saved[group_key][tv] >= per_image_max_num for tv in active_target_values)
         return False
 
     def _all_done():
@@ -3110,10 +3263,12 @@ def run_layer_grad_csv(config, run_dir):
         viz_dir.mkdir(parents=True, exist_ok=True)
     if viz_enabled and per_image_enabled:
         for g in all_groups:
-            (viz_dir / "per_image" / g).mkdir(parents=True, exist_ok=True)
+            for tv in active_target_values:
+                (viz_dir / "per_image" / g / tv).mkdir(parents=True, exist_ok=True)
     if viz_enabled and reference_enabled and (viz_save_progress_raw_map or viz_save_progress_norm_map):
         for g in all_groups:
-            (viz_dir / "reference_progress" / g).mkdir(parents=True, exist_ok=True)
+            for tv in active_target_values:
+                (viz_dir / "reference_progress" / g / tv).mkdir(parents=True, exist_ok=True)
     if viz_enabled and reference_enabled and layer_grad_ref_csv_enabled and layer_grad_ref_save_running_log:
         tb_log_dir = run_dir / "ref_maps" / "tensorboard"
         tb_log_dir.mkdir(parents=True, exist_ok=True)
@@ -3254,7 +3409,7 @@ def run_layer_grad_csv(config, run_dir):
                                     map_use_t = _normalize_layer_map(map_use_t, mode=viz_normalize)
                                 map_use_t = _apply_ref_mode_to_map(
                                     map_use_t,
-                                    noise_map_for_target_layers,
+                                    noise_map_for_target_layers_by_target.get(str(target_value)),
                                     ref_mode,
                                 )
                                 transformed_maps_by_target[target_value] = map_use_t
@@ -3285,66 +3440,80 @@ def run_layer_grad_csv(config, run_dir):
                         csv_writer.writerow(row)
 
                     if viz_enabled and group_key is not None:
-                        grad_map_raw = _build_layer_filter_map_from_grad_stats(
+                        grad_map_raw_by_target = _build_layer_filter_map_by_target_from_grad_stats(
                             grad_stats=grad_stats_all,
                             target_values=viz_target_values,
                             target_layers=viz_target_layers,
                             layer_param_shapes=layer_param_shapes,
                         )
                         if reference_enabled and (group_key in active_reference_groups):
-                            delta_l2 = _update_running_mean_map(st, grad_map_raw)
-                            if np.isinf(viz_num_by_group[group_key]):
-                                if (
-                                    st["count"] >= conv_min_samples
-                                    and np.isfinite(delta_l2)
-                                    and delta_l2 <= conv_delta_l2_tol
-                                ):
-                                    st["stable_steps"] += 1
-                                else:
-                                    st["stable_steps"] = 0
-                                if st["stable_steps"] >= conv_patience:
-                                    st["converged"] = True
-                            if _is_group_done(group_key):
-                                if st["stop_reason"] == "":
-                                    st["stop_reason"] = "target_reached"
-                            if layer_grad_ref_csv_enabled and layer_grad_ref_save_running_log and tb_writer is not None:
-                                step_val = int(st["count"])
-                                tb_writer.add_scalar(f"layer_grad/{group_key}/delta_l2", float(delta_l2), step_val)
-                                tb_writer.add_scalar(f"layer_grad/{group_key}/converged", int(bool(st["converged"])), step_val)
-                            if viz_save_progress_raw_map or viz_save_progress_norm_map:
-                                should_save_progress_img = ((int(st["count"]) % int(viz_progress_step)) == 0)
-                                if should_save_progress_img:
-                                    progress_idx = int(ref_progress_image_saved[group_key])
-                                    if st.get("mean_raw") is not None:
+                            for tv in active_target_values:
+                                st_t = group_states[group_key]["targets"][tv]
+                                if _is_target_done(group_key, tv):
+                                    continue
+                                map_t = grad_map_raw_by_target.get(tv, np.zeros((0, 0), dtype=np.float32))
+                                delta_l2 = _update_running_mean_map(st_t, map_t)
+                                if np.isinf(viz_num_by_group[group_key]):
+                                    if (
+                                        st_t["count"] >= conv_min_samples
+                                        and np.isfinite(delta_l2)
+                                        and delta_l2 <= conv_delta_l2_tol
+                                    ):
+                                        st_t["stable_steps"] += 1
+                                    else:
+                                        st_t["stable_steps"] = 0
+                                    if st_t["stable_steps"] >= conv_patience:
+                                        st_t["converged"] = True
+                                _is_target_done(group_key, tv)
+                                if layer_grad_ref_csv_enabled and layer_grad_ref_save_running_log and tb_writer is not None:
+                                    step_val = int(st_t["count"])
+                                    tb_writer.add_scalar(f"layer_grad/{group_key}/{tv}/delta_l2", float(delta_l2), step_val)
+                                    tb_writer.add_scalar(f"layer_grad/{group_key}/{tv}/converged", int(bool(st_t["converged"])), step_val)
+                                if viz_save_progress_raw_map or viz_save_progress_norm_map:
+                                    should_save_progress_img = ((int(st_t["count"]) % int(viz_progress_step)) == 0)
+                                    if should_save_progress_img and st_t.get("mean_raw") is not None:
+                                        progress_idx = int(ref_progress_image_saved[group_key][tv])
                                         if viz_save_progress_raw_map:
-                                            out_raw = viz_dir / "reference_progress" / group_key / f"raw_{progress_idx:05d}.png"
-                                            _save_heatmap_png(st["mean_raw"], out_raw)
+                                            out_raw = viz_dir / "reference_progress" / group_key / tv / f"raw_{progress_idx:05d}.png"
+                                            _save_heatmap_png(st_t["mean_raw"], out_raw)
                                         if viz_save_progress_norm_map:
-                                            out_norm = viz_dir / "reference_progress" / group_key / f"norm_{progress_idx:05d}.png"
-                                            _save_heatmap_png(_normalize_layer_map(st["mean_raw"], mode=viz_normalize), out_norm)
-                                        ref_progress_image_saved[group_key] += 1
-                            if layer_grad_ref_csv_enabled and (layer_grad_ref_save_progress_raw_map_csv or layer_grad_ref_save_progress_norm_map_csv):
-                                should_save_progress_csv = ((int(st["count"]) % int(layer_grad_ref_progress_step)) == 0)
-                                if should_save_progress_csv:
-                                    progress_idx = int(ref_progress_csv_saved[group_key])
-                                    ref_prog_dir = run_dir / "ref_maps" / "progress" / group_key
-                                    ref_prog_dir.mkdir(parents=True, exist_ok=True)
-                                    if st.get("mean_raw") is not None:
+                                            out_norm = viz_dir / "reference_progress" / group_key / tv / f"norm_{progress_idx:05d}.png"
+                                            _save_heatmap_png(_normalize_layer_map(st_t["mean_raw"], mode=viz_normalize), out_norm)
+                                        ref_progress_image_saved[group_key][tv] += 1
+                                if layer_grad_ref_csv_enabled and (layer_grad_ref_save_progress_raw_map_csv or layer_grad_ref_save_progress_norm_map_csv):
+                                    should_save_progress_csv = ((int(st_t["count"]) % int(layer_grad_ref_progress_step)) == 0)
+                                    if should_save_progress_csv and st_t.get("mean_raw") is not None:
+                                        progress_idx = int(ref_progress_csv_saved[group_key][tv])
+                                        ref_prog_dir = run_dir / "ref_maps" / "progress" / group_key
+                                        ref_prog_dir.mkdir(parents=True, exist_ok=True)
+                                        map_dict_all = {}
+                                        for tt in active_target_values:
+                                            m_tt = group_states[group_key]["targets"][tt]["mean_raw"]
+                                            map_dict_all[tt] = m_tt if m_tt is not None else np.zeros((0, 0), dtype=np.float32)
                                         if layer_grad_ref_save_progress_raw_map_csv:
-                                            _save_map_nodes_csv(st["mean_raw"], ref_prog_dir / f"raw_{progress_idx:05d}.csv")
-                                        if layer_grad_ref_save_progress_norm_map_csv:
-                                            _save_map_nodes_csv(
-                                                _normalize_layer_map(st["mean_raw"], mode=viz_normalize),
-                                                ref_prog_dir / f"norm_{progress_idx:05d}.csv",
+                                            _save_map_nodes_csv_multi(
+                                                map_dict_all,
+                                                ref_prog_dir / f"{tv}_raw_{progress_idx:05d}.csv",
+                                                target_values=active_target_values,
                                             )
-                                        ref_progress_csv_saved[group_key] += 1
+                                        if layer_grad_ref_save_progress_norm_map_csv:
+                                            norm_dict_all = {tt: _normalize_layer_map(map_dict_all[tt], mode=viz_normalize) for tt in active_target_values}
+                                            _save_map_nodes_csv_multi(
+                                                norm_dict_all,
+                                                ref_prog_dir / f"{tv}_norm_{progress_idx:05d}.csv",
+                                                target_values=active_target_values,
+                                            )
+                                        ref_progress_csv_saved[group_key][tv] += 1
+                            _is_group_done(group_key)
                         if per_image_enabled:
-                            per_image_seen[group_key] += 1
-                            should_save = ((per_image_seen[group_key] - 1) % per_image_step == 0)
-                            if should_save and (per_image_max_num <= 0 or per_image_saved[group_key] < per_image_max_num):
-                                out_path = viz_dir / "per_image" / group_key / f"{image_id}_{per_image_saved[group_key]:05d}.png"
-                                _save_heatmap_png(_normalize_layer_map(grad_map_raw, mode=viz_normalize), out_path)
-                                per_image_saved[group_key] += 1
+                            for tv in active_target_values:
+                                per_image_seen[group_key][tv] += 1
+                                should_save = ((per_image_seen[group_key][tv] - 1) % per_image_step == 0)
+                                if should_save and (per_image_max_num <= 0 or per_image_saved[group_key][tv] < per_image_max_num):
+                                    m = grad_map_raw_by_target.get(tv, np.zeros((0, 0), dtype=np.float32))
+                                    out_path = viz_dir / "per_image" / group_key / tv / f"{image_id}_{per_image_saved[group_key][tv]:05d}.png"
+                                    _save_heatmap_png(_normalize_layer_map(m, mode=viz_normalize), out_path)
+                                    per_image_saved[group_key][tv] += 1
                     del grad_stats_all
             del infer_batch
             if batch_preds is not None:
@@ -3360,66 +3529,104 @@ def run_layer_grad_csv(config, run_dir):
             tb_writer = None
 
     if viz_enabled:
-        fn_mean_raw = np.zeros((0, 0), dtype=np.float32)
-        non_fn_mean_raw = np.zeros((0, 0), dtype=np.float32)
-        fn_mean = np.zeros((0, 0), dtype=np.float32)
-        non_fn_mean = np.zeros((0, 0), dtype=np.float32)
-        has_fn = False
-        has_non_fn = False
         if reference_enabled:
             for g in all_groups:
-                st = group_states[g]
-                if st["stop_reason"] == "":
-                    if st["converged"]:
-                        st["stop_reason"] = "converged"
-                    elif st["done"]:
-                        st["stop_reason"] = "target_reached"
-                    else:
-                        st["stop_reason"] = "dataloader_exhausted"
-            if "fn" in group_states:
-                fn_mean_raw = group_states["fn"]["mean_raw"] if group_states["fn"]["mean_raw"] is not None else np.zeros((0, 0), dtype=np.float32)
-                fn_mean = _normalize_layer_map(fn_mean_raw, mode=viz_normalize)
-                has_fn = bool(fn_mean.size > 0)
-            if "non_fn" in group_states:
-                non_fn_mean_raw = group_states["non_fn"]["mean_raw"] if group_states["non_fn"]["mean_raw"] is not None else np.zeros((0, 0), dtype=np.float32)
-                non_fn_mean = _normalize_layer_map(non_fn_mean_raw, mode=viz_normalize)
-                has_non_fn = bool(non_fn_mean.size > 0)
+                gst = group_states[g]
+                for tv in active_target_values:
+                    st_t = gst["targets"][tv]
+                    if st_t["stop_reason"] == "":
+                        if st_t["converged"]:
+                            st_t["stop_reason"] = "converged"
+                        elif st_t["done"]:
+                            st_t["stop_reason"] = "target_reached"
+                        else:
+                            st_t["stop_reason"] = "dataloader_exhausted"
+                _is_group_done(g)
             if viz_save_final_raw_map:
                 for g in all_groups:
-                    if group_states[g]["mean_raw"] is not None:
-                        _save_heatmap_png(group_states[g]["mean_raw"], viz_dir / f"{g}_final_raw_map.png")
+                    for tv in active_target_values:
+                        m = group_states[g]["targets"][tv]["mean_raw"]
+                        if m is not None:
+                            _save_heatmap_png(m, viz_dir / f"{g}_final_raw_{tv}_map.png")
             if viz_save_final_norm_map:
                 for g in all_groups:
-                    if group_states[g]["mean_raw"] is not None:
+                    for tv in active_target_values:
+                        m = group_states[g]["targets"][tv]["mean_raw"]
+                        if m is None:
+                            continue
                         _save_heatmap_png(
-                            _normalize_layer_map(group_states[g]["mean_raw"], mode=viz_normalize),
-                            viz_dir / f"{g}_final_norm_map.png",
+                            _normalize_layer_map(m, mode=viz_normalize),
+                            viz_dir / f"{g}_final_norm_{tv}_map.png",
                         )
-            if (not null_image_mode) and viz_save_profile and (has_fn or has_non_fn):
-                _save_layer_profile_plot(
-                    fn_mean_map=fn_mean,
-                    non_fn_mean_map=non_fn_mean,
-                    out_path=viz_dir / "profile_mean_std_log.png",
-                    log_scale=False,
-                )
+            if (not null_image_mode) and viz_save_profile:
+                for tv in active_target_values:
+                    fn_m = group_states.get("fn", {}).get("targets", {}).get(tv, {}).get("mean_raw")
+                    non_m = group_states.get("non_fn", {}).get("targets", {}).get(tv, {}).get("mean_raw")
+                    fn_norm = _normalize_layer_map(fn_m, mode=viz_normalize) if fn_m is not None else np.zeros((0, 0), dtype=np.float32)
+                    non_norm = _normalize_layer_map(non_m, mode=viz_normalize) if non_m is not None else np.zeros((0, 0), dtype=np.float32)
+                    if fn_norm.size > 0 or non_norm.size > 0:
+                        _save_layer_profile_plot(
+                            fn_mean_map=fn_norm,
+                            non_fn_mean_map=non_norm,
+                            out_path=viz_dir / f"profile_{tv}_mean_std_log.png",
+                            log_scale=False,
+                        )
             if layer_grad_ref_csv_enabled:
                 ref_dir = run_dir / "ref_maps"
                 ref_dir.mkdir(parents=True, exist_ok=True)
                 if layer_grad_ref_save_final_raw_map_csv:
                     for g in all_groups:
-                        m = group_states[g]["mean_raw"] if group_states[g]["mean_raw"] is not None else np.zeros((0, 0), dtype=np.float32)
-                        _save_map_nodes_csv(m, ref_dir / f"{g}_raw_map.csv")
+                        map_dict = {}
+                        for tv in active_target_values:
+                            m = group_states[g]["targets"][tv]["mean_raw"]
+                            map_dict[tv] = m if m is not None else np.zeros((0, 0), dtype=np.float32)
+                        _save_map_nodes_csv_multi(map_dict, ref_dir / f"{g}_raw_map.csv", target_values=active_target_values)
                 if layer_grad_ref_save_final_norm_map_csv:
                     for g in all_groups:
-                        m = group_states[g]["mean_raw"]
-                        norm = _normalize_layer_map(m, mode=viz_normalize) if m is not None else np.zeros((0, 0), dtype=np.float32)
-                        _save_map_nodes_csv(norm, ref_dir / f"{g}_norm_map.csv")
+                        norm_dict = {}
+                        for tv in active_target_values:
+                            m = group_states[g]["targets"][tv]["mean_raw"]
+                            norm_dict[tv] = _normalize_layer_map(m, mode=viz_normalize) if m is not None else np.zeros((0, 0), dtype=np.float32)
+                        _save_map_nodes_csv_multi(norm_dict, ref_dir / f"{g}_norm_map.csv", target_values=active_target_values)
         if gt_match_stats.get("unmatched", 0) > 0:
             print(f"[layer_grad] unmatched GT rows: {int(gt_match_stats['unmatched'])}")
+        group_total_counts = {}
+        group_converged = {}
+        group_final_delta_l2 = {}
+        group_stable_steps = {}
+        group_stop_reason = {}
+        group_target_converged = {}
+        group_target_final_delta_l2 = {}
+        group_target_stable_steps = {}
+        group_target_stop_reason = {}
+        for g in all_groups:
+            gst = group_states[g]
+            target_counts = {tv: int(gst["targets"][tv]["count"]) for tv in active_target_values}
+            target_deltas = {
+                tv: (float(gst["targets"][tv]["final_delta_l2"]) if np.isfinite(gst["targets"][tv]["final_delta_l2"]) else None)
+                for tv in active_target_values
+            }
+            target_stables = {tv: int(gst["targets"][tv]["stable_steps"]) for tv in active_target_values}
+            target_conv = {tv: bool(gst["targets"][tv]["converged"]) for tv in active_target_values}
+            target_stop = {tv: str(gst["targets"][tv]["stop_reason"]) for tv in active_target_values}
+            group_target_converged[g] = target_conv
+            group_target_final_delta_l2[g] = target_deltas
+            group_target_stable_steps[g] = target_stables
+            group_target_stop_reason[g] = target_stop
+            group_total_counts[g] = int(max(target_counts.values()) if target_counts else 0)
+            group_converged[g] = bool(all(target_conv.values())) if target_conv else False
+            finite_vals = [v for v in target_deltas.values() if v is not None]
+            group_final_delta_l2[g] = (float(np.mean(np.asarray(finite_vals, dtype=np.float32))) if finite_vals else None)
+            group_stable_steps[g] = int(min(target_stables.values()) if target_stables else 0)
+            group_stop_reason[g] = str(gst.get("stop_reason", ""))
+            if group_stop_reason[g] == "":
+                if all(v == "dataloader_exhausted" for v in target_stop.values()):
+                    group_stop_reason[g] = "dataloader_exhausted"
         viz_summary = {
             "normalize": viz_normalize,
             "mode": "reference" if reference_enabled else "per_image",
             "num_by_group": {k: ("inf" if np.isinf(viz_num_by_group[k]) else int(viz_num_by_group[k])) for k in all_groups},
+            "target_values_for_map": list(active_target_values),
             "convergence": {
                 "delta_metric": "l2",
                 "delta_l2_tol": conv_delta_l2_tol,
@@ -3428,20 +3635,21 @@ def run_layer_grad_csv(config, run_dir):
                 "max_samples": conv_max_samples,
             },
             "null_image_mode": bool(null_image_mode),
-            "group_total_counts": {k: int(group_states[k]["count"]) for k in all_groups},
-            "group_converged": {k: bool(group_states[k]["converged"]) for k in all_groups},
-            "group_final_delta_l2": {
-                k: float(group_states[k]["final_delta_l2"]) if np.isfinite(group_states[k]["final_delta_l2"]) else None
-                for k in all_groups
-            },
-            "group_stable_steps": {k: int(group_states[k]["stable_steps"]) for k in all_groups},
-            "group_stop_reason": {k: str(group_states[k]["stop_reason"]) for k in all_groups},
+            "group_total_counts": group_total_counts,
+            "group_converged": group_converged,
+            "group_final_delta_l2": group_final_delta_l2,
+            "group_stable_steps": group_stable_steps,
+            "group_stop_reason": group_stop_reason,
+            "group_target_converged": group_target_converged,
+            "group_target_final_delta_l2": group_target_final_delta_l2,
+            "group_target_stable_steps": group_target_stable_steps,
+            "group_target_stop_reason": group_target_stop_reason,
             "target_layers_for_map": viz_target_layers,
             "per_image": {
                 "enabled": bool(per_image_enabled),
                 "step": int(per_image_step),
                 "max_num": int(per_image_max_num),
-                "saved": {k: int(per_image_saved[k]) for k in all_groups},
+                "saved": {k: {tv: int(per_image_saved[k][tv]) for tv in active_target_values} for k in all_groups},
             },
             "reference_enabled": bool(reference_enabled),
             "reference_groups": active_reference_groups,
@@ -3450,13 +3658,13 @@ def run_layer_grad_csv(config, run_dir):
                 "save_raw": bool(viz_save_progress_raw_map),
                 "save_norm": bool(viz_save_progress_norm_map),
                 "step": int(viz_progress_step),
-                "saved": {k: int(ref_progress_image_saved[k]) for k in all_groups},
+                "saved": {k: {tv: int(ref_progress_image_saved[k][tv]) for tv in active_target_values} for k in all_groups},
             },
             "reference_progress_csv": {
                 "save_raw_csv": bool(layer_grad_ref_save_progress_raw_map_csv),
                 "save_norm_csv": bool(layer_grad_ref_save_progress_norm_map_csv),
                 "step": int(layer_grad_ref_progress_step),
-                "saved": {k: int(ref_progress_csv_saved[k]) for k in all_groups},
+                "saved": {k: {tv: int(ref_progress_csv_saved[k][tv]) for tv in active_target_values} for k in all_groups},
             },
             "tensorboard_log_dir": str(tb_log_dir) if tb_log_dir is not None else "",
             "save_final_raw_map": bool(viz_save_final_raw_map),
@@ -3471,22 +3679,24 @@ def run_layer_grad_csv(config, run_dir):
         ref_dir = run_dir / "ref_maps"
         ref_dir.mkdir(parents=True, exist_ok=True)
         disc_csv_path = ref_dir / "disc_layer_scores.csv"
+        extra_fields = [f"score_{tv}" for tv in active_target_values]
         with open(disc_csv_path, "w", newline="", encoding="utf-8") as f:
             writer = csv.DictWriter(
                 f,
-                fieldnames=["rank", "layer_idx", "layer_name", "score", "selected"],
+                fieldnames=["rank", "layer_idx", "layer_name", "score"] + extra_fields + ["selected"],
             )
             writer.writeheader()
             for row in disc_rows:
-                writer.writerow(
-                    {
-                        "rank": int(row.get("rank", 0)),
-                        "layer_idx": int(row.get("layer_idx", -1)),
-                        "layer_name": str(row.get("layer_name", "")),
-                        "score": float(row.get("score", float("nan"))),
-                        "selected": int(row.get("selected", 0)),
-                    }
-                )
+                out = {
+                    "rank": int(row.get("rank", 0)),
+                    "layer_idx": int(row.get("layer_idx", -1)),
+                    "layer_name": str(row.get("layer_name", "")),
+                    "score": float(row.get("score", float("nan"))),
+                    "selected": int(row.get("selected", 0)),
+                }
+                for tv in active_target_values:
+                    out[f"score_{tv}"] = float(row.get(f"score_{tv}", float("nan")))
+                writer.writerow(out)
     del detector
     if device.type == "cuda":
         torch.cuda.empty_cache()
