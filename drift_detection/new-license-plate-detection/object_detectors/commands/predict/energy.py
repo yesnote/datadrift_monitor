@@ -1,4 +1,4 @@
-from object_detectors.commands.predict.common import *
+from commands.predict.common import *
 
 def run_energy_csv(config, run_dir):
     run_dir = Path(run_dir)

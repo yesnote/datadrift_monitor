@@ -1,4 +1,4 @@
-from object_detectors.commands.predict import (
+from commands.predict import (
     run_energy_csv,
     run_ensemble_csv,
     run_entropy_csv,

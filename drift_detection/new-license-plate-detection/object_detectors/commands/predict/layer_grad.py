@@ -1,4 +1,4 @@
-from object_detectors.commands.predict.common import *
+from commands.predict.common import *
 import csv
 from pathlib import Path
 
