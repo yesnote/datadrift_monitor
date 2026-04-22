@@ -284,6 +284,7 @@ def load_training_dataframe(dataset_cfg: dict[str, Any]) -> tuple[pd.DataFrame, 
     prefixed_feature_columns: list[str] = []
     input_uncertainties: list[str] = []
     input_targets: list[str] = []
+    prefix_seen_count: dict[str, int] = {}
     for input_root, (_group, input_cue, input_target) in zip(input_roots, input_infos):
         input_csv_name = cue_to_csv.get(input_cue)
         if input_csv_name is None:
@@ -348,7 +349,11 @@ def load_training_dataframe(dataset_cfg: dict[str, Any]) -> tuple[pd.DataFrame, 
         if not feature_columns:
             raise ValueError(f"No input feature columns found in {input_csv}")
         suffix_target = f"_{input_target}" if input_target else ""
-        prefix = f"{input_cue}{suffix_target}__"
+        prefix_base = f"{input_cue}{suffix_target}__"
+        seen_count = int(prefix_seen_count.get(prefix_base, 0))
+        prefix_seen_count[prefix_base] = seen_count + 1
+        # When multiple input roots share the same cue/target, disambiguate feature prefixes.
+        prefix = prefix_base if seen_count == 0 else f"{input_cue}{suffix_target}__src{seen_count}__"
         rename_map = {c: f"{prefix}{c}" for c in feature_columns}
         tp_candidate_keys = [
             "image_id",
