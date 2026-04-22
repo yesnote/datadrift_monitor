@@ -483,17 +483,46 @@ def _resolve_ref_map_path(root_path, map_name):
     return root / "ref_maps" / f"{map_name}.csv"
 
 
-def _load_disc_source_maps(fn_non_fn_root, ref_root):
+def _load_disc_source_maps(fn_non_fn_root, ref_root=None):
     paths = {
         "fn_raw": _resolve_ref_map_path(fn_non_fn_root, "fn_raw_map"),
         "non_fn_raw": _resolve_ref_map_path(fn_non_fn_root, "non_fn_raw_map"),
         "fn_norm": _resolve_ref_map_path(fn_non_fn_root, "fn_norm_map"),
         "non_fn_norm": _resolve_ref_map_path(fn_non_fn_root, "non_fn_norm_map"),
-        "noise_raw": _resolve_ref_map_path(ref_root, "noise_raw_map"),
-        "noise_norm": _resolve_ref_map_path(ref_root, "noise_norm_map"),
     }
+    if ref_root:
+        paths["noise_raw"] = _resolve_ref_map_path(ref_root, "noise_raw_map")
+        paths["noise_norm"] = _resolve_ref_map_path(ref_root, "noise_norm_map")
     maps = {k: _load_map_nodes_csv(v) for k, v in paths.items()}
     return maps, {k: str(v) for k, v in paths.items()}
+
+
+def _apply_ref_mode_to_map(map_2d, ref_map_2d, ref_mode, eps=1.0e-8):
+    m = map_2d if map_2d is not None else np.zeros((0, 0), dtype=np.float32)
+    if ref_mode == "none":
+        return m
+    r = ref_map_2d if ref_map_2d is not None else np.zeros((0, 0), dtype=np.float32)
+    target_shape = _merge_map_shape(m.shape, r.shape)
+    out = _pad_map_2d(m, target_shape).astype(np.float32, copy=True)
+    ref = _pad_map_2d(r, target_shape).astype(np.float32, copy=False)
+    if ref_mode == "subtract":
+        return out - ref
+    if ref_mode == "proj_removal":
+        n_layers = int(out.shape[0]) if out.ndim == 2 else 0
+        for i in range(n_layers):
+            g_row = out[i]
+            r_row = ref[i]
+            common = np.isfinite(g_row) & np.isfinite(r_row)
+            if not common.any():
+                continue
+            g = g_row[common].astype(np.float64, copy=False)
+            rr = r_row[common].astype(np.float64, copy=False)
+            denom = float(np.dot(rr, rr)) + float(eps)
+            alpha = float(np.dot(g, rr)) / denom
+            g_row[common] = (g - alpha * rr).astype(np.float32, copy=False)
+            out[i] = g_row
+        return out
+    raise ValueError("gradient.ref_corrected must be one of {'none','subtract','proj_removal'}.")
 
 
 def _compute_disc_layer_scores(
@@ -502,26 +531,17 @@ def _compute_disc_layer_scores(
     non_fn_map,
     ref_map=None,
     *,
-    disc_rule="ref_corrected",
-    used_grad="raw",
+    ref_mode="none",
     separation_score="effect_size",
 ):
     fn_use = fn_map if fn_map is not None else np.zeros((0, 0), dtype=np.float32)
     non_fn_use = non_fn_map if non_fn_map is not None else np.zeros((0, 0), dtype=np.float32)
-    ref_use = ref_map if ref_map is not None else np.zeros((0, 0), dtype=np.float32)
-    if used_grad == "norm":
-        fn_use = _normalize_layer_map(fn_use, mode="layer_minmax")
-        non_fn_use = _normalize_layer_map(non_fn_use, mode="layer_minmax")
-        ref_use = _normalize_layer_map(ref_use, mode="layer_minmax")
-
-    if disc_rule == "ref_corrected":
-        target_shape = _merge_map_shape(fn_use.shape, non_fn_use.shape)
-        target_shape = _merge_map_shape(target_shape, ref_use.shape)
-        fn_use = _pad_map_2d(fn_use, target_shape)
-        non_fn_use = _pad_map_2d(non_fn_use, target_shape)
-        ref_use = _pad_map_2d(ref_use, target_shape)
-        fn_use = fn_use - ref_use
-        non_fn_use = non_fn_use - ref_use
+    if ref_mode in {"subtract", "proj_removal"}:
+        ref_use = ref_map if ref_map is not None else np.zeros((0, 0), dtype=np.float32)
+        fn_use = _apply_ref_mode_to_map(fn_use, ref_use, ref_mode)
+        non_fn_use = _apply_ref_mode_to_map(non_fn_use, ref_use, ref_mode)
+    elif ref_mode != "none":
+        raise ValueError("gradient.ref_corrected must be one of {'none','subtract','proj_removal'}.")
 
     eps = 1.0e-8
     rows = []
@@ -2813,7 +2833,7 @@ def run_layer_grad_csv(config, run_dir):
     else:
         _disc_tokens = [str(target_layers).strip().lower()]
     disc_enabled = any(tok == "disc_layers" for tok in _disc_tokens)
-    grad_ref_corrected = bool(parsed.get("layer_ref_corrected", False))
+    ref_mode = str(parsed.get("layer_ref_mode", "none")).strip().lower()
     grad_use_norm = bool(parsed.get("layer_use_norm", False))
     disc_separation_score = str(parsed.get("layer_disc_separation_score", "effect_size")).strip().lower()
     disc_topk = max(1, int(parsed.get("layer_disc_topk", 3)))
@@ -2908,7 +2928,7 @@ def run_layer_grad_csv(config, run_dir):
     disc_summary = {
         "enabled": bool(disc_enabled),
         "config": {
-            "ref_corrected": bool(grad_ref_corrected),
+            "ref_corrected": ref_mode,
             "use_norm": bool(grad_use_norm),
             "separation_score": disc_separation_score,
             "topk": int(disc_topk),
@@ -2922,49 +2942,42 @@ def run_layer_grad_csv(config, run_dir):
 
     print(
         "[INFO] layer_grad gradient options "
-        f"(ref_corrected={int(bool(grad_ref_corrected))}, use_norm={int(bool(grad_use_norm))})"
+        f"(ref_corrected={ref_mode}, use_norm={int(bool(grad_use_norm))})"
     )
 
     if disc_enabled:
         if unit != "image":
             raise ValueError("gradient.layer='disc_layers' requires output.layer_grad.unit='image'.")
-        if not disc_fn_non_fn_map_root or not layer_ref_map_root:
-            raise ValueError(
-                "gradient.layer='disc_layers' requires gradient.disc_layers.fn_non_fn_map and gradient.ref_map."
-            )
+        if ref_mode not in {"none", "subtract", "proj_removal"}:
+            raise ValueError("gradient.ref_corrected must be one of {'none','subtract','proj_removal'}.")
+        if not disc_fn_non_fn_map_root:
+            raise ValueError("gradient.layer='disc_layers' requires gradient.disc_layers.fn_non_fn_map.")
+        if ref_mode != "none" and not layer_ref_map_root:
+            raise ValueError("gradient.ref_corrected!='none' requires gradient.ref_map.")
         if disc_separation_score not in {"effect_size", "fisher_ratio"}:
             raise ValueError("gradient.disc_layers.separation_score must be one of {'effect_size','fisher_ratio'}.")
 
-        disc_maps, disc_map_paths = _load_disc_source_maps(disc_fn_non_fn_map_root, layer_ref_map_root)
+        disc_maps, disc_map_paths = _load_disc_source_maps(
+            disc_fn_non_fn_map_root,
+            layer_ref_map_root if ref_mode != "none" else None,
+        )
         if grad_use_norm:
             fn_map = disc_maps["fn_norm"]
             non_fn_map = disc_maps["non_fn_norm"]
-            noise_map = disc_maps["noise_norm"]
+            noise_map = disc_maps.get("noise_norm")
         else:
             fn_map = disc_maps["fn_raw"]
             non_fn_map = disc_maps["non_fn_raw"]
-            noise_map = disc_maps["noise_raw"]
+            noise_map = disc_maps.get("noise_raw")
 
-        if grad_ref_corrected:
-            disc_rows = _compute_disc_layer_scores(
-                layer_names=target_layers,
-                fn_map=fn_map,
-                non_fn_map=non_fn_map,
-                ref_map=noise_map,
-                disc_rule="ref_corrected",
-                used_grad="raw",
-                separation_score=disc_separation_score,
-            )
-        else:
-            disc_rows = _compute_disc_layer_scores(
-                layer_names=target_layers,
-                fn_map=fn_map,
-                non_fn_map=non_fn_map,
-                ref_map=None,
-                disc_rule="raw",
-                used_grad="raw",
-                separation_score=disc_separation_score,
-            )
+        disc_rows = _compute_disc_layer_scores(
+            layer_names=target_layers,
+            fn_map=fn_map,
+            non_fn_map=non_fn_map,
+            ref_map=noise_map,
+            ref_mode=ref_mode,
+            separation_score=disc_separation_score,
+        )
         selected_layers = []
         for row in disc_rows:
             if np.isfinite(float(row["score"])):
@@ -2981,23 +2994,25 @@ def run_layer_grad_csv(config, run_dir):
         viz_target_layers = list(selected_layers)
         print(
             "[INFO] discriminative layers "
-            f"(ref_corrected={int(bool(grad_ref_corrected))}, use_norm={int(bool(grad_use_norm))}, score={disc_separation_score}, topk={int(disc_topk)}): "
+            f"(ref_corrected={ref_mode}, use_norm={int(bool(grad_use_norm))}, score={disc_separation_score}, topk={int(disc_topk)}): "
             + ", ".join(selected_layers)
         )
         selected_indices = [int(row["layer_idx"]) for row in disc_rows if int(row.get("selected", 0)) == 1]
-        if selected_indices:
+        if ref_mode != "none" and noise_map is not None and selected_indices:
             max_idx = max(selected_indices)
             if noise_map.ndim == 2 and max_idx < int(noise_map.shape[0]):
                 noise_map_for_target_layers = noise_map[selected_indices, :].astype(np.float32, copy=True)
             else:
                 noise_map_for_target_layers = np.zeros((len(selected_indices), 0), dtype=np.float32)
-        else:
+        elif ref_mode != "none":
             noise_map_for_target_layers = np.zeros((0, 0), dtype=np.float32)
         disc_summary["map_paths"] = disc_map_paths
         disc_summary["selected_layers"] = list(selected_layers)
-    elif grad_ref_corrected:
+    elif ref_mode != "none":
+        if ref_mode not in {"subtract", "proj_removal"}:
+            raise ValueError("gradient.ref_corrected must be one of {'none','subtract','proj_removal'}.")
         if not layer_ref_map_root:
-            raise ValueError("gradient.ref_corrected=true requires gradient.ref_map.")
+            raise ValueError("gradient.ref_corrected!='none' requires gradient.ref_map.")
         all_conv_layers = expand_layer_names(detector.model, ["all_conv"])
         name_to_idx = {name: idx for idx, name in enumerate(all_conv_layers)}
         target_indices = [int(name_to_idx[name]) for name in target_layers if name in name_to_idx]
@@ -3020,7 +3035,7 @@ def run_layer_grad_csv(config, run_dir):
             fieldnames.append(f"{target_value}_{layer_name}")
 
     layer_param_shapes = {}
-    need_transform_maps = bool(save_csv and unit == "image" and (grad_use_norm or grad_ref_corrected))
+    need_transform_maps = bool(save_csv and unit == "image" and (grad_use_norm or ref_mode != "none"))
     if unit == "image" and (viz_enabled or need_transform_maps):
         shape_layers = list(dict.fromkeys(list(viz_target_layers) + list(target_layers)))
         for layer_name in shape_layers:
@@ -3237,11 +3252,11 @@ def run_layer_grad_csv(config, run_dir):
                                 map_use_t = map_raw_t
                                 if grad_use_norm:
                                     map_use_t = _normalize_layer_map(map_use_t, mode=viz_normalize)
-                                if grad_ref_corrected and noise_map_for_target_layers is not None:
-                                    target_shape = _merge_map_shape(map_use_t.shape, noise_map_for_target_layers.shape)
-                                    map_use_t = _pad_map_2d(map_use_t, target_shape) - _pad_map_2d(
-                                        noise_map_for_target_layers, target_shape
-                                    )
+                                map_use_t = _apply_ref_mode_to_map(
+                                    map_use_t,
+                                    noise_map_for_target_layers,
+                                    ref_mode,
+                                )
                                 transformed_maps_by_target[target_value] = map_use_t
                         for target_value in target_values:
                             for layer_idx, layer_name in enumerate(target_layers):
