@@ -19,7 +19,7 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt  # noqa: E402
 
 from dataloaders.dataloader_yolo import build_dataset, create_dataloader, yolo_collate_fn
-from object_detectors.commands.utils.predict_utils import (
+from commands.utils.predict_utils import (
     assign_tp_to_predictions,
     build_detector,
     enable_forced_mc_dropout_on_yolov5_head,

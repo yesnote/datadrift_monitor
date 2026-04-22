@@ -1,7 +1,7 @@
 import torch
 
-from object_detectors.commands.predict.registry import resolve_predict_runner
-from object_detectors.commands.utils.predict_utils import parse_output_config
+from commands.predict.registry import resolve_predict_runner
+from commands.utils.predict_utils import parse_output_config
 
 
 def run_predict(config, run_dir):
