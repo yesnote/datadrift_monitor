@@ -151,14 +151,14 @@ output:
       layer: disc_layers # all_conv | disc_layers | ["model.24.m.0", "model.24.m.1", "model.24.m.2"]
       target: null_target # cand_target | null_target
       ref_corrected: subtract # subtract | proj_removal | none
-      ref_map: object_detectors/runs/references/04-19-2026_14;24_layer_grad_null_target_loss_noise
+      ref_map: object_detectors/runs/references/04-22-2026_19;16_layer_grad_null_target_loss_noise
       use_norm: true
       disc_layers:
-        fn_non_fn_map: object_detectors/runs/references/04-19-2026_21;35_layer_grad_null_target_loss_fn-non_fn
+        fn_non_fn_map: object_detectors/runs/references/04-23-2026_00;40_layer_grad_null_target_loss_fn-non_fn
         separation_score: effect_size # effect_size | fisher_ratio
         topk: 3
     reference:
-      gt: object_detectors/runs/fn_detectors/04-08-2026_14;10_gt
+      gt: object_detectors/runs/fn_detectors/04-07-2026_14;09_gt
       group: [fn, non_fn]
       delta: 5.0e-4
       patience: 20
