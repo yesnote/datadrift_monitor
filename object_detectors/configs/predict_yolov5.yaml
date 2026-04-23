@@ -152,7 +152,7 @@ output:
       target: null_target # cand_target | null_target
       ref_corrected: subtract # subtract | proj_removal | none
       ref_map: object_detectors/runs/references/04-22-2026_19;16_layer_grad_null_target_loss_noise
-      use_norm: true
+      use_norm: false
       disc_layers:
         fn_non_fn_map: object_detectors/runs/references/04-23-2026_00;40_layer_grad_null_target_loss_fn-non_fn
         separation_score: effect_size # effect_size | fisher_ratio
