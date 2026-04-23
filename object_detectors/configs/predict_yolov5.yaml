@@ -150,7 +150,7 @@ output:
       scalar: [loss]
       layer: disc_layers # all_conv | disc_layers | ["model.24.m.0", "model.24.m.1", "model.24.m.2"]
       target: null_target # cand_target | null_target
-      ref_corrected: subtract # subtract | proj_removal | none
+      ref_corrected: subtract # subtract | product | proj_removal | none
       ref_map: object_detectors/runs/references/04-22-2026_19;16_layer_grad_null_target_loss_noise
       use_norm: false
       disc_layers:

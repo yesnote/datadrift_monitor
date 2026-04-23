@@ -479,6 +479,8 @@ def _apply_ref_mode_to_map(map_2d, ref_map_2d, ref_mode, eps=1.0e-8):
     ref = _pad_map_2d(r, target_shape).astype(np.float32, copy=False)
     if ref_mode == "subtract":
         return out - ref
+    if ref_mode == "product":
+        return out * ref
     if ref_mode == "proj_removal":
         n_layers = int(out.shape[0]) if out.ndim == 2 else 0
         for i in range(n_layers):
@@ -494,7 +496,7 @@ def _apply_ref_mode_to_map(map_2d, ref_map_2d, ref_mode, eps=1.0e-8):
             g_row[common] = (g - alpha * rr).astype(np.float32, copy=False)
             out[i] = g_row
         return out
-    raise ValueError("gradient.ref_corrected must be one of {'none','subtract','proj_removal'}.")
+    raise ValueError("gradient.ref_corrected must be one of {'none','subtract','product','proj_removal'}.")
 
 
 def _compute_disc_layer_scores(
@@ -508,12 +510,12 @@ def _compute_disc_layer_scores(
 ):
     fn_use = fn_map if fn_map is not None else np.zeros((0, 0), dtype=np.float32)
     non_fn_use = non_fn_map if non_fn_map is not None else np.zeros((0, 0), dtype=np.float32)
-    if ref_mode in {"subtract", "proj_removal"}:
+    if ref_mode in {"subtract", "product", "proj_removal"}:
         ref_use = ref_map if ref_map is not None else np.zeros((0, 0), dtype=np.float32)
         fn_use = _apply_ref_mode_to_map(fn_use, ref_use, ref_mode)
         non_fn_use = _apply_ref_mode_to_map(non_fn_use, ref_use, ref_mode)
     elif ref_mode != "none":
-        raise ValueError("gradient.ref_corrected must be one of {'none','subtract','proj_removal'}.")
+        raise ValueError("gradient.ref_corrected must be one of {'none','subtract','product','proj_removal'}.")
 
     eps = 1.0e-8
     rows = []
@@ -698,8 +700,8 @@ def run_layer_grad_csv(config, run_dir):
     if disc_enabled:
         if unit != "image":
             raise ValueError("gradient.layer='disc_layers' requires output.layer_grad.unit='image'.")
-        if ref_mode not in {"none", "subtract", "proj_removal"}:
-            raise ValueError("gradient.ref_corrected must be one of {'none','subtract','proj_removal'}.")
+        if ref_mode not in {"none", "subtract", "product", "proj_removal"}:
+            raise ValueError("gradient.ref_corrected must be one of {'none','subtract','product','proj_removal'}.")
         if not disc_fn_non_fn_map_root:
             raise ValueError("gradient.layer='disc_layers' requires gradient.disc_layers.fn_non_fn_map.")
         if ref_mode != "none" and not layer_ref_map_root:
@@ -778,8 +780,8 @@ def run_layer_grad_csv(config, run_dir):
         disc_summary["map_paths"] = disc_map_paths
         disc_summary["selected_layers"] = list(selected_layers)
     elif ref_mode != "none":
-        if ref_mode not in {"subtract", "proj_removal"}:
-            raise ValueError("gradient.ref_corrected must be one of {'none','subtract','proj_removal'}.")
+        if ref_mode not in {"subtract", "product", "proj_removal"}:
+            raise ValueError("gradient.ref_corrected must be one of {'none','subtract','product','proj_removal'}.")
         if not layer_ref_map_root:
             raise ValueError("gradient.ref_corrected!='none' requires gradient.ref_map.")
         all_conv_layers = expand_layer_names(detector.model, ["all_conv"])
