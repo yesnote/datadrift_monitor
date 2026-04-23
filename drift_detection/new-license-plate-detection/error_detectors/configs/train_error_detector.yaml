@@ -11,7 +11,7 @@ dataset:
   input_root:
     - object_detectors/runs/fn_detectors/03-12-2026_18;34_feature_grad
     # - object_detectors/runs/fn_detectors/03-12-2026_18;34_entropy
-  gt_root: object_detectors/runs/fn_detectors/03-27-2026_17;54_gt
+  gt_root: object_detectors/runs/fn_detectors/04-07-2026_14;09_gt
 
 experiment:
   process: repeat              # kfold | repeat
