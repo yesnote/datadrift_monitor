@@ -182,7 +182,7 @@ output:
           norm_map: false # layer min-max normalization
     
     save_image:
-      per_image:
+      inferenced_image:
         enabled: false
         step: 10
         max_num: 10
