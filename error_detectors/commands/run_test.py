@@ -114,7 +114,15 @@ def run_test(config: dict[str, Any], run_dir: Path) -> Path:
             results_dir / f"eval_data_test_{model_name}.csv",
             index=False,
         )
-        save_eval_plots(y, y_pred, out_dir=out_dir, model_name=model_name, label_col=label_col)
+        save_eval_plots(
+            y,
+            y_pred,
+            out_dir=out_dir,
+            model_name=model_name,
+            label_col=label_col,
+            x_features=x,
+            estimator=estimator,
+        )
         shutil.copy2(model_path, models_dir / model_path.name)
 
     eval_df = pd.DataFrame(eval_rows)

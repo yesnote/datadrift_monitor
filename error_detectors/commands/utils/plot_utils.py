@@ -5,6 +5,7 @@ from pathlib import Path
 import matplotlib
 import numpy as np
 import seaborn as sns
+from sklearn.decomposition import PCA
 from sklearn.metrics import average_precision_score, precision_recall_curve, roc_curve
 
 matplotlib.use("Agg")
@@ -174,12 +175,71 @@ def _save_confidence_vs_conditional_precision(y_true: np.ndarray, y_score: np.nd
     plt.close(fig)
 
 
+def _save_pca_2d(
+    x_features: np.ndarray,
+    y_true: np.ndarray,
+    estimator,
+    out_path: Path,
+) -> None:
+    with sns.axes_style("whitegrid"):
+        fig, ax = plt.subplots(figsize=(8, 6))
+        try:
+            x_arr = np.asarray(x_features, dtype=np.float64)
+            y_arr = np.asarray(y_true, dtype=np.int64).reshape(-1)
+            if x_arr.ndim != 2 or x_arr.shape[0] < 2 or x_arr.shape[1] < 2:
+                raise ValueError("PCA 2D requires at least 2 samples and 2 features.")
+
+            pca = PCA(n_components=2)
+            x_2d = pca.fit_transform(x_arr)
+
+            x_min = float(x_2d[:, 0].min() - 1.0)
+            x_max = float(x_2d[:, 0].max() + 1.0)
+            y_min = float(x_2d[:, 1].min() - 1.0)
+            y_max = float(x_2d[:, 1].max() + 1.0)
+            xx, yy = np.meshgrid(
+                np.linspace(x_min, x_max, 300, dtype=np.float64),
+                np.linspace(y_min, y_max, 300, dtype=np.float64),
+            )
+            grid_2d = np.c_[xx.ravel(), yy.ravel()]
+            grid_original = pca.inverse_transform(grid_2d)
+            z = estimator.predict_proba(grid_original)[:, 1].reshape(xx.shape)
+
+            contour = ax.contourf(xx, yy, z, levels=50, cmap="coolwarm", alpha=0.35)
+            fig.colorbar(contour, ax=ax, label="Predicted Positive Probability")
+            ax.contour(xx, yy, z, levels=[0.5], colors="black", linewidths=1.8)
+
+            labels = np.where(y_arr == 1, "positive", "negative")
+            sns.scatterplot(
+                x=x_2d[:, 0],
+                y=x_2d[:, 1],
+                hue=labels,
+                hue_order=["negative", "positive"],
+                palette={"negative": "#4C78A8", "positive": "#E45756"},
+                edgecolor="black",
+                s=45,
+                alpha=0.85,
+                ax=ax,
+            )
+            ax.set_title("PCA 2D Decision Boundary")
+            ax.set_xlabel("PC1")
+            ax.set_ylabel("PC2")
+            ax.legend(title="Class", loc="best")
+        except Exception as e:  # pragma: no cover - depends on data shape and estimator
+            ax.text(0.5, 0.5, f"PCA 2D unavailable\n{e}", ha="center", va="center")
+            ax.set_axis_off()
+        fig.tight_layout()
+        fig.savefig(out_path, dpi=150)
+        plt.close(fig)
+
+
 def save_eval_plots(
     y_true: np.ndarray,
     y_score: np.ndarray,
     out_dir: Path,
     model_name: str,
     label_col: str = "fn",
+    x_features: np.ndarray | None = None,
+    estimator=None,
 ) -> None:
     plot_dir = out_dir / "plots" / model_name
     plot_dir.mkdir(parents=True, exist_ok=True)
@@ -201,4 +261,11 @@ def save_eval_plots(
             y_true,
             y_score,
             plot_dir / "confidence_vs_conditional_precision.png",
+        )
+    if x_features is not None and estimator is not None:
+        _save_pca_2d(
+            x_features=np.asarray(x_features),
+            y_true=np.asarray(y_true),
+            estimator=estimator,
+            out_path=plot_dir / "pca_2d.png",
         )
