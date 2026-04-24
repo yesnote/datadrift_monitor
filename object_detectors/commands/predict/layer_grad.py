@@ -342,7 +342,7 @@ def _save_map_nodes_csv(map_2d, out_path):
                 writer.writerow({"layer_idx": layer_idx, "filter_idx": filter_idx, "value": val})
 
 
-def _save_map_nodes_csv_multi(map_by_target, out_path, target_values):
+def _save_map_nodes_csv_multi(map_by_target, out_path, target_values, layer_indices=None):
     out_path = Path(out_path)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     targets = [str(t) for t in target_values]
@@ -368,9 +368,13 @@ def _save_map_nodes_csv_multi(map_by_target, out_path, target_values):
                 padded[t] = _pad_map_2d(m, (h, w))
             else:
                 padded[t] = np.full((h, w), np.nan, dtype=np.float32)
+        li_map = None
+        if layer_indices is not None:
+            li_map = [int(v) for v in list(layer_indices)]
         for li in range(h):
+            layer_idx_out = li_map[li] if (li_map is not None and li < len(li_map)) else li
             for fi in range(w):
-                row = {"layer_idx": li, "filter_idx": fi}
+                row = {"layer_idx": int(layer_idx_out), "filter_idx": fi}
                 for t in targets:
                     v = padded[t][li, fi]
                     row[f"{t}_grad"] = float(v) if np.isfinite(v) else float("nan")
@@ -666,6 +670,8 @@ def run_layer_grad_csv(config, run_dir):
         raise ValueError("Loaded 0 images. Check dataset root/image_dir/split configuration in YAML.")
 
     detector, device = build_detector(config)
+    all_conv_layers = expand_layer_names(detector.model, ["all_conv"])
+    all_conv_name_to_idx = {name: idx for idx, name in enumerate(all_conv_layers)}
     if disc_enabled:
         target_layers = expand_layer_names(detector.model, ["all_conv"])
     else:
@@ -784,9 +790,7 @@ def run_layer_grad_csv(config, run_dir):
             raise ValueError("gradient.ref_corrected must be one of {'none','subtract','product','proj_removal'}.")
         if not layer_ref_map_root:
             raise ValueError("gradient.ref_corrected!='none' requires gradient.ref_map.")
-        all_conv_layers = expand_layer_names(detector.model, ["all_conv"])
-        name_to_idx = {name: idx for idx, name in enumerate(all_conv_layers)}
-        target_indices = [int(name_to_idx[name]) for name in target_layers if name in name_to_idx]
+        target_indices = [int(all_conv_name_to_idx[name]) for name in target_layers if name in all_conv_name_to_idx]
         noise_map_name = "noise_norm_map" if grad_use_norm else "noise_raw_map"
         noise_map_by_target = _load_map_nodes_csv_multi(
             _resolve_ref_map_path(layer_ref_map_root, noise_map_name),
@@ -807,6 +811,11 @@ def run_layer_grad_csv(config, run_dir):
             fieldnames.append(f"{target_value}_{layer_name}")
 
     layer_param_shapes = {}
+    viz_target_layer_indices = [
+        int(all_conv_name_to_idx[layer_name])
+        for layer_name in viz_target_layers
+        if layer_name in all_conv_name_to_idx
+    ]
     need_transform_maps = bool(save_csv and unit == "image" and (grad_use_norm or ref_mode != "none"))
     if unit == "image" and (viz_enabled or need_transform_maps):
         shape_layers = list(dict.fromkeys(list(viz_target_layers) + list(target_layers)))
@@ -1141,6 +1150,7 @@ def run_layer_grad_csv(config, run_dir):
                                                 map_dict_all,
                                                 ref_prog_dir / f"{tv}_raw_{progress_idx:05d}.csv",
                                                 target_values=active_target_values,
+                                                layer_indices=viz_target_layer_indices,
                                             )
                                         if layer_grad_ref_save_progress_norm_map_csv:
                                             norm_dict_all = {tt: _normalize_layer_map(map_dict_all[tt], mode=viz_normalize) for tt in active_target_values}
@@ -1148,6 +1158,7 @@ def run_layer_grad_csv(config, run_dir):
                                                 norm_dict_all,
                                                 ref_prog_dir / f"{tv}_norm_{progress_idx:05d}.csv",
                                                 target_values=active_target_values,
+                                                layer_indices=viz_target_layer_indices,
                                             )
                                         ref_progress_csv_saved[group_key][tv] += 1
                             _is_group_done(group_key)
@@ -1226,14 +1237,24 @@ def run_layer_grad_csv(config, run_dir):
                         for tv in active_target_values:
                             m = group_states[g]["targets"][tv]["mean_raw"]
                             map_dict[tv] = m if m is not None else np.zeros((0, 0), dtype=np.float32)
-                        _save_map_nodes_csv_multi(map_dict, ref_dir / f"{g}_raw_map.csv", target_values=active_target_values)
+                        _save_map_nodes_csv_multi(
+                            map_dict,
+                            ref_dir / f"{g}_raw_map.csv",
+                            target_values=active_target_values,
+                            layer_indices=viz_target_layer_indices,
+                        )
                 if layer_grad_ref_save_final_norm_map_csv:
                     for g in all_groups:
                         norm_dict = {}
                         for tv in active_target_values:
                             m = group_states[g]["targets"][tv]["mean_raw"]
                             norm_dict[tv] = _normalize_layer_map(m, mode=viz_normalize) if m is not None else np.zeros((0, 0), dtype=np.float32)
-                        _save_map_nodes_csv_multi(norm_dict, ref_dir / f"{g}_norm_map.csv", target_values=active_target_values)
+                        _save_map_nodes_csv_multi(
+                            norm_dict,
+                            ref_dir / f"{g}_norm_map.csv",
+                            target_values=active_target_values,
+                            layer_indices=viz_target_layer_indices,
+                        )
         if gt_match_stats.get("unmatched", 0) > 0:
             print(f"[layer_grad] unmatched GT rows: {int(gt_match_stats['unmatched'])}")
         group_total_counts = {}
