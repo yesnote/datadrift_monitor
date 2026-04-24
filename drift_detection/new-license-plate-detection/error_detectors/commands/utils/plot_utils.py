@@ -181,6 +181,17 @@ def _save_pca_2d(
     estimator,
     out_path: Path,
 ) -> None:
+    def _smooth_grid(z_in: np.ndarray, passes: int = 2) -> np.ndarray:
+        z = np.asarray(z_in, dtype=np.float64)
+        for _ in range(max(0, int(passes))):
+            zp = np.pad(z, ((1, 1), (1, 1)), mode="edge")
+            z = (
+                zp[:-2, :-2] + zp[:-2, 1:-1] + zp[:-2, 2:]
+                + zp[1:-1, :-2] + 2.0 * zp[1:-1, 1:-1] + zp[1:-1, 2:]
+                + zp[2:, :-2] + zp[2:, 1:-1] + zp[2:, 2:]
+            ) / 10.0
+        return z
+
     with sns.axes_style("whitegrid"):
         fig, ax = plt.subplots(figsize=(8, 6))
         try:
@@ -203,10 +214,17 @@ def _save_pca_2d(
             grid_2d = np.c_[xx.ravel(), yy.ravel()]
             grid_original = pca.inverse_transform(grid_2d)
             z = estimator.predict_proba(grid_original)[:, 1].reshape(xx.shape)
+            z_smooth = _smooth_grid(z, passes=2)
 
-            contour = ax.contourf(xx, yy, z, levels=50, cmap="coolwarm", alpha=0.35)
-            fig.colorbar(contour, ax=ax, label="Predicted Positive Probability")
-            ax.contour(xx, yy, z, levels=[0.5], colors="black", linewidths=1.8)
+            ax.contour(
+                xx,
+                yy,
+                z_smooth,
+                levels=[0.5],
+                colors="black",
+                linewidths=2.2,
+                antialiased=True,
+            )
 
             labels = np.where(y_arr == 1, "positive", "negative")
             sns.scatterplot(
