@@ -172,6 +172,10 @@ output:
           map: none
           vector: [L1, L2, min, max, mean, std]
       reference:
+        per_image:
+          raw_map: false
+          norm_map: false
+          step: 10
         progress:
           log: false # tensorboard event log
           raw_map: false
