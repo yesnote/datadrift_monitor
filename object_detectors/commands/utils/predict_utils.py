@@ -432,7 +432,7 @@ def parse_output_config(output_cfg):
     if uncertainty == "layer_grad":
         lg = layer_grad_cfg
         common_ref_cfg = as_dict(lg.get("reference", {}))
-        per_image_cfg = as_dict(save_image_cfg.get("per_image", {}))
+        per_image_cfg = as_dict(save_image_cfg.get("inferenced_image", {}))
         ref_img_cfg = as_dict(save_image_cfg.get("reference", {}))
         ref_img_progress_cfg = as_dict(ref_img_cfg.get("progress", {}))
         ref_img_final_cfg = as_dict(ref_img_cfg.get("final", {}))

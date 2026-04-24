@@ -1312,7 +1312,7 @@ def run_layer_grad_csv(config, run_dir):
             "group_target_stable_steps": group_target_stable_steps,
             "group_target_stop_reason": group_target_stop_reason,
             "target_layers_for_map": viz_target_layers,
-            "per_image": {
+            "inferenced_image": {
                 "enabled": bool(per_image_enabled),
                 "step": int(per_image_step),
                 "max_num": int(per_image_max_num),
