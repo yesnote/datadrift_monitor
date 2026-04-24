@@ -27,6 +27,21 @@ def _normalize_list(raw, default: list[str]) -> list[str]:
     return list(default)
 
 
+def _limit_samples_per_group(samples: list, max_num: int) -> list:
+    if max_num <= 0:
+        return samples
+    out = []
+    seen = {}
+    for s in samples:
+        g = str(s.group)
+        c = int(seen.get(g, 0))
+        if c >= max_num:
+            continue
+        out.append(s)
+        seen[g] = c + 1
+    return out
+
+
 def run_visualize(config: dict, run_dir: Path) -> dict:
     run_dir = Path(run_dir).resolve()
     inp = config.get("input", {}) or {}
@@ -41,6 +56,7 @@ def run_visualize(config: dict, run_dir: Path) -> dict:
 
     map_types = [v.lower() for v in _normalize_list(inp.get("map_types"), ["raw", "norm"])]
     groups = [v.lower() for v in _normalize_list(inp.get("groups"), ["noise", "fn", "non_fn"])]
+    max_num = int(inp.get("max_num", 0))
     per_target = bool(pca_cfg.get("per_target", True))
     save_png = bool(pca_cfg.get("save_png", True))
     if not per_target:
@@ -70,6 +86,7 @@ def run_visualize(config: dict, run_dir: Path) -> dict:
             "run_roots": [str((REPO_ROOT / r).resolve()) if not Path(r).is_absolute() else str(Path(r).resolve()) for r in run_roots],
             "map_types": map_types,
             "groups": groups,
+            "max_num": int(max_num),
         },
         "total_samples": int(len(samples)),
         "keys": {},
@@ -77,7 +94,7 @@ def run_visualize(config: dict, run_dir: Path) -> dict:
 
     for key in sorted(by_key.keys()):
         target, map_type = key
-        key_samples = by_key[key]
+        key_samples = _limit_samples_per_group(by_key[key], max_num=max_num)
         x, meta = build_key_matrix(key_samples)
         n_samples = int(x.shape[0])
         n_features = int(x.shape[1]) if x.ndim == 2 else 0
@@ -143,4 +160,3 @@ def run_visualize(config: dict, run_dir: Path) -> dict:
             json.dump({"message": "No per-image CSV files were found."}, f, ensure_ascii=False, indent=2)
 
     return summary
-
