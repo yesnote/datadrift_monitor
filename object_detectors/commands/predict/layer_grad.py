@@ -665,6 +665,15 @@ def run_layer_grad_csv(config, run_dir):
     layer_grad_ref_save_progress_raw_map_csv = bool(parsed.get("save_image_layer_grad_csv_save_progress_raw_map_csv", False))
     layer_grad_ref_save_progress_norm_map_csv = bool(parsed.get("save_image_layer_grad_csv_save_progress_norm_map_csv", False))
     layer_grad_ref_progress_step = max(1, int(parsed.get("save_image_layer_grad_csv_progress_step", 10)))
+    reference_per_image_image_enabled = bool(
+        viz_save_reference_per_image_raw_map or viz_save_reference_per_image_norm_map
+    )
+    reference_per_image_csv_enabled = bool(
+        layer_grad_ref_save_per_image_raw_map_csv or layer_grad_ref_save_per_image_norm_map_csv
+    )
+    reference_per_image_any_enabled = bool(
+        reference_per_image_image_enabled or reference_per_image_csv_enabled
+    )
 
     if not save_csv and not viz_enabled:
         return
@@ -835,7 +844,9 @@ def run_layer_grad_csv(config, run_dir):
     per_image_seen = {g: {tv: 0 for tv in active_target_values} for g in all_groups}
     per_image_saved = {g: {tv: 0 for tv in active_target_values} for g in all_groups}
     ref_progress_image_saved = {g: {tv: 0 for tv in active_target_values} for g in all_groups}
+    ref_per_image_seen = {g: {tv: 0 for tv in active_target_values} for g in all_groups}
     ref_per_image_saved = {g: {tv: 0 for tv in active_target_values} for g in all_groups}
+    ref_per_image_csv_seen = {g: {tv: 0 for tv in active_target_values} for g in all_groups}
     ref_per_image_csv_saved = {g: {tv: 0 for tv in active_target_values} for g in all_groups}
     ref_progress_csv_saved = {g: {tv: 0 for tv in active_target_values} for g in all_groups}
     tb_writer = None
@@ -918,6 +929,8 @@ def run_layer_grad_csv(config, run_dir):
 
     def _all_done():
         if reference_enabled:
+            if reference_per_image_any_enabled:
+                return False
             return all(_is_group_done(g) for g in active_reference_groups)
         return all(_is_group_done(g) for g in all_groups)
 
@@ -1056,7 +1069,12 @@ def run_layer_grad_csv(config, run_dir):
                                 fn_flag = int(is_fn)
                             group_key = "fn" if int(fn_flag) == 1 else "non_fn"
                         st = group_states[group_key]
-                        if reference_enabled and (group_key in active_reference_groups) and _is_group_done(group_key):
+                        if (
+                            reference_enabled
+                            and (group_key in active_reference_groups)
+                            and _is_group_done(group_key)
+                            and not reference_per_image_any_enabled
+                        ):
                             continue
                     grad_stats_all = batch_grad_stats_all[sample_idx] if batch_grad_stats_all is not None else {}
 
@@ -1116,28 +1134,12 @@ def run_layer_grad_csv(config, run_dir):
                         if reference_enabled and (group_key in active_reference_groups):
                             for tv in active_target_values:
                                 st_t = group_states[group_key]["targets"][tv]
-                                if _is_target_done(group_key, tv):
-                                    continue
                                 map_t = grad_map_raw_by_target.get(tv, np.zeros((0, 0), dtype=np.float32))
-                                delta_l2 = _update_running_mean_map(st_t, map_t)
-                                if np.isinf(viz_num_by_group[group_key]):
-                                    if (
-                                        st_t["count"] >= conv_min_samples
-                                        and np.isfinite(delta_l2)
-                                        and delta_l2 <= conv_delta_l2_tol
-                                    ):
-                                        st_t["stable_steps"] += 1
-                                    else:
-                                        st_t["stable_steps"] = 0
-                                    if st_t["stable_steps"] >= conv_patience:
-                                        st_t["converged"] = True
-                                _is_target_done(group_key, tv)
-                                if layer_grad_ref_csv_enabled and layer_grad_ref_save_running_log and tb_writer is not None:
-                                    step_val = int(st_t["count"])
-                                    tb_writer.add_scalar(f"layer_grad/{group_key}/{tv}/delta_l2", float(delta_l2), step_val)
-                                    tb_writer.add_scalar(f"layer_grad/{group_key}/{tv}/converged", int(bool(st_t["converged"])), step_val)
                                 if layer_grad_ref_csv_enabled and (layer_grad_ref_save_per_image_raw_map_csv or layer_grad_ref_save_per_image_norm_map_csv):
-                                    should_save_per_image_csv = ((int(st_t["count"]) % int(layer_grad_ref_per_image_step)) == 0)
+                                    ref_per_image_csv_seen[group_key][tv] += 1
+                                    should_save_per_image_csv = (
+                                        (ref_per_image_csv_seen[group_key][tv] - 1) % int(layer_grad_ref_per_image_step)
+                                    ) == 0
                                     if should_save_per_image_csv:
                                         per_idx = int(ref_per_image_csv_saved[group_key][tv])
                                         ref_per_img_dir = run_dir / "ref_maps" / "per_image" / group_key / tv
@@ -1159,7 +1161,10 @@ def run_layer_grad_csv(config, run_dir):
                                             )
                                         ref_per_image_csv_saved[group_key][tv] += 1
                                 if viz_save_reference_per_image_raw_map or viz_save_reference_per_image_norm_map:
-                                    should_save_reference_per_image = ((int(st_t["count"]) % int(viz_reference_per_image_step)) == 0)
+                                    ref_per_image_seen[group_key][tv] += 1
+                                    should_save_reference_per_image = (
+                                        (ref_per_image_seen[group_key][tv] - 1) % int(viz_reference_per_image_step)
+                                    ) == 0
                                     if should_save_reference_per_image:
                                         per_idx = int(ref_per_image_saved[group_key][tv])
                                         if viz_save_reference_per_image_raw_map:
@@ -1169,6 +1174,25 @@ def run_layer_grad_csv(config, run_dir):
                                             out_norm = viz_dir / "reference_per_image" / group_key / tv / f"norm_{per_idx:05d}.png"
                                             _save_heatmap_png(_normalize_layer_map(map_t, mode=viz_normalize), out_norm)
                                         ref_per_image_saved[group_key][tv] += 1
+                                if _is_target_done(group_key, tv):
+                                    continue
+                                delta_l2 = _update_running_mean_map(st_t, map_t)
+                                if np.isinf(viz_num_by_group[group_key]):
+                                    if (
+                                        st_t["count"] >= conv_min_samples
+                                        and np.isfinite(delta_l2)
+                                        and delta_l2 <= conv_delta_l2_tol
+                                    ):
+                                        st_t["stable_steps"] += 1
+                                    else:
+                                        st_t["stable_steps"] = 0
+                                    if st_t["stable_steps"] >= conv_patience:
+                                        st_t["converged"] = True
+                                _is_target_done(group_key, tv)
+                                if layer_grad_ref_csv_enabled and layer_grad_ref_save_running_log and tb_writer is not None:
+                                    step_val = int(st_t["count"])
+                                    tb_writer.add_scalar(f"layer_grad/{group_key}/{tv}/delta_l2", float(delta_l2), step_val)
+                                    tb_writer.add_scalar(f"layer_grad/{group_key}/{tv}/converged", int(bool(st_t["converged"])), step_val)
                                 if viz_save_progress_raw_map or viz_save_progress_norm_map:
                                     should_save_progress_img = ((int(st_t["count"]) % int(viz_progress_step)) == 0)
                                     if should_save_progress_img and st_t.get("mean_raw") is not None:
