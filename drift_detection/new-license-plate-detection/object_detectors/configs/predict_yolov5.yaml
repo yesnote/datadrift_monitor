@@ -187,6 +187,10 @@ output:
         step: 10
         max_num: 10
       reference:
+        per_image:
+          raw_map: false
+          norm_map: false
+          step: 10
         progress:
           raw_map: false
           norm_map: false

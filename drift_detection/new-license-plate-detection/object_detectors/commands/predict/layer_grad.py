@@ -652,6 +652,9 @@ def run_layer_grad_csv(config, run_dir):
     viz_save_progress_raw_map = bool(parsed.get("save_image_layer_grad_save_progress_raw_map", False))
     viz_save_progress_norm_map = bool(parsed.get("save_image_layer_grad_save_progress_norm_map", False))
     viz_progress_step = max(1, int(parsed.get("save_image_layer_grad_progress_step", 10)))
+    viz_save_reference_per_image_raw_map = bool(parsed.get("save_image_layer_grad_save_reference_per_image_raw_map", False))
+    viz_save_reference_per_image_norm_map = bool(parsed.get("save_image_layer_grad_save_reference_per_image_norm_map", False))
+    viz_reference_per_image_step = max(1, int(parsed.get("save_image_layer_grad_reference_per_image_step", 10)))
     layer_grad_ref_csv_enabled = bool(parsed.get("save_image_layer_grad_csv_reference_enabled", False))
     layer_grad_ref_save_running_log = bool(parsed.get("save_image_layer_grad_csv_save_running_log", True))
     layer_grad_ref_save_final_raw_map_csv = bool(parsed.get("save_image_layer_grad_csv_save_final_raw_map_csv", True))
@@ -829,6 +832,7 @@ def run_layer_grad_csv(config, run_dir):
     per_image_seen = {g: {tv: 0 for tv in active_target_values} for g in all_groups}
     per_image_saved = {g: {tv: 0 for tv in active_target_values} for g in all_groups}
     ref_progress_image_saved = {g: {tv: 0 for tv in active_target_values} for g in all_groups}
+    ref_per_image_saved = {g: {tv: 0 for tv in active_target_values} for g in all_groups}
     ref_progress_csv_saved = {g: {tv: 0 for tv in active_target_values} for g in all_groups}
     tb_writer = None
     tb_log_dir = None
@@ -924,6 +928,10 @@ def run_layer_grad_csv(config, run_dir):
         for g in all_groups:
             for tv in active_target_values:
                 (viz_dir / "reference_progress" / g / tv).mkdir(parents=True, exist_ok=True)
+    if viz_enabled and reference_enabled and (viz_save_reference_per_image_raw_map or viz_save_reference_per_image_norm_map):
+        for g in all_groups:
+            for tv in active_target_values:
+                (viz_dir / "reference_per_image" / g / tv).mkdir(parents=True, exist_ok=True)
     if viz_enabled and reference_enabled and layer_grad_ref_csv_enabled and layer_grad_ref_save_running_log:
         tb_log_dir = run_dir / "ref_maps" / "tensorboard"
         tb_log_dir.mkdir(parents=True, exist_ok=True)
@@ -1124,6 +1132,17 @@ def run_layer_grad_csv(config, run_dir):
                                     step_val = int(st_t["count"])
                                     tb_writer.add_scalar(f"layer_grad/{group_key}/{tv}/delta_l2", float(delta_l2), step_val)
                                     tb_writer.add_scalar(f"layer_grad/{group_key}/{tv}/converged", int(bool(st_t["converged"])), step_val)
+                                if viz_save_reference_per_image_raw_map or viz_save_reference_per_image_norm_map:
+                                    should_save_reference_per_image = ((int(st_t["count"]) % int(viz_reference_per_image_step)) == 0)
+                                    if should_save_reference_per_image:
+                                        per_idx = int(ref_per_image_saved[group_key][tv])
+                                        if viz_save_reference_per_image_raw_map:
+                                            out_raw = viz_dir / "reference_per_image" / group_key / tv / f"raw_{per_idx:05d}.png"
+                                            _save_heatmap_png(map_t, out_raw)
+                                        if viz_save_reference_per_image_norm_map:
+                                            out_norm = viz_dir / "reference_per_image" / group_key / tv / f"norm_{per_idx:05d}.png"
+                                            _save_heatmap_png(_normalize_layer_map(map_t, mode=viz_normalize), out_norm)
+                                        ref_per_image_saved[group_key][tv] += 1
                                 if viz_save_progress_raw_map or viz_save_progress_norm_map:
                                     should_save_progress_img = ((int(st_t["count"]) % int(viz_progress_step)) == 0)
                                     if should_save_progress_img and st_t.get("mean_raw") is not None:
@@ -1326,6 +1345,12 @@ def run_layer_grad_csv(config, run_dir):
                 "save_norm": bool(viz_save_progress_norm_map),
                 "step": int(viz_progress_step),
                 "saved": {k: {tv: int(ref_progress_image_saved[k][tv]) for tv in active_target_values} for k in all_groups},
+            },
+            "reference_per_image": {
+                "save_raw": bool(viz_save_reference_per_image_raw_map),
+                "save_norm": bool(viz_save_reference_per_image_norm_map),
+                "step": int(viz_reference_per_image_step),
+                "saved": {k: {tv: int(ref_per_image_saved[k][tv]) for tv in active_target_values} for k in all_groups},
             },
             "reference_progress_csv": {
                 "save_raw_csv": bool(layer_grad_ref_save_progress_raw_map_csv),
