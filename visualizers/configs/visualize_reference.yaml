@@ -2,9 +2,9 @@ mode: visualize
 
 input:
   run_roots:
-    - object_detectors/runs/references/04-24-2026_17;48_layer_grad_null_target_loss_noise
-    - object_detectors/runs/references/04-24-2026_19;52_layer_grad_null_target_loss_fn-non_fn
-  map_types: [raw, norm]
+    - object_detectors/runs/references/04-24-2026_20;41_layer_grad_null_target_loss_noise
+    - object_detectors/runs/references/04-24-2026_20;26_layer_grad_null_target_loss_fn-non_fn
+  map_types: [raw]
   groups: [noise, fn, non_fn]
   max_num: 1000
 
