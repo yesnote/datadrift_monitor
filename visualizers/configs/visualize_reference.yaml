@@ -6,10 +6,9 @@ input:
     - object_detectors/runs/references/04-24-2026_19;52_layer_grad_null_target_loss_fn-non_fn
   map_types: [raw, norm]
   groups: [noise, fn, non_fn]
+  max_num: 0 # 0이면 제한 없음. 양수면 group당 최대 샘플 개수
 
 output:
-  dir: ""
   pca:
     per_target: true
     save_png: true
-

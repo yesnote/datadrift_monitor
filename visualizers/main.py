@@ -67,12 +67,7 @@ def main() -> None:
         run_dir = _resolve_run_dir(args.run_dir)
         run_dir.mkdir(parents=True, exist_ok=True)
     else:
-        cfg_out = str(config.get("output", {}).get("dir", "")).strip()
-        if cfg_out:
-            run_dir = _resolve_run_dir(cfg_out)
-            run_dir.mkdir(parents=True, exist_ok=True)
-        else:
-            run_dir = _create_default_run_dir()
+        run_dir = _create_default_run_dir()
 
     _save_used_config(config_path, run_dir)
     summary = run_visualize(config, run_dir)
@@ -82,4 +77,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-
