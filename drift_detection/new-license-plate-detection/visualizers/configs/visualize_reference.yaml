@@ -10,5 +10,6 @@ input:
 
 output:
   pca:
+    dimension: 2 # 2 or 3
     per_target: true
     save_png: true

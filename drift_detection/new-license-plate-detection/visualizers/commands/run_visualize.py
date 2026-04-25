@@ -59,10 +59,13 @@ def run_visualize(config: dict, run_dir: Path) -> dict:
     max_num = int(inp.get("max_num", 0))
     per_target = bool(pca_cfg.get("per_target", True))
     save_png = bool(pca_cfg.get("save_png", True))
+    dimension = int(pca_cfg.get("dimension", 2))
     if not per_target:
         raise ValueError("output.pca.per_target must be true.")
     if not save_png:
         raise ValueError("output.pca.save_png must be true.")
+    if dimension not in {2, 3}:
+        raise ValueError("output.pca.dimension must be 2 or 3.")
 
     samples = collect_per_image_samples(
         run_roots=run_roots,
@@ -75,7 +78,7 @@ def run_visualize(config: dict, run_dir: Path) -> dict:
     for s in samples:
         by_key[(s.target, s.map_type)].append(s)
 
-    plots_root = run_dir / "plots" / "pca_2d"
+    plots_root = run_dir / "plots" / f"pca_{dimension}d"
     results_root = run_dir / "results"
     plots_root.mkdir(parents=True, exist_ok=True)
     results_root.mkdir(parents=True, exist_ok=True)
@@ -89,6 +92,7 @@ def run_visualize(config: dict, run_dir: Path) -> dict:
             "max_num": int(max_num),
         },
         "total_samples": int(len(samples)),
+        "pca_dimension": int(dimension),
         "keys": {},
     }
 
@@ -101,15 +105,17 @@ def run_visualize(config: dict, run_dir: Path) -> dict:
         reason = ""
         points = None
 
-        if n_samples >= 2 and n_features >= 2:
-            pca = PCA(n_components=2)
+        if n_samples >= max(2, dimension) and n_features >= dimension:
+            pca = PCA(n_components=dimension)
             points = pca.fit_transform(x)
             pc1 = points[:, 0]
             pc2 = points[:, 1]
+            pc3 = points[:, 2] if dimension == 3 else np.full((n_samples,), np.nan, dtype=np.float32)
         else:
             reason = f"n_samples={n_samples}, n_features={n_features}"
             pc1 = np.full((n_samples,), np.nan, dtype=np.float32)
             pc2 = np.full((n_samples,), np.nan, dtype=np.float32)
+            pc3 = np.full((n_samples,), np.nan, dtype=np.float32)
 
         rows = []
         for i, m in enumerate(meta):
@@ -123,6 +129,7 @@ def run_visualize(config: dict, run_dir: Path) -> dict:
                     "vector_len": int(m["vector_len"]),
                     "pc1": float(pc1[i]) if i < len(pc1) and np.isfinite(pc1[i]) else np.nan,
                     "pc2": float(pc2[i]) if i < len(pc2) and np.isfinite(pc2[i]) else np.nan,
+                    "pc3": float(pc3[i]) if i < len(pc3) and np.isfinite(pc3[i]) else np.nan,
                 }
             )
         points_csv = results_root / f"pca_points_{target}_{map_type}.csv"
@@ -131,10 +138,11 @@ def run_visualize(config: dict, run_dir: Path) -> dict:
         plot_path = plots_root / target / f"{map_type}.png"
         save_pca_plot(
             plot_path,
-            points_2d=points,
+            points=points,
             groups=[m["group"] for m in meta],
-            title=f"PCA 2D - {target} ({map_type})",
+            title=f"PCA {dimension}D - {target} ({map_type})",
             reason=reason,
+            dimension=dimension,
         )
 
         group_counts = {}
