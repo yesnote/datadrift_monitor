@@ -168,7 +168,7 @@ def parse_root_info(root_path: Path) -> tuple[str, str, str]:
         run_name = root_path.name
         match = re.match(r"^\d{2}-\d{2}-\d{4}_\d{2};\d{2}_(.+)$", run_name)
         tail = match.group(1) if match else run_name
-        for cue_name in ("feature_grad", "layer_grad", "full_softmax", "mc_dropout", "meta_detect", "entropy", "energy", "feature", "score", "gt", "fn", "tp"):
+        for cue_name in ("feature_grad", "layer_grad", "full_softmax", "mc_dropout", "meta_detect", "entropy", "energy", "ensemble", "feature", "score", "gt", "fn", "tp"):
             if tail == cue_name:
                 return model_group, cue_name, ""
             prefix = f"{cue_name}_"
@@ -238,6 +238,7 @@ def load_training_dataframe(dataset_cfg: dict[str, Any]) -> tuple[pd.DataFrame, 
         "full_softmax": "full_softmax.csv",
         "entropy": "entropy.csv",
         "energy": "energy.csv",
+        "ensemble": "ensemble.csv",
     }
     if input_group == "fn_detectors":
         gt_csv = gt_root / "fn.csv"
@@ -290,7 +291,7 @@ def load_training_dataframe(dataset_cfg: dict[str, Any]) -> tuple[pd.DataFrame, 
         if input_csv_name is None:
             raise ValueError(
                 f"Unsupported input uncertainty '{input_cue}'. "
-                "Supported uncertainties: feature, layer_grad, feature_grad, score, mc_dropout, meta_detect, full_softmax, entropy, energy."
+                "Supported uncertainties: feature, layer_grad, feature_grad, score, mc_dropout, meta_detect, full_softmax, entropy, energy, ensemble."
             )
         input_csv = input_root / input_csv_name
         if not input_csv.is_file():
