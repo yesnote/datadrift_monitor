@@ -9,7 +9,7 @@ import pandas as pd
 from sklearn.decomposition import PCA
 
 from utils.loader import build_key_matrix, collect_per_image_samples
-from utils.plot import save_pca_plot
+from utils.plot import save_pca_html
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 REPO_ROOT = PROJECT_ROOT.parent
@@ -58,12 +58,12 @@ def run_visualize(config: dict, run_dir: Path) -> dict:
     groups = [v.lower() for v in _normalize_list(inp.get("groups"), ["noise", "fn", "non_fn"])]
     max_num = int(inp.get("max_num", 0))
     per_target = bool(pca_cfg.get("per_target", True))
-    save_png = bool(pca_cfg.get("save_png", True))
+    save_html = bool(pca_cfg.get("save_html", True))
     dimension = int(pca_cfg.get("dimension", 2))
     if not per_target:
         raise ValueError("output.pca.per_target must be true.")
-    if not save_png:
-        raise ValueError("output.pca.save_png must be true.")
+    if not save_html:
+        raise ValueError("output.pca.save_html must be true.")
     if dimension not in {2, 3}:
         raise ValueError("output.pca.dimension must be 2 or 3.")
 
@@ -135,8 +135,8 @@ def run_visualize(config: dict, run_dir: Path) -> dict:
         points_csv = results_root / f"pca_points_{target}_{map_type}.csv"
         pd.DataFrame(rows).to_csv(points_csv, index=False)
 
-        plot_path = plots_root / target / f"{map_type}.png"
-        save_pca_plot(
+        plot_path = plots_root / target / f"{map_type}.html"
+        save_pca_html(
             plot_path,
             points=points,
             groups=[m["group"] for m in meta],
@@ -157,7 +157,7 @@ def run_visualize(config: dict, run_dir: Path) -> dict:
             "vector_len_max": int(vec_lens.max()) if vec_lens.size else 0,
             "vector_len_mean": float(vec_lens.mean()) if vec_lens.size else 0.0,
             "points_csv": str(points_csv),
-            "plot_png": str(plot_path),
+            "plot_html": str(plot_path),
             "pca_applied": bool(points is not None),
             "reason": reason,
         }
