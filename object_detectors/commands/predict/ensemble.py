@@ -44,10 +44,6 @@ def run_ensemble_csv(config, run_dir):
         raise ValueError("Loaded 0 images. Check dataset root/image_dir/split configuration in YAML.")
 
     output_csv = run_dir / "ensemble.csv"
-    temp_dir = run_dir / "_ensemble_tmp"
-    if temp_dir.exists():
-        shutil.rmtree(temp_dir)
-    temp_dir.mkdir(parents=True, exist_ok=True)
 
     stat_keys = list(vector_reduction)
     stat_alias = {
@@ -79,131 +75,22 @@ def run_ensemble_csv(config, run_dir):
             "std": float(torch.std(v, unbiased=False).item()),
         }
 
-    def load_state(path):
-        try:
-            return torch.load(path, map_location="cpu", weights_only=False)
-        except TypeError:
-            return torch.load(path, map_location="cpu")
-
     n_classes_hint = None
     class_names_hint = None
     n_classes_actual = None
     device = torch.device("cpu")
-    had_error = False
+
+    detectors = []
     try:
-        for weight_idx, model_weight in enumerate(weight_paths):
+        for model_weight in weight_paths:
             detector, device = build_detector(config, model_weight=model_weight)
             if n_classes_hint is None:
                 n_classes_hint = len(detector.names) if detector.names is not None else 80
                 class_names_hint = detector.names
-
-            for batch_idx, (images, targets) in enumerate(
-                tqdm(
-                    dataloader,
-                    desc=f"Object Detector ({mode} - {uncertainty}) [{weight_idx + 1}/{len(weight_paths)}]",
-                    total=len(dataloader),
-                )
-            ):
-                batch_size = len(images)
-                batch_tensors = []
-                image_ids = []
-                image_paths = []
-                for sample_idx in range(batch_size):
-                    target = targets[sample_idx]
-                    image_ids.append(int(target["image_id"][0].item()))
-                    image_paths.append(target["path"])
-                    infer_tensor, _ratio, _pad, _resized_chw = preprocess_with_letterbox(
-                        detector, images[sample_idx], device, requires_grad=False, auto=False
-                    )
-                    batch_tensors.append(infer_tensor)
-                infer_batch = torch.cat(batch_tensors, dim=0)
-                del batch_tensors
-
-                with torch.no_grad():
-                    det_output = detector.model(infer_batch, augment=False)
-                    det_raw_pred = det_output[0] if isinstance(det_output, (tuple, list)) else det_output
-                    det_raw_logits = det_output[1] if isinstance(det_output, (tuple, list)) and len(det_output) > 1 else None
-                    selected_preds, _selected_logits, _selected_objectness, selected_indices = detector.non_max_suppression(
-                        det_raw_pred,
-                        det_raw_logits,
-                        detector.confidence,
-                        detector.iou_thresh,
-                        classes=None,
-                        agnostic=detector.agnostic,
-                        return_indices=True,
-                    )
-
-                pred_batch = det_raw_pred.detach().float()
-                bbox_xyxy = _xywh_to_xyxy_tensor(pred_batch[..., :4])
-                score_vec = pred_batch[..., 4].unsqueeze(-1)
-                prob_mat = pred_batch[..., 5:].detach().float()
-                if prob_mat.numel() == 0 and det_raw_logits is not None:
-                    prob_mat = torch.sigmoid(det_raw_logits.detach().float())
-                run_features = torch.cat([bbox_xyxy, score_vec, prob_mat], dim=2).detach().cpu()
-                class_count = int(run_features.shape[2] - 5)
-                if n_classes_actual is None:
-                    n_classes_actual = class_count
-                elif n_classes_actual != class_count:
-                    raise ValueError(
-                        f"All ensemble weights must have the same class count: {n_classes_actual} vs {class_count}."
-                    )
-
-                state_path = temp_dir / f"batch_{batch_idx:06d}.pt"
-                if weight_idx == 0:
-                    det_boxes_cpu = []
-                    raw_keep_cpu = []
-                    for b in range(batch_size):
-                        det_b = selected_preds[b] if selected_preds and b < len(selected_preds) else torch.zeros((0, 6), device=device)
-                        raw_keep_b = (
-                            selected_indices[b]
-                            if selected_indices and b < len(selected_indices)
-                            else torch.zeros((0,), dtype=torch.long, device=device)
-                        )
-                        det_boxes_cpu.append(det_b.detach().cpu())
-                        raw_keep_cpu.append([int(v) for v in raw_keep_b.detach().cpu().tolist()])
-
-                    state = {
-                        "count": 1,
-                        "mean": run_features,
-                        "m2": torch.zeros_like(run_features),
-                        "image_ids": image_ids,
-                        "image_paths": image_paths,
-                        "det_boxes": det_boxes_cpu,
-                        "raw_keep_indices": raw_keep_cpu,
-                    }
-                else:
-                    state = load_state(state_path)
-                    if list(state.get("image_ids", [])) != image_ids or list(state.get("image_paths", [])) != image_paths:
-                        raise ValueError(
-                            "Data order mismatch across ensemble passes. Set dataloader.shuffle_eval=false for predict mode."
-                        )
-                    mean = state["mean"]
-                    m2 = state["m2"]
-                    count = int(state["count"])
-                    if tuple(mean.shape) != tuple(run_features.shape):
-                        raise ValueError(
-                            f"Candidate tensor shape mismatch across ensemble weights: {tuple(mean.shape)} vs {tuple(run_features.shape)}."
-                        )
-                    count_new = count + 1
-                    delta = run_features - mean
-                    mean = mean + delta / count_new
-                    delta2 = run_features - mean
-                    m2 = m2 + delta * delta2
-                    state["count"] = count_new
-                    state["mean"] = mean
-                    state["m2"] = m2
-
-                torch.save(state, state_path)
-                del infer_batch, det_raw_pred, det_raw_logits, selected_preds, selected_indices, run_features, state
-
-            del detector
-            if device.type == "cuda":
-                torch.cuda.empty_cache()
+            detectors.append(detector)
 
         if n_classes_hint is None:
             n_classes_hint = 80
-        if n_classes_actual is None:
-            n_classes_actual = n_classes_hint
 
         fieldnames = ["image_id", "image_path"]
         if unit == "bbox":
@@ -257,19 +144,74 @@ def run_ensemble_csv(config, run_dir):
         with open(output_csv, "w", newline="", encoding="utf-8") as output_file:
             writer = csv.DictWriter(output_file, fieldnames=fieldnames)
             writer.writeheader()
+            for images, targets in tqdm(
+                dataloader,
+                desc=f"Object Detector ({mode} - {uncertainty})",
+                total=len(dataloader),
+            ):
+                base_detector = detectors[0]
+                infer_batch, _ratios, _pads, _resized_chws = _prepare_infer_batch(
+                    base_detector, images, device, auto=False
+                )
+                batch_size = infer_batch.shape[0]
+                image_ids = [int(targets[i]["image_id"][0].item()) for i in range(batch_size)]
+                image_paths = [targets[i]["path"] for i in range(batch_size)]
 
-            for batch_idx in range(len(dataloader)):
-                state_path = temp_dir / f"batch_{batch_idx:06d}.pt"
-                state = load_state(state_path)
-                count = int(state["count"])
-                mean = state["mean"].detach().float()
-                m2 = state["m2"].detach().float()
-                std = torch.sqrt(torch.clamp(m2 / max(count, 1), min=0.0))
+                feature_runs = []
+                det_boxes = None
+                raw_keep_indices = None
+                for det_idx, detector in enumerate(detectors):
+                    with torch.no_grad():
+                        det_output = detector.model(infer_batch, augment=False)
+                        det_raw_pred = det_output[0] if isinstance(det_output, (tuple, list)) else det_output
+                        det_raw_logits = det_output[1] if isinstance(det_output, (tuple, list)) and len(det_output) > 1 else None
+                        nms_logits = _resolve_nms_logits(det_raw_pred, det_raw_logits, num_classes_hint=n_classes_hint)
+                        nms_kwargs = _resolve_detector_nms_kwargs(detector)
+                        selected_preds, _selected_logits, _selected_objectness, selected_indices = detector.non_max_suppression(
+                            det_raw_pred,
+                            nms_logits,
+                            conf_thres=nms_kwargs["conf_thres"],
+                            iou_thres=nms_kwargs["iou_thres"],
+                            classes=nms_kwargs["classes"],
+                            agnostic=nms_kwargs["agnostic"],
+                            max_det=nms_kwargs["max_det"],
+                            return_indices=True,
+                        )
 
-                image_ids = state["image_ids"]
-                image_paths = state["image_paths"]
-                det_boxes = state["det_boxes"]
-                raw_keep_indices = state["raw_keep_indices"]
+                    pred_batch = det_raw_pred.detach().float()
+                    bbox_xyxy = _xywh_to_xyxy_tensor(pred_batch[..., :4])
+                    score_vec = pred_batch[..., 4].unsqueeze(-1)
+                    prob_mat = pred_batch[..., 5:].detach().float()
+                    if prob_mat.numel() == 0 and det_raw_logits is not None:
+                        prob_mat = torch.sigmoid(det_raw_logits.detach().float())
+                    run_features = torch.cat([bbox_xyxy, score_vec, prob_mat], dim=2).detach().cpu()
+                    class_count = int(run_features.shape[2] - 5)
+                    if n_classes_actual is None:
+                        n_classes_actual = class_count
+                    elif n_classes_actual != class_count:
+                        raise ValueError(
+                            f"All ensemble weights must have the same class count: {n_classes_actual} vs {class_count}."
+                        )
+                    feature_runs.append(run_features)
+
+                    if det_idx == 0:
+                        det_boxes = []
+                        raw_keep_indices = []
+                        for b in range(batch_size):
+                            det_b = selected_preds[b] if selected_preds and b < len(selected_preds) else torch.zeros((0, 6), device=device)
+                            raw_keep_b = (
+                                selected_indices[b]
+                                if selected_indices and b < len(selected_indices)
+                                else torch.zeros((0,), dtype=torch.long, device=device)
+                            )
+                            det_boxes.append(det_b.detach().cpu())
+                            raw_keep_indices.append([int(v) for v in raw_keep_b.detach().cpu().tolist()])
+
+                runs_tensor = torch.stack(feature_runs, dim=0)  # [M, B, N, F]
+                mean = runs_tensor.mean(dim=0)
+                std = runs_tensor.std(dim=0, unbiased=False)
+                del runs_tensor, feature_runs, infer_batch
+
                 for b in range(len(image_ids)):
                     image_id = int(image_ids[b])
                     image_path = str(image_paths[b])
@@ -395,14 +337,13 @@ def run_ensemble_csv(config, run_dir):
                                 for key, val in stats_from_tensor(prob_std_vec).items():
                                     row[f"prob_{class_idx}_std_{stat_alias[key]}"] = val
                         writer.writerow(row)
-                del state, mean, m2, std
+                del mean, std
     except Exception:
-        had_error = True
         raise
     finally:
-        if temp_dir.exists():
-            shutil.rmtree(temp_dir, ignore_errors=True)
-        if had_error and device.type == "cuda":
+        for detector in detectors:
+            del detector
+        if device.type == "cuda":
             torch.cuda.empty_cache()
 
     if device.type == "cuda":
