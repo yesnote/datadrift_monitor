@@ -1,4 +1,5 @@
 import argparse
+import warnings
 from datetime import datetime
 from pathlib import Path
 
@@ -10,6 +11,12 @@ from commands.utils.run_utils import create_run_dir, save_run_summary, save_used
 
 PROJECT_ROOT = Path(__file__).resolve().parent
 REPO_ROOT = PROJECT_ROOT.parent
+
+warnings.filterwarnings(
+    "ignore",
+    message=r"The \.grad attribute of a Tensor that is not a leaf Tensor is being accessed\.",
+    category=UserWarning,
+)
 
 
 def _resolve_path_value(raw_path):
