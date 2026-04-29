@@ -139,15 +139,6 @@ def build_detector(config, model_weight=None):
         confidence=confidence,
         iou_thresh=iou_thresh,
     )
-    # We only need gradients wrt feature maps, not model weights.
-    try:
-        detector.model.requires_grad_(False)
-    except RuntimeError:
-        for p in detector.model.parameters():
-            try:
-                p.requires_grad_(False)
-            except RuntimeError:
-                continue
     detector.eval().to(device)
     return detector, device
 
