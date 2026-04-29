@@ -33,7 +33,14 @@ class YOLOV5TorchObjectDetector(nn.Module):
         self.agnostic = agnostic_nms
         self.model = attempt_load(model_weight, device=device,fuse=fuse)
         print("[INFO] model is loaded")
-        self.model.requires_grad_(False)
+        try:
+            self.model.requires_grad_(False)
+        except RuntimeError:
+            for p in self.model.parameters():
+                try:
+                    p.requires_grad_(False)
+                except RuntimeError:
+                    continue
         self.model.to(device)
         if self.mode == 'train':
             self.model.train()
