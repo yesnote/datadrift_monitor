@@ -12,4 +12,4 @@ output:
   pca:
     dimension: 2 # 2 | 3
     per_target: true
-    save_png: true
+    save_html: true

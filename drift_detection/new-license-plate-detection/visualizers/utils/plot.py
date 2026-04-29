@@ -2,12 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import matplotlib
 import numpy as np
-import seaborn as sns
-
-matplotlib.use("Agg")
-import matplotlib.pyplot as plt  # noqa: E402
+import plotly.graph_objects as go
 
 
 GROUP_PALETTE = {
@@ -17,7 +13,7 @@ GROUP_PALETTE = {
 }
 
 
-def save_pca_plot(
+def save_pca_html(
     out_path: Path,
     *,
     points: np.ndarray | None,
@@ -28,62 +24,69 @@ def save_pca_plot(
 ) -> None:
     out_path = Path(out_path)
     out_path.parent.mkdir(parents=True, exist_ok=True)
+    fig = go.Figure()
+    fig.update_layout(
+        title=title,
+        legend_title_text="group",
+        template="plotly_white",
+    )
 
-    with sns.axes_style("whitegrid"):
-        if int(dimension) == 3:
-            fig = plt.figure(figsize=(8, 6))
-            ax = fig.add_subplot(111, projection="3d")
-        else:
-            fig, ax = plt.subplots(figsize=(8, 6))
+    if points is None or points.size == 0:
+        msg = "insufficient data" if not reason else f"insufficient data: {reason}"
+        fig.add_annotation(
+            text=msg,
+            x=0.5,
+            y=0.5,
+            xref="paper",
+            yref="paper",
+            showarrow=False,
+            font=dict(size=16),
+        )
+    else:
+        g_arr = np.asarray(groups, dtype=object)
+        unique = [g for g in ["noise", "fn", "non_fn"] if g in set(g_arr.tolist())]
+        if not unique:
+            unique = sorted(set(g_arr.tolist()))
 
-        if points is None or points.size == 0:
-            msg = "insufficient data" if not reason else f"insufficient data\n{reason}"
+        for g in unique:
+            mask = g_arr == g
+            p = points[mask]
+            if p.size == 0:
+                continue
+            color = GROUP_PALETTE.get(g, "#333333")
             if int(dimension) == 3:
-                ax.text2D(0.5, 0.5, msg, transform=ax.transAxes, ha="center", va="center")
-                ax.set_axis_off()
-            else:
-                ax.text(0.5, 0.5, msg, ha="center", va="center")
-                ax.set_axis_off()
-        else:
-            g_arr = np.asarray(groups, dtype=object)
-            unique = [g for g in ["noise", "fn", "non_fn"] if g in set(g_arr.tolist())]
-            if not unique:
-                unique = sorted(set(g_arr.tolist()))
-            if int(dimension) == 3:
-                for g in unique:
-                    mask = (g_arr == g)
-                    p = points[mask]
-                    if p.size == 0:
-                        continue
-                    ax.scatter(
-                        p[:, 0],
-                        p[:, 1],
-                        p[:, 2],
-                        label=str(g),
-                        color=GROUP_PALETTE.get(g, "#333333"),
-                        s=26,
-                        alpha=0.85,
-                        edgecolors="black",
-                        linewidths=0.3,
+                fig.add_trace(
+                    go.Scatter3d(
+                        x=p[:, 0],
+                        y=p[:, 1],
+                        z=p[:, 2],
+                        mode="markers",
+                        marker=dict(size=4, color=color, opacity=0.85),
+                        name=str(g),
                     )
-                ax.set_zlabel("PC3")
-            else:
-                sns.scatterplot(
-                    x=points[:, 0],
-                    y=points[:, 1],
-                    hue=g_arr,
-                    hue_order=unique,
-                    palette={k: GROUP_PALETTE.get(k, "#333333") for k in unique},
-                    edgecolor="black",
-                    linewidth=0.5,
-                    s=40,
-                    alpha=0.85,
-                    ax=ax,
                 )
-            ax.set_xlabel("PC1")
-            ax.set_ylabel("PC2")
-            ax.legend(title="group", loc="best")
-        ax.set_title(title)
-        fig.tight_layout()
-        fig.savefig(out_path, dpi=150)
-        plt.close(fig)
+            else:
+                fig.add_trace(
+                    go.Scatter(
+                        x=p[:, 0],
+                        y=p[:, 1],
+                        mode="markers",
+                        marker=dict(size=7, color=color, opacity=0.85, line=dict(width=0.5, color="black")),
+                        name=str(g),
+                    )
+                )
+
+    if int(dimension) == 3:
+        fig.update_layout(
+            scene=dict(
+                xaxis_title="PC1",
+                yaxis_title="PC2",
+                zaxis_title="PC3",
+            )
+        )
+    else:
+        fig.update_xaxes(title_text="PC1")
+        fig.update_yaxes(title_text="PC2")
+
+    # plotly legend supports group on/off via click by default.
+    fig.write_html(str(out_path), include_plotlyjs="cdn", full_html=True)
