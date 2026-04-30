@@ -588,7 +588,9 @@ def run_layer_grad_csv(config, run_dir):
     else:
         _disc_tokens = [str(target_layers).strip().lower()]
     disc_enabled = any(tok == "disc_layers" for tok in _disc_tokens)
-    ref_mode = str(parsed.get("layer_ref_mode", "none")).strip().lower()
+    ref_type = str(parsed.get("layer_ref_type", "prototype")).strip().lower()
+    ref_mode = str(parsed.get("layer_ref_prototype_mode", parsed.get("layer_ref_mode", "none"))).strip().lower()
+    ref_subspace_mode = str(parsed.get("layer_ref_subspace_mode", "none")).strip().lower()
     grad_use_norm = bool(parsed.get("layer_use_norm", False))
     disc_separation_score = str(parsed.get("layer_disc_separation_score", "effect_size")).strip().lower()
     disc_topk = max(1, int(parsed.get("layer_disc_topk", 3)))
@@ -701,7 +703,11 @@ def run_layer_grad_csv(config, run_dir):
     disc_summary = {
         "enabled": bool(disc_enabled),
         "config": {
-            "ref_corrected": ref_mode,
+            "ref_corrected": {
+                "mode": ref_type,
+                "prototype_mode": ref_mode,
+                "subspace_mode": ref_subspace_mode,
+            },
             "use_norm": bool(grad_use_norm),
             "separation_score": disc_separation_score,
             "topk": int(disc_topk),
@@ -715,8 +721,12 @@ def run_layer_grad_csv(config, run_dir):
 
     print(
         "[INFO] layer_grad gradient options "
-        f"(ref_corrected={ref_mode}, use_norm={int(bool(grad_use_norm))})"
+        f"(ref_corrected.mode={ref_type}, prototype.mode={ref_mode}, subspace.mode={ref_subspace_mode}, use_norm={int(bool(grad_use_norm))})"
     )
+    if ref_type == "subspace":
+        raise NotImplementedError("gradient.ref_corrected.mode='subspace' is not implemented yet.")
+    if ref_type == "none":
+        ref_mode = "none"
 
     if disc_enabled:
         if unit != "image":
@@ -787,7 +797,7 @@ def run_layer_grad_csv(config, run_dir):
         viz_target_layers = list(selected_layers)
         print(
             "[INFO] discriminative layers "
-            f"(ref_corrected={ref_mode}, use_norm={int(bool(grad_use_norm))}, score={disc_separation_score}, topk={int(disc_topk)}): "
+            f"(ref_corrected.mode={ref_type}, prototype.mode={ref_mode}, use_norm={int(bool(grad_use_norm))}, score={disc_separation_score}, topk={int(disc_topk)}): "
             + ", ".join(selected_layers)
         )
         selected_indices = [int(row["layer_idx"]) for row in disc_rows if int(row.get("selected", 0)) == 1]
