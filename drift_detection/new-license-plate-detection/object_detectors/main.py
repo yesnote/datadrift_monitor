@@ -99,6 +99,7 @@ def main():
         elif uncertainty == "layer_grad":
             layer_grad_cfg = config.get("output", {}).get("layer_grad", {})
             grad_cfg = layer_grad_cfg.get("gradient", {})
+            ref_corr_cfg = grad_cfg.get("ref_corrected", {}) if isinstance(grad_cfg.get("ref_corrected", {}), dict) else {}
             ref_common_cfg = layer_grad_cfg.get("reference", {})
             ref_img_cfg = layer_grad_cfg.get("save_image", {}).get("reference", {})
             ref_csv_cfg = layer_grad_cfg.get("save_csv", {}).get("reference", {})
@@ -133,6 +134,26 @@ def main():
                 run_base_subdir = "references"
 
             target_tag = f"{grad_target}_{scalar_tag}"
+            ref_mode = str(ref_corr_cfg.get("mode", "none")).strip().lower() or "none"
+            if ref_mode != "none":
+                if ref_mode == "prototype":
+                    proto_cfg = ref_corr_cfg.get("prototype", {}) if isinstance(ref_corr_cfg.get("prototype", {}), dict) else {}
+                    proto_mode = str(proto_cfg.get("mode", "none")).strip().lower() or "none"
+                    target_tag += f"_{ref_mode}_{proto_mode}"
+                elif ref_mode == "subspace":
+                    sub_cfg = ref_corr_cfg.get("subspace", {}) if isinstance(ref_corr_cfg.get("subspace", {}), dict) else {}
+                    sub_mode = str(sub_cfg.get("mode", "orth")).strip().lower() or "orth"
+                    centering = str(sub_cfg.get("centering", "centered")).strip().lower() or "centered"
+                    rank_cfg = sub_cfg.get("rank", {}) if isinstance(sub_cfg.get("rank", {}), dict) else {}
+                    rank_mode = str(rank_cfg.get("mode", "energy")).strip().lower() or "energy"
+                    if rank_mode == "fixed_k":
+                        rank_tag = f"k{int(rank_cfg.get('k', 10))}"
+                    else:
+                        thr = float(rank_cfg.get("energy_threshold", 0.95))
+                        rank_tag = f"e{thr:.2f}"
+                    target_tag += f"_{ref_mode}_{sub_mode}_{centering}_{rank_tag}"
+                else:
+                    target_tag += f"_{ref_mode}"
             if save_reference == 1:
                 used_raw = config.get("dataset", {}).get("used_dataset", [])
                 if isinstance(used_raw, str):
