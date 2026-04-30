@@ -1,7 +1,11 @@
 import argparse
+import os
 import warnings
 from datetime import datetime
 from pathlib import Path
+
+# Workaround for duplicated OpenMP runtime initialization on some Windows envs.
+os.environ.setdefault("KMP_DUPLICATE_LIB_OK", "TRUE")
 
 from dataloaders.dataloader_yolo import load_config
 from commands.run_predict import run_predict
