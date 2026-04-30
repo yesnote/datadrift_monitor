@@ -201,7 +201,7 @@ output:
         step: 10
         max_num: 10
       subspace:
-        enabled: false
+        enabled: true
       reference:
         per_image:
           raw_map: false
