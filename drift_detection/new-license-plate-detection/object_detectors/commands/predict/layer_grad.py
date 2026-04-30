@@ -468,6 +468,7 @@ def _build_noise_subspace_models(
     rank_mode="energy",
     energy_threshold=0.95,
     fixed_k=10,
+    max_samples=1000,
 ):
     noise_root = _resolve_ref_per_image_noise_dir(ref_root)
     if not noise_root.is_dir():
@@ -489,6 +490,7 @@ def _build_noise_subspace_models(
         files = sorted(target_dir.glob("raw_*.csv"))
         if not files:
             raise FileNotFoundError(f"No noise per-image raw csv files found: {target_dir / 'raw_*.csv'}")
+        files = files[: max(1, int(max_samples))]
 
         by_layer_samples = {}
         by_layer_dim = {}
@@ -767,6 +769,7 @@ def run_layer_grad_csv(config, run_dir):
     ref_subspace_rank_mode = str(parsed.get("layer_ref_subspace_rank_mode", "energy")).strip().lower()
     ref_subspace_energy_threshold = float(parsed.get("layer_ref_subspace_energy_threshold", 0.95))
     ref_subspace_k = max(1, int(parsed.get("layer_ref_subspace_k", 10)))
+    ref_subspace_max_samples = max(1, int(parsed.get("layer_ref_subspace_max_samples", 1000)))
     disc_separation_score = str(parsed.get("layer_disc_separation_score", "effect_size")).strip().lower()
     disc_topk = max(1, int(parsed.get("layer_disc_topk", 3)))
     disc_fn_non_fn_map_root = str(parsed.get("layer_disc_fn_non_fn_map_root", "")).strip()
@@ -905,7 +908,7 @@ def run_layer_grad_csv(config, run_dir):
         print(
             "[INFO] layer_grad subspace options "
             f"(centering={ref_subspace_centering}, rank_mode={ref_subspace_rank_mode}, "
-            f"energy_threshold={ref_subspace_energy_threshold:.2f}, k={ref_subspace_k})"
+            f"energy_threshold={ref_subspace_energy_threshold:.2f}, k={ref_subspace_k}, max_samples={ref_subspace_max_samples})"
         )
 
     if disc_enabled:
@@ -1001,6 +1004,7 @@ def run_layer_grad_csv(config, run_dir):
             rank_mode=ref_subspace_rank_mode,
             energy_threshold=ref_subspace_energy_threshold,
             fixed_k=ref_subspace_k,
+            max_samples=ref_subspace_max_samples,
         )
         if not subspace_stats_rows:
             raise ValueError("No valid subspace model could be built from noise per-image CSVs.")
@@ -1645,6 +1649,7 @@ def run_layer_grad_csv(config, run_dir):
                         "rank_mode": ref_subspace_rank_mode,
                         "energy_threshold": ref_subspace_energy_threshold,
                         "k": ref_subspace_k,
+                        "max_samples": ref_subspace_max_samples,
                         "ref_map": layer_ref_map_root,
                     },
                     "stats": subspace_stats_rows,

@@ -352,6 +352,7 @@ def parse_output_config(output_cfg):
     layer_ref_subspace_rank_mode = "energy"
     layer_ref_subspace_energy_threshold = 0.95
     layer_ref_subspace_k = 10
+    layer_ref_subspace_max_samples = 1000
     layer_disc_separation_score = "effect_size"
     layer_disc_topk = 3
     layer_disc_fn_non_fn_map_root = ""
@@ -392,6 +393,7 @@ def parse_output_config(output_cfg):
         layer_ref_subspace_rank_mode = str(subspace_rank_cfg.get("mode", "energy")).strip().lower() or "energy"
         layer_ref_subspace_energy_threshold = as_float(subspace_rank_cfg.get("energy_threshold", 0.95), 0.95)
         layer_ref_subspace_k = max(1, as_int(subspace_rank_cfg.get("k", 10), 10))
+        layer_ref_subspace_max_samples = max(1, as_int(subspace_cfg.get("max_samples", 1000), 1000))
         layer_ref_mode = layer_ref_prototype_mode
         t = g.get("target", "cand_target")
         t_policy = str(t).strip().lower() if t is not None else "null_target"
@@ -567,6 +569,7 @@ def parse_output_config(output_cfg):
         "layer_ref_subspace_rank_mode": layer_ref_subspace_rank_mode,
         "layer_ref_subspace_energy_threshold": layer_ref_subspace_energy_threshold,
         "layer_ref_subspace_k": layer_ref_subspace_k,
+        "layer_ref_subspace_max_samples": layer_ref_subspace_max_samples,
         "layer_disc_separation_score": layer_disc_separation_score,
         "layer_disc_topk": layer_disc_topk,
         "layer_disc_fn_non_fn_map_root": layer_disc_fn_non_fn_map_root,
