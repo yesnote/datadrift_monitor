@@ -156,7 +156,7 @@ output:
         prototype:
           mode: none # subtract | product | proj_removal | none
         subspace:
-          mode: orth # proj | orth | both
+          mode: orth # proj | orth
           centering: centered # centered | uncentered
           rank:
             mode: energy # energy | fixed_k
