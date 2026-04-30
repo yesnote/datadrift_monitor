@@ -345,6 +345,9 @@ def parse_output_config(output_cfg):
     layer_vector_reduction = ["1-norm", "2-norm", "min", "max", "mean", "std"]
     layer_pseudo_gt = "cand"
     layer_ref_mode = "none"
+    layer_ref_type = "prototype"
+    layer_ref_prototype_mode = "none"
+    layer_ref_subspace_mode = "none"
     layer_use_norm = False
     layer_disc_separation_score = "effect_size"
     layer_disc_topk = 3
@@ -375,7 +378,13 @@ def parse_output_config(output_cfg):
         layer_target_layers = normalize_to_list(g.get("layer", []))
         layer_map_reduction = str(r.get("map", "none")).strip().lower()
         layer_vector_reduction = normalize_vector_reduction(r.get("vector", ["L1", "L2", "min", "max", "mean", "std"]))
-        layer_ref_mode = str(g.get("ref_corrected", "none")).strip().lower() or "none"
+        ref_cfg = as_dict(g.get("ref_corrected", {}))
+        layer_ref_type = str(ref_cfg.get("mode", "prototype")).strip().lower() or "prototype"
+        prototype_cfg = as_dict(ref_cfg.get("prototype", {}))
+        subspace_cfg = as_dict(ref_cfg.get("subspace", {}))
+        layer_ref_prototype_mode = str(prototype_cfg.get("mode", "none")).strip().lower() or "none"
+        layer_ref_subspace_mode = str(subspace_cfg.get("mode", "none")).strip().lower() or "none"
+        layer_ref_mode = layer_ref_prototype_mode
         layer_use_norm = bool(g.get("use_norm", False))
         t = g.get("target", "cand_target")
         t_policy = str(t).strip().lower() if t is not None else "null_target"
@@ -386,7 +395,7 @@ def parse_output_config(output_cfg):
         )
         layer_disc_topk = max(1, as_int(disc_cfg.get("topk", 3), 3))
         layer_disc_fn_non_fn_map_root = str(disc_cfg.get("fn_non_fn_map", "")).strip()
-        layer_ref_map_root = str(g.get("ref_map", "")).strip()
+        layer_ref_map_root = str(ref_cfg.get("ref_map", "")).strip()
 
     save_image_enabled = bool(save_image_cfg.get("enabled", bool(save_image_cfg)))
     gt_image_step = as_int(save_image_cfg.get("step", 1), 1)
@@ -544,6 +553,9 @@ def parse_output_config(output_cfg):
         "layer_vector_reduction": layer_vector_reduction,
         "layer_pseudo_gt": layer_pseudo_gt,
         "layer_ref_mode": layer_ref_mode,
+        "layer_ref_type": layer_ref_type,
+        "layer_ref_prototype_mode": layer_ref_prototype_mode,
+        "layer_ref_subspace_mode": layer_ref_subspace_mode,
         "layer_use_norm": layer_use_norm,
         "layer_disc_separation_score": layer_disc_separation_score,
         "layer_disc_topk": layer_disc_topk,
