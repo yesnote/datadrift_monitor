@@ -348,6 +348,10 @@ def parse_output_config(output_cfg):
     layer_ref_type = "prototype"
     layer_ref_prototype_mode = "none"
     layer_ref_subspace_mode = "none"
+    layer_ref_subspace_centering = "centered"
+    layer_ref_subspace_rank_mode = "energy"
+    layer_ref_subspace_energy_threshold = 0.95
+    layer_ref_subspace_k = 10
     layer_disc_separation_score = "effect_size"
     layer_disc_topk = 3
     layer_disc_fn_non_fn_map_root = ""
@@ -381,8 +385,13 @@ def parse_output_config(output_cfg):
         layer_ref_type = str(ref_cfg.get("mode", "prototype")).strip().lower() or "prototype"
         prototype_cfg = as_dict(ref_cfg.get("prototype", {}))
         subspace_cfg = as_dict(ref_cfg.get("subspace", {}))
+        subspace_rank_cfg = as_dict(subspace_cfg.get("rank", {}))
         layer_ref_prototype_mode = str(prototype_cfg.get("mode", "none")).strip().lower() or "none"
         layer_ref_subspace_mode = str(subspace_cfg.get("mode", "none")).strip().lower() or "none"
+        layer_ref_subspace_centering = str(subspace_cfg.get("centering", "centered")).strip().lower() or "centered"
+        layer_ref_subspace_rank_mode = str(subspace_rank_cfg.get("mode", "energy")).strip().lower() or "energy"
+        layer_ref_subspace_energy_threshold = as_float(subspace_rank_cfg.get("energy_threshold", 0.95), 0.95)
+        layer_ref_subspace_k = max(1, as_int(subspace_rank_cfg.get("k", 10), 10))
         layer_ref_mode = layer_ref_prototype_mode
         t = g.get("target", "cand_target")
         t_policy = str(t).strip().lower() if t is not None else "null_target"
@@ -554,6 +563,10 @@ def parse_output_config(output_cfg):
         "layer_ref_type": layer_ref_type,
         "layer_ref_prototype_mode": layer_ref_prototype_mode,
         "layer_ref_subspace_mode": layer_ref_subspace_mode,
+        "layer_ref_subspace_centering": layer_ref_subspace_centering,
+        "layer_ref_subspace_rank_mode": layer_ref_subspace_rank_mode,
+        "layer_ref_subspace_energy_threshold": layer_ref_subspace_energy_threshold,
+        "layer_ref_subspace_k": layer_ref_subspace_k,
         "layer_disc_separation_score": layer_disc_separation_score,
         "layer_disc_topk": layer_disc_topk,
         "layer_disc_fn_non_fn_map_root": layer_disc_fn_non_fn_map_root,
