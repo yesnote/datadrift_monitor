@@ -196,6 +196,8 @@ output:
           norm_map: false # layer min-max normalization
     
     save_image:
+      subspace:
+        enabled: false
       inferenced_image:
         enabled: false
         step: 10

@@ -485,6 +485,7 @@ def _build_noise_subspace_models(
 
     out_models = {}
     stats_rows = []
+    spectra_rows = []
     for tv in target_values:
         target_dir = noise_root / str(tv)
         files = sorted(target_dir.glob("raw_*.csv"))
@@ -574,9 +575,56 @@ def _build_noise_subspace_models(
                     "energy_kept": float(energy_kept),
                 }
             )
+            spectra_rows.append(
+                {
+                    "target": str(tv),
+                    "layer_idx": int(layer_idx),
+                    "cum_var": np.cumsum(energy / total_e).astype(np.float32, copy=False),
+                }
+            )
         out_models[str(tv)] = tv_models
 
-    return out_models, stats_rows
+    return out_models, stats_rows, spectra_rows
+
+
+def _save_subspace_cumvar_plot(spectra_rows, out_path, max_samples=1000):
+    out_path = Path(out_path)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    fig, ax = plt.subplots(figsize=(12, 7), dpi=150)
+    fig.patch.set_facecolor("white")
+    ax.set_facecolor("#f7f7f7")
+    plotted = False
+    x_max = int(max(1, max_samples))
+    for row in spectra_rows:
+        cum = row.get("cum_var")
+        if cum is None:
+            continue
+        y = np.asarray(cum, dtype=np.float32).reshape(-1)
+        if y.size == 0:
+            continue
+        x = np.arange(1, min(x_max, y.size) + 1, dtype=np.int32)
+        y_plot = y[: x.shape[0]]
+        if x.shape[0] < x_max:
+            x_tail = np.arange(x.shape[0] + 1, x_max + 1, dtype=np.int32)
+            y_tail = np.full((x_tail.shape[0],), float(y_plot[-1]), dtype=np.float32)
+            x = np.concatenate([x, x_tail], axis=0)
+            y_plot = np.concatenate([y_plot, y_tail], axis=0)
+        label = f"{row.get('target')}/L{int(row.get('layer_idx', -1))}"
+        ax.plot(x, y_plot, linewidth=1.0, alpha=0.8, label=label)
+        plotted = True
+    if not plotted:
+        ax.text(0.5, 0.5, "No subspace spectra", ha="center", va="center", transform=ax.transAxes)
+    ax.set_xlim(1, x_max)
+    ax.set_ylim(0.0, 1.01)
+    ax.set_xlabel("Singular Value Index")
+    ax.set_ylabel("Cumulative Variance")
+    ax.set_title("Noise Subspace Cumulative Variance")
+    ax.grid(True, alpha=0.25)
+    if plotted and len(spectra_rows) <= 20:
+        ax.legend(loc="lower right", fontsize=8)
+    fig.tight_layout()
+    fig.savefig(out_path)
+    plt.close(fig)
 
 
 def _apply_subspace_mode_to_map(map_2d, layer_models, mode):
@@ -845,6 +893,7 @@ def run_layer_grad_csv(config, run_dir):
     layer_grad_ref_save_progress_raw_map_csv = bool(parsed.get("save_image_layer_grad_csv_save_progress_raw_map_csv", False))
     layer_grad_ref_save_progress_norm_map_csv = bool(parsed.get("save_image_layer_grad_csv_save_progress_norm_map_csv", False))
     layer_grad_ref_progress_step = max(1, int(parsed.get("save_image_layer_grad_csv_progress_step", 10)))
+    save_subspace_plot = bool(parsed.get("save_image_layer_grad_save_subspace", False))
     reference_per_image_image_enabled = bool(
         viz_save_reference_per_image_raw_map or viz_save_reference_per_image_norm_map
     )
@@ -897,6 +946,7 @@ def run_layer_grad_csv(config, run_dir):
     noise_map_for_target_layers_by_target = {}
     subspace_models_by_target = {}
     subspace_stats_rows = []
+    subspace_spectra_rows = []
 
     print(
         "[INFO] layer_grad gradient options "
@@ -997,7 +1047,7 @@ def run_layer_grad_csv(config, run_dir):
             raise ValueError("gradient.ref_corrected.mode='subspace' requires gradient.ref_corrected.ref_map.")
         if ref_subspace_mode not in {"proj", "orth"}:
             raise ValueError("gradient.ref_corrected.subspace.mode must be one of {'proj','orth'}.")
-        subspace_models_by_target, subspace_stats_rows = _build_noise_subspace_models(
+        subspace_models_by_target, subspace_stats_rows, subspace_spectra_rows = _build_noise_subspace_models(
             layer_ref_map_root,
             target_values=target_values,
             centering=ref_subspace_centering,
@@ -1013,6 +1063,12 @@ def run_layer_grad_csv(config, run_dir):
                 "[INFO] subspace "
                 f"target={r['target']} layer_idx={r['layer_idx']} n={r['n_samples']} d={r['dim']} "
                 f"rank={r['rank']} energy={r['energy_kept']:.4f}"
+            )
+        if save_subspace_plot:
+            _save_subspace_cumvar_plot(
+                subspace_spectra_rows,
+                run_dir / "images" / "subspace_cumvar.png",
+                max_samples=ref_subspace_max_samples,
             )
     elif ref_mode != "none":
         if ref_mode not in {"subtract", "product", "proj_removal"}:
