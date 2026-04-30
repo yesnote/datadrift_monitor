@@ -161,7 +161,7 @@ output:
           max_samples: 1000
           rank:
             mode: energy # energy | fixed_k
-            energy_threshold: 0.95 # 0.90 | 0.95 | 0.97 | 0.99
+            energy_threshold: 0.95 # (0, 1]
             k: 10
       disc_layers:
         fn_non_fn_map: object_detectors/runs/references/04-23-2026_00;40_layer_grad_null_target_loss_fn-non_fn

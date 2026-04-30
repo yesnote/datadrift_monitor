@@ -475,10 +475,9 @@ def _build_noise_subspace_models(
         raise FileNotFoundError(f"Noise per-image directory not found: {noise_root}")
 
     if rank_mode == "energy":
-        allowed = {0.90, 0.95, 0.97, 0.99}
-        thr = round(float(energy_threshold), 2)
-        if thr not in allowed:
-            raise ValueError("subspace.rank.energy_threshold must be one of {0.90,0.95,0.97,0.99}.")
+        thr = float(energy_threshold)
+        if not np.isfinite(thr) or thr <= 0.0 or thr > 1.0:
+            raise ValueError("subspace.rank.energy_threshold must be in (0, 1].")
         energy_threshold = thr
     elif rank_mode != "fixed_k":
         raise ValueError("subspace.rank.mode must be one of {'energy','fixed_k'}.")
