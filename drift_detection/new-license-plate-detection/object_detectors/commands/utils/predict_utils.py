@@ -484,7 +484,6 @@ def parse_output_config(output_cfg):
             bool(layer_grad_image_save_final_raw_map),
             bool(layer_grad_image_save_final_norm_map),
             bool(layer_grad_image_save_profile),
-            bool(layer_grad_image_save_subspace),
         ])
 
         gt_dir = str(common_ref_cfg.get("gt", "")).strip()
