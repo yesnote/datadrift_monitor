@@ -591,7 +591,6 @@ def run_layer_grad_csv(config, run_dir):
     ref_type = str(parsed.get("layer_ref_type", "prototype")).strip().lower()
     ref_mode = str(parsed.get("layer_ref_prototype_mode", parsed.get("layer_ref_mode", "none"))).strip().lower()
     ref_subspace_mode = str(parsed.get("layer_ref_subspace_mode", "none")).strip().lower()
-    grad_use_norm = bool(parsed.get("layer_use_norm", False))
     disc_separation_score = str(parsed.get("layer_disc_separation_score", "effect_size")).strip().lower()
     disc_topk = max(1, int(parsed.get("layer_disc_topk", 3)))
     disc_fn_non_fn_map_root = str(parsed.get("layer_disc_fn_non_fn_map_root", "")).strip()
@@ -708,7 +707,6 @@ def run_layer_grad_csv(config, run_dir):
                 "prototype_mode": ref_mode,
                 "subspace_mode": ref_subspace_mode,
             },
-            "use_norm": bool(grad_use_norm),
             "separation_score": disc_separation_score,
             "topk": int(disc_topk),
             "fn_non_fn_map": disc_fn_non_fn_map_root,
@@ -721,7 +719,7 @@ def run_layer_grad_csv(config, run_dir):
 
     print(
         "[INFO] layer_grad gradient options "
-        f"(ref_corrected.mode={ref_type}, prototype.mode={ref_mode}, subspace.mode={ref_subspace_mode}, use_norm={int(bool(grad_use_norm))})"
+        f"(ref_corrected.mode={ref_type}, prototype.mode={ref_mode}, subspace.mode={ref_subspace_mode})"
     )
     if ref_type == "subspace":
         raise NotImplementedError("gradient.ref_corrected.mode='subspace' is not implemented yet.")
@@ -745,14 +743,9 @@ def run_layer_grad_csv(config, run_dir):
             layer_ref_map_root if ref_mode != "none" else None,
             target_values=active_target_values,
         )
-        if grad_use_norm:
-            fn_map_by_target = disc_maps["fn_norm"]
-            non_fn_map_by_target = disc_maps["non_fn_norm"]
-            noise_map_by_target = disc_maps.get("noise_norm", {})
-        else:
-            fn_map_by_target = disc_maps["fn_raw"]
-            non_fn_map_by_target = disc_maps["non_fn_raw"]
-            noise_map_by_target = disc_maps.get("noise_raw", {})
+        fn_map_by_target = disc_maps["fn_raw"]
+        non_fn_map_by_target = disc_maps["non_fn_raw"]
+        noise_map_by_target = disc_maps.get("noise_raw", {})
 
         score_sum_by_layer = {int(i): 0.0 for i in range(len(target_layers))}
         score_by_target = {}
@@ -797,7 +790,7 @@ def run_layer_grad_csv(config, run_dir):
         viz_target_layers = list(selected_layers)
         print(
             "[INFO] discriminative layers "
-            f"(ref_corrected.mode={ref_type}, prototype.mode={ref_mode}, use_norm={int(bool(grad_use_norm))}, score={disc_separation_score}, topk={int(disc_topk)}): "
+            f"(ref_corrected.mode={ref_type}, prototype.mode={ref_mode}, score={disc_separation_score}, topk={int(disc_topk)}): "
             + ", ".join(selected_layers)
         )
         selected_indices = [int(row["layer_idx"]) for row in disc_rows if int(row.get("selected", 0)) == 1]
@@ -816,7 +809,7 @@ def run_layer_grad_csv(config, run_dir):
         if not layer_ref_map_root:
             raise ValueError("gradient.ref_corrected!='none' requires gradient.ref_map.")
         target_indices = [int(all_conv_name_to_idx[name]) for name in target_layers if name in all_conv_name_to_idx]
-        noise_map_name = "noise_norm_map" if grad_use_norm else "noise_raw_map"
+        noise_map_name = "noise_raw_map"
         noise_map_by_target = _load_map_nodes_csv_multi(
             _resolve_ref_map_path(layer_ref_map_root, noise_map_name),
             target_values=active_target_values,
@@ -841,7 +834,7 @@ def run_layer_grad_csv(config, run_dir):
         for layer_name in viz_target_layers
         if layer_name in all_conv_name_to_idx
     ]
-    need_transform_maps = bool(save_csv and unit == "image" and (grad_use_norm or ref_mode != "none"))
+    need_transform_maps = bool(save_csv and unit == "image" and (ref_mode != "none"))
     if unit == "image" and (viz_enabled or need_transform_maps):
         shape_layers = list(dict.fromkeys(list(viz_target_layers) + list(target_layers)))
         for layer_name in shape_layers:
@@ -1100,8 +1093,6 @@ def run_layer_grad_csv(config, run_dir):
                                     layer_param_shapes=layer_param_shapes,
                                 )
                                 map_use_t = map_raw_t
-                                if grad_use_norm:
-                                    map_use_t = _normalize_layer_map(map_use_t, mode=viz_normalize)
                                 map_use_t = _apply_ref_mode_to_map(
                                     map_use_t,
                                     noise_map_for_target_layers_by_target.get(str(target_value)),
