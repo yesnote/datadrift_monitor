@@ -348,7 +348,6 @@ def parse_output_config(output_cfg):
     layer_ref_type = "prototype"
     layer_ref_prototype_mode = "none"
     layer_ref_subspace_mode = "none"
-    layer_use_norm = False
     layer_disc_separation_score = "effect_size"
     layer_disc_topk = 3
     layer_disc_fn_non_fn_map_root = ""
@@ -385,7 +384,6 @@ def parse_output_config(output_cfg):
         layer_ref_prototype_mode = str(prototype_cfg.get("mode", "none")).strip().lower() or "none"
         layer_ref_subspace_mode = str(subspace_cfg.get("mode", "none")).strip().lower() or "none"
         layer_ref_mode = layer_ref_prototype_mode
-        layer_use_norm = bool(g.get("use_norm", False))
         t = g.get("target", "cand_target")
         t_policy = str(t).strip().lower() if t is not None else "null_target"
         layer_pseudo_gt = "uniform" if t_policy in {"null_target", "null"} else "cand"
@@ -556,7 +554,6 @@ def parse_output_config(output_cfg):
         "layer_ref_type": layer_ref_type,
         "layer_ref_prototype_mode": layer_ref_prototype_mode,
         "layer_ref_subspace_mode": layer_ref_subspace_mode,
-        "layer_use_norm": layer_use_norm,
         "layer_disc_separation_score": layer_disc_separation_score,
         "layer_disc_topk": layer_disc_topk,
         "layer_disc_fn_non_fn_map_root": layer_disc_fn_non_fn_map_root,
