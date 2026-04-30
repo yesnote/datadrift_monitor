@@ -581,8 +581,8 @@ def _apply_subspace_mode_to_map(map_2d, layer_models, mode):
     m = map_2d if map_2d is not None else np.zeros((0, 0), dtype=np.float32)
     if m.ndim != 2 or m.size == 0:
         return m
-    if mode not in {"orth", "both"}:
-        raise ValueError("subspace.mode must be one of {'orth','both'}.")
+    if mode not in {"proj", "orth", "both"}:
+        raise ValueError("subspace.mode must be one of {'proj','orth','both'}.")
     rows = []
     max_w = 0
     n_layers = int(m.shape[0])
@@ -604,7 +604,9 @@ def _apply_subspace_mode_to_map(map_2d, layer_models, mode):
             xc = x - mu
             proj = (B @ (B.T @ xc)).astype(np.float32, copy=False)
             orth = (xc - proj).astype(np.float32, copy=False)
-            if mode == "orth":
+            if mode == "proj":
+                out_row = proj
+            elif mode == "orth":
                 out_row = orth
             else:
                 out_row = np.concatenate([proj, orth], axis=0).astype(np.float32, copy=False)
@@ -992,8 +994,8 @@ def run_layer_grad_csv(config, run_dir):
             raise ValueError("gradient.ref_corrected.mode='subspace' requires output.layer_grad.unit='image'.")
         if not layer_ref_map_root:
             raise ValueError("gradient.ref_corrected.mode='subspace' requires gradient.ref_corrected.ref_map.")
-        if ref_subspace_mode not in {"orth", "both"}:
-            raise ValueError("gradient.ref_corrected.subspace.mode must be one of {'orth','both'}.")
+        if ref_subspace_mode not in {"proj", "orth", "both"}:
+            raise ValueError("gradient.ref_corrected.subspace.mode must be one of {'proj','orth','both'}.")
         subspace_models_by_target, subspace_stats_rows = _build_noise_subspace_models(
             layer_ref_map_root,
             target_values=target_values,
