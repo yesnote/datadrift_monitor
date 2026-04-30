@@ -627,7 +627,7 @@ def _save_subspace_cumvar_plot(spectra_rows, out_path, max_samples=1000):
     plt.close(fig)
 
 
-def _apply_subspace_mode_to_map(map_2d, layer_models, mode):
+def _apply_subspace_mode_to_map(map_2d, layer_models, mode, layer_indices=None):
     m = map_2d if map_2d is not None else np.zeros((0, 0), dtype=np.float32)
     if m.ndim != 2 or m.size == 0:
         return m
@@ -638,7 +638,8 @@ def _apply_subspace_mode_to_map(map_2d, layer_models, mode):
     n_layers = int(m.shape[0])
     for li in range(n_layers):
         row = m[li].astype(np.float32, copy=True)
-        model = layer_models.get(int(li))
+        global_li = int(layer_indices[li]) if (layer_indices is not None and li < len(layer_indices)) else int(li)
+        model = layer_models.get(global_li)
         if model is None:
             out_row = row
         else:
@@ -1096,6 +1097,11 @@ def run_layer_grad_csv(config, run_dir):
             fieldnames.append(f"{target_value}_{layer_name}")
 
     layer_param_shapes = {}
+    target_layer_indices_for_subspace = [
+        int(all_conv_name_to_idx[layer_name])
+        for layer_name in target_layers
+        if layer_name in all_conv_name_to_idx
+    ]
     viz_target_layer_indices = [
         int(all_conv_name_to_idx[layer_name])
         for layer_name in viz_target_layers
@@ -1365,6 +1371,7 @@ def run_layer_grad_csv(config, run_dir):
                                         map_use_t,
                                         subspace_models_by_target.get(str(target_value), {}),
                                         mode=ref_subspace_mode,
+                                        layer_indices=target_layer_indices_for_subspace,
                                     )
                                 else:
                                     map_use_t = _apply_ref_mode_to_map(
