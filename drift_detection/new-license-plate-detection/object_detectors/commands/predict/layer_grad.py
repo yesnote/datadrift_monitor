@@ -445,6 +445,178 @@ def _resolve_ref_map_path(root_path, map_name):
     return root / "ref_maps" / f"{map_name}.csv"
 
 
+def _resolve_ref_per_image_noise_dir(root_path):
+    root = Path(root_path)
+    if not root.is_absolute():
+        root = (Path.cwd() / root).resolve()
+    return root / "ref_maps" / "per_image" / "noise"
+
+
+def _pick_target_grad_column(df, target_value):
+    tv_col = f"{str(target_value)}_grad"
+    if tv_col in df.columns:
+        return tv_col
+    grad_cols = [c for c in df.columns if c.endswith("_grad")]
+    return grad_cols[0] if grad_cols else None
+
+
+def _build_noise_subspace_models(
+    ref_root,
+    target_values,
+    *,
+    centering="centered",
+    rank_mode="energy",
+    energy_threshold=0.95,
+    fixed_k=10,
+):
+    noise_root = _resolve_ref_per_image_noise_dir(ref_root)
+    if not noise_root.is_dir():
+        raise FileNotFoundError(f"Noise per-image directory not found: {noise_root}")
+
+    if rank_mode == "energy":
+        allowed = {0.90, 0.95, 0.97, 0.99}
+        thr = round(float(energy_threshold), 2)
+        if thr not in allowed:
+            raise ValueError("subspace.rank.energy_threshold must be one of {0.90,0.95,0.97,0.99}.")
+        energy_threshold = thr
+    elif rank_mode != "fixed_k":
+        raise ValueError("subspace.rank.mode must be one of {'energy','fixed_k'}.")
+
+    out_models = {}
+    stats_rows = []
+    for tv in target_values:
+        target_dir = noise_root / str(tv)
+        files = sorted(target_dir.glob("raw_*.csv"))
+        if not files:
+            raise FileNotFoundError(f"No noise per-image raw csv files found: {target_dir / 'raw_*.csv'}")
+
+        by_layer_samples = {}
+        by_layer_dim = {}
+        for fp in files:
+            df = pd.read_csv(fp)
+            if not {"layer_idx", "filter_idx"}.issubset(df.columns):
+                raise ValueError(f"Per-image noise csv missing required columns in: {fp}")
+            grad_col = _pick_target_grad_column(df, tv)
+            if grad_col is None:
+                raise ValueError(f"No '*_grad' column found in: {fp}")
+            li = df["layer_idx"].astype(int).to_numpy()
+            fi = df["filter_idx"].astype(int).to_numpy()
+            vv = df[grad_col].astype(float).to_numpy()
+            for layer_idx in np.unique(li):
+                mask = li == layer_idx
+                f_layer = fi[mask].astype(int, copy=False)
+                v_layer = vv[mask].astype(np.float32, copy=False)
+                d_here = (int(np.max(f_layer)) + 1) if f_layer.size else 0
+                if layer_idx not in by_layer_samples:
+                    by_layer_samples[layer_idx] = []
+                    by_layer_dim[layer_idx] = d_here
+                else:
+                    by_layer_dim[layer_idx] = max(int(by_layer_dim[layer_idx]), int(d_here))
+                by_layer_samples[layer_idx].append((f_layer, v_layer))
+
+        tv_models = {}
+        for layer_idx, sparse_rows in by_layer_samples.items():
+            dim = int(by_layer_dim.get(layer_idx, 0))
+            n_samples = int(len(sparse_rows))
+            if dim <= 0 or n_samples <= 0:
+                continue
+            G = np.zeros((n_samples, dim), dtype=np.float64)
+            for i, (f_idx, vals) in enumerate(sparse_rows):
+                if f_idx.size == 0:
+                    continue
+                m = np.isfinite(vals)
+                if m.any():
+                    G[i, f_idx[m]] = vals[m].astype(np.float64, copy=False)
+
+            mean_vec = np.zeros((dim,), dtype=np.float64)
+            X = G
+            if centering == "centered":
+                mean_vec = np.mean(G, axis=0)
+                X = G - mean_vec[None, :]
+            elif centering != "uncentered":
+                raise ValueError("subspace.centering must be one of {'centered','uncentered'}.")
+
+            try:
+                _u, svals, vt = np.linalg.svd(X, full_matrices=False)
+            except np.linalg.LinAlgError:
+                continue
+            if svals.size == 0 or vt.size == 0:
+                continue
+            energy = (svals * svals).astype(np.float64, copy=False)
+            total_e = float(np.sum(energy))
+            if total_e <= 0.0:
+                continue
+            if rank_mode == "fixed_k":
+                k = min(int(fixed_k), int(vt.shape[0]))
+            else:
+                cum = np.cumsum(energy) / total_e
+                k = int(np.searchsorted(cum, float(energy_threshold), side="left") + 1)
+                k = min(max(1, k), int(vt.shape[0]))
+            basis = vt[:k, :].T.astype(np.float32, copy=False)  # [D, k]
+            energy_kept = float(np.sum(energy[:k]) / total_e)
+            tv_models[int(layer_idx)] = {
+                "basis": basis,
+                "mean": mean_vec.astype(np.float32, copy=False),
+                "dim": int(dim),
+                "rank": int(k),
+                "n_samples": int(n_samples),
+                "energy_kept": energy_kept,
+            }
+            stats_rows.append(
+                {
+                    "target": str(tv),
+                    "layer_idx": int(layer_idx),
+                    "n_samples": int(n_samples),
+                    "dim": int(dim),
+                    "rank": int(k),
+                    "energy_kept": float(energy_kept),
+                }
+            )
+        out_models[str(tv)] = tv_models
+
+    return out_models, stats_rows
+
+
+def _apply_subspace_mode_to_map(map_2d, layer_models, mode):
+    m = map_2d if map_2d is not None else np.zeros((0, 0), dtype=np.float32)
+    if m.ndim != 2 or m.size == 0:
+        return m
+    if mode not in {"orth", "both"}:
+        raise ValueError("subspace.mode must be one of {'orth','both'}.")
+    rows = []
+    max_w = 0
+    n_layers = int(m.shape[0])
+    for li in range(n_layers):
+        row = m[li].astype(np.float32, copy=True)
+        model = layer_models.get(int(li))
+        if model is None:
+            out_row = row
+        else:
+            D = int(model["dim"])
+            B = model["basis"]  # [D,k]
+            mu = model["mean"]  # [D]
+            x = np.zeros((D,), dtype=np.float32)
+            w = min(D, int(row.shape[0]))
+            if w > 0:
+                vals = row[:w]
+                vals = np.where(np.isfinite(vals), vals, 0.0).astype(np.float32, copy=False)
+                x[:w] = vals
+            xc = x - mu
+            proj = (B @ (B.T @ xc)).astype(np.float32, copy=False)
+            orth = (xc - proj).astype(np.float32, copy=False)
+            if mode == "orth":
+                out_row = orth
+            else:
+                out_row = np.concatenate([proj, orth], axis=0).astype(np.float32, copy=False)
+        rows.append(out_row)
+        max_w = max(max_w, int(out_row.shape[0]))
+    out = np.full((n_layers, max_w), np.nan, dtype=np.float32)
+    for li, row in enumerate(rows):
+        if row.size > 0:
+            out[li, : row.shape[0]] = row
+    return out
+
+
 def _load_disc_source_maps(fn_non_fn_root, ref_root=None):
     paths = {
         "fn_raw": _resolve_ref_map_path(fn_non_fn_root, "fn_raw_map"),
@@ -591,6 +763,10 @@ def run_layer_grad_csv(config, run_dir):
     ref_type = str(parsed.get("layer_ref_type", "prototype")).strip().lower()
     ref_mode = str(parsed.get("layer_ref_prototype_mode", parsed.get("layer_ref_mode", "none"))).strip().lower()
     ref_subspace_mode = str(parsed.get("layer_ref_subspace_mode", "none")).strip().lower()
+    ref_subspace_centering = str(parsed.get("layer_ref_subspace_centering", "centered")).strip().lower()
+    ref_subspace_rank_mode = str(parsed.get("layer_ref_subspace_rank_mode", "energy")).strip().lower()
+    ref_subspace_energy_threshold = float(parsed.get("layer_ref_subspace_energy_threshold", 0.95))
+    ref_subspace_k = max(1, int(parsed.get("layer_ref_subspace_k", 10)))
     disc_separation_score = str(parsed.get("layer_disc_separation_score", "effect_size")).strip().lower()
     disc_topk = max(1, int(parsed.get("layer_disc_topk", 3)))
     disc_fn_non_fn_map_root = str(parsed.get("layer_disc_fn_non_fn_map_root", "")).strip()
@@ -716,19 +892,27 @@ def run_layer_grad_csv(config, run_dir):
     }
     disc_rows = []
     noise_map_for_target_layers_by_target = {}
+    subspace_models_by_target = {}
+    subspace_stats_rows = []
 
     print(
         "[INFO] layer_grad gradient options "
         f"(ref_corrected.mode={ref_type}, prototype.mode={ref_mode}, subspace.mode={ref_subspace_mode})"
     )
-    if ref_type == "subspace":
-        raise NotImplementedError("gradient.ref_corrected.mode='subspace' is not implemented yet.")
     if ref_type == "none":
         ref_mode = "none"
+    if ref_type == "subspace":
+        print(
+            "[INFO] layer_grad subspace options "
+            f"(centering={ref_subspace_centering}, rank_mode={ref_subspace_rank_mode}, "
+            f"energy_threshold={ref_subspace_energy_threshold:.2f}, k={ref_subspace_k})"
+        )
 
     if disc_enabled:
         if unit != "image":
             raise ValueError("gradient.layer='disc_layers' requires output.layer_grad.unit='image'.")
+        if ref_type == "subspace":
+            raise NotImplementedError("gradient.layer='disc_layers' with ref_corrected.mode='subspace' is not implemented yet.")
         if ref_mode not in {"none", "subtract", "product", "proj_removal"}:
             raise ValueError("gradient.ref_corrected must be one of {'none','subtract','product','proj_removal'}.")
         if not disc_fn_non_fn_map_root:
@@ -803,6 +987,29 @@ def run_layer_grad_csv(config, run_dir):
                     noise_map_for_target_layers_by_target[tv] = np.zeros((len(selected_indices), 0), dtype=np.float32)
         disc_summary["map_paths"] = disc_map_paths
         disc_summary["selected_layers"] = list(selected_layers)
+    elif ref_type == "subspace":
+        if unit != "image":
+            raise ValueError("gradient.ref_corrected.mode='subspace' requires output.layer_grad.unit='image'.")
+        if not layer_ref_map_root:
+            raise ValueError("gradient.ref_corrected.mode='subspace' requires gradient.ref_corrected.ref_map.")
+        if ref_subspace_mode not in {"orth", "both"}:
+            raise ValueError("gradient.ref_corrected.subspace.mode must be one of {'orth','both'}.")
+        subspace_models_by_target, subspace_stats_rows = _build_noise_subspace_models(
+            layer_ref_map_root,
+            target_values=target_values,
+            centering=ref_subspace_centering,
+            rank_mode=ref_subspace_rank_mode,
+            energy_threshold=ref_subspace_energy_threshold,
+            fixed_k=ref_subspace_k,
+        )
+        if not subspace_stats_rows:
+            raise ValueError("No valid subspace model could be built from noise per-image CSVs.")
+        for r in subspace_stats_rows[:8]:
+            print(
+                "[INFO] subspace "
+                f"target={r['target']} layer_idx={r['layer_idx']} n={r['n_samples']} d={r['dim']} "
+                f"rank={r['rank']} energy={r['energy_kept']:.4f}"
+            )
     elif ref_mode != "none":
         if ref_mode not in {"subtract", "product", "proj_removal"}:
             raise ValueError("gradient.ref_corrected must be one of {'none','subtract','product','proj_removal'}.")
@@ -834,7 +1041,7 @@ def run_layer_grad_csv(config, run_dir):
         for layer_name in viz_target_layers
         if layer_name in all_conv_name_to_idx
     ]
-    need_transform_maps = bool(save_csv and unit == "image" and (ref_mode != "none"))
+    need_transform_maps = bool(save_csv and unit == "image" and ((ref_mode != "none") or (ref_type == "subspace")))
     if unit == "image" and (viz_enabled or need_transform_maps):
         shape_layers = list(dict.fromkeys(list(viz_target_layers) + list(target_layers)))
         for layer_name in shape_layers:
@@ -1093,11 +1300,18 @@ def run_layer_grad_csv(config, run_dir):
                                     layer_param_shapes=layer_param_shapes,
                                 )
                                 map_use_t = map_raw_t
-                                map_use_t = _apply_ref_mode_to_map(
-                                    map_use_t,
-                                    noise_map_for_target_layers_by_target.get(str(target_value)),
-                                    ref_mode,
-                                )
+                                if ref_type == "subspace":
+                                    map_use_t = _apply_subspace_mode_to_map(
+                                        map_use_t,
+                                        subspace_models_by_target.get(str(target_value), {}),
+                                        mode=ref_subspace_mode,
+                                    )
+                                else:
+                                    map_use_t = _apply_ref_mode_to_map(
+                                        map_use_t,
+                                        noise_map_for_target_layers_by_target.get(str(target_value)),
+                                        ref_mode,
+                                    )
                                 transformed_maps_by_target[target_value] = map_use_t
                         for target_value in target_values:
                             for layer_idx, layer_name in enumerate(target_layers):
@@ -1421,6 +1635,21 @@ def run_layer_grad_csv(config, run_dir):
             "save_profile": bool(viz_save_profile),
             "gt_match_stats": gt_match_stats,
             "disc_layers": disc_summary,
+            "ref_corrected": {
+                "mode": ref_type,
+                "prototype_mode": ref_mode,
+                "subspace_mode": ref_subspace_mode,
+                "subspace": {
+                    "config": {
+                        "centering": ref_subspace_centering,
+                        "rank_mode": ref_subspace_rank_mode,
+                        "energy_threshold": ref_subspace_energy_threshold,
+                        "k": ref_subspace_k,
+                        "ref_map": layer_ref_map_root,
+                    },
+                    "stats": subspace_stats_rows,
+                },
+            },
         }
         with open(viz_dir / "summary.json", "w", encoding="utf-8") as f:
             json.dump(viz_summary, f, ensure_ascii=False, indent=2)
@@ -1446,6 +1675,27 @@ def run_layer_grad_csv(config, run_dir):
                 for tv in active_target_values:
                     out[f"score_{tv}"] = float(row.get(f"score_{tv}", float("nan")))
                 writer.writerow(out)
+    if ref_type == "subspace":
+        ref_dir = run_dir / "ref_maps"
+        ref_dir.mkdir(parents=True, exist_ok=True)
+        subspace_csv = ref_dir / "subspace_summary.csv"
+        with open(subspace_csv, "w", newline="", encoding="utf-8") as f:
+            writer = csv.DictWriter(
+                f,
+                fieldnames=["target", "layer_idx", "n_samples", "dim", "rank", "energy_kept"],
+            )
+            writer.writeheader()
+            for r in subspace_stats_rows:
+                writer.writerow(
+                    {
+                        "target": str(r.get("target", "")),
+                        "layer_idx": int(r.get("layer_idx", -1)),
+                        "n_samples": int(r.get("n_samples", 0)),
+                        "dim": int(r.get("dim", 0)),
+                        "rank": int(r.get("rank", 0)),
+                        "energy_kept": float(r.get("energy_kept", float("nan"))),
+                    }
+                )
     del detector
     if device.type == "cuda":
         torch.cuda.empty_cache()
