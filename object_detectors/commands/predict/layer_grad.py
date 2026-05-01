@@ -1058,7 +1058,7 @@ def run_layer_grad_csv(config, run_dir):
         )
         if not subspace_stats_rows:
             raise ValueError("No valid subspace model could be built from noise per-image CSVs.")
-        for r in subspace_stats_rows[:8]:
+        for r in subspace_stats_rows:
             print(
                 "[INFO] subspace "
                 f"target={r['target']} layer_idx={r['layer_idx']} n={r['n_samples']} d={r['dim']} "
