@@ -154,7 +154,8 @@ def main():
                         rank_tag = f"k{int(rank_cfg.get('k', 10))}"
                     else:
                         thr = float(rank_cfg.get("energy_threshold", 0.95))
-                        rank_tag = f"e{thr:.2f}"
+                        thr_txt = f"{thr:.3f}".rstrip("0").rstrip(".")
+                        rank_tag = f"e{thr_txt}"
                     target_tag += f"_{ref_mode}_{sub_mode}_{centering}_{rank_tag}"
                 else:
                     target_tag += f"_{ref_mode}"
