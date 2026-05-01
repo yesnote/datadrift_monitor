@@ -958,7 +958,8 @@ def run_layer_grad_csv(config, run_dir):
         print(
             "[INFO] layer_grad subspace options "
             f"(centering={ref_subspace_centering}, rank_mode={ref_subspace_rank_mode}, "
-            f"energy_threshold={ref_subspace_energy_threshold:.2f}, k={ref_subspace_k}, max_samples={ref_subspace_max_samples})"
+            f"energy_threshold={f'{ref_subspace_energy_threshold:.3f}'.rstrip('0').rstrip('.')}, "
+            f"k={ref_subspace_k}, max_samples={ref_subspace_max_samples})"
         )
 
     if disc_enabled:
