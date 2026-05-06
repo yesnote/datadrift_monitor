@@ -42,6 +42,7 @@ def run_score_csv(config, run_dir):
 
     detector, device = build_detector(config)
     nms_kwargs = _resolve_detector_nms_kwargs(detector)
+    raw_prof = RawComputeProfiler(run_dir=run_dir, uncertainty=uncertainty, unit=unit)
 
     with open(output_csv, "w", newline="", encoding="utf-8") as output_file:
         writer = csv.DictWriter(output_file, fieldnames=fieldnames)
@@ -83,6 +84,8 @@ def run_score_csv(config, run_dir):
                         model_output = detector.model(infer_batch, augment=False)
                         raw_prediction = model_output[0] if isinstance(model_output, (tuple, list)) else model_output
 
+            t_raw = raw_prof.start()
+            batch_items = 0
             for sample_idx in range(len(image_list)):
                 target = targets[sample_idx]
                 image_id = int(target["image_id"][0].item())
@@ -90,6 +93,7 @@ def run_score_csv(config, run_dir):
 
                 if unit == "bbox":
                     det = selected_preds[sample_idx]
+                    batch_items += int(det.shape[0])
                     raw_keep_b = selected_indices[sample_idx]
                     for pred_idx, box in enumerate(det):
                         raw_pred_idx = int(raw_keep_b[pred_idx].detach().cpu().item()) if pred_idx < int(raw_keep_b.shape[0]) else pred_idx
@@ -133,6 +137,7 @@ def run_score_csv(config, run_dir):
                     else:
                         score_tensor = torch.as_tensor(pred_scores, dtype=torch.float32, device=device)
                         num_preds = len(pred_scores)
+                    batch_items += int(num_preds)
 
                     if num_preds == 0:
                         stat_all = {
@@ -149,6 +154,7 @@ def run_score_csv(config, run_dir):
                     for metric_name in score_vector_reduction:
                         row[metric_name] = float(stat_all[metric_name])
                     writer.writerow(row)
+            raw_prof.end(t_raw, batch_items)
             if unit == "bbox":
                 del infer_batch, raw_prediction, raw_logits, selected_preds, selected_indices
             else:
@@ -157,7 +163,10 @@ def run_score_csv(config, run_dir):
     del detector
     if device.type == "cuda":
         torch.cuda.empty_cache()
+    timing_csv, timing_json = raw_prof.save()
 
     print(f"Saved results CSV: {output_csv}")
+    print(f"Saved raw compute timing: {timing_csv}")
+    print(f"Saved raw compute timing summary: {timing_json}")
 
 __all__ = ["run_score_csv"]
