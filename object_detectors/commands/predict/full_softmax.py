@@ -167,7 +167,7 @@ def run_full_softmax_csv(config, run_dir):
                     else:
                         probs_np = pred_probs.detach().cpu().numpy() if pred_probs.numel() else None
                         num_preds = int(pred_probs.shape[0])
-                    batch_items += int(num_preds)
+                    batch_items += 1
                     row = {
                         "image_id": image_id,
                         "image_path": image_path,

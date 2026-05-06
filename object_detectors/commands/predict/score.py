@@ -137,7 +137,7 @@ def run_score_csv(config, run_dir):
                     else:
                         score_tensor = torch.as_tensor(pred_scores, dtype=torch.float32, device=device)
                         num_preds = len(pred_scores)
-                    batch_items += int(num_preds)
+                    batch_items += 1
 
                     if num_preds == 0:
                         stat_all = {

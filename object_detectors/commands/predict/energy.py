@@ -207,7 +207,7 @@ def run_energy_csv(config, run_dir):
                         energy_tensor = pred_energy
 
                     num_preds = int(energy_tensor.shape[0])
-                    batch_items += int(num_preds)
+                    batch_items += 1
                     if num_preds == 0:
                         stat_all = {
                             "1-norm": 0.0,
