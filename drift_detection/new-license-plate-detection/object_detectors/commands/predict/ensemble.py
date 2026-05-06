@@ -341,7 +341,7 @@ def run_ensemble_csv(config, run_dir):
                                 for key, val in stats_from_tensor(prob_std_vec).items():
                                     row[f"prob_{class_idx}_std_{stat_alias[key]}"] = val
                         writer.writerow(row)
-                        batch_items += int(len(raw_indices))
+                        batch_items += 1
                 raw_prof.end(t_raw, batch_items)
                 del mean, std
     except Exception:

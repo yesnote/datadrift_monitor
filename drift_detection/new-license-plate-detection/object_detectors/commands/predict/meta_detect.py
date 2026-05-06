@@ -195,7 +195,7 @@ def run_meta_detect_csv(config, run_dir):
                     else:
                         image_feature_rows.append(feature_row)
                 if unit == "image":
-                    batch_items += int(len(image_feature_rows))
+                    batch_items += 1
                     row = {
                         "image_id": image_id,
                         "image_path": image_path,

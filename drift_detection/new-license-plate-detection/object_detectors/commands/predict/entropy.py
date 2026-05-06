@@ -182,7 +182,7 @@ def run_entropy_csv(config, run_dir):
                         entropy_tensor = pred_entropy
 
                     num_preds = int(entropy_tensor.shape[0])
-                    batch_items += int(num_preds)
+                    batch_items += 1
                     if num_preds == 0:
                         stat_all = {
                             "1-norm": 0.0,
