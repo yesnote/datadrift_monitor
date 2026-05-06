@@ -125,7 +125,9 @@ def build_detector(config, model_weight=None):
 
     weight_source = model_weight if model_weight is not None else model_cfg["weights"]
     if isinstance(weight_source, (list, tuple)):
-        raise ValueError("build_detector expects a single weight path, got a list.")
+        if len(weight_source) == 0:
+            raise ValueError("model.weights is empty.")
+        weight_source = weight_source[0]
     weight_path = Path(weight_source)
     if not weight_path.is_absolute():
         weight_path = (PROJECT_ROOT / weight_path).resolve()
