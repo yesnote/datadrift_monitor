@@ -914,6 +914,7 @@ def run_layer_grad_csv(config, run_dir):
         raise ValueError("Loaded 0 images. Check dataset root/image_dir/split configuration in YAML.")
 
     detector, device = build_detector(config)
+    raw_prof = RawComputeProfiler(run_dir=run_dir, uncertainty=uncertainty, unit=unit)
     all_conv_layers = expand_layer_names(detector.model, ["all_conv"])
     all_conv_name_to_idx = {name: idx for idx, name in enumerate(all_conv_layers)}
     if disc_enabled:
@@ -1245,6 +1246,8 @@ def run_layer_grad_csv(config, run_dir):
                 break
             image_list = _as_image_list(images)
             infer_batch, ratios, pads, _resized_chws = _prepare_infer_batch(detector, image_list, device, auto=False)
+            t_raw = raw_prof.start()
+            batch_items = 0
             batch_preds = None
             batch_grad_stats_all = None
             required_layers = []
@@ -1304,6 +1307,7 @@ def run_layer_grad_csv(config, run_dir):
                             for grad_key, grad_value in bbox_row["grad_stats"].items():
                                 row[grad_key] = json.dumps(grad_value, separators=(",", ":"))
                             csv_writer.writerow(row)
+                    batch_items += int(len(bbox_rows))
                     del bbox_rows
                 else:
                     group_key = None
@@ -1353,6 +1357,7 @@ def run_layer_grad_csv(config, run_dir):
                         ):
                             continue
                     grad_stats_all = batch_grad_stats_all[sample_idx] if batch_grad_stats_all is not None else {}
+                    batch_items += 1
 
                     if csv_writer is not None:
                         row = {"image_id": image_id, "image_path": image_path}
@@ -1523,6 +1528,7 @@ def run_layer_grad_csv(config, run_dir):
                                     _save_heatmap_png(_normalize_layer_map(m, mode=viz_normalize), out_path)
                                     per_image_saved[group_key][tv] += 1
                     del grad_stats_all
+            raw_prof.end(t_raw, batch_items)
             del infer_batch
             if batch_preds is not None:
                 del batch_preds
@@ -1767,6 +1773,7 @@ def run_layer_grad_csv(config, run_dir):
     del detector
     if device.type == "cuda":
         torch.cuda.empty_cache()
+    timing_csv, timing_json = raw_prof.save()
 
     if save_csv:
         print(f"Saved results CSV: {output_csv}")
@@ -1774,6 +1781,8 @@ def run_layer_grad_csv(config, run_dir):
         print(f"Saved layer-grad maps: {viz_dir}")
         if tb_log_dir is not None:
             print(f"Saved layer-grad TensorBoard logs: {tb_log_dir}")
+    print(f"Saved raw compute timing: {timing_csv}")
+    print(f"Saved raw compute timing summary: {timing_json}")
 
 
 

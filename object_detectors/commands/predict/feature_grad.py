@@ -34,6 +34,7 @@ def run_feature_grad_csv(config, run_dir):
         raise ValueError("Loaded 0 images. Check dataset root/image_dir/split configuration in YAML.")
 
     detector, device = build_detector(config)
+    raw_prof = RawComputeProfiler(run_dir=run_dir, uncertainty=uncertainty, unit=unit)
     layer_buffer = None
     if unit == "bbox":
         layer_buffer = create_layer_grad_buffer(
@@ -52,6 +53,8 @@ def run_feature_grad_csv(config, run_dir):
             ):
                 image_list = _as_image_list(images)
                 infer_batch, _ratios, _pads, _resized_chws = _prepare_infer_batch(detector, image_list, device, auto=False)
+                t_raw = raw_prof.start()
+                batch_items = 0
                 batch_grad_stats = None
                 if unit != "bbox":
                     batch_grad_stats = collect_batch_feature_gradients_per_target(
@@ -93,6 +96,7 @@ def run_feature_grad_csv(config, run_dir):
                             for grad_key, grad_value in bbox_row["grad_stats"].items():
                                 row[grad_key] = json.dumps(grad_value, separators=(",", ":"))
                             writer.writerow(row)
+                        batch_items += int(len(bbox_rows))
                         del bbox_rows
                     else:
                         grad_stats = batch_grad_stats[sample_idx]
@@ -100,7 +104,9 @@ def run_feature_grad_csv(config, run_dir):
                         for grad_key, grad_value in grad_stats.items():
                             row[grad_key] = json.dumps(grad_value, separators=(",", ":"))
                         writer.writerow(row)
+                        batch_items += 1
                         del grad_stats
+                raw_prof.end(t_raw, batch_items)
                 if batch_grad_stats is not None:
                     del batch_grad_stats
                 del infer_batch
@@ -111,7 +117,10 @@ def run_feature_grad_csv(config, run_dir):
     del detector
     if device.type == "cuda":
         torch.cuda.empty_cache()
+    timing_csv, timing_json = raw_prof.save()
 
     print(f"Saved results CSV: {output_csv}")
+    print(f"Saved raw compute timing: {timing_csv}")
+    print(f"Saved raw compute timing summary: {timing_json}")
 
 __all__ = ["run_feature_grad_csv"]
