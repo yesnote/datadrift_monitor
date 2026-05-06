@@ -25,6 +25,7 @@ def run_entropy_csv(config, run_dir):
 
     detector, device = build_detector(config)
     nms_kwargs = _resolve_detector_nms_kwargs(detector)
+    raw_prof = RawComputeProfiler(run_dir=run_dir, uncertainty=uncertainty, unit=unit)
     num_classes = len(detector.names) if detector.names is not None else 80
     output_csv = run_dir / "entropy.csv"
     fieldnames = ["image_id", "image_path"]
@@ -91,6 +92,8 @@ def run_entropy_csv(config, run_dir):
                             else None
                         )
 
+            t_raw = raw_prof.start()
+            batch_items = 0
             for sample_idx in range(len(image_list)):
                 target = targets[sample_idx]
                 image_id = int(target["image_id"][0].item())
@@ -98,6 +101,7 @@ def run_entropy_csv(config, run_dir):
 
                 if unit == "bbox":
                     det = selected_preds[sample_idx]
+                    batch_items += int(det.shape[0])
                     raw_keep_b = selected_indices[sample_idx]
                     if raw_logits is not None:
                         selected_logits = (
@@ -178,6 +182,7 @@ def run_entropy_csv(config, run_dir):
                         entropy_tensor = pred_entropy
 
                     num_preds = int(entropy_tensor.shape[0])
+                    batch_items += int(num_preds)
                     if num_preds == 0:
                         stat_all = {
                             "1-norm": 0.0,
@@ -193,6 +198,7 @@ def run_entropy_csv(config, run_dir):
                     for metric_name in entropy_vector_reduction:
                         row[metric_name] = float(stat_all[metric_name])
                     writer.writerow(row)
+            raw_prof.end(t_raw, batch_items)
             if unit == "bbox":
                 del infer_batch, raw_prediction, raw_logits, selected_preds, selected_indices
             else:
@@ -201,7 +207,10 @@ def run_entropy_csv(config, run_dir):
     del detector
     if device.type == "cuda":
         torch.cuda.empty_cache()
+    timing_csv, timing_json = raw_prof.save()
 
     print(f"Saved results CSV: {output_csv}")
+    print(f"Saved raw compute timing: {timing_csv}")
+    print(f"Saved raw compute timing summary: {timing_json}")
 
 __all__ = ["run_entropy_csv"]

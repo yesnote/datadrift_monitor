@@ -37,6 +37,7 @@ def run_mc_dropout_csv(config, run_dir):
         raise ValueError("Loaded 0 images. Check dataset root/image_dir/split configuration in YAML.")
 
     detector, device = build_detector(config)
+    raw_prof = RawComputeProfiler(run_dir=run_dir, uncertainty=uncertainty, unit=unit)
     n_classes_hint = len(detector.names) if detector.names is not None else 80
 
     output_csv = run_dir / "mc_dropout.csv"
@@ -170,6 +171,7 @@ def run_mc_dropout_csv(config, run_dir):
                     return_indices=True,
                 )
 
+            t_raw = raw_prof.start()
             feat_mean = None
             feat_m2 = None
             n_candidates = None
@@ -221,6 +223,7 @@ def run_mc_dropout_csv(config, run_dir):
 
             feat_std = torch.sqrt(torch.clamp(feat_m2 / max(run_count, 1), min=0.0))
             batch_rows = []
+            batch_items = 0
 
             for b in range(batch_size):
                 image_id = image_ids[b]
@@ -270,6 +273,7 @@ def run_mc_dropout_csv(config, run_dir):
                             row[f"prob_{class_idx}_mean"] = float(feat_mean_cpu[raw_idx, 5 + class_idx].item())
                             row[f"prob_{class_idx}_std"] = float(feat_std_cpu[raw_idx, 5 + class_idx].item())
                         batch_rows.append(row)
+                    batch_items += int(len(valid_pairs))
                 else:
                     raw_indices = list(range(n_candidates))
                     row = {"image_id": image_id, "image_path": image_path, "num_preds": len(raw_indices)}
@@ -342,8 +346,10 @@ def run_mc_dropout_csv(config, run_dir):
                             for key, val in stats_from_tensor(prob_std_vec).items():
                                 row[f"prob_{class_idx}_std_{stat_alias[key]}"] = val
                     batch_rows.append(row)
+                    batch_items += int(len(raw_indices))
 
             write_queue.put(batch_rows)
+            raw_prof.end(t_raw, batch_items)
 
             del selected_preds, selected_indices
             del infer_batch
@@ -361,7 +367,10 @@ def run_mc_dropout_csv(config, run_dir):
     del detector
     if device.type == "cuda":
         torch.cuda.empty_cache()
+    timing_csv, timing_json = raw_prof.save()
 
     print(f"Saved results CSV: {output_csv}")
+    print(f"Saved raw compute timing: {timing_csv}")
+    print(f"Saved raw compute timing summary: {timing_json}")
 
 __all__ = ["run_mc_dropout_csv"]
