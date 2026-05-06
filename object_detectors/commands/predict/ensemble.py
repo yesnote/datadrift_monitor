@@ -79,6 +79,7 @@ def run_ensemble_csv(config, run_dir):
     class_names_hint = None
     n_classes_actual = None
     device = torch.device("cpu")
+    raw_prof = RawComputeProfiler(run_dir=run_dir, uncertainty=uncertainty, unit=unit)
 
     detectors = []
     try:
@@ -208,10 +209,12 @@ def run_ensemble_csv(config, run_dir):
                             raw_keep_indices.append([int(v) for v in raw_keep_b.detach().cpu().tolist()])
 
                 runs_tensor = torch.stack(feature_runs, dim=0)  # [M, B, N, F]
+                t_raw = raw_prof.start()
                 mean = runs_tensor.mean(dim=0)
                 std = runs_tensor.std(dim=0, unbiased=False)
                 del runs_tensor, feature_runs, infer_batch
 
+                batch_items = 0
                 for b in range(len(image_ids)):
                     image_id = int(image_ids[b])
                     image_path = str(image_paths[b])
@@ -264,6 +267,7 @@ def run_ensemble_csv(config, run_dir):
                                     row[f"prob_{class_idx}_mean"] = 0.0
                                     row[f"prob_{class_idx}_std"] = 0.0
                             writer.writerow(row)
+                        batch_items += int(num_final)
                     else:
                         raw_indices = list(range(n_candidates))
 
@@ -337,6 +341,8 @@ def run_ensemble_csv(config, run_dir):
                                 for key, val in stats_from_tensor(prob_std_vec).items():
                                     row[f"prob_{class_idx}_std_{stat_alias[key]}"] = val
                         writer.writerow(row)
+                        batch_items += int(len(raw_indices))
+                raw_prof.end(t_raw, batch_items)
                 del mean, std
     except Exception:
         raise
@@ -348,6 +354,9 @@ def run_ensemble_csv(config, run_dir):
 
     if device.type == "cuda":
         torch.cuda.empty_cache()
+    timing_csv, timing_json = raw_prof.save()
     print(f"Saved results CSV: {output_csv}")
+    print(f"Saved raw compute timing: {timing_csv}")
+    print(f"Saved raw compute timing summary: {timing_json}")
 
 __all__ = ["run_ensemble_csv"]

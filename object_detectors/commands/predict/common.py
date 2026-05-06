@@ -4,6 +4,7 @@ import math
 import queue
 import shutil
 import threading
+import time
 from pathlib import Path
 
 import cv2
@@ -152,5 +153,67 @@ def _mc_dropout_single_csv_writer(write_queue, output_csv, fieldnames):
                 break
             if batch_rows:
                 writer.writerows(batch_rows)
+
+
+class RawComputeProfiler:
+    def __init__(self, run_dir, uncertainty, unit):
+        self.run_dir = Path(run_dir)
+        self.uncertainty = str(uncertainty)
+        self.unit = str(unit)
+        self.records = []
+        self._batch_idx = 0
+
+    def start(self):
+        return time.perf_counter()
+
+    def end(self, start_t, num_items):
+        elapsed = max(0.0, float(time.perf_counter() - start_t))
+        n = int(max(0, num_items))
+        self.records.append(
+            {
+                "batch_idx": self._batch_idx,
+                "num_items": n,
+                "elapsed_sec": elapsed,
+                "items_per_sec": (float(n) / elapsed) if elapsed > 0 else 0.0,
+            }
+        )
+        self._batch_idx += 1
+
+    def save(self):
+        timing_dir = self.run_dir / "timing"
+        timing_dir.mkdir(parents=True, exist_ok=True)
+        csv_path = timing_dir / f"{self.uncertainty}_raw_compute_timing.csv"
+        json_path = timing_dir / f"{self.uncertainty}_raw_compute_timing.json"
+
+        total_batches = len(self.records)
+        total_items = int(sum(r["num_items"] for r in self.records))
+        total_sec = float(sum(r["elapsed_sec"] for r in self.records))
+        mean_batch_sec = (total_sec / total_batches) if total_batches > 0 else 0.0
+        mean_item_ms = ((total_sec / total_items) * 1000.0) if total_items > 0 else 0.0
+        items_per_sec = (total_items / total_sec) if total_sec > 0 else 0.0
+
+        with open(csv_path, "w", newline="", encoding="utf-8") as f:
+            writer = csv.DictWriter(
+                f, fieldnames=["batch_idx", "num_items", "elapsed_sec", "items_per_sec"]
+            )
+            writer.writeheader()
+            for r in self.records:
+                writer.writerow(r)
+
+        summary = {
+            "uncertainty": self.uncertainty,
+            "unit": self.unit,
+            "interval": "after_detector_output_to_raw_uncertainty_done",
+            "total_batches": total_batches,
+            "total_items": total_items,
+            "total_elapsed_sec": total_sec,
+            "mean_elapsed_sec_per_batch": mean_batch_sec,
+            "mean_elapsed_ms_per_item": mean_item_ms,
+            "items_per_sec": items_per_sec,
+            "batch_csv": str(csv_path),
+        }
+        with open(json_path, "w", encoding="utf-8") as f:
+            json.dump(summary, f, ensure_ascii=False, indent=2)
+        return csv_path, json_path
 
 __all__ = [name for name in globals().keys() if not name.startswith("__")]

@@ -67,6 +67,7 @@ def run_meta_detect_csv(config, run_dir):
         raise ValueError("Loaded 0 images. Check dataset root/image_dir/split configuration in YAML.")
 
     detector, device = build_detector(config)
+    raw_prof = RawComputeProfiler(run_dir=run_dir, uncertainty=uncertainty, unit=unit)
     with open(output_csv, "w", newline="", encoding="utf-8") as output_file:
         writer = csv.DictWriter(output_file, fieldnames=fieldnames)
         writer.writeheader()
@@ -89,6 +90,8 @@ def run_meta_detect_csv(config, run_dir):
                     return_indices=True,
                 )
 
+            t_raw = raw_prof.start()
+            batch_items = 0
             for sample_idx in range(len(image_list)):
                 target = targets[sample_idx]
                 image_id = int(target["image_id"][0].item())
@@ -192,6 +195,7 @@ def run_meta_detect_csv(config, run_dir):
                     else:
                         image_feature_rows.append(feature_row)
                 if unit == "image":
+                    batch_items += int(len(image_feature_rows))
                     row = {
                         "image_id": image_id,
                         "image_path": image_path,
@@ -217,11 +221,17 @@ def run_meta_detect_csv(config, run_dir):
                         for metric_name in vector_reduction:
                             row[f"{feature_name}_{metric_name}"] = float(stats[metric_name])
                     writer.writerow(row)
+                else:
+                    batch_items += int(len(pred_boxes))
+            raw_prof.end(t_raw, batch_items)
             del infer_batch, model_output, raw_prediction, raw_logits, selected_preds, selected_indices
 
     del detector
     if device.type == "cuda":
         torch.cuda.empty_cache()
+    timing_csv, timing_json = raw_prof.save()
     print(f"Saved results CSV: {output_csv}")
+    print(f"Saved raw compute timing: {timing_csv}")
+    print(f"Saved raw compute timing summary: {timing_json}")
 
 __all__ = ["run_meta_detect_csv"]
