@@ -19,6 +19,7 @@ def run_prediction_dump_csv(config, run_dir):
     parsed = parse_output_config(config.get("output", {}))
     save_csv = parsed["save_csv_enabled"]
     unit = parsed["unit"]
+    iou_match_threshold = parsed["gt_iou_match_threshold"]
     if unit != "bbox":
         raise ValueError("output.uncertainty='prediction_dump' requires output.unit='bbox'.")
     if not save_csv:
@@ -45,8 +46,11 @@ def run_prediction_dump_csv(config, run_dir):
         "score",
         "pred_class",
         "pred_class_id",
+        "max_iou",
+        "tp",
     ]
 
+    catid_to_name = load_gt_category_maps(config, split)
     dataloader = create_dataloader(config, split=split)
     if len(dataloader.dataset) == 0:
         raise ValueError("Loaded 0 images. Check dataset root/image_dir/split configuration in YAML.")
@@ -67,7 +71,7 @@ def run_prediction_dump_csv(config, run_dir):
             image_list = _as_image_list(images)
             total_images += len(image_list)
             detector.zero_grad(set_to_none=True)
-            infer_batch, _ratios, _pads, _resized_chws = _prepare_infer_batch(detector, image_list, device, auto=False)
+            infer_batch, ratios, pads, _resized_chws = _prepare_infer_batch(detector, image_list, device, auto=False)
             with torch.no_grad():
                 model_output = detector.model(infer_batch, augment=False)
                 raw_prediction = model_output[0] if isinstance(model_output, (tuple, list)) else model_output
@@ -97,6 +101,24 @@ def run_prediction_dump_csv(config, run_dir):
                 det = selected_preds[sample_idx]
                 raw_keep_b = selected_indices[sample_idx]
                 raw_b = raw_prediction[sample_idx].detach().float()
+                pred_boxes = det[:, :4].detach().cpu().tolist()
+                pred_scores = det[:, 4].detach().cpu().tolist() if det.shape[1] > 4 else []
+                pred_cls_ids = (
+                    det[:, 5].long().detach().cpu().tolist()
+                    if det.shape[1] > 5
+                    else [0 for _ in range(int(det.shape[0]))]
+                )
+                pred_class_names = [_class_name(detector.names, int(cls_idx)) for cls_idx in pred_cls_ids]
+                gt_boxes = map_boxes_to_letterbox(target["boxes"], ratios[sample_idx], pads[sample_idx])
+                gt_class_names = _resolve_gt_class_names(target, catid_to_name)
+                tp_flags, best_ious = assign_tp_to_predictions(
+                    gt_boxes=gt_boxes,
+                    gt_class_names=gt_class_names,
+                    pred_boxes=pred_boxes,
+                    pred_class_names=pred_class_names,
+                    pred_scores=pred_scores,
+                    iou_match_threshold=iou_match_threshold,
+                )
                 batch_items += int(det.shape[0])
                 total_predictions += int(det.shape[0])
 
@@ -106,7 +128,7 @@ def run_prediction_dump_csv(config, run_dir):
                         if pred_idx < int(raw_keep_b.shape[0])
                         else pred_idx
                     )
-                    cls_idx = int(box[5].detach().cpu().item()) if box.shape[0] > 5 else -1
+                    cls_idx = int(pred_cls_ids[pred_idx]) if pred_idx < len(pred_cls_ids) else -1
                     xmin = float(box[0].detach().cpu().item())
                     ymin = float(box[1].detach().cpu().item())
                     xmax = float(box[2].detach().cpu().item())
@@ -144,8 +166,10 @@ def run_prediction_dump_csv(config, run_dir):
                             "obj": obj,
                             "cls_conf": cls_conf,
                             "score": score,
-                            "pred_class": _class_name(detector.names, cls_idx),
+                            "pred_class": pred_class_names[pred_idx] if pred_idx < len(pred_class_names) else _class_name(detector.names, cls_idx),
                             "pred_class_id": cls_idx,
+                            "max_iou": float(best_ious[pred_idx]) if pred_idx < len(best_ious) else 0.0,
+                            "tp": int(tp_flags[pred_idx]) if pred_idx < len(tp_flags) else 0,
                         }
                     )
             raw_prof.end(t_raw, batch_items)

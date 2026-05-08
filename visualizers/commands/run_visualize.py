@@ -214,6 +214,8 @@ def run_prediction_distribution(config: dict, run_dir: Path) -> dict:
         "obj",
         "cls_conf",
         "score",
+        "max_iou",
+        "tp",
     ]
     summary_rows = []
     for col in numeric_cols:

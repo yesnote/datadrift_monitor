@@ -40,5 +40,6 @@ output:
 
   prediction_dump:
     unit: bbox
+    iou_match_threshold: 0.45
     save_csv:
       enabled: true

@@ -134,7 +134,7 @@ def save_prediction_distribution_plots(out_dir: Path, *, df, enabled=None, image
     out_dir.mkdir(parents=True, exist_ok=True)
     outputs: dict[str, list[str] | str] = {}
 
-    hist_cols = ["obj", "cls_conf", "score", "w", "h", "area", "aspect_ratio"]
+    hist_cols = ["obj", "cls_conf", "score", "w", "h", "area", "aspect_ratio", "max_iou", "tp"]
     if _enabled(enabled, "histogram"):
         paths = []
         for col in hist_cols:
@@ -153,7 +153,7 @@ def save_prediction_distribution_plots(out_dir: Path, *, df, enabled=None, image
 
     if _enabled(enabled, "box_violin"):
         paths = []
-        for metric in ["score", "obj", "cls_conf"]:
+        for metric in ["score", "obj", "cls_conf", "max_iou"]:
             out = out_dir / "box_violin" / f"{metric}_by_class.html"
             if df.empty or metric not in df.columns or "pred_class" not in df.columns:
                 paths.append(_write_empty_plot(out, f"{metric} by class"))
@@ -181,7 +181,7 @@ def save_prediction_distribution_plots(out_dir: Path, *, df, enabled=None, image
         outputs["box_violin"] = paths
 
     if _enabled(enabled, "scatter"):
-        pairs = [("obj", "cls_conf"), ("area", "score"), ("aspect_ratio", "score")]
+        pairs = [("obj", "cls_conf"), ("area", "score"), ("aspect_ratio", "score"), ("score", "max_iou")]
         paths = []
         for x_col, y_col in pairs:
             out = out_dir / "scatter" / f"{x_col}_vs_{y_col}.html"
@@ -259,7 +259,7 @@ def save_prediction_distribution_plots(out_dir: Path, *, df, enabled=None, image
 
     if _enabled(enabled, "correlation"):
         out = out_dir / "correlation" / "numeric_correlation.html"
-        numeric_cols = ["xmin", "ymin", "xmax", "ymax", "cx", "cy", "w", "h", "area", "aspect_ratio", "obj", "cls_conf", "score"]
+        numeric_cols = ["xmin", "ymin", "xmax", "ymax", "cx", "cy", "w", "h", "area", "aspect_ratio", "obj", "cls_conf", "score", "max_iou", "tp"]
         cols = [c for c in numeric_cols if c in df.columns]
         if df.empty or len(cols) < 2:
             outputs["correlation"] = _write_empty_plot(out, "numeric correlation")
@@ -274,7 +274,7 @@ def save_prediction_distribution_plots(out_dir: Path, *, df, enabled=None, image
     if _enabled(enabled, "overview"):
         out = out_dir / "overview.html"
         fig = make_subplots(rows=2, cols=2, subplot_titles=("score", "obj", "cls_conf", "area"))
-        for idx, col in enumerate(["score", "obj", "cls_conf", "area"]):
+        for idx, col in enumerate(["score", "obj", "cls_conf", "max_iou"]):
             vals = _numeric_series(df, col)
             r = idx // 2 + 1
             c = idx % 2 + 1
