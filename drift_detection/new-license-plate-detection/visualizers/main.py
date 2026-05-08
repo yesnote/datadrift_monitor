@@ -32,9 +32,10 @@ def _load_config(path: Path) -> dict:
     return cfg or {}
 
 
-def _create_default_run_dir() -> Path:
+def _create_default_run_dir(task: str = "reference_pca") -> Path:
     ts = datetime.now().strftime("%m-%d-%Y_%H;%M")
-    out = PROJECT_ROOT / "runs" / f"{ts}_reference_pca"
+    task_tag = str(task or "reference_pca").strip().lower().replace(" ", "_")
+    out = PROJECT_ROOT / "runs" / f"{ts}_{task_tag}"
     out.mkdir(parents=True, exist_ok=True)
     return out.resolve()
 
@@ -67,7 +68,7 @@ def main() -> None:
         run_dir = _resolve_run_dir(args.run_dir)
         run_dir.mkdir(parents=True, exist_ok=True)
     else:
-        run_dir = _create_default_run_dir()
+        run_dir = _create_default_run_dir(config.get("task", "reference_pca"))
 
     _save_used_config(config_path, run_dir)
     summary = run_visualize(config, run_dir)

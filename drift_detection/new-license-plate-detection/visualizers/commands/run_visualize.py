@@ -6,10 +6,10 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
-from sklearn.decomposition import PCA
 
 from utils.loader import build_key_matrix, collect_per_image_samples
-from utils.plot import save_pca_html
+from utils.loader import collect_prediction_dump_data
+from utils.plot import save_pca_html, save_prediction_distribution_plots
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 REPO_ROOT = PROJECT_ROOT.parent
@@ -43,6 +43,12 @@ def _limit_samples_per_group(samples: list, max_num: int) -> list:
 
 
 def run_visualize(config: dict, run_dir: Path) -> dict:
+    task = str(config.get("task", "reference_pca")).strip().lower()
+    if task == "prediction_distribution":
+        return run_prediction_distribution(config, run_dir)
+    if task not in {"", "reference_pca"}:
+        raise ValueError(f"Unsupported visualizers task: {task}")
+
     run_dir = Path(run_dir).resolve()
     inp = config.get("input", {}) or {}
     out_cfg = config.get("output", {}) or {}
@@ -106,6 +112,8 @@ def run_visualize(config: dict, run_dir: Path) -> dict:
         points = None
 
         if n_samples >= max(2, dimension) and n_features >= dimension:
+            from sklearn.decomposition import PCA
+
             pca = PCA(n_components=dimension)
             points = pca.fit_transform(x)
             pc1 = points[:, 0]
@@ -167,4 +175,110 @@ def run_visualize(config: dict, run_dir: Path) -> dict:
         with open(no_data, "w", encoding="utf-8") as f:
             json.dump({"message": "No per-image CSV files were found."}, f, ensure_ascii=False, indent=2)
 
+    return summary
+
+
+def run_prediction_distribution(config: dict, run_dir: Path) -> dict:
+    run_dir = Path(run_dir).resolve()
+    inp = config.get("input", {}) or {}
+    plots_cfg = config.get("plots", {}) or {}
+    enabled = plots_cfg.get("enabled", None)
+    max_rows = int(inp.get("max_rows", 0) or 0)
+
+    df, source_summaries = collect_prediction_dump_data(
+        csv_paths=_normalize_list(inp.get("csv_paths", []), []),
+        run_roots=_normalize_list(inp.get("run_roots", []), []),
+        repo_root=REPO_ROOT,
+        max_rows=max_rows,
+    )
+
+    results_root = run_dir / "results"
+    plots_root = run_dir / "plots" / "prediction_distribution"
+    results_root.mkdir(parents=True, exist_ok=True)
+    plots_root.mkdir(parents=True, exist_ok=True)
+
+    merged_csv = results_root / "prediction_dump_merged.csv"
+    df.to_csv(merged_csv, index=False)
+
+    numeric_cols = [
+        "xmin",
+        "ymin",
+        "xmax",
+        "ymax",
+        "cx",
+        "cy",
+        "w",
+        "h",
+        "area",
+        "aspect_ratio",
+        "obj",
+        "cls_conf",
+        "score",
+    ]
+    summary_rows = []
+    for col in numeric_cols:
+        if col not in df.columns:
+            continue
+        vals = pd.to_numeric(df[col], errors="coerce").replace([np.inf, -np.inf], np.nan).dropna()
+        if vals.empty:
+            continue
+        summary_rows.append(
+            {
+                "column": col,
+                "count": int(vals.shape[0]),
+                "min": float(vals.min()),
+                "max": float(vals.max()),
+                "mean": float(vals.mean()),
+                "std": float(vals.std(ddof=0)),
+                "p05": float(vals.quantile(0.05)),
+                "p50": float(vals.quantile(0.50)),
+                "p95": float(vals.quantile(0.95)),
+            }
+        )
+    summary_stats_csv = results_root / "summary_stats.csv"
+    pd.DataFrame(summary_rows).to_csv(summary_stats_csv, index=False)
+
+    per_image_counts = (
+        df.groupby(["source_csv", "image_id"], dropna=False).size().reset_index(name="num_predictions")
+        if not df.empty and {"source_csv", "image_id"}.issubset(df.columns)
+        else pd.DataFrame(columns=["source_csv", "image_id", "num_predictions"])
+    )
+    extra_count_rows = []
+    for source in source_summaries:
+        total_images = int(source.get("total_images", 0) or 0)
+        if total_images <= 0:
+            continue
+        source_csv = source.get("csv_path", "")
+        observed = int((per_image_counts["source_csv"] == source_csv).sum()) if not per_image_counts.empty else 0
+        for i in range(max(0, total_images - observed)):
+            extra_count_rows.append(
+                {
+                    "source_csv": source_csv,
+                    "image_id": f"__no_prediction_{i}",
+                    "num_predictions": 0,
+                }
+            )
+    if extra_count_rows:
+        per_image_counts = pd.concat([per_image_counts, pd.DataFrame(extra_count_rows)], ignore_index=True)
+    per_image_counts_csv = results_root / "per_image_prediction_counts.csv"
+    per_image_counts.to_csv(per_image_counts_csv, index=False)
+
+    plot_outputs = save_prediction_distribution_plots(
+        plots_root,
+        df=df,
+        enabled=enabled,
+        image_counts=per_image_counts,
+    )
+
+    summary = {
+        "mode": "visualize",
+        "task": "prediction_distribution",
+        "num_rows": int(df.shape[0]),
+        "num_sources": int(len(source_summaries)),
+        "sources": source_summaries,
+        "merged_csv": str(merged_csv),
+        "summary_stats_csv": str(summary_stats_csv),
+        "per_image_counts_csv": str(per_image_counts_csv),
+        "plots": plot_outputs,
+    }
     return summary
