@@ -302,7 +302,7 @@ def parse_output_config(output_cfg):
     pre_nms = bool(pre_nms_cfg.get("enabled", False))
     pre_nms_ratio = as_float(pre_nms_cfg.get("ratio", 1.0), 1.0)
 
-    gt_cfg = active if uncertainty == "gt" else {}
+    gt_cfg = active if uncertainty in {"gt", "prediction_dump"} else {}
     score_cfg = save_csv if uncertainty == "score" else {}
     meta_detect_cfg = active if uncertainty == "meta_detect" else {}
     meta_detect_csv_cfg = save_csv if uncertainty == "meta_detect" else {}

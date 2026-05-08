@@ -131,6 +131,8 @@ PREDICTION_DUMP_REQUIRED_COLUMNS = {
     "score",
     "pred_class",
     "pred_class_id",
+    "max_iou",
+    "tp",
 }
 
 
@@ -160,6 +162,8 @@ def _read_prediction_dump_csv(csv_path: Path) -> pd.DataFrame:
         "cls_conf",
         "score",
         "pred_class_id",
+        "max_iou",
+        "tp",
     ]
     for col in numeric_cols:
         if col in df.columns:
