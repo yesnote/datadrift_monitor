@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import json
 from pathlib import Path
 
 import numpy as np
@@ -109,3 +110,116 @@ def build_key_matrix(samples: list[PerImageSample]) -> tuple[np.ndarray, list[di
     x = np.nan_to_num(x, nan=0.0, posinf=0.0, neginf=0.0)
     return x, meta
 
+
+PREDICTION_DUMP_REQUIRED_COLUMNS = {
+    "image_id",
+    "image_path",
+    "pred_idx",
+    "raw_pred_idx",
+    "xmin",
+    "ymin",
+    "xmax",
+    "ymax",
+    "cx",
+    "cy",
+    "w",
+    "h",
+    "area",
+    "aspect_ratio",
+    "obj",
+    "cls_conf",
+    "score",
+    "pred_class",
+    "pred_class_id",
+}
+
+
+def _read_prediction_dump_csv(csv_path: Path) -> pd.DataFrame:
+    df = pd.read_csv(csv_path)
+    missing = sorted(PREDICTION_DUMP_REQUIRED_COLUMNS.difference(df.columns))
+    if missing:
+        raise ValueError(f"prediction_dump.csv is missing required columns {missing}: {csv_path}")
+    df = df.copy()
+    df["source_csv"] = str(csv_path)
+    df["source_run"] = str(csv_path.parent)
+    numeric_cols = [
+        "image_id",
+        "pred_idx",
+        "raw_pred_idx",
+        "xmin",
+        "ymin",
+        "xmax",
+        "ymax",
+        "cx",
+        "cy",
+        "w",
+        "h",
+        "area",
+        "aspect_ratio",
+        "obj",
+        "cls_conf",
+        "score",
+        "pred_class_id",
+    ]
+    for col in numeric_cols:
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors="coerce")
+    return df.replace([np.inf, -np.inf], np.nan)
+
+
+def collect_prediction_dump_data(
+    csv_paths: list[str],
+    run_roots: list[str],
+    *,
+    repo_root: Path,
+    max_rows: int = 0,
+) -> tuple[pd.DataFrame, list[dict]]:
+    paths: list[Path] = []
+    for raw in csv_paths:
+        csv_path = _resolve_path(str(raw), repo_root)
+        paths.append(csv_path)
+    for raw in run_roots:
+        run_root = _resolve_path(str(raw), repo_root)
+        paths.append(run_root / "prediction_dump.csv")
+
+    unique_paths = []
+    seen = set()
+    for p in paths:
+        key = str(p.resolve())
+        if key in seen:
+            continue
+        seen.add(key)
+        unique_paths.append(p.resolve())
+
+    if not unique_paths:
+        raise ValueError("input.csv_paths or input.run_roots is required.")
+
+    frames = []
+    summaries = []
+    for csv_path in unique_paths:
+        if not csv_path.is_file():
+            raise FileNotFoundError(f"prediction dump CSV not found: {csv_path}")
+        df = _read_prediction_dump_csv(csv_path)
+        summary_path = csv_path.parent / "prediction_dump_summary.json"
+        run_summary = {}
+        if summary_path.is_file():
+            with open(summary_path, "r", encoding="utf-8") as f:
+                loaded = json.load(f)
+                if isinstance(loaded, dict):
+                    run_summary = loaded
+        frames.append(df)
+        summaries.append(
+            {
+                "csv_path": str(csv_path),
+                "run_root": str(csv_path.parent),
+                "num_rows": int(df.shape[0]),
+                "num_images_with_predictions": int(df["image_id"].nunique(dropna=True)) if "image_id" in df.columns else 0,
+                "total_images": int(run_summary.get("total_images", 0) or 0),
+                "total_predictions": int(run_summary.get("total_predictions", df.shape[0]) or 0),
+            }
+        )
+
+    merged = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
+    if max_rows > 0 and int(merged.shape[0]) > max_rows:
+        merged = merged.sample(n=max_rows, random_state=0).sort_index().reset_index(drop=True)
+    return merged, summaries

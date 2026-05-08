@@ -12,6 +12,7 @@ imbalanced-learn
 matplotlib
 seaborn
 scipy
+plotly
 requests
 joblib
 setuptools

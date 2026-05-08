@@ -1,0 +1,20 @@
+mode: visualize
+task: prediction_distribution
+
+input:
+  # Either provide run_roots containing prediction_dump.csv or direct csv_paths.
+  run_roots:
+    - object_detectors/runs/tp_classifiers/CHANGE_ME_prediction_dump
+  csv_paths: []
+  max_rows: 0
+
+plots:
+  enabled:
+    - overview
+    - histogram
+    - box_violin
+    - scatter
+    - heatmap
+    - rank_curve
+    - count_distribution
+    - correlation

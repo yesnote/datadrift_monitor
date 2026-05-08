@@ -9,6 +9,7 @@ from commands.predict import (
     run_layer_grad_csv,
     run_mc_dropout_csv,
     run_meta_detect_csv,
+    run_prediction_dump_csv,
     run_score_csv,
     run_tp_csv,
 )
@@ -36,6 +37,7 @@ def resolve_predict_runner(uncertainty: str, unit: str):
         "feature": run_feature_csv,
         "feature_grad": run_feature_grad_csv,
         "layer_grad": run_layer_grad_csv,
+        "prediction_dump": run_prediction_dump_csv,
     }
     fn = table.get(u)
     if fn is None:

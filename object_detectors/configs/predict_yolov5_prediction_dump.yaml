@@ -1,0 +1,44 @@
+mode: predict
+
+model:
+  type: yolov5
+  weights: object_detectors/models/yolo/weights/yolov5x.pt
+  img_size: 640
+  confidence_threshold: 0.25
+  iou_threshold: 0.45
+  device: cuda
+
+dataset:
+  used_dataset:
+    - coco
+  split:
+    - val
+
+  coco:
+    root: D:/SEONGJIN/datasets/COCO
+    train_split: train2017
+    val_split: val2017
+    test_split: test2017
+    image_dir: images
+    annotation_dir: annotations
+    train_annotation_file: instances_train2017.json
+    val_annotation_file: instances_val2017.json
+    test_annotation_file: instances_test2017.json
+
+  null_image:
+    num_samples: 200
+
+dataloader:
+  batch_size: 8
+  num_workers: 4
+  pin_memory: false
+  shuffle_train: false
+  shuffle_eval: false
+
+output:
+  uncertainty: prediction_dump
+
+  prediction_dump:
+    unit: bbox
+    save_csv:
+      enabled: true
