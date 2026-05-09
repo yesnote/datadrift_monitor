@@ -307,6 +307,124 @@ def _grouped_bar_svg(path: Path, labels: list[str], left: np.ndarray, right: np.
     return _write_svg(path, width, height, title, body)
 
 
+def _tp_fp_hist_panel(body: list[str], df, feature: str, x0: float, y0: float, w: float, h: float, title: str) -> None:
+    if df is None or df.empty or feature not in df.columns or "tp" not in df.columns:
+        body.append(f'<text x="{x0 + w / 2}" y="{y0 + h / 2}" text-anchor="middle" font-family="Arial" font-size="12" fill="#777">no data</text>')
+        return
+    raw = df[feature].to_numpy(dtype=np.float64, copy=False)
+    tp_raw = df["tp"].to_numpy(dtype=np.float64, copy=False)
+    finite = np.isfinite(raw) & np.isfinite(tp_raw)
+    if not np.any(finite):
+        body.append(f'<text x="{x0 + w / 2}" y="{y0 + h / 2}" text-anchor="middle" font-family="Arial" font-size="12" fill="#777">no data</text>')
+        return
+    vals = raw[finite]
+    tp = tp_raw[finite] == 1
+    lo = float(np.nanmin(vals))
+    hi = float(np.nanmax(vals))
+    if hi <= lo:
+        hi = lo + 1.0
+    bins = np.linspace(lo, hi, 36)
+    tp_counts, _ = np.histogram(vals[tp], bins=bins)
+    fp_counts, _ = np.histogram(vals[~tp], bins=bins)
+    max_count = max(float(tp_counts.max()) if tp_counts.size else 0.0, float(fp_counts.max()) if fp_counts.size else 0.0, 1.0)
+    bw = w / max(1, len(tp_counts))
+    body.append(f'<text x="{x0 + w / 2}" y="{y0 - 12}" text-anchor="middle" font-family="Arial" font-size="13" fill="#222">{escape(title)}</text>')
+    body.extend(_axes(x0, y0, w, h, feature, "count"))
+    for i, count in enumerate(tp_counts):
+        bh = h * (float(count) / max_count)
+        body.append(f'<rect x="{x0 + i * bw:.2f}" y="{y0 + h - bh:.2f}" width="{max(1, bw - 1):.2f}" height="{bh:.2f}" fill="#4C78A8" opacity="0.45"/>')
+    for i, count in enumerate(fp_counts):
+        bh = h * (float(count) / max_count)
+        body.append(f'<rect x="{x0 + i * bw:.2f}" y="{y0 + h - bh:.2f}" width="{max(1, bw - 1):.2f}" height="{bh:.2f}" fill="#E45756" opacity="0.45"/>')
+    body.append(f'<text x="{x0}" y="{y0 + h + 15}" font-family="Arial" font-size="9" fill="#555">{lo:.3g}</text>')
+    body.append(f'<text x="{x0 + w}" y="{y0 + h + 15}" text-anchor="end" font-family="Arial" font-size="9" fill="#555">{hi:.3g}</text>')
+
+
+def _tp_fp_class_box_panel(body: list[str], df, feature: str, x0: float, y0: float, w: float, h: float, title: str, max_classes: int = 8) -> None:
+    if df is None or df.empty or feature not in df.columns or "tp" not in df.columns or "pred_class" not in df.columns:
+        body.append(f'<text x="{x0 + w / 2}" y="{y0 + h / 2}" text-anchor="middle" font-family="Arial" font-size="12" fill="#777">no data</text>')
+        return
+    class_counts = df["pred_class"].astype(str).value_counts().head(max_classes)
+    groups = []
+    all_vals = []
+    for cls_name in class_counts.index.tolist():
+        cls_mask = df["pred_class"].astype(str) == cls_name
+        tp_vals = df.loc[cls_mask & (df["tp"] == 1), feature].to_numpy(dtype=np.float64, copy=False)
+        fp_vals = df.loc[cls_mask & (df["tp"] == 0), feature].to_numpy(dtype=np.float64, copy=False)
+        tp_vals = tp_vals[np.isfinite(tp_vals)]
+        fp_vals = fp_vals[np.isfinite(fp_vals)]
+        if tp_vals.size or fp_vals.size:
+            groups.append((str(cls_name), tp_vals, fp_vals))
+            if tp_vals.size:
+                all_vals.append(tp_vals)
+            if fp_vals.size:
+                all_vals.append(fp_vals)
+    if not groups or not all_vals:
+        body.append(f'<text x="{x0 + w / 2}" y="{y0 + h / 2}" text-anchor="middle" font-family="Arial" font-size="12" fill="#777">no data</text>')
+        return
+    vals = np.concatenate(all_vals)
+    lo = float(np.nanmin(vals))
+    hi = float(np.nanmax(vals))
+    if hi <= lo:
+        hi = lo + 1.0
+    body.append(f'<text x="{x0 + w / 2}" y="{y0 - 12}" text-anchor="middle" font-family="Arial" font-size="13" fill="#222">{escape(title)}</text>')
+    body.extend(_axes(x0, y0, w, h, "class", feature))
+    step = w / max(1, len(groups))
+
+    def draw_box(cx: float, vals: np.ndarray, color: str) -> None:
+        if vals.size == 0:
+            return
+        q1, med, q3 = np.quantile(vals, [0.25, 0.5, 0.75])
+        vmin, vmax = float(np.min(vals)), float(np.max(vals))
+        yq1, ymed, yq3, ylo, yhi = _scale([q1, med, q3, vmin, vmax], lo, hi, y0 + h, y0)
+        box_w = min(12, step * 0.18)
+        body.extend(
+            [
+                f'<line x1="{cx:.2f}" y1="{yhi:.2f}" x2="{cx:.2f}" y2="{ylo:.2f}" stroke="#333"/>',
+                f'<rect x="{cx - box_w / 2:.2f}" y="{min(yq1, yq3):.2f}" width="{box_w:.2f}" height="{abs(yq3 - yq1):.2f}" fill="{color}" opacity="0.5" stroke="#333"/>',
+                f'<line x1="{cx - box_w / 2:.2f}" y1="{ymed:.2f}" x2="{cx + box_w / 2:.2f}" y2="{ymed:.2f}" stroke="#111" stroke-width="1.5"/>',
+            ]
+        )
+
+    for i, (cls_name, tp_vals, fp_vals) in enumerate(groups):
+        center = x0 + step * (i + 0.5)
+        draw_box(center - step * 0.12, tp_vals, "#4C78A8")
+        draw_box(center + step * 0.12, fp_vals, "#E45756")
+        body.append(f'<text x="{center:.2f}" y="{y0 + h + 15}" text-anchor="end" font-family="Arial" font-size="8.5" fill="#333" transform="rotate(-55 {center:.2f} {y0 + h + 15})">{escape(cls_name[:14])}</text>')
+
+
+def _tp_fp_null_comparison_svg(path: Path, df) -> str:
+    width, height = 1720, 760
+    margin_x, margin_y = 80, 90
+    panel_w, panel_h = 330, 205
+    gap_x, gap_y = 78, 110
+    body = [
+        '<rect x="40" y="44" width="14" height="14" fill="#4C78A8" opacity="0.55"/>',
+        '<text x="60" y="56" font-family="Arial" font-size="12" fill="#333">TP</text>',
+        '<rect x="110" y="44" width="14" height="14" fill="#E45756" opacity="0.55"/>',
+        '<text x="130" y="56" font-family="Arial" font-size="12" fill="#333">FP</text>',
+    ]
+    panels = [
+        ("hist", "score", "score"),
+        ("hist", "obj", "obj"),
+        ("class", "cls_conf", "cls conf by class"),
+        ("hist", "area", "bbox area"),
+        ("hist", "score_null_abs_diff", "score null abs diff"),
+        ("hist", "obj_null_abs_diff", "obj null abs diff"),
+        ("class", "cls_uniform_kl", "cls uniform kl by class"),
+        ("hist", "bbox_anchor_log_area_ratio", "bbox anchor log area ratio"),
+    ]
+    for idx, (kind, feature, title) in enumerate(panels):
+        row, col = divmod(idx, 4)
+        x0 = margin_x + col * (panel_w + gap_x)
+        y0 = margin_y + row * (panel_h + gap_y)
+        if kind == "class":
+            _tp_fp_class_box_panel(body, df, feature, x0, y0, panel_w, panel_h, title)
+        else:
+            _tp_fp_hist_panel(body, df, feature, x0, y0, panel_w, panel_h, title)
+    return _write_svg(path, width, height, "TP/FP Raw vs Null Feature Comparison", body)
+
+
 def _tp_fp_hist_grid_svg(path: Path, df, features: list[str]) -> str:
     if df is None or df.empty or "tp" not in df.columns:
         return _empty_svg(path, "TP/FP feature histograms")
@@ -412,6 +530,7 @@ def save_uncertainty_analysis_plots(out_dir: Path, *, pred_df=None, features=Non
 
     if pred_df is not None and features is not None:
         outputs["tp_fp_histograms"] = _tp_fp_hist_grid_svg(out_dir / "tp_fp_feature_histograms.svg", pred_df, list(features))
+        outputs["tp_fp_null_comparison"] = _tp_fp_null_comparison_svg(out_dir / "tp_fp_null_comparison_grid.svg", pred_df)
 
     return outputs
 
