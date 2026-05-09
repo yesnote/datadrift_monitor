@@ -307,7 +307,26 @@ def _grouped_bar_svg(path: Path, labels: list[str], left: np.ndarray, right: np.
     return _write_svg(path, width, height, title, body)
 
 
-def _tp_fp_hist_panel(body: list[str], df, feature: str, x0: float, y0: float, w: float, h: float, title: str) -> None:
+def _metric_text(metric_lookup: dict, feature: str) -> str:
+    row = metric_lookup.get(feature, {})
+    if row is None or (hasattr(row, "empty") and row.empty) or (isinstance(row, dict) and not row):
+        return ""
+    high = row.get("auroc_fp_high", np.nan)
+    low = row.get("auroc_fp_low", np.nan)
+    ap_high = row.get("auprc_fp_high", np.nan)
+    ap_low = row.get("auprc_fp_low", np.nan)
+    auroc = np.nanmax([high, low])
+    ap = ap_low if np.isfinite(low) and np.isfinite(high) and low >= high else ap_high
+    if not np.isfinite(ap):
+        ap = np.nanmax([ap_high, ap_low])
+    if not np.isfinite(auroc):
+        return ""
+    if np.isfinite(ap):
+        return f"AUROC={auroc:.3f}, AP={ap:.3f}"
+    return f"AUROC={auroc:.3f}"
+
+
+def _tp_fp_hist_panel(body: list[str], df, feature: str, x0: float, y0: float, w: float, h: float, title: str, metric_lookup: dict | None = None) -> None:
     if df is None or df.empty or feature not in df.columns or "tp" not in df.columns:
         body.append(f'<text x="{x0 + w / 2}" y="{y0 + h / 2}" text-anchor="middle" font-family="Arial" font-size="12" fill="#777">no data</text>')
         return
@@ -329,6 +348,9 @@ def _tp_fp_hist_panel(body: list[str], df, feature: str, x0: float, y0: float, w
     max_count = max(float(tp_counts.max()) if tp_counts.size else 0.0, float(fp_counts.max()) if fp_counts.size else 0.0, 1.0)
     bw = w / max(1, len(tp_counts))
     body.append(f'<text x="{x0 + w / 2}" y="{y0 - 12}" text-anchor="middle" font-family="Arial" font-size="13" fill="#222">{escape(title)}</text>')
+    metric = _metric_text(metric_lookup or {}, feature)
+    if metric:
+        body.append(f'<text x="{x0 + w / 2}" y="{y0 + 8}" text-anchor="middle" font-family="Arial" font-size="10" fill="#555">{escape(metric)}</text>')
     body.extend(_axes(x0, y0, w, h, feature, "count"))
     for i, count in enumerate(tp_counts):
         bh = h * (float(count) / max_count)
@@ -340,7 +362,7 @@ def _tp_fp_hist_panel(body: list[str], df, feature: str, x0: float, y0: float, w
     body.append(f'<text x="{x0 + w}" y="{y0 + h + 15}" text-anchor="end" font-family="Arial" font-size="9" fill="#555">{hi:.3g}</text>')
 
 
-def _tp_fp_class_box_panel(body: list[str], df, feature: str, x0: float, y0: float, w: float, h: float, title: str, max_classes: int = 8) -> None:
+def _tp_fp_class_box_panel(body: list[str], df, feature: str, x0: float, y0: float, w: float, h: float, title: str, max_classes: int = 8, metric_lookup: dict | None = None) -> None:
     if df is None or df.empty or feature not in df.columns or "tp" not in df.columns or "pred_class" not in df.columns:
         body.append(f'<text x="{x0 + w / 2}" y="{y0 + h / 2}" text-anchor="middle" font-family="Arial" font-size="12" fill="#777">no data</text>')
         return
@@ -368,6 +390,9 @@ def _tp_fp_class_box_panel(body: list[str], df, feature: str, x0: float, y0: flo
     if hi <= lo:
         hi = lo + 1.0
     body.append(f'<text x="{x0 + w / 2}" y="{y0 - 12}" text-anchor="middle" font-family="Arial" font-size="13" fill="#222">{escape(title)}</text>')
+    metric = _metric_text(metric_lookup or {}, feature)
+    if metric:
+        body.append(f'<text x="{x0 + w / 2}" y="{y0 + 8}" text-anchor="middle" font-family="Arial" font-size="10" fill="#555">{escape(metric)}</text>')
     body.extend(_axes(x0, y0, w, h, "class", feature))
     step = w / max(1, len(groups))
 
@@ -393,7 +418,7 @@ def _tp_fp_class_box_panel(body: list[str], df, feature: str, x0: float, y0: flo
         body.append(f'<text x="{center:.2f}" y="{y0 + h + 15}" text-anchor="end" font-family="Arial" font-size="8.5" fill="#333" transform="rotate(-55 {center:.2f} {y0 + h + 15})">{escape(cls_name[:14])}</text>')
 
 
-def _tp_fp_null_comparison_svg(path: Path, df) -> str:
+def _tp_fp_null_comparison_svg(path: Path, df, metrics_df=None) -> str:
     width, height = 1720, 760
     margin_x, margin_y = 80, 90
     panel_w, panel_h = 330, 205
@@ -414,18 +439,21 @@ def _tp_fp_null_comparison_svg(path: Path, df) -> str:
         ("class", "cls_uniform_kl", "cls uniform kl by class"),
         ("hist", "bbox_anchor_log_area_ratio", "bbox anchor log area ratio"),
     ]
+    metric_lookup = {}
+    if metrics_df is not None and not metrics_df.empty and "feature" in metrics_df.columns:
+        metric_lookup = {str(row["feature"]): row for _, row in metrics_df.iterrows()}
     for idx, (kind, feature, title) in enumerate(panels):
         row, col = divmod(idx, 4)
         x0 = margin_x + col * (panel_w + gap_x)
         y0 = margin_y + row * (panel_h + gap_y)
         if kind == "class":
-            _tp_fp_class_box_panel(body, df, feature, x0, y0, panel_w, panel_h, title)
+            _tp_fp_class_box_panel(body, df, feature, x0, y0, panel_w, panel_h, title, metric_lookup=metric_lookup)
         else:
-            _tp_fp_hist_panel(body, df, feature, x0, y0, panel_w, panel_h, title)
+            _tp_fp_hist_panel(body, df, feature, x0, y0, panel_w, panel_h, title, metric_lookup=metric_lookup)
     return _write_svg(path, width, height, "TP/FP Raw vs Null Feature Comparison", body)
 
 
-def _tp_fp_hist_grid_svg(path: Path, df, features: list[str]) -> str:
+def _tp_fp_hist_grid_svg(path: Path, df, features: list[str], metrics_df=None) -> str:
     if df is None or df.empty or "tp" not in df.columns:
         return _empty_svg(path, "TP/FP feature histograms")
     usable = [f for f in features if f in df.columns]
@@ -441,6 +469,9 @@ def _tp_fp_hist_grid_svg(path: Path, df, features: list[str]) -> str:
         '<rect x="88" y="38" width="14" height="14" fill="#E45756" opacity="0.55"/>',
         '<text x="108" y="50" font-family="Arial" font-size="12" fill="#333">FP</text>',
     ]
+    metric_lookup = {}
+    if metrics_df is not None and not metrics_df.empty and "feature" in metrics_df.columns:
+        metric_lookup = {str(row["feature"]): row for _, row in metrics_df.iterrows()}
     tp_raw = df["tp"].to_numpy(dtype=np.float64, copy=False)
     for idx, feature in enumerate(usable):
         r, c = divmod(idx, cols)
@@ -463,6 +494,9 @@ def _tp_fp_hist_grid_svg(path: Path, df, features: list[str]) -> str:
         max_count = max(float(tp_counts.max()) if tp_counts.size else 0.0, float(fp_counts.max()) if fp_counts.size else 0.0, 1.0)
         bw = pw / max(1, len(tp_counts))
         body.append(f'<text x="{px0 + pw / 2}" y="{py0 - 10}" text-anchor="middle" font-family="Arial" font-size="12" fill="#222">{escape(feature)}</text>')
+        metric = _metric_text(metric_lookup, feature)
+        if metric:
+            body.append(f'<text x="{px0 + pw / 2}" y="{py0 + 8}" text-anchor="middle" font-family="Arial" font-size="9" fill="#555">{escape(metric)}</text>')
         body.extend(_axes(px0, py0, pw, ph, "", ""))
         for i, count in enumerate(tp_counts):
             bh = ph * (float(count) / max_count)
@@ -529,8 +563,8 @@ def save_uncertainty_analysis_plots(out_dir: Path, *, pred_df=None, features=Non
         )
 
     if pred_df is not None and features is not None:
-        outputs["tp_fp_histograms"] = _tp_fp_hist_grid_svg(out_dir / "tp_fp_feature_histograms.svg", pred_df, list(features))
-        outputs["tp_fp_null_comparison"] = _tp_fp_null_comparison_svg(out_dir / "tp_fp_null_comparison_grid.svg", pred_df)
+        outputs["tp_fp_histograms"] = _tp_fp_hist_grid_svg(out_dir / "tp_fp_feature_histograms.svg", pred_df, list(features), metrics_df=metrics_df)
+        outputs["tp_fp_null_comparison"] = _tp_fp_null_comparison_svg(out_dir / "tp_fp_null_comparison_grid.svg", pred_df, metrics_df=metrics_df)
 
     return outputs
 
