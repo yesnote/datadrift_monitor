@@ -282,6 +282,8 @@ def run_prediction_distribution(config: dict, run_dir: Path) -> dict:
     )
     analysis_plots = save_uncertainty_analysis_plots(
         plots_root / "uncertainty_analysis",
+        pred_df=df,
+        features=analysis_features,
         tp_fp_df=pd.read_csv(tp_fp_csv) if tp_fp_csv.is_file() else pd.DataFrame(),
         metrics_df=pd.read_csv(detection_metrics_csv) if detection_metrics_csv.is_file() else pd.DataFrame(),
         high_score_df=pd.read_csv(high_score_fp_csv) if high_score_fp_csv.is_file() else pd.DataFrame(),
@@ -470,8 +472,10 @@ def _feature_metric_rows(df: pd.DataFrame, features: list[str]) -> tuple[list[di
         )
         corr_iou = np.nan
         if max_iou is not None:
-            xi, iou = _clean_xy(values, max_iou)
-            corr_iou = _pearson(xi, iou.astype(np.float64))
+            xi = pd.to_numeric(values, errors="coerce").to_numpy(dtype=np.float64, copy=False)
+            iou = pd.to_numeric(max_iou, errors="coerce").to_numpy(dtype=np.float64, copy=False)
+            mask = np.isfinite(xi) & np.isfinite(iou)
+            corr_iou = _pearson(xi[mask], iou[mask])
         ops = _operating_points(x, y_fp)
         metric_rows.append(
             {

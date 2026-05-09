@@ -259,6 +259,8 @@ def _bar_svg(path: Path, labels: list[str], values: np.ndarray, title: str, y_la
         bh = abs(base - y)
         x = x0 + i * step + step * 0.15
         body.append(f'<rect x="{x:.2f}" y="{top:.2f}" width="{step * 0.7:.2f}" height="{bh:.2f}" fill="{color}" opacity="0.9"/>')
+        label_y = top - 6 if top > y0 + 18 else top + 14
+        body.append(f'<text x="{x + step * 0.35:.2f}" y="{label_y:.2f}" text-anchor="middle" font-family="Arial" font-size="10" fill="#222">{val:.3g}</text>')
         body.append(f'<text x="{x + step * 0.35:.2f}" y="{y0 + h + 18}" text-anchor="end" font-family="Arial" font-size="10" fill="#333" transform="rotate(-60 {x + step * 0.35:.2f} {y0 + h + 18})">{escape(label)}</text>')
     body.append(f'<text x="{x0 - 8}" y="{y0 + 5}" text-anchor="end" font-family="Arial" font-size="11" fill="#555">{hi:.4g}</text>')
     body.append(f'<text x="{x0 - 8}" y="{y0 + h}" text-anchor="end" font-family="Arial" font-size="11" fill="#555">{lo:.4g}</text>')
@@ -293,6 +295,8 @@ def _grouped_bar_svg(path: Path, labels: list[str], left: np.ndarray, right: np.
             bh = abs(base - y)
             x = group_x + step * (0.18 + 0.32 * j)
             body.append(f'<rect x="{x:.2f}" y="{top:.2f}" width="{step * 0.26:.2f}" height="{bh:.2f}" fill="{color}" opacity="0.9"/>')
+            label_y = top - 5 if top > y0 + 16 else top + 13
+            body.append(f'<text x="{x + step * 0.13:.2f}" y="{label_y:.2f}" text-anchor="middle" font-family="Arial" font-size="9" fill="#222">{val:.3g}</text>')
         body.append(f'<text x="{group_x + step * 0.5:.2f}" y="{y0 + h + 18}" text-anchor="end" font-family="Arial" font-size="10" fill="#333" transform="rotate(-60 {group_x + step * 0.5:.2f} {y0 + h + 18})">{escape(label)}</text>')
     body.extend(
         [
@@ -303,7 +307,57 @@ def _grouped_bar_svg(path: Path, labels: list[str], left: np.ndarray, right: np.
     return _write_svg(path, width, height, title, body)
 
 
-def save_uncertainty_analysis_plots(out_dir: Path, *, tp_fp_df, metrics_df, high_score_df) -> dict:
+def _tp_fp_hist_grid_svg(path: Path, df, features: list[str]) -> str:
+    if df is None or df.empty or "tp" not in df.columns:
+        return _empty_svg(path, "TP/FP feature histograms")
+    usable = [f for f in features if f in df.columns]
+    if not usable:
+        return _empty_svg(path, "TP/FP feature histograms")
+    cols = 3
+    rows = int(np.ceil(len(usable) / cols))
+    panel_w, panel_h = 360, 245
+    width, height = cols * panel_w + 40, rows * panel_h + 65
+    body = [
+        '<rect x="28" y="38" width="14" height="14" fill="#4C78A8" opacity="0.55"/>',
+        '<text x="48" y="50" font-family="Arial" font-size="12" fill="#333">TP</text>',
+        '<rect x="88" y="38" width="14" height="14" fill="#E45756" opacity="0.55"/>',
+        '<text x="108" y="50" font-family="Arial" font-size="12" fill="#333">FP</text>',
+    ]
+    tp_raw = df["tp"].to_numpy(dtype=np.float64, copy=False)
+    for idx, feature in enumerate(usable):
+        r, c = divmod(idx, cols)
+        px0 = 62 + c * panel_w
+        py0 = 82 + r * panel_h
+        pw, ph = 260, 135
+        raw = df[feature].to_numpy(dtype=np.float64, copy=False)
+        finite = np.isfinite(raw) & np.isfinite(tp_raw)
+        if not np.any(finite):
+            continue
+        vals = raw[finite]
+        tp = tp_raw[finite] == 1
+        lo = float(np.nanmin(vals))
+        hi = float(np.nanmax(vals))
+        if hi <= lo:
+            hi = lo + 1.0
+        bins = np.linspace(lo, hi, 31)
+        tp_counts, _ = np.histogram(vals[tp], bins=bins)
+        fp_counts, _ = np.histogram(vals[~tp], bins=bins)
+        max_count = max(float(tp_counts.max()) if tp_counts.size else 0.0, float(fp_counts.max()) if fp_counts.size else 0.0, 1.0)
+        bw = pw / max(1, len(tp_counts))
+        body.append(f'<text x="{px0 + pw / 2}" y="{py0 - 10}" text-anchor="middle" font-family="Arial" font-size="12" fill="#222">{escape(feature)}</text>')
+        body.extend(_axes(px0, py0, pw, ph, "", ""))
+        for i, count in enumerate(tp_counts):
+            bh = ph * (float(count) / max_count)
+            body.append(f'<rect x="{px0 + i * bw:.2f}" y="{py0 + ph - bh:.2f}" width="{max(1, bw - 1):.2f}" height="{bh:.2f}" fill="#4C78A8" opacity="0.45"/>')
+        for i, count in enumerate(fp_counts):
+            bh = ph * (float(count) / max_count)
+            body.append(f'<rect x="{px0 + i * bw:.2f}" y="{py0 + ph - bh:.2f}" width="{max(1, bw - 1):.2f}" height="{bh:.2f}" fill="#E45756" opacity="0.45"/>')
+        body.append(f'<text x="{px0}" y="{py0 + ph + 14}" font-family="Arial" font-size="9" fill="#555">{lo:.3g}</text>')
+        body.append(f'<text x="{px0 + pw}" y="{py0 + ph + 14}" text-anchor="end" font-family="Arial" font-size="9" fill="#555">{hi:.3g}</text>')
+    return _write_svg(path, width, height, "TP/FP feature histograms", body)
+
+
+def save_uncertainty_analysis_plots(out_dir: Path, *, pred_df=None, features=None, tp_fp_df, metrics_df, high_score_df) -> dict:
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     outputs = {}
@@ -355,6 +409,9 @@ def save_uncertainty_analysis_plots(out_dir: Path, *, tp_fp_df, metrics_df, high
             y_min=0.0,
             y_max=1.0,
         )
+
+    if pred_df is not None and features is not None:
+        outputs["tp_fp_histograms"] = _tp_fp_hist_grid_svg(out_dir / "tp_fp_feature_histograms.svg", pred_df, list(features))
 
     return outputs
 
