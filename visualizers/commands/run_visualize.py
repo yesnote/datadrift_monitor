@@ -9,7 +9,7 @@ import pandas as pd
 
 from utils.loader import build_key_matrix, collect_per_image_samples
 from utils.loader import collect_prediction_dump_data
-from utils.plot import save_pca_html, save_prediction_distribution_plots
+from utils.plot import save_pca_html, save_prediction_distribution_plots, save_uncertainty_analysis_plots
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 REPO_ROOT = PROJECT_ROOT.parent
@@ -280,6 +280,12 @@ def run_prediction_distribution(config: dict, run_dir: Path) -> dict:
         class_metrics_csv=class_metrics_csv,
         high_score_fp_csv=high_score_fp_csv,
     )
+    analysis_plots = save_uncertainty_analysis_plots(
+        plots_root / "uncertainty_analysis",
+        tp_fp_df=pd.read_csv(tp_fp_csv) if tp_fp_csv.is_file() else pd.DataFrame(),
+        metrics_df=pd.read_csv(detection_metrics_csv) if detection_metrics_csv.is_file() else pd.DataFrame(),
+        high_score_df=pd.read_csv(high_score_fp_csv) if high_score_fp_csv.is_file() else pd.DataFrame(),
+    )
 
     per_image_counts = (
         df.groupby(["source_csv", "image_id"], dropna=False).size().reset_index(name="num_predictions")
@@ -327,6 +333,7 @@ def run_prediction_distribution(config: dict, run_dir: Path) -> dict:
         "high_score_fp_analysis_csv": str(high_score_fp_csv),
         "per_image_counts_csv": str(per_image_counts_csv),
         "plots": plot_outputs,
+        "analysis_plots": analysis_plots,
     }
     return summary
 

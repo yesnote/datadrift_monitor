@@ -236,6 +236,129 @@ def _corr_svg(path: Path, corr, cols: list[str]) -> str:
     return _write_svg(path, width, height, "numeric correlation", body)
 
 
+def _bar_svg(path: Path, labels: list[str], values: np.ndarray, title: str, y_label: str, color: str = "#4C78A8", y_min: float | None = None, y_max: float | None = None) -> str:
+    vals = np.asarray(values, dtype=np.float64)
+    mask = np.isfinite(vals)
+    labels = [label for label, keep in zip(labels, mask) if keep]
+    vals = vals[mask]
+    if vals.size == 0:
+        return _empty_svg(path, title)
+    width = max(900, min(1900, 72 * len(labels) + 160))
+    height = 620
+    x0, y0, w, h = 85, 60, width - 140, 420
+    lo = float(np.nanmin(vals)) if y_min is None else float(y_min)
+    hi = float(np.nanmax(vals)) if y_max is None else float(y_max)
+    if hi <= lo:
+        hi = lo + 1.0
+    body = _axes(x0, y0, w, h, "feature", y_label)
+    step = w / max(1, len(vals))
+    for i, (label, val) in enumerate(zip(labels, vals)):
+        y = float(_scale([val], lo, hi, y0 + h, y0)[0])
+        base = float(_scale([max(0.0, lo)], lo, hi, y0 + h, y0)[0])
+        top = min(y, base)
+        bh = abs(base - y)
+        x = x0 + i * step + step * 0.15
+        body.append(f'<rect x="{x:.2f}" y="{top:.2f}" width="{step * 0.7:.2f}" height="{bh:.2f}" fill="{color}" opacity="0.9"/>')
+        body.append(f'<text x="{x + step * 0.35:.2f}" y="{y0 + h + 18}" text-anchor="end" font-family="Arial" font-size="10" fill="#333" transform="rotate(-60 {x + step * 0.35:.2f} {y0 + h + 18})">{escape(label)}</text>')
+    body.append(f'<text x="{x0 - 8}" y="{y0 + 5}" text-anchor="end" font-family="Arial" font-size="11" fill="#555">{hi:.4g}</text>')
+    body.append(f'<text x="{x0 - 8}" y="{y0 + h}" text-anchor="end" font-family="Arial" font-size="11" fill="#555">{lo:.4g}</text>')
+    return _write_svg(path, width, height, title, body)
+
+
+def _grouped_bar_svg(path: Path, labels: list[str], left: np.ndarray, right: np.ndarray, title: str, y_label: str, left_name: str, right_name: str) -> str:
+    left = np.asarray(left, dtype=np.float64)
+    right = np.asarray(right, dtype=np.float64)
+    mask = np.isfinite(left) | np.isfinite(right)
+    labels = [label for label, keep in zip(labels, mask) if keep]
+    left = left[mask]
+    right = right[mask]
+    if len(labels) == 0:
+        return _empty_svg(path, title)
+    vals = np.concatenate([left[np.isfinite(left)], right[np.isfinite(right)]])
+    width = max(900, min(1900, 80 * len(labels) + 180))
+    height = 650
+    x0, y0, w, h = 85, 70, width - 150, 420
+    lo = min(0.0, float(np.nanmin(vals))) if vals.size else 0.0
+    hi = max(1.0, float(np.nanmax(vals))) if vals.size else 1.0
+    body = _axes(x0, y0, w, h, "feature", y_label)
+    step = w / max(1, len(labels))
+    base = float(_scale([0.0], lo, hi, y0 + h, y0)[0])
+    for i, label in enumerate(labels):
+        group_x = x0 + i * step
+        for j, (val, color) in enumerate([(left[i], "#4C78A8"), (right[i], "#E45756")]):
+            if not np.isfinite(val):
+                continue
+            y = float(_scale([val], lo, hi, y0 + h, y0)[0])
+            top = min(y, base)
+            bh = abs(base - y)
+            x = group_x + step * (0.18 + 0.32 * j)
+            body.append(f'<rect x="{x:.2f}" y="{top:.2f}" width="{step * 0.26:.2f}" height="{bh:.2f}" fill="{color}" opacity="0.9"/>')
+        body.append(f'<text x="{group_x + step * 0.5:.2f}" y="{y0 + h + 18}" text-anchor="end" font-family="Arial" font-size="10" fill="#333" transform="rotate(-60 {group_x + step * 0.5:.2f} {y0 + h + 18})">{escape(label)}</text>')
+    body.extend(
+        [
+            f'<rect x="{x0 + 15}" y="{height - 60}" width="14" height="14" fill="#4C78A8"/><text x="{x0 + 36}" y="{height - 48}" font-family="Arial" font-size="12">{escape(left_name)}</text>',
+            f'<rect x="{x0 + 115}" y="{height - 60}" width="14" height="14" fill="#E45756"/><text x="{x0 + 136}" y="{height - 48}" font-family="Arial" font-size="12">{escape(right_name)}</text>',
+        ]
+    )
+    return _write_svg(path, width, height, title, body)
+
+
+def save_uncertainty_analysis_plots(out_dir: Path, *, tp_fp_df, metrics_df, high_score_df) -> dict:
+    out_dir = Path(out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    outputs = {}
+
+    if metrics_df is not None and not metrics_df.empty and "feature" in metrics_df.columns:
+        labels = metrics_df["feature"].astype(str).tolist()
+        if {"auroc_fp_high", "auroc_fp_low"}.issubset(metrics_df.columns):
+            high = metrics_df["auroc_fp_high"].to_numpy(dtype=np.float64, copy=False)
+            low = metrics_df["auroc_fp_low"].to_numpy(dtype=np.float64, copy=False)
+            best = np.nanmax(np.vstack([high, low]), axis=0)
+            outputs["best_fp_auroc"] = _bar_svg(out_dir / "best_fp_auroc.svg", labels, best, "Best FP AUROC by feature", "AUROC", y_min=0.0, y_max=1.0)
+            outputs["fp_auroc_direction"] = _grouped_bar_svg(out_dir / "fp_auroc_direction.svg", labels, high, low, "FP AUROC by direction", "AUROC", "high=FP", "low=FP")
+        if "corr_with_max_iou" in metrics_df.columns:
+            outputs["corr_with_max_iou"] = _bar_svg(out_dir / "corr_with_max_iou.svg", labels, metrics_df["corr_with_max_iou"].to_numpy(dtype=np.float64, copy=False), "Correlation with max IoU", "Pearson r", y_min=-1.0, y_max=1.0, color="#59A14F")
+    else:
+        outputs["best_fp_auroc"] = _empty_svg(out_dir / "best_fp_auroc.svg", "Best FP AUROC by feature")
+
+    if tp_fp_df is not None and not tp_fp_df.empty and {"feature", "tp_mean", "fp_mean"}.issubset(tp_fp_df.columns):
+        labels = tp_fp_df["feature"].astype(str).tolist()
+        outputs["tp_fp_mean"] = _grouped_bar_svg(
+            out_dir / "tp_fp_mean.svg",
+            labels,
+            tp_fp_df["tp_mean"].to_numpy(dtype=np.float64, copy=False),
+            tp_fp_df["fp_mean"].to_numpy(dtype=np.float64, copy=False),
+            "TP vs FP feature means",
+            "mean value",
+            "TP",
+            "FP",
+        )
+        if "cohen_d_fp_minus_tp" in tp_fp_df.columns:
+            outputs["effect_size"] = _bar_svg(
+                out_dir / "effect_size_fp_minus_tp.svg",
+                labels,
+                tp_fp_df["cohen_d_fp_minus_tp"].to_numpy(dtype=np.float64, copy=False),
+                "Effect size: FP minus TP",
+                "Cohen d",
+                color="#F28E2B",
+            )
+
+    if high_score_df is not None and not high_score_df.empty and {"score_threshold", "fp_rate"}.issubset(high_score_df.columns):
+        labels = [f">={v:g}" for v in high_score_df["score_threshold"].to_numpy(dtype=np.float64, copy=False)]
+        outputs["high_score_fp_rate"] = _bar_svg(
+            out_dir / "high_score_fp_rate.svg",
+            labels,
+            high_score_df["fp_rate"].to_numpy(dtype=np.float64, copy=False),
+            "FP rate among high-score predictions",
+            "FP rate",
+            color="#E45756",
+            y_min=0.0,
+            y_max=1.0,
+        )
+
+    return outputs
+
+
 def save_prediction_distribution_plots(out_dir: Path, *, df, enabled=None, image_counts=None) -> dict:
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
