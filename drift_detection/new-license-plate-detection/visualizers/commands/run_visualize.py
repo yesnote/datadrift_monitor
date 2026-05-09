@@ -230,6 +230,21 @@ def run_prediction_distribution(config: dict, run_dir: Path) -> dict:
         "max_iou",
         "tp",
     ]
+    analysis_features = [
+        "score",
+        "obj",
+        "cls_conf",
+        "obj_null_abs_diff",
+        "cls_null_abs_diff",
+        "score_null_abs_diff",
+        "cls_entropy_norm",
+        "cls_uniform_kl",
+        "bbox_anchor_center_l2",
+        "bbox_anchor_log_w_ratio",
+        "bbox_anchor_log_h_ratio",
+        "bbox_anchor_log_area_ratio",
+        "bbox_anchor_aspect_ratio_diff",
+    ]
     summary_rows = []
     for col in numeric_cols:
         if col not in df.columns:
@@ -252,6 +267,19 @@ def run_prediction_distribution(config: dict, run_dir: Path) -> dict:
         )
     summary_stats_csv = results_root / "summary_stats.csv"
     pd.DataFrame(summary_rows).to_csv(summary_stats_csv, index=False)
+
+    tp_fp_csv = results_root / "tp_fp_feature_comparison.csv"
+    detection_metrics_csv = results_root / "fp_detection_metrics.csv"
+    class_metrics_csv = results_root / "classwise_fp_detection_metrics.csv"
+    high_score_fp_csv = results_root / "high_score_fp_analysis.csv"
+    _save_uncertainty_analysis_tables(
+        df=df,
+        features=analysis_features,
+        tp_fp_csv=tp_fp_csv,
+        detection_metrics_csv=detection_metrics_csv,
+        class_metrics_csv=class_metrics_csv,
+        high_score_fp_csv=high_score_fp_csv,
+    )
 
     per_image_counts = (
         df.groupby(["source_csv", "image_id"], dropna=False).size().reset_index(name="num_predictions")
@@ -293,7 +321,214 @@ def run_prediction_distribution(config: dict, run_dir: Path) -> dict:
         "sources": source_summaries,
         "merged_csv": str(merged_csv),
         "summary_stats_csv": str(summary_stats_csv),
+        "tp_fp_feature_comparison_csv": str(tp_fp_csv),
+        "fp_detection_metrics_csv": str(detection_metrics_csv),
+        "classwise_fp_detection_metrics_csv": str(class_metrics_csv),
+        "high_score_fp_analysis_csv": str(high_score_fp_csv),
         "per_image_counts_csv": str(per_image_counts_csv),
         "plots": plot_outputs,
     }
     return summary
+
+
+def _clean_xy(feature_values, labels):
+    x = pd.to_numeric(feature_values, errors="coerce").to_numpy(dtype=np.float64, copy=False)
+    y = pd.to_numeric(labels, errors="coerce").to_numpy(dtype=np.float64, copy=False)
+    mask = np.isfinite(x) & np.isfinite(y)
+    return x[mask], y[mask].astype(np.int64)
+
+
+def _rankdata_average(x: np.ndarray) -> np.ndarray:
+    order = np.argsort(x, kind="mergesort")
+    ranks = np.empty(x.shape[0], dtype=np.float64)
+    i = 0
+    while i < x.shape[0]:
+        j = i + 1
+        while j < x.shape[0] and x[order[j]] == x[order[i]]:
+            j += 1
+        avg_rank = 0.5 * (i + 1 + j)
+        ranks[order[i:j]] = avg_rank
+        i = j
+    return ranks
+
+
+def _auroc(scores: np.ndarray, labels: np.ndarray) -> float:
+    pos = labels == 1
+    neg = labels == 0
+    n_pos = int(pos.sum())
+    n_neg = int(neg.sum())
+    if n_pos == 0 or n_neg == 0:
+        return float("nan")
+    ranks = _rankdata_average(scores)
+    rank_sum_pos = float(ranks[pos].sum())
+    return (rank_sum_pos - n_pos * (n_pos + 1) / 2.0) / float(n_pos * n_neg)
+
+
+def _average_precision(scores: np.ndarray, labels: np.ndarray) -> float:
+    pos_total = int((labels == 1).sum())
+    if pos_total == 0:
+        return float("nan")
+    order = np.argsort(-scores, kind="mergesort")
+    y = labels[order]
+    tp_cum = np.cumsum(y == 1)
+    fp_cum = np.cumsum(y == 0)
+    precision = tp_cum / np.maximum(tp_cum + fp_cum, 1)
+    recall = tp_cum / float(pos_total)
+    prev_recall = np.concatenate(([0.0], recall[:-1]))
+    return float(np.sum((recall - prev_recall) * precision))
+
+
+def _pearson(x: np.ndarray, y: np.ndarray) -> float:
+    if x.shape[0] < 2:
+        return float("nan")
+    x_std = float(np.std(x))
+    y_std = float(np.std(y))
+    if x_std <= 0 or y_std <= 0:
+        return float("nan")
+    return float(np.corrcoef(x, y)[0, 1])
+
+
+def _effect_size(a: np.ndarray, b: np.ndarray) -> float:
+    if a.size == 0 or b.size == 0:
+        return float("nan")
+    var_a = float(np.var(a))
+    var_b = float(np.var(b))
+    pooled = ((var_a + var_b) / 2.0) ** 0.5
+    if pooled <= 0:
+        return float("nan")
+    return (float(np.mean(a)) - float(np.mean(b))) / pooled
+
+
+def _operating_points(scores: np.ndarray, labels: np.ndarray) -> dict:
+    pos_total = int((labels == 1).sum())
+    neg_total = int((labels == 0).sum())
+    out = {
+        "threshold_at_tpr95": np.nan,
+        "fpr_at_tpr95": np.nan,
+        "threshold_at_fpr05": np.nan,
+        "tpr_at_fpr05": np.nan,
+    }
+    if pos_total == 0 or neg_total == 0:
+        return out
+    order = np.argsort(-scores, kind="mergesort")
+    s = scores[order]
+    y = labels[order]
+    tp = np.cumsum(y == 1)
+    fp = np.cumsum(y == 0)
+    tpr = tp / float(pos_total)
+    fpr = fp / float(neg_total)
+    idx = np.where(tpr >= 0.95)[0]
+    if idx.size:
+        i = int(idx[0])
+        out["threshold_at_tpr95"] = float(s[i])
+        out["fpr_at_tpr95"] = float(fpr[i])
+    idx = np.where(fpr <= 0.05)[0]
+    if idx.size:
+        i = int(idx[-1])
+        out["threshold_at_fpr05"] = float(s[i])
+        out["tpr_at_fpr05"] = float(tpr[i])
+    return out
+
+
+def _feature_metric_rows(df: pd.DataFrame, features: list[str]) -> tuple[list[dict], list[dict]]:
+    if df.empty or "tp" not in df.columns:
+        return [], []
+    fp_label = 1 - pd.to_numeric(df["tp"], errors="coerce")
+    tp_fp_rows = []
+    metric_rows = []
+    max_iou = pd.to_numeric(df["max_iou"], errors="coerce") if "max_iou" in df.columns else None
+
+    for feature in features:
+        if feature not in df.columns:
+            continue
+        values = pd.to_numeric(df[feature], errors="coerce")
+        x, y_fp = _clean_xy(values, fp_label)
+        if x.size == 0:
+            continue
+        tp_vals = x[y_fp == 0]
+        fp_vals = x[y_fp == 1]
+        tp_fp_rows.append(
+            {
+                "feature": feature,
+                "n": int(x.size),
+                "tp_n": int(tp_vals.size),
+                "fp_n": int(fp_vals.size),
+                "tp_mean": float(np.mean(tp_vals)) if tp_vals.size else np.nan,
+                "fp_mean": float(np.mean(fp_vals)) if fp_vals.size else np.nan,
+                "fp_minus_tp_mean": (float(np.mean(fp_vals)) - float(np.mean(tp_vals))) if fp_vals.size and tp_vals.size else np.nan,
+                "tp_median": float(np.median(tp_vals)) if tp_vals.size else np.nan,
+                "fp_median": float(np.median(fp_vals)) if fp_vals.size else np.nan,
+                "cohen_d_fp_minus_tp": _effect_size(fp_vals, tp_vals),
+            }
+        )
+        corr_iou = np.nan
+        if max_iou is not None:
+            xi, iou = _clean_xy(values, max_iou)
+            corr_iou = _pearson(xi, iou.astype(np.float64))
+        ops = _operating_points(x, y_fp)
+        metric_rows.append(
+            {
+                "feature": feature,
+                "n": int(x.size),
+                "fp_positive_rate": float(np.mean(y_fp)) if y_fp.size else np.nan,
+                "auroc_fp_high": _auroc(x, y_fp),
+                "auprc_fp_high": _average_precision(x, y_fp),
+                "auroc_fp_low": _auroc(-x, y_fp),
+                "auprc_fp_low": _average_precision(-x, y_fp),
+                "corr_with_max_iou": corr_iou,
+                **ops,
+            }
+        )
+    return tp_fp_rows, metric_rows
+
+
+def _save_uncertainty_analysis_tables(
+    *,
+    df: pd.DataFrame,
+    features: list[str],
+    tp_fp_csv: Path,
+    detection_metrics_csv: Path,
+    class_metrics_csv: Path,
+    high_score_fp_csv: Path,
+) -> None:
+    tp_fp_rows, metric_rows = _feature_metric_rows(df, features)
+    pd.DataFrame(tp_fp_rows).to_csv(tp_fp_csv, index=False)
+    pd.DataFrame(metric_rows).to_csv(detection_metrics_csv, index=False)
+
+    class_rows = []
+    if not df.empty and "pred_class" in df.columns and "tp" in df.columns:
+        for cls_name, group in df.groupby(df["pred_class"].astype(str), dropna=False):
+            if int(group.shape[0]) < 20:
+                continue
+            _tp_fp, metrics = _feature_metric_rows(group, features)
+            for row in metrics:
+                row = dict(row)
+                row["pred_class"] = cls_name
+                row["class_n"] = int(group.shape[0])
+                class_rows.append(row)
+    pd.DataFrame(class_rows).to_csv(class_metrics_csv, index=False)
+
+    high_score_rows = []
+    if not df.empty and {"score", "tp"}.issubset(df.columns):
+        score = pd.to_numeric(df["score"], errors="coerce")
+        tp = pd.to_numeric(df["tp"], errors="coerce")
+        for threshold in [0.25, 0.5, 0.75, 0.9]:
+            subset = df[(score >= threshold) & np.isfinite(score) & np.isfinite(tp)]
+            if subset.empty:
+                continue
+            fp_rate = float((pd.to_numeric(subset["tp"], errors="coerce") == 0).mean())
+            row = {
+                "score_threshold": threshold,
+                "n": int(subset.shape[0]),
+                "fp_rate": fp_rate,
+            }
+            for feature in features:
+                if feature not in subset.columns:
+                    continue
+                vals = pd.to_numeric(subset[feature], errors="coerce").replace([np.inf, -np.inf], np.nan).dropna()
+                if vals.empty:
+                    continue
+                row[f"{feature}_mean"] = float(vals.mean())
+                row[f"{feature}_median"] = float(vals.median())
+            high_score_rows.append(row)
+    pd.DataFrame(high_score_rows).to_csv(high_score_fp_csv, index=False)
