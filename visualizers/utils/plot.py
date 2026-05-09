@@ -249,6 +249,14 @@ def save_prediction_distribution_plots(out_dir: Path, *, df, enabled=None, image
         "h",
         "area",
         "aspect_ratio",
+        "anchor_w",
+        "anchor_h",
+        "anchor_area",
+        "bbox_anchor_center_l2",
+        "bbox_anchor_log_w_ratio",
+        "bbox_anchor_log_h_ratio",
+        "bbox_anchor_log_area_ratio",
+        "bbox_anchor_aspect_ratio_diff",
         "obj_null_abs_diff",
         "cls_null_abs_diff",
         "score_null_abs_diff",
@@ -282,6 +290,8 @@ def save_prediction_distribution_plots(out_dir: Path, *, df, enabled=None, image
             ("obj", "cls_conf"),
             ("area", "score"),
             ("aspect_ratio", "score"),
+            ("bbox_anchor_center_l2", "score"),
+            ("bbox_anchor_log_area_ratio", "score"),
             ("score", "max_iou"),
             ("score_null_abs_diff", "max_iou"),
             ("cls_entropy_norm", "score"),
@@ -341,6 +351,14 @@ def save_prediction_distribution_plots(out_dir: Path, *, df, enabled=None, image
             "h",
             "area",
             "aspect_ratio",
+            "anchor_w",
+            "anchor_h",
+            "anchor_area",
+            "bbox_anchor_center_l2",
+            "bbox_anchor_log_w_ratio",
+            "bbox_anchor_log_h_ratio",
+            "bbox_anchor_log_area_ratio",
+            "bbox_anchor_aspect_ratio_diff",
             "obj",
             "cls_conf",
             "score",
@@ -361,7 +379,7 @@ def save_prediction_distribution_plots(out_dir: Path, *, df, enabled=None, image
     if _enabled(enabled, "overview"):
         out = out_dir / "overview.svg"
         panels = []
-        for idx, col in enumerate(["score", "score_null_abs_diff", "cls_entropy_norm", "max_iou"]):
+        for idx, col in enumerate(["score", "bbox_anchor_log_area_ratio", "bbox_anchor_center_l2", "max_iou"]):
             vals = _numeric_series(df, col)
             counts, edges = np.histogram(vals, bins=50) if vals.size else (np.zeros(1), np.asarray([0, 1]))
             px0 = 65 + (idx % 2) * 410
