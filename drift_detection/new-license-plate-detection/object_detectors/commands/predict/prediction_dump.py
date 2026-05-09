@@ -9,6 +9,50 @@ def _class_name(names, cls_idx):
     return str(cls_idx)
 
 
+def _null_target_stats(raw_row, logit_row, cls_idx, obj, score):
+    if logit_row is not None and getattr(logit_row, "numel", lambda: 0)() > 0:
+        cls_probs = torch.softmax(logit_row.detach().float(), dim=-1)
+    elif raw_row is not None and raw_row.shape[0] > 5:
+        cls_probs = raw_row[5:].detach().float().clamp(min=0.0)
+        prob_sum = cls_probs.sum()
+        if float(prob_sum.detach().cpu().item()) > 1e-12:
+            cls_probs = cls_probs / prob_sum
+    else:
+        cls_probs = torch.zeros((0,), dtype=torch.float32)
+
+    n_cls = int(cls_probs.shape[0]) if cls_probs.numel() else 0
+    null_obj = 0.5
+    null_cls_conf = (1.0 / float(n_cls)) if n_cls > 0 else 0.0
+    null_score = null_obj * null_cls_conf
+    cls_prob = (
+        float(cls_probs[cls_idx].detach().cpu().item())
+        if cls_idx >= 0 and n_cls > cls_idx
+        else 0.0
+    )
+    if n_cls > 0:
+        eps = 1e-12
+        probs = cls_probs.clamp(min=eps)
+        entropy = float((-(probs * torch.log(probs)).sum()).detach().cpu().item())
+        max_entropy = float(np.log(float(n_cls)))
+        entropy_norm = entropy / max_entropy if max_entropy > 0 else 0.0
+        uniform_kl = max_entropy - entropy
+    else:
+        entropy = 0.0
+        entropy_norm = 0.0
+        uniform_kl = 0.0
+    return {
+        "null_obj": null_obj,
+        "null_cls_conf": null_cls_conf,
+        "null_score": null_score,
+        "obj_null_abs_diff": abs(float(obj) - null_obj),
+        "cls_null_abs_diff": abs(float(cls_prob) - null_cls_conf),
+        "score_null_abs_diff": abs(float(score) - null_score),
+        "cls_entropy": entropy,
+        "cls_entropy_norm": entropy_norm,
+        "cls_uniform_kl": uniform_kl,
+    }
+
+
 def run_prediction_dump_csv(config, run_dir):
     run_dir = Path(run_dir)
     mode = str(config.get("mode", "predict"))
@@ -46,6 +90,15 @@ def run_prediction_dump_csv(config, run_dir):
         "score",
         "pred_class",
         "pred_class_id",
+        "null_obj",
+        "null_cls_conf",
+        "null_score",
+        "obj_null_abs_diff",
+        "cls_null_abs_diff",
+        "score_null_abs_diff",
+        "cls_entropy",
+        "cls_entropy_norm",
+        "cls_uniform_kl",
         "max_iou",
         "tp",
     ]
@@ -138,14 +191,19 @@ def run_prediction_dump_csv(config, run_dir):
                     area = w * h
                     obj = 0.0
                     cls_conf = 0.0
+                    raw_row = None
+                    logit_row = None
                     if 0 <= raw_pred_idx < int(raw_b.shape[0]):
                         raw_row = raw_b[raw_pred_idx]
                         obj = float(raw_row[4].detach().cpu().item()) if raw_row.shape[0] > 4 else 1.0
                         if cls_idx >= 0 and raw_row.shape[0] > 5 + cls_idx:
                             cls_conf = float(raw_row[5 + cls_idx].detach().cpu().item())
+                    if raw_logits is not None and sample_idx < int(raw_logits.shape[0]) and 0 <= raw_pred_idx < int(raw_logits.shape[1]):
+                        logit_row = raw_logits[sample_idx, raw_pred_idx]
                     score = float(box[4].detach().cpu().item())
                     if cls_conf == 0.0 and obj > 1e-12:
                         cls_conf = score / obj
+                    null_stats = _null_target_stats(raw_row, logit_row, cls_idx, obj, score)
 
                     writer.writerow(
                         {
@@ -168,6 +226,7 @@ def run_prediction_dump_csv(config, run_dir):
                             "score": score,
                             "pred_class": pred_class_names[pred_idx] if pred_idx < len(pred_class_names) else _class_name(detector.names, cls_idx),
                             "pred_class_id": cls_idx,
+                            **null_stats,
                             "max_iou": float(best_ious[pred_idx]) if pred_idx < len(best_ious) else 0.0,
                             "tp": int(tp_flags[pred_idx]) if pred_idx < len(tp_flags) else 0,
                         }
