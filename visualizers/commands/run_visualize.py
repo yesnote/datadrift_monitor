@@ -214,6 +214,11 @@ def run_prediction_distribution(config: dict, run_dir: Path) -> dict:
         "obj",
         "cls_conf",
         "score",
+        "obj_null_abs_diff",
+        "cls_null_abs_diff",
+        "score_null_abs_diff",
+        "cls_entropy_norm",
+        "cls_uniform_kl",
         "max_iou",
         "tp",
     ]

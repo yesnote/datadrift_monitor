@@ -241,7 +241,22 @@ def save_prediction_distribution_plots(out_dir: Path, *, df, enabled=None, image
     out_dir.mkdir(parents=True, exist_ok=True)
     outputs: dict[str, list[str] | str] = {}
 
-    hist_cols = ["obj", "cls_conf", "score", "w", "h", "area", "aspect_ratio", "max_iou", "tp"]
+    hist_cols = [
+        "obj",
+        "cls_conf",
+        "score",
+        "w",
+        "h",
+        "area",
+        "aspect_ratio",
+        "obj_null_abs_diff",
+        "cls_null_abs_diff",
+        "score_null_abs_diff",
+        "cls_entropy_norm",
+        "cls_uniform_kl",
+        "max_iou",
+        "tp",
+    ]
     if _enabled(enabled, "histogram"):
         paths = []
         for col in hist_cols:
@@ -250,7 +265,7 @@ def save_prediction_distribution_plots(out_dir: Path, *, df, enabled=None, image
 
     if _enabled(enabled, "box_violin"):
         paths = []
-        for metric in ["score", "obj", "cls_conf", "max_iou"]:
+        for metric in ["score", "obj", "cls_conf", "score_null_abs_diff", "cls_uniform_kl", "max_iou"]:
             if df.empty or metric not in df.columns or "pred_class" not in df.columns:
                 paths.append(_empty_svg(out_dir / "box_violin" / f"{metric}_by_class.svg", f"{metric} by class"))
                 continue
@@ -263,7 +278,14 @@ def save_prediction_distribution_plots(out_dir: Path, *, df, enabled=None, image
 
     if _enabled(enabled, "scatter"):
         paths = []
-        for x_col, y_col in [("obj", "cls_conf"), ("area", "score"), ("aspect_ratio", "score"), ("score", "max_iou")]:
+        for x_col, y_col in [
+            ("obj", "cls_conf"),
+            ("area", "score"),
+            ("aspect_ratio", "score"),
+            ("score", "max_iou"),
+            ("score_null_abs_diff", "max_iou"),
+            ("cls_entropy_norm", "score"),
+        ]:
             paths.append(_scatter_svg(out_dir / "scatter" / f"{x_col}_vs_{y_col}.svg", _numeric_series(df, x_col), _numeric_series(df, y_col), f"{x_col} vs {y_col}", x_col, y_col))
         outputs["scatter"] = paths
 
@@ -308,7 +330,28 @@ def save_prediction_distribution_plots(out_dir: Path, *, df, enabled=None, image
         outputs["count_distribution"] = _hist_svg(out_dir / "count_distribution" / "predictions_per_image.svg", counts, "predictions per image", "num_predictions", bins=60, color="#59A14F")
 
     if _enabled(enabled, "correlation"):
-        numeric_cols = ["xmin", "ymin", "xmax", "ymax", "cx", "cy", "w", "h", "area", "aspect_ratio", "obj", "cls_conf", "score", "max_iou", "tp"]
+        numeric_cols = [
+            "xmin",
+            "ymin",
+            "xmax",
+            "ymax",
+            "cx",
+            "cy",
+            "w",
+            "h",
+            "area",
+            "aspect_ratio",
+            "obj",
+            "cls_conf",
+            "score",
+            "obj_null_abs_diff",
+            "cls_null_abs_diff",
+            "score_null_abs_diff",
+            "cls_entropy_norm",
+            "cls_uniform_kl",
+            "max_iou",
+            "tp",
+        ]
         cols = [c for c in numeric_cols if c in df.columns]
         if df.empty or len(cols) < 2:
             outputs["correlation"] = _empty_svg(out_dir / "correlation" / "numeric_correlation.svg", "numeric correlation")
@@ -318,7 +361,7 @@ def save_prediction_distribution_plots(out_dir: Path, *, df, enabled=None, image
     if _enabled(enabled, "overview"):
         out = out_dir / "overview.svg"
         panels = []
-        for idx, col in enumerate(["score", "obj", "cls_conf", "max_iou"]):
+        for idx, col in enumerate(["score", "score_null_abs_diff", "cls_entropy_norm", "max_iou"]):
             vals = _numeric_series(df, col)
             counts, edges = np.histogram(vals, bins=50) if vals.size else (np.zeros(1), np.asarray([0, 1]))
             px0 = 65 + (idx % 2) * 410
