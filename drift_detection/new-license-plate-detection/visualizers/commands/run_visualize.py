@@ -234,6 +234,7 @@ def run_prediction_distribution(config: dict, run_dir: Path) -> dict:
         "score",
         "obj",
         "cls_conf",
+        "area",
         "obj_null_abs_diff",
         "cls_null_abs_diff",
         "score_null_abs_diff",
