@@ -85,6 +85,22 @@ def run_prediction_dump_csv(config, run_dir):
         "h",
         "area",
         "aspect_ratio",
+        "anchor_cx",
+        "anchor_cy",
+        "anchor_w",
+        "anchor_h",
+        "anchor_area",
+        "anchor_aspect_ratio",
+        "bbox_anchor_dx",
+        "bbox_anchor_dy",
+        "bbox_anchor_center_l2",
+        "bbox_anchor_w_ratio",
+        "bbox_anchor_h_ratio",
+        "bbox_anchor_area_ratio",
+        "bbox_anchor_log_w_ratio",
+        "bbox_anchor_log_h_ratio",
+        "bbox_anchor_log_area_ratio",
+        "bbox_anchor_aspect_ratio_diff",
         "obj",
         "cls_conf",
         "score",
@@ -131,6 +147,11 @@ def run_prediction_dump_csv(config, run_dir):
                 raw_logits = (
                     model_output[1]
                     if isinstance(model_output, (tuple, list)) and len(model_output) > 1
+                    else None
+                )
+                raw_priors = (
+                    model_output[3]
+                    if isinstance(model_output, (tuple, list)) and len(model_output) > 3
                     else None
                 )
                 nms_logits = _resolve_nms_logits(raw_prediction, raw_logits)
@@ -193,6 +214,7 @@ def run_prediction_dump_csv(config, run_dir):
                     cls_conf = 0.0
                     raw_row = None
                     logit_row = None
+                    prior_row = None
                     if 0 <= raw_pred_idx < int(raw_b.shape[0]):
                         raw_row = raw_b[raw_pred_idx]
                         obj = float(raw_row[4].detach().cpu().item()) if raw_row.shape[0] > 4 else 1.0
@@ -200,10 +222,27 @@ def run_prediction_dump_csv(config, run_dir):
                             cls_conf = float(raw_row[5 + cls_idx].detach().cpu().item())
                     if raw_logits is not None and sample_idx < int(raw_logits.shape[0]) and 0 <= raw_pred_idx < int(raw_logits.shape[1]):
                         logit_row = raw_logits[sample_idx, raw_pred_idx]
+                    if raw_priors is not None and sample_idx < int(raw_priors.shape[0]) and 0 <= raw_pred_idx < int(raw_priors.shape[1]):
+                        prior_row = raw_priors[sample_idx, raw_pred_idx].detach().float()
                     score = float(box[4].detach().cpu().item())
                     if cls_conf == 0.0 and obj > 1e-12:
                         cls_conf = score / obj
                     null_stats = _null_target_stats(raw_row, logit_row, cls_idx, obj, score)
+                    anchor_cx = anchor_cy = anchor_w = anchor_h = 0.0
+                    if prior_row is not None and prior_row.shape[0] >= 4:
+                        anchor_cx = float(prior_row[0].detach().cpu().item())
+                        anchor_cy = float(prior_row[1].detach().cpu().item())
+                        anchor_w = float(prior_row[2].detach().cpu().item())
+                        anchor_h = float(prior_row[3].detach().cpu().item())
+                    anchor_area = max(0.0, anchor_w) * max(0.0, anchor_h)
+                    anchor_aspect_ratio = anchor_w / max(anchor_h, 1e-12)
+                    cx = 0.5 * (xmin + xmax)
+                    cy = 0.5 * (ymin + ymax)
+                    dx = cx - anchor_cx
+                    dy = cy - anchor_cy
+                    w_ratio = w / max(anchor_w, 1e-12)
+                    h_ratio = h / max(anchor_h, 1e-12)
+                    area_ratio = area / max(anchor_area, 1e-12)
 
                     writer.writerow(
                         {
@@ -215,12 +254,28 @@ def run_prediction_dump_csv(config, run_dir):
                             "ymin": ymin,
                             "xmax": xmax,
                             "ymax": ymax,
-                            "cx": 0.5 * (xmin + xmax),
-                            "cy": 0.5 * (ymin + ymax),
+                            "cx": cx,
+                            "cy": cy,
                             "w": w,
                             "h": h,
                             "area": area,
                             "aspect_ratio": w / max(h, 1e-12),
+                            "anchor_cx": anchor_cx,
+                            "anchor_cy": anchor_cy,
+                            "anchor_w": anchor_w,
+                            "anchor_h": anchor_h,
+                            "anchor_area": anchor_area,
+                            "anchor_aspect_ratio": anchor_aspect_ratio,
+                            "bbox_anchor_dx": dx,
+                            "bbox_anchor_dy": dy,
+                            "bbox_anchor_center_l2": float((dx * dx + dy * dy) ** 0.5),
+                            "bbox_anchor_w_ratio": w_ratio,
+                            "bbox_anchor_h_ratio": h_ratio,
+                            "bbox_anchor_area_ratio": area_ratio,
+                            "bbox_anchor_log_w_ratio": float(np.log(max(w_ratio, 1e-12))),
+                            "bbox_anchor_log_h_ratio": float(np.log(max(h_ratio, 1e-12))),
+                            "bbox_anchor_log_area_ratio": float(np.log(max(area_ratio, 1e-12))),
+                            "bbox_anchor_aspect_ratio_diff": (w / max(h, 1e-12)) - anchor_aspect_ratio,
                             "obj": obj,
                             "cls_conf": cls_conf,
                             "score": score,
@@ -232,7 +287,7 @@ def run_prediction_dump_csv(config, run_dir):
                         }
                     )
             raw_prof.end(t_raw, batch_items)
-            del infer_batch, raw_prediction, raw_logits, selected_preds, selected_indices
+            del infer_batch, raw_prediction, raw_logits, raw_priors, selected_preds, selected_indices
 
     summary = {
         "output_csv": str(output_csv),
