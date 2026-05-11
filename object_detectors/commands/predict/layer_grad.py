@@ -826,6 +826,7 @@ def run_layer_grad_csv(config, run_dir):
     layer_vector_reduction = parsed["layer_vector_reduction"]
     layer_pseudo_gt = parsed.get("layer_pseudo_gt", "cand")
     layer_cand_score_threshold = float(parsed.get("layer_cand_score_threshold", 0.01))
+    layer_bbox_loss = str(parsed.get("layer_bbox_loss", "ciou")).strip().lower()
     pre_nms = bool(parsed.get("pre_nms", False))
     pre_nms_ratio = float(parsed.get("pre_nms_ratio", 1.0))
     save_image_enabled = bool(parsed.get("save_image_enabled", False))
@@ -1270,6 +1271,7 @@ def run_layer_grad_csv(config, run_dir):
                         pre_nms_ratio=pre_nms_ratio,
                         pseudo_gt=viz_pseudo_gt if viz_enabled else layer_pseudo_gt,
                         cand_score_threshold=layer_cand_score_threshold,
+                        bbox_loss=layer_bbox_loss,
                     )
                 else:
                     batch_grad_stats_all = [{} for _ in range(len(image_list))]
@@ -1292,6 +1294,7 @@ def run_layer_grad_csv(config, run_dir):
                         vector_reduction=layer_vector_reduction,
                         pseudo_gt=layer_pseudo_gt,
                         cand_score_threshold=layer_cand_score_threshold,
+                        bbox_loss=layer_bbox_loss,
                     )
                     if csv_writer is not None:
                         for bbox_row in bbox_rows:
@@ -1654,6 +1657,7 @@ def run_layer_grad_csv(config, run_dir):
             "mode": "reference" if reference_enabled else "per_image",
             "num_by_group": {k: ("inf" if np.isinf(viz_num_by_group[k]) else int(viz_num_by_group[k])) for k in all_groups},
             "target_values_for_map": list(active_target_values),
+            "bbox_loss": layer_bbox_loss,
             "convergence": {
                 "delta_metric": "l2",
                 "delta_l2_tol": conv_delta_l2_tol,

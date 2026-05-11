@@ -360,6 +360,7 @@ def parse_output_config(output_cfg):
     layer_disc_fn_non_fn_map_root = ""
     layer_ref_map_root = ""
     layer_cand_score_threshold = 0.01
+    layer_bbox_loss = "ciou"
 
     if uncertainty == "feature_grad":
         g = as_dict(feature_grad_cfg.get("gradient", {}))
@@ -402,6 +403,9 @@ def parse_output_config(output_cfg):
         t_policy = str(t).strip().lower() if t is not None else "null_target"
         layer_pseudo_gt = "uniform" if t_policy in {"null_target", "null"} else "cand"
         layer_cand_score_threshold = as_float(g.get("cand_score_threshold", 0.01), 0.01)
+        layer_bbox_loss = str(g.get("bbox_loss", "ciou")).strip().lower() or "ciou"
+        if layer_bbox_loss not in {"smooth_l1", "ciou", "log_area_ratio"}:
+            raise ValueError("layer_grad.gradient.bbox_loss must be one of: smooth_l1, ciou, log_area_ratio")
         disc_cfg = as_dict(g.get("disc_layers", {}))
         layer_disc_separation_score = (
             str(disc_cfg.get("separation_score", "effect_size")).strip().lower() or "effect_size"
@@ -569,6 +573,7 @@ def parse_output_config(output_cfg):
         "layer_vector_reduction": layer_vector_reduction,
         "layer_pseudo_gt": layer_pseudo_gt,
         "layer_cand_score_threshold": float(layer_cand_score_threshold),
+        "layer_bbox_loss": layer_bbox_loss,
         "layer_ref_mode": layer_ref_mode,
         "layer_ref_type": layer_ref_type,
         "layer_ref_prototype_mode": layer_ref_prototype_mode,
@@ -1392,6 +1397,7 @@ def build_pseudo_label_losses_for_candidates(
     raw_idx: int,
     iou_threshold: float,
     score_threshold: float = 0.01,
+    bbox_loss: str = "smooth_l1",
 ):
     if raw_idx >= pred_img.shape[0]:
         return None
@@ -1414,7 +1420,7 @@ def build_pseudo_label_losses_for_candidates(
 
     candidate_pred = pred_img[candidate_mask]
     pseudo_box_target = pseudo_row[:4].view(1, 4).expand(candidate_pred.shape[0], -1)
-    bbox_loss = F.smooth_l1_loss(candidate_pred[:, :4], pseudo_box_target, reduction="sum")
+    bbox_loss_value = _bbox_loss_xywh_tensor(candidate_pred[:, :4], pseudo_box_target, mode=bbox_loss, reduction="sum")
 
     obj_prob = candidate_pred[:, 4].clamp(eps, 1.0 - eps)
     obj_target = torch.ones_like(obj_prob)
@@ -1426,11 +1432,34 @@ def build_pseudo_label_losses_for_candidates(
     cls_loss = F.binary_cross_entropy(cls_prob, cls_target, reduction="sum")
 
     return {
-        "bbox_loss": bbox_loss,
+        "bbox_loss": bbox_loss_value,
         "obj_loss": obj_loss,
         "cls_loss": cls_loss,
-        "loss": bbox_loss + obj_loss + cls_loss,
+        "loss": bbox_loss_value + obj_loss + cls_loss,
     }
+
+
+def _bbox_loss_xywh_tensor(pred_xywh: torch.Tensor, target_xywh: torch.Tensor, mode: str = "ciou", reduction: str = "mean"):
+    mode = str(mode).strip().lower()
+    if mode == "smooth_l1":
+        return F.smooth_l1_loss(pred_xywh, target_xywh.to(dtype=pred_xywh.dtype, device=pred_xywh.device), reduction=reduction)
+
+    target_xywh = target_xywh.to(dtype=pred_xywh.dtype, device=pred_xywh.device)
+    if mode == "ciou":
+        loss = 1.0 - _bbox_ciou_xywh_tensor(pred_xywh, target_xywh)
+    elif mode == "log_area_ratio":
+        eps = 1e-12
+        pred_area = pred_xywh[..., 2].clamp(min=eps) * pred_xywh[..., 3].clamp(min=eps)
+        target_area = target_xywh[..., 2].clamp(min=eps) * target_xywh[..., 3].clamp(min=eps)
+        loss = torch.log(pred_area / target_area.clamp(min=eps))
+    else:
+        raise ValueError("bbox_loss must be one of: smooth_l1, ciou, log_area_ratio")
+
+    if reduction == "sum":
+        return loss.sum()
+    if reduction == "none":
+        return loss
+    return loss.mean()
 
 
 def build_layer_target_scalar_image(target_value, raw_prediction, raw_logits):
@@ -1455,6 +1484,7 @@ def build_layer_target_scalar_bbox(
     pseudo_gt="cand",
     anchor_xywh=None,
     cand_score_threshold=0.01,
+    bbox_loss: str = "ciou",
 ):
     if target_value == "obj":
         if raw_idx >= pred_img.shape[0]:
@@ -1487,7 +1517,7 @@ def build_layer_target_scalar_bbox(
                 return None
             pred_xywh = pred_row[:4]
             anchor_xywh = anchor_xywh.to(dtype=pred_xywh.dtype, device=pred_xywh.device)
-            return (1.0 - _bbox_ciou_xywh_tensor(pred_xywh, anchor_xywh)).mean()
+            return _bbox_loss_xywh_tensor(pred_xywh, anchor_xywh, mode=bbox_loss, reduction="mean")
         return None
 
     losses = build_pseudo_label_losses_for_candidates(
@@ -1495,6 +1525,7 @@ def build_layer_target_scalar_bbox(
         raw_idx=raw_idx,
         iou_threshold=iou_threshold,
         score_threshold=cand_score_threshold,
+        bbox_loss=bbox_loss,
     )
     if losses is not None and target_value in losses:
         return losses[target_value]
@@ -1510,6 +1541,7 @@ def collect_bbox_layer_grads_per_target(
     vector_reduction=None,
     pseudo_gt="cand",
     cand_score_threshold=0.01,
+    bbox_loss: str = "ciou",
 ):
     layer_params = [resolve_layer_parameter(detector.model, layer_name) for layer_name in target_layers]
     original_requires_grad = [bool(p.requires_grad) for p in layer_params]
@@ -1562,6 +1594,7 @@ def collect_bbox_layer_grads_per_target(
                     pseudo_gt=pseudo_gt,
                     anchor_xywh=anchor_row,
                     cand_score_threshold=cand_score_threshold,
+                    bbox_loss=bbox_loss,
                 )
 
                 if target_scalar is None:
@@ -1620,6 +1653,7 @@ def collect_batch_image_layer_grads_per_target(
     pre_nms_ratio=1.0,
     pseudo_gt="cand",
     cand_score_threshold=0.01,
+    bbox_loss: str = "ciou",
 ):
     if not hasattr(torch, "func") or not hasattr(torch.func, "vmap") or not hasattr(torch.func, "grad"):
         raise RuntimeError(
@@ -1715,6 +1749,7 @@ def collect_batch_image_layer_grads_per_target(
                             pseudo_gt=pseudo_gt,
                             anchor_xywh=anchor_row,
                             cand_score_threshold=cand_score_threshold,
+                            bbox_loss=bbox_loss,
                         )
                         if scalar is not None:
                             loss_terms.append(scalar)
