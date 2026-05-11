@@ -513,6 +513,50 @@ def _tp_fp_hist_grid_svg(path: Path, df, features: list[str], metrics_df=None) -
     return _write_svg(path, width, height, "TP/FP feature histograms", body)
 
 
+def _candidate_target_summary_svg(path: Path, df, metrics_df=None) -> str:
+    width, height = 1320, 760
+    margin_x, margin_y = 70, 95
+    panel_w, panel_h = 335, 165
+    gap_x, gap_y = 75, 105
+    features = [
+        ("num_cand_boxes", "candidate boxes used"),
+        ("num_nonself_cand_boxes", "non-self candidate boxes"),
+        ("cand_score_mean", "candidate score mean"),
+        ("cand_iou_mean", "candidate IoU mean"),
+        ("cand_area_mean", "candidate area mean"),
+        ("bbox_cand_log_area_ratio_std", "candidate log area ratio std"),
+    ]
+    body = [
+        '<rect x="38" y="45" width="14" height="14" fill="#4C78A8" opacity="0.55"/>',
+        '<text x="58" y="57" font-family="Arial" font-size="12" fill="#333">TP</text>',
+        '<rect x="98" y="45" width="14" height="14" fill="#E45756" opacity="0.55"/>',
+        '<text x="118" y="57" font-family="Arial" font-size="12" fill="#333">FP</text>',
+    ]
+    metric_lookup = {}
+    if metrics_df is not None and not metrics_df.empty and "feature" in metrics_df.columns:
+        metric_lookup = {str(row["feature"]): row for _, row in metrics_df.iterrows()}
+
+    if df is not None and not df.empty:
+        for text_idx, col in enumerate(["num_cand_boxes", "num_nonself_cand_boxes"]):
+            if col not in df.columns:
+                continue
+            vals = df[col].to_numpy(dtype=np.float64, copy=False)
+            vals = vals[np.isfinite(vals)]
+            if vals.size:
+                x = 250 + text_idx * 245
+                body.append(
+                    f'<text x="{x}" y="57" font-family="Arial" font-size="12" fill="#333">'
+                    f'{escape(col)} mean={float(np.mean(vals)):.3g}, p50={float(np.median(vals)):.3g}</text>'
+                )
+
+    for idx, (feature, title) in enumerate(features):
+        row, col = divmod(idx, 3)
+        x0 = margin_x + col * (panel_w + gap_x)
+        y0 = margin_y + row * (panel_h + gap_y)
+        _tp_fp_hist_panel(body, df, feature, x0, y0, panel_w, panel_h, title, metric_lookup=metric_lookup)
+    return _write_svg(path, width, height, "Candidate Target Summary", body)
+
+
 def save_uncertainty_analysis_plots(out_dir: Path, *, pred_df=None, features=None, tp_fp_df, metrics_df, high_score_df) -> dict:
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -569,6 +613,7 @@ def save_uncertainty_analysis_plots(out_dir: Path, *, pred_df=None, features=Non
     if pred_df is not None and features is not None:
         outputs["tp_fp_histograms"] = _tp_fp_hist_grid_svg(out_dir / "tp_fp_feature_histograms.svg", pred_df, list(features), metrics_df=metrics_df)
         outputs["tp_fp_null_cand_comparison"] = _tp_fp_null_comparison_svg(out_dir / "tp_fp_null_cand_comparison_grid.svg", pred_df, metrics_df=metrics_df)
+        outputs["candidate_target_summary"] = _candidate_target_summary_svg(out_dir / "candidate_target_summary.svg", pred_df, metrics_df=metrics_df)
 
     return outputs
 
@@ -605,6 +650,22 @@ def save_prediction_distribution_plots(out_dir: Path, *, df, enabled=None, image
         "obj_cand_bce_loss",
         "cls_cand_kl",
         "bbox_cand_log_area_ratio",
+        "bbox_cand_log_area_ratio_std",
+        "num_cand_boxes",
+        "num_nonself_cand_boxes",
+        "has_nonself_cand",
+        "cand_score_mean",
+        "cand_score_min",
+        "cand_score_max",
+        "cand_score_std",
+        "cand_iou_mean",
+        "cand_iou_min",
+        "cand_iou_max",
+        "cand_iou_std",
+        "cand_area_mean",
+        "cand_area_min",
+        "cand_area_max",
+        "cand_area_std",
         "max_iou",
         "tp",
     ]
@@ -637,6 +698,10 @@ def save_prediction_distribution_plots(out_dir: Path, *, df, enabled=None, image
             ("bbox_anchor_log_area_ratio", "score"),
             ("score", "max_iou"),
             ("score_null_diff", "max_iou"),
+            ("num_cand_boxes", "score"),
+            ("num_cand_boxes", "max_iou"),
+            ("cand_iou_mean", "max_iou"),
+            ("cand_score_mean", "score"),
             ("cls_entropy_norm", "score"),
         ]:
             paths.append(_scatter_svg(out_dir / "scatter" / f"{x_col}_vs_{y_col}.svg", _numeric_series(df, x_col), _numeric_series(df, y_col), f"{x_col} vs {y_col}", x_col, y_col))
@@ -715,6 +780,22 @@ def save_prediction_distribution_plots(out_dir: Path, *, df, enabled=None, image
             "obj_cand_bce_loss",
             "cls_cand_kl",
             "bbox_cand_log_area_ratio",
+            "bbox_cand_log_area_ratio_std",
+            "num_cand_boxes",
+            "num_nonself_cand_boxes",
+            "has_nonself_cand",
+            "cand_score_mean",
+            "cand_score_min",
+            "cand_score_max",
+            "cand_score_std",
+            "cand_iou_mean",
+            "cand_iou_min",
+            "cand_iou_max",
+            "cand_iou_std",
+            "cand_area_mean",
+            "cand_area_min",
+            "cand_area_max",
+            "cand_area_std",
             "max_iou",
             "tp",
         ]
