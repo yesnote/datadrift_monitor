@@ -219,6 +219,8 @@ def run_prediction_distribution(config: dict, run_dir: Path) -> dict:
         "bbox_anchor_log_h_ratio",
         "bbox_anchor_log_area_ratio",
         "bbox_anchor_aspect_ratio_diff",
+        "bbox_anchor_ciou",
+        "bbox_anchor_ciou_loss",
         "obj",
         "cls_conf",
         "score",
@@ -245,6 +247,7 @@ def run_prediction_distribution(config: dict, run_dir: Path) -> dict:
         "bbox_anchor_log_h_ratio",
         "bbox_anchor_log_area_ratio",
         "bbox_anchor_aspect_ratio_diff",
+        "bbox_anchor_ciou_loss",
     ]
     summary_rows = []
     for col in numeric_cols:
