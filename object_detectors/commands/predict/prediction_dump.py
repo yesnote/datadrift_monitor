@@ -53,6 +53,34 @@ def _null_target_stats(raw_row, logit_row, cls_idx, obj, score):
     }
 
 
+def _ciou_xyxy(box_a, box_b, eps=1e-7):
+    ax1, ay1, ax2, ay2 = [float(v) for v in box_a]
+    bx1, by1, bx2, by2 = [float(v) for v in box_b]
+    aw = max(0.0, ax2 - ax1)
+    ah = max(0.0, ay2 - ay1)
+    bw = max(0.0, bx2 - bx1)
+    bh = max(0.0, by2 - by1)
+    area_a = aw * ah
+    area_b = bw * bh
+    inter_w = max(0.0, min(ax2, bx2) - max(ax1, bx1))
+    inter_h = max(0.0, min(ay2, by2) - max(ay1, by1))
+    inter = inter_w * inter_h
+    union = area_a + area_b - inter + eps
+    iou = inter / union
+
+    acx = 0.5 * (ax1 + ax2)
+    acy = 0.5 * (ay1 + ay2)
+    bcx = 0.5 * (bx1 + bx2)
+    bcy = 0.5 * (by1 + by2)
+    rho2 = (acx - bcx) ** 2 + (acy - bcy) ** 2
+    cw = max(ax2, bx2) - min(ax1, bx1)
+    ch = max(ay2, by2) - min(ay1, by1)
+    c2 = cw ** 2 + ch ** 2 + eps
+    v = (4.0 / (np.pi ** 2)) * (np.arctan(bw / max(bh, eps)) - np.arctan(aw / max(ah, eps))) ** 2
+    alpha = v / max(1.0 - iou + v, eps)
+    return float(iou - (rho2 / c2 + alpha * v))
+
+
 def run_prediction_dump_csv(config, run_dir):
     run_dir = Path(run_dir)
     mode = str(config.get("mode", "predict"))
@@ -101,6 +129,8 @@ def run_prediction_dump_csv(config, run_dir):
         "bbox_anchor_log_h_ratio",
         "bbox_anchor_log_area_ratio",
         "bbox_anchor_aspect_ratio_diff",
+        "bbox_anchor_ciou",
+        "bbox_anchor_ciou_loss",
         "obj",
         "cls_conf",
         "score",
@@ -243,6 +273,14 @@ def run_prediction_dump_csv(config, run_dir):
                     w_ratio = w / max(anchor_w, 1e-12)
                     h_ratio = h / max(anchor_h, 1e-12)
                     area_ratio = area / max(anchor_area, 1e-12)
+                    anchor_xmin = anchor_cx - 0.5 * anchor_w
+                    anchor_ymin = anchor_cy - 0.5 * anchor_h
+                    anchor_xmax = anchor_cx + 0.5 * anchor_w
+                    anchor_ymax = anchor_cy + 0.5 * anchor_h
+                    bbox_anchor_ciou = _ciou_xyxy(
+                        (xmin, ymin, xmax, ymax),
+                        (anchor_xmin, anchor_ymin, anchor_xmax, anchor_ymax),
+                    )
 
                     writer.writerow(
                         {
@@ -276,6 +314,8 @@ def run_prediction_dump_csv(config, run_dir):
                             "bbox_anchor_log_h_ratio": float(np.log(max(h_ratio, 1e-12))),
                             "bbox_anchor_log_area_ratio": float(np.log(max(area_ratio, 1e-12))),
                             "bbox_anchor_aspect_ratio_diff": (w / max(h, 1e-12)) - anchor_aspect_ratio,
+                            "bbox_anchor_ciou": bbox_anchor_ciou,
+                            "bbox_anchor_ciou_loss": 1.0 - bbox_anchor_ciou,
                             "obj": obj,
                             "cls_conf": cls_conf,
                             "score": score,
