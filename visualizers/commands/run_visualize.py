@@ -234,6 +234,24 @@ def run_prediction_distribution(config: dict, run_dir: Path) -> dict:
         "obj_cand_bce_loss",
         "cls_cand_kl",
         "bbox_cand_log_area_ratio",
+        "bbox_cand_log_area_ratio_std",
+        "num_cand_boxes",
+        "num_nonself_cand_boxes",
+        "has_nonself_cand",
+        "cand_score_mean",
+        "cand_score_min",
+        "cand_score_max",
+        "cand_score_std",
+        "cand_iou_mean",
+        "cand_iou_min",
+        "cand_iou_max",
+        "cand_iou_std",
+        "cand_area_mean",
+        "cand_area_min",
+        "cand_area_max",
+        "cand_area_std",
+        "cand_score_threshold",
+        "cand_iou_threshold",
         "max_iou",
         "tp",
     ]
@@ -252,6 +270,13 @@ def run_prediction_distribution(config: dict, run_dir: Path) -> dict:
         "obj_cand_bce_loss",
         "cls_cand_kl",
         "bbox_cand_log_area_ratio",
+        "bbox_cand_log_area_ratio_std",
+        "num_cand_boxes",
+        "num_nonself_cand_boxes",
+        "has_nonself_cand",
+        "cand_score_mean",
+        "cand_iou_mean",
+        "cand_area_mean",
         "bbox_anchor_center_l2",
         "bbox_anchor_log_w_ratio",
         "bbox_anchor_log_h_ratio",
@@ -281,6 +306,9 @@ def run_prediction_distribution(config: dict, run_dir: Path) -> dict:
         )
     summary_stats_csv = results_root / "summary_stats.csv"
     pd.DataFrame(summary_rows).to_csv(summary_stats_csv, index=False)
+
+    cand_summary_csv = results_root / "candidate_target_summary.csv"
+    _save_candidate_target_summary(df, cand_summary_csv)
 
     tp_fp_csv = results_root / "tp_fp_feature_comparison.csv"
     detection_metrics_csv = results_root / "fp_detection_metrics.csv"
@@ -343,6 +371,7 @@ def run_prediction_distribution(config: dict, run_dir: Path) -> dict:
         "sources": source_summaries,
         "merged_csv": str(merged_csv),
         "summary_stats_csv": str(summary_stats_csv),
+        "candidate_target_summary_csv": str(cand_summary_csv),
         "tp_fp_feature_comparison_csv": str(tp_fp_csv),
         "fp_detection_metrics_csv": str(detection_metrics_csv),
         "classwise_fp_detection_metrics_csv": str(class_metrics_csv),
@@ -352,6 +381,52 @@ def run_prediction_distribution(config: dict, run_dir: Path) -> dict:
         "analysis_plots": analysis_plots,
     }
     return summary
+
+
+def _save_candidate_target_summary(df: pd.DataFrame, out_csv: Path) -> None:
+    cols = [
+        "num_cand_boxes",
+        "num_nonself_cand_boxes",
+        "has_nonself_cand",
+        "cand_score_mean",
+        "cand_score_std",
+        "cand_iou_mean",
+        "cand_iou_std",
+        "cand_area_mean",
+        "cand_area_std",
+        "bbox_cand_log_area_ratio",
+        "bbox_cand_log_area_ratio_std",
+    ]
+    rows = []
+    groups = [("all", df)]
+    if "tp" in df.columns:
+        tp = pd.to_numeric(df["tp"], errors="coerce")
+        groups.extend(
+            [
+                ("tp", df[tp == 1]),
+                ("fp", df[tp == 0]),
+            ]
+        )
+    for group_name, group in groups:
+        for col in cols:
+            if col not in group.columns:
+                continue
+            vals = pd.to_numeric(group[col], errors="coerce").replace([np.inf, -np.inf], np.nan).dropna()
+            if vals.empty:
+                continue
+            rows.append(
+                {
+                    "group": group_name,
+                    "column": col,
+                    "count": int(vals.shape[0]),
+                    "mean": float(vals.mean()),
+                    "std": float(vals.std(ddof=0)),
+                    "p05": float(vals.quantile(0.05)),
+                    "p50": float(vals.quantile(0.50)),
+                    "p95": float(vals.quantile(0.95)),
+                }
+            )
+    pd.DataFrame(rows).to_csv(out_csv, index=False)
 
 
 def _clean_xy(feature_values, labels):

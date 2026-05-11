@@ -129,6 +129,24 @@ def _cand_target_stats(
         "obj_cand_bce_loss": 0.0,
         "cls_cand_kl": 0.0,
         "bbox_cand_log_area_ratio": 0.0,
+        "bbox_cand_log_area_ratio_std": 0.0,
+        "num_cand_boxes": 0,
+        "num_nonself_cand_boxes": 0,
+        "has_nonself_cand": 0,
+        "cand_score_mean": 0.0,
+        "cand_score_min": 0.0,
+        "cand_score_max": 0.0,
+        "cand_score_std": 0.0,
+        "cand_iou_mean": 0.0,
+        "cand_iou_min": 0.0,
+        "cand_iou_max": 0.0,
+        "cand_iou_std": 0.0,
+        "cand_area_mean": 0.0,
+        "cand_area_min": 0.0,
+        "cand_area_max": 0.0,
+        "cand_area_std": 0.0,
+        "cand_score_threshold": float(score_threshold),
+        "cand_iou_threshold": float(iou_threshold),
     }
     if raw_b is None or raw_b.numel() == 0 or raw_pred_idx < 0 or raw_pred_idx >= int(raw_b.shape[0]):
         return zero
@@ -147,7 +165,8 @@ def _cand_target_stats(
     cand_mask = class_mask & (ious >= float(iou_threshold)) & (raw_score >= float(score_threshold))
     cand_mask[raw_pred_idx] = False
 
-    if bool(cand_mask.any()):
+    has_nonself_cand = bool(cand_mask.any())
+    if has_nonself_cand:
         cand_indices = cand_mask.nonzero(as_tuple=False).view(-1)
     else:
         cand_indices = torch.tensor([int(raw_pred_idx)], dtype=torch.long, device=raw_b.device)
@@ -158,6 +177,9 @@ def _cand_target_stats(
     obj_bces = []
     cls_kls = []
     area_ratios = []
+    cand_scores = []
+    cand_ious = []
+    cand_areas = []
     for cand_idx_tensor in cand_indices:
         cand_idx = int(cand_idx_tensor.detach().cpu().item())
         cand_row = raw_b[cand_idx]
@@ -183,14 +205,41 @@ def _cand_target_stats(
         cand_h = max(0.0, float((cand_xyxy[3] - cand_xyxy[1]).detach().cpu().item()))
         cand_area = cand_w * cand_h
         cand_score = float(raw_score[cand_idx].detach().cpu().item())
+        cand_iou = float(ious[cand_idx].detach().cpu().item())
         score_diffs.append(float(pred_score) - cand_score)
         area_ratios.append(float(np.log(max(float(pred_area), eps) / max(float(cand_area), eps))))
+        cand_scores.append(cand_score)
+        cand_ious.append(cand_iou)
+        cand_areas.append(cand_area)
+
+    cand_scores_arr = np.asarray(cand_scores, dtype=np.float64)
+    cand_ious_arr = np.asarray(cand_ious, dtype=np.float64)
+    cand_areas_arr = np.asarray(cand_areas, dtype=np.float64)
+    area_ratios_arr = np.asarray(area_ratios, dtype=np.float64)
 
     return {
         "score_cand_diff": float(np.mean(score_diffs)) if score_diffs else 0.0,
         "obj_cand_bce_loss": float(np.mean(obj_bces)) if obj_bces else 0.0,
         "cls_cand_kl": float(np.mean(cls_kls)) if cls_kls else 0.0,
         "bbox_cand_log_area_ratio": float(np.mean(area_ratios)) if area_ratios else 0.0,
+        "bbox_cand_log_area_ratio_std": float(np.std(area_ratios_arr)) if area_ratios_arr.size else 0.0,
+        "num_cand_boxes": int(cand_indices.numel()),
+        "num_nonself_cand_boxes": int(cand_indices.numel()) if has_nonself_cand else 0,
+        "has_nonself_cand": int(has_nonself_cand),
+        "cand_score_mean": float(np.mean(cand_scores_arr)) if cand_scores_arr.size else 0.0,
+        "cand_score_min": float(np.min(cand_scores_arr)) if cand_scores_arr.size else 0.0,
+        "cand_score_max": float(np.max(cand_scores_arr)) if cand_scores_arr.size else 0.0,
+        "cand_score_std": float(np.std(cand_scores_arr)) if cand_scores_arr.size else 0.0,
+        "cand_iou_mean": float(np.mean(cand_ious_arr)) if cand_ious_arr.size else 0.0,
+        "cand_iou_min": float(np.min(cand_ious_arr)) if cand_ious_arr.size else 0.0,
+        "cand_iou_max": float(np.max(cand_ious_arr)) if cand_ious_arr.size else 0.0,
+        "cand_iou_std": float(np.std(cand_ious_arr)) if cand_ious_arr.size else 0.0,
+        "cand_area_mean": float(np.mean(cand_areas_arr)) if cand_areas_arr.size else 0.0,
+        "cand_area_min": float(np.min(cand_areas_arr)) if cand_areas_arr.size else 0.0,
+        "cand_area_max": float(np.max(cand_areas_arr)) if cand_areas_arr.size else 0.0,
+        "cand_area_std": float(np.std(cand_areas_arr)) if cand_areas_arr.size else 0.0,
+        "cand_score_threshold": float(score_threshold),
+        "cand_iou_threshold": float(iou_threshold),
     }
 
 
@@ -263,6 +312,24 @@ def run_prediction_dump_csv(config, run_dir):
         "obj_cand_bce_loss",
         "cls_cand_kl",
         "bbox_cand_log_area_ratio",
+        "bbox_cand_log_area_ratio_std",
+        "num_cand_boxes",
+        "num_nonself_cand_boxes",
+        "has_nonself_cand",
+        "cand_score_mean",
+        "cand_score_min",
+        "cand_score_max",
+        "cand_score_std",
+        "cand_iou_mean",
+        "cand_iou_min",
+        "cand_iou_max",
+        "cand_iou_std",
+        "cand_area_mean",
+        "cand_area_min",
+        "cand_area_max",
+        "cand_area_std",
+        "cand_score_threshold",
+        "cand_iou_threshold",
         "max_iou",
         "tp",
     ]
