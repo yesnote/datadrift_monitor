@@ -112,7 +112,7 @@ output:
 
   meta_detect:
     unit: image  # image | bbox
-    score_threshold: 0.0
+    score_threshold: 0.1
     iou_threshold: 0.45
     save_csv:
       enabled: false
@@ -149,7 +149,7 @@ output:
     gradient:
       scalar: [loss]
       layer: ["model.24.m.0", "model.24.m.1", "model.24.m.2"] # all_conv | disc_layers | ["model.24.m.0", "model.24.m.1", "model.24.m.2"]
-      target: null_target # cand_target | null_target
+      target: null_target # cand_target (score threshold 0.1) | null_target
       ref_corrected:
         mode: prototype # prototype | subspace | none
         ref_map: object_detectors/runs/references/04-22-2026_19;16_layer_grad_null_target_loss_noise

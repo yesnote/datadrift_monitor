@@ -159,6 +159,10 @@ PREDICTION_DUMP_REQUIRED_COLUMNS = {
     "cls_entropy",
     "cls_entropy_norm",
     "cls_uniform_kl",
+    "score_cand_abs_diff",
+    "obj_cand_bce_loss",
+    "cls_cand_kl",
+    "bbox_cand_log_area_ratio",
     "max_iou",
     "tp",
 }
@@ -218,6 +222,10 @@ def _read_prediction_dump_csv(csv_path: Path) -> pd.DataFrame:
         "cls_entropy",
         "cls_entropy_norm",
         "cls_uniform_kl",
+        "score_cand_abs_diff",
+        "obj_cand_bce_loss",
+        "cls_cand_kl",
+        "bbox_cand_log_area_ratio",
         "max_iou",
         "tp",
     ]

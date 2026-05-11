@@ -419,7 +419,7 @@ def _tp_fp_class_box_panel(body: list[str], df, feature: str, x0: float, y0: flo
 
 
 def _tp_fp_null_comparison_svg(path: Path, df, metrics_df=None) -> str:
-    width, height = 1720, 760
+    width, height = 1720, 1075
     margin_x, margin_y = 80, 90
     panel_w, panel_h = 330, 205
     gap_x, gap_y = 78, 110
@@ -438,6 +438,10 @@ def _tp_fp_null_comparison_svg(path: Path, df, metrics_df=None) -> str:
         ("hist", "obj_null_bce_loss", "obj null BCE loss"),
         ("class", "cls_uniform_kl", "cls uniform kl by class"),
         ("hist", "bbox_anchor_log_area_ratio", "bbox anchor log area ratio"),
+        ("hist", "score_cand_abs_diff", "score cand abs diff"),
+        ("hist", "obj_cand_bce_loss", "obj cand BCE loss"),
+        ("class", "cls_cand_kl", "cls cand KL by class"),
+        ("hist", "bbox_cand_log_area_ratio", "bbox cand log area ratio"),
     ]
     metric_lookup = {}
     if metrics_df is not None and not metrics_df.empty and "feature" in metrics_df.columns:
@@ -450,7 +454,7 @@ def _tp_fp_null_comparison_svg(path: Path, df, metrics_df=None) -> str:
             _tp_fp_class_box_panel(body, df, feature, x0, y0, panel_w, panel_h, title, metric_lookup=metric_lookup)
         else:
             _tp_fp_hist_panel(body, df, feature, x0, y0, panel_w, panel_h, title, metric_lookup=metric_lookup)
-    return _write_svg(path, width, height, "TP/FP Raw vs Null Feature Comparison", body)
+    return _write_svg(path, width, height, "TP/FP Raw vs Null/Cand Feature Comparison", body)
 
 
 def _tp_fp_hist_grid_svg(path: Path, df, features: list[str], metrics_df=None) -> str:
@@ -564,7 +568,7 @@ def save_uncertainty_analysis_plots(out_dir: Path, *, pred_df=None, features=Non
 
     if pred_df is not None and features is not None:
         outputs["tp_fp_histograms"] = _tp_fp_hist_grid_svg(out_dir / "tp_fp_feature_histograms.svg", pred_df, list(features), metrics_df=metrics_df)
-        outputs["tp_fp_null_comparison"] = _tp_fp_null_comparison_svg(out_dir / "tp_fp_null_comparison_grid.svg", pred_df, metrics_df=metrics_df)
+        outputs["tp_fp_null_cand_comparison"] = _tp_fp_null_comparison_svg(out_dir / "tp_fp_null_cand_comparison_grid.svg", pred_df, metrics_df=metrics_df)
 
     return outputs
 
@@ -597,6 +601,10 @@ def save_prediction_distribution_plots(out_dir: Path, *, df, enabled=None, image
         "score_null_abs_diff",
         "cls_entropy_norm",
         "cls_uniform_kl",
+        "score_cand_abs_diff",
+        "obj_cand_bce_loss",
+        "cls_cand_kl",
+        "bbox_cand_log_area_ratio",
         "max_iou",
         "tp",
     ]
@@ -703,6 +711,10 @@ def save_prediction_distribution_plots(out_dir: Path, *, df, enabled=None, image
             "score_null_abs_diff",
             "cls_entropy_norm",
             "cls_uniform_kl",
+            "score_cand_abs_diff",
+            "obj_cand_bce_loss",
+            "cls_cand_kl",
+            "bbox_cand_log_area_ratio",
             "max_iou",
             "tp",
         ]

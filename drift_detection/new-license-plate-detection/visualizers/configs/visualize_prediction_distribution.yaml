@@ -4,7 +4,7 @@ task: prediction_distribution
 input:
   # Either provide run_roots containing prediction_dump.csv or direct csv_paths.
   run_roots:
-    - object_detectors/runs/tp_classifiers/05-11-2026_13;12_prediction_dump
+    - object_detectors/runs/tp_classifiers/05-11-2026_16;23_prediction_dump
   csv_paths: []
   max_rows: 0
 
