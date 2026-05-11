@@ -419,7 +419,7 @@ def _tp_fp_class_box_panel(body: list[str], df, feature: str, x0: float, y0: flo
 
 
 def _tp_fp_null_comparison_svg(path: Path, df, metrics_df=None) -> str:
-    width, height = 1720, 1995
+    width, height = 1720, 2935
     margin_x, margin_y = 80, 90
     panel_w, panel_h = 330, 205
     gap_x, gap_y = 78, 110
@@ -454,6 +454,18 @@ def _tp_fp_null_comparison_svg(path: Path, df, metrics_df=None) -> str:
         ("hist", "obj_null_bce_loss_grad_norm_model_24_m_2", "m.2 grad: obj null BCE"),
         ("hist", "cls_uniform_kl_grad_norm_model_24_m_2", "m.2 grad: cls uniform KL"),
         ("hist", "bbox_anchor_log_area_ratio_grad_norm_model_24_m_2", "m.2 grad: bbox log area"),
+        ("hist", "score_cand_diff_grad_norm_model_24_m_0", "m.0 grad: score cand diff"),
+        ("hist", "obj_cand_bce_loss_grad_norm_model_24_m_0", "m.0 grad: obj cand BCE"),
+        ("hist", "cls_cand_kl_grad_norm_model_24_m_0", "m.0 grad: cls cand KL"),
+        ("hist", "bbox_cand_log_area_ratio_grad_norm_model_24_m_0", "m.0 grad: bbox cand log area"),
+        ("hist", "score_cand_diff_grad_norm_model_24_m_1", "m.1 grad: score cand diff"),
+        ("hist", "obj_cand_bce_loss_grad_norm_model_24_m_1", "m.1 grad: obj cand BCE"),
+        ("hist", "cls_cand_kl_grad_norm_model_24_m_1", "m.1 grad: cls cand KL"),
+        ("hist", "bbox_cand_log_area_ratio_grad_norm_model_24_m_1", "m.1 grad: bbox cand log area"),
+        ("hist", "score_cand_diff_grad_norm_model_24_m_2", "m.2 grad: score cand diff"),
+        ("hist", "obj_cand_bce_loss_grad_norm_model_24_m_2", "m.2 grad: obj cand BCE"),
+        ("hist", "cls_cand_kl_grad_norm_model_24_m_2", "m.2 grad: cls cand KL"),
+        ("hist", "bbox_cand_log_area_ratio_grad_norm_model_24_m_2", "m.2 grad: bbox cand log area"),
     ]
     metric_lookup = {}
     if metrics_df is not None and not metrics_df.empty and "feature" in metrics_df.columns:
@@ -690,6 +702,18 @@ def save_prediction_distribution_plots(out_dir: Path, *, df, enabled=None, image
         "obj_null_bce_loss_grad_norm_model_24_m_2",
         "cls_uniform_kl_grad_norm_model_24_m_2",
         "bbox_anchor_log_area_ratio_grad_norm_model_24_m_2",
+        "score_cand_diff_grad_norm_model_24_m_0",
+        "obj_cand_bce_loss_grad_norm_model_24_m_0",
+        "cls_cand_kl_grad_norm_model_24_m_0",
+        "bbox_cand_log_area_ratio_grad_norm_model_24_m_0",
+        "score_cand_diff_grad_norm_model_24_m_1",
+        "obj_cand_bce_loss_grad_norm_model_24_m_1",
+        "cls_cand_kl_grad_norm_model_24_m_1",
+        "bbox_cand_log_area_ratio_grad_norm_model_24_m_1",
+        "score_cand_diff_grad_norm_model_24_m_2",
+        "obj_cand_bce_loss_grad_norm_model_24_m_2",
+        "cls_cand_kl_grad_norm_model_24_m_2",
+        "bbox_cand_log_area_ratio_grad_norm_model_24_m_2",
         "max_iou",
         "tp",
     ]
@@ -832,6 +856,18 @@ def save_prediction_distribution_plots(out_dir: Path, *, df, enabled=None, image
             "obj_null_bce_loss_grad_norm_model_24_m_2",
             "cls_uniform_kl_grad_norm_model_24_m_2",
             "bbox_anchor_log_area_ratio_grad_norm_model_24_m_2",
+            "score_cand_diff_grad_norm_model_24_m_0",
+            "obj_cand_bce_loss_grad_norm_model_24_m_0",
+            "cls_cand_kl_grad_norm_model_24_m_0",
+            "bbox_cand_log_area_ratio_grad_norm_model_24_m_0",
+            "score_cand_diff_grad_norm_model_24_m_1",
+            "obj_cand_bce_loss_grad_norm_model_24_m_1",
+            "cls_cand_kl_grad_norm_model_24_m_1",
+            "bbox_cand_log_area_ratio_grad_norm_model_24_m_1",
+            "score_cand_diff_grad_norm_model_24_m_2",
+            "obj_cand_bce_loss_grad_norm_model_24_m_2",
+            "cls_cand_kl_grad_norm_model_24_m_2",
+            "bbox_cand_log_area_ratio_grad_norm_model_24_m_2",
             "max_iou",
             "tp",
         ]

@@ -6,6 +6,10 @@ PREDICTION_DUMP_GRAD_TARGETS = [
     "obj_null_bce_loss",
     "cls_uniform_kl",
     "bbox_anchor_log_area_ratio",
+    "score_cand_diff",
+    "obj_cand_bce_loss",
+    "cls_cand_kl",
+    "bbox_cand_log_area_ratio",
 ]
 
 
@@ -117,12 +121,112 @@ def _null_gradient_scalars(raw_row, logit_row, cls_idx, prior_row):
     return out
 
 
-def _collect_null_gradient_norms(detector, grad_buffer, target_layers, raw_row, logit_row, cls_idx, prior_row):
+def _select_cand_indices(raw_b, raw_pred_idx, cls_idx, pred_box_xyxy, iou_threshold, score_threshold=0.1):
+    if raw_b is None or raw_b.numel() == 0 or raw_pred_idx < 0 or raw_pred_idx >= int(raw_b.shape[0]):
+        device = raw_b.device if raw_b is not None else "cpu"
+        return torch.zeros((0,), dtype=torch.long, device=device)
+    raw_xyxy = _xywh_to_xyxy_tensor(raw_b[:, :4])
+    ious = _iou_1vN_xyxy(pred_box_xyxy, raw_xyxy)
+    raw_obj = raw_b[:, 4] if raw_b.shape[1] > 4 else torch.ones((raw_b.shape[0],), device=raw_b.device)
+    raw_cls = raw_b[:, 5:] if raw_b.shape[1] > 5 else torch.zeros((raw_b.shape[0], 0), device=raw_b.device)
+    if raw_cls.numel() > 0:
+        raw_cls_max, raw_cls_idx = raw_cls.max(dim=1)
+    else:
+        raw_cls_max = torch.ones_like(raw_obj)
+        raw_cls_idx = torch.zeros((raw_b.shape[0],), dtype=torch.long, device=raw_b.device)
+    raw_score = raw_obj * raw_cls_max
+    class_mask = (raw_cls_idx == int(cls_idx)) if cls_idx >= 0 else torch.ones_like(raw_score, dtype=torch.bool)
+    cand_mask = class_mask & (ious >= float(iou_threshold)) & (raw_score >= float(score_threshold))
+    cand_mask[int(raw_pred_idx)] = False
+    if bool(cand_mask.any()):
+        return cand_mask.nonzero(as_tuple=False).view(-1)
+    return torch.tensor([int(raw_pred_idx)], dtype=torch.long, device=raw_b.device)
+
+
+def _cand_gradient_scalars(
+    raw_row,
+    logit_row,
+    raw_b,
+    logit_b,
+    cand_indices,
+    cls_idx,
+):
+    eps = 1e-12
+    out = {}
+    device = raw_row.device
+    obj = raw_row[4].float().clamp(min=1e-6, max=1.0 - 1e-6) if raw_row.shape[0] > 4 else torch.ones((), device=device)
+    pred_probs = _prob_distribution_for_grad(raw_row, logit_row)
+    n_cls = int(pred_probs.shape[0]) if pred_probs.numel() else 0
+    pred_cls_conf = pred_probs[int(cls_idx)].clamp(min=eps) if cls_idx >= 0 and n_cls > int(cls_idx) else torch.zeros((), device=device)
+    pred_score = obj * pred_cls_conf
+    pred_area = (raw_row[2].float().clamp(min=eps) * raw_row[3].float().clamp(min=eps)) if raw_row.shape[0] >= 4 else torch.ones((), device=device)
+
+    if cand_indices.numel() == 0:
+        zero = raw_row.sum() * 0.0
+        return {
+            "score_cand_diff": zero,
+            "obj_cand_bce_loss": zero,
+            "cls_cand_kl": zero,
+            "bbox_cand_log_area_ratio": zero,
+        }
+
+    score_diffs = []
+    obj_bces = []
+    cls_kls = []
+    area_ratios = []
+    for cand_idx_tensor in cand_indices:
+        cand_idx = int(cand_idx_tensor.detach().cpu().item())
+        cand_row = raw_b[cand_idx].detach()
+        cand_obj = cand_row[4].float().clamp(min=1e-6, max=1.0 - 1e-6) if cand_row.shape[0] > 4 else torch.ones((), device=device)
+        cand_probs = _prob_distribution_for_grad(
+            cand_row,
+            logit_b[cand_idx].detach() if logit_b is not None and cand_idx < int(logit_b.shape[0]) else None,
+        )
+        if cand_probs.numel() and cls_idx >= 0 and int(cand_probs.shape[0]) > int(cls_idx):
+            cand_score = cand_obj * cand_probs[int(cls_idx)].clamp(min=eps)
+        else:
+            cand_score = cand_obj
+        score_diffs.append(pred_score - cand_score.to(device=device, dtype=pred_score.dtype))
+        obj_bces.append(-(cand_obj.to(device=device, dtype=obj.dtype) * torch.log(obj) + (1.0 - cand_obj.to(device=device, dtype=obj.dtype)) * torch.log(1.0 - obj)))
+
+        if pred_probs.numel() and cand_probs.numel() and int(pred_probs.shape[0]) == int(cand_probs.shape[0]):
+            cand_probs = cand_probs.to(device=device, dtype=pred_probs.dtype).clamp(min=eps)
+            pred_probs_clamped = pred_probs.clamp(min=eps)
+            cls_kls.append((cand_probs * (torch.log(cand_probs) - torch.log(pred_probs_clamped))).sum())
+        else:
+            cls_kls.append(raw_row.sum() * 0.0)
+
+        if cand_row.shape[0] >= 4:
+            cand_area = cand_row[2].float().clamp(min=eps) * cand_row[3].float().clamp(min=eps)
+            area_ratios.append(torch.log(pred_area / cand_area.to(device=device, dtype=pred_area.dtype).clamp(min=eps)))
+        else:
+            area_ratios.append(raw_row.sum() * 0.0)
+
+    out["score_cand_diff"] = torch.stack(score_diffs).mean()
+    out["obj_cand_bce_loss"] = torch.stack(obj_bces).mean()
+    out["cls_cand_kl"] = torch.stack(cls_kls).mean()
+    out["bbox_cand_log_area_ratio"] = torch.stack(area_ratios).mean()
+    return out
+
+
+def _collect_gradient_norms(
+    detector,
+    grad_buffer,
+    target_layers,
+    raw_row,
+    logit_row,
+    cls_idx,
+    prior_row,
+    raw_b,
+    logit_b,
+    cand_indices,
+):
     out = {}
     for target_name in PREDICTION_DUMP_GRAD_TARGETS:
         for layer_name in target_layers:
             out[_grad_norm_col(target_name, layer_name)] = 0.0
     scalars = _null_gradient_scalars(raw_row, logit_row, cls_idx, prior_row)
+    scalars.update(_cand_gradient_scalars(raw_row, logit_row, raw_b, logit_b, cand_indices, cls_idx))
     for target_name in PREDICTION_DUMP_GRAD_TARGETS:
         scalar = scalars.get(target_name)
         if scalar is None or not getattr(scalar, "requires_grad", False):
@@ -615,6 +719,14 @@ def run_prediction_dump_csv(config, run_dir):
                             cls_conf = score / obj
                         null_stats = _null_target_stats(raw_row, logit_row, cls_idx, obj, score)
                         logit_b = raw_logits[sample_idx] if raw_logits is not None and sample_idx < int(raw_logits.shape[0]) else None
+                        cand_indices = _select_cand_indices(
+                            raw_b=raw_b,
+                            raw_pred_idx=raw_pred_idx,
+                            cls_idx=cls_idx,
+                            pred_box_xyxy=box[:4].detach().float(),
+                            iou_threshold=nms_kwargs["iou_thres"],
+                            score_threshold=0.1,
+                        )
                         cand_stats = _cand_target_stats(
                             raw_b=raw_b,
                             logit_b=logit_b.detach() if logit_b is not None else None,
@@ -629,7 +741,7 @@ def run_prediction_dump_csv(config, run_dir):
                         )
                         gradient_stats = {col: 0.0 for col in gradient_columns}
                         if gradient_enabled and grad_buffer is not None and raw_row_grad is not None:
-                            gradient_stats = _collect_null_gradient_norms(
+                            gradient_stats = _collect_gradient_norms(
                                 detector=detector,
                                 grad_buffer=grad_buffer,
                                 target_layers=gradient_layers,
@@ -637,6 +749,9 @@ def run_prediction_dump_csv(config, run_dir):
                                 logit_row=logit_row_grad,
                                 cls_idx=cls_idx,
                                 prior_row=prior_row_grad,
+                                raw_b=raw_b,
+                                logit_b=logit_b.detach() if logit_b is not None else None,
+                                cand_indices=cand_indices,
                             )
                         anchor_cx = anchor_cy = anchor_w = anchor_h = 0.0
                         if prior_row is not None and prior_row.shape[0] >= 4:
