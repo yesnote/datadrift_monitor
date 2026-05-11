@@ -435,9 +435,9 @@ def _tp_fp_null_comparison_svg(path: Path, df, metrics_df=None) -> str:
         ("class", "cls_conf", "cls conf by class"),
         ("hist", "area", "bbox area"),
         ("hist", "score_null_abs_diff", "score null abs diff"),
-        ("hist", "obj_null_abs_diff", "obj null abs diff"),
+        ("hist", "obj_null_bce_loss", "obj null BCE loss"),
         ("class", "cls_uniform_kl", "cls uniform kl by class"),
-        ("hist", "bbox_anchor_ciou_loss", "bbox anchor CIoU loss"),
+        ("hist", "bbox_anchor_log_area_ratio", "bbox anchor log area ratio"),
     ]
     metric_lookup = {}
     if metrics_df is not None and not metrics_df.empty and "feature" in metrics_df.columns:
@@ -592,6 +592,7 @@ def save_prediction_distribution_plots(out_dir: Path, *, df, enabled=None, image
         "bbox_anchor_ciou_loss",
         "bbox_anchor_aspect_ratio_diff",
         "obj_null_abs_diff",
+        "obj_null_bce_loss",
         "cls_null_abs_diff",
         "score_null_abs_diff",
         "cls_entropy_norm",
@@ -697,6 +698,7 @@ def save_prediction_distribution_plots(out_dir: Path, *, df, enabled=None, image
             "cls_conf",
             "score",
             "obj_null_abs_diff",
+            "obj_null_bce_loss",
             "cls_null_abs_diff",
             "score_null_abs_diff",
             "cls_entropy_norm",

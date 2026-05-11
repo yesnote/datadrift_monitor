@@ -24,6 +24,10 @@ def _null_target_stats(raw_row, logit_row, cls_idx, obj, score):
     null_obj = 0.5
     null_cls_conf = (1.0 / float(n_cls)) if n_cls > 0 else 0.0
     null_score = null_obj * null_cls_conf
+    obj_prob = min(max(float(obj), 1e-6), 1.0 - 1e-6)
+    obj_null_bce_loss = -(
+        null_obj * np.log(obj_prob) + (1.0 - null_obj) * np.log(1.0 - obj_prob)
+    )
     cls_prob = (
         float(cls_probs[cls_idx].detach().cpu().item())
         if cls_idx >= 0 and n_cls > cls_idx
@@ -45,6 +49,7 @@ def _null_target_stats(raw_row, logit_row, cls_idx, obj, score):
         "null_cls_conf": null_cls_conf,
         "null_score": null_score,
         "obj_null_abs_diff": abs(float(obj) - null_obj),
+        "obj_null_bce_loss": float(obj_null_bce_loss),
         "cls_null_abs_diff": abs(float(cls_prob) - null_cls_conf),
         "score_null_abs_diff": abs(float(score) - null_score),
         "cls_entropy": entropy,
@@ -140,6 +145,7 @@ def run_prediction_dump_csv(config, run_dir):
         "null_cls_conf",
         "null_score",
         "obj_null_abs_diff",
+        "obj_null_bce_loss",
         "cls_null_abs_diff",
         "score_null_abs_diff",
         "cls_entropy",
