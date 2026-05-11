@@ -1334,6 +1334,44 @@ def _xywh_to_xyxy_tensor(xywh: torch.Tensor) -> torch.Tensor:
     return out
 
 
+def _bbox_ciou_xywh_tensor(box1: torch.Tensor, box2: torch.Tensor, eps: float = 1e-7) -> torch.Tensor:
+    if box1.ndim == 1:
+        box1 = box1.view(1, 4)
+    if box2.ndim == 1:
+        box2 = box2.view(1, 4)
+    if box2.shape[0] == 1 and box1.shape[0] > 1:
+        box2 = box2.expand(box1.shape[0], -1)
+
+    b1_x1 = box1[:, 0] - box1[:, 2] / 2.0
+    b1_y1 = box1[:, 1] - box1[:, 3] / 2.0
+    b1_x2 = box1[:, 0] + box1[:, 2] / 2.0
+    b1_y2 = box1[:, 1] + box1[:, 3] / 2.0
+    b2_x1 = box2[:, 0] - box2[:, 2] / 2.0
+    b2_y1 = box2[:, 1] - box2[:, 3] / 2.0
+    b2_x2 = box2[:, 0] + box2[:, 2] / 2.0
+    b2_y2 = box2[:, 1] + box2[:, 3] / 2.0
+
+    inter = (
+        (torch.min(b1_x2, b2_x2) - torch.max(b1_x1, b2_x1)).clamp(0)
+        * (torch.min(b1_y2, b2_y2) - torch.max(b1_y1, b2_y1)).clamp(0)
+    )
+    w1 = (b1_x2 - b1_x1).clamp(min=0)
+    h1 = (b1_y2 - b1_y1).clamp(min=0)
+    w2 = (b2_x2 - b2_x1).clamp(min=0)
+    h2 = (b2_y2 - b2_y1).clamp(min=0)
+    union = w1 * h1 + w2 * h2 - inter + eps
+    iou = inter / union
+
+    cw = torch.max(b1_x2, b2_x2) - torch.min(b1_x1, b2_x1)
+    ch = torch.max(b1_y2, b2_y2) - torch.min(b1_y1, b2_y1)
+    c2 = cw.pow(2) + ch.pow(2) + eps
+    rho2 = (box1[:, 0] - box2[:, 0]).pow(2) + (box1[:, 1] - box2[:, 1]).pow(2)
+    v = (4.0 / (math.pi ** 2)) * torch.pow(torch.atan(w2 / (h2 + eps)) - torch.atan(w1 / (h1 + eps)), 2)
+    with torch.no_grad():
+        alpha = v / (1.0 - iou + v + eps)
+    return iou - (rho2 / c2 + alpha * v)
+
+
 def _box_iou_tensor(boxes1: torch.Tensor, boxes2: torch.Tensor) -> torch.Tensor:
     area1 = (boxes1[:, 2] - boxes1[:, 0]).clamp(min=0) * (boxes1[:, 3] - boxes1[:, 1]).clamp(min=0)
     area2 = (boxes2[:, 2] - boxes2[:, 0]).clamp(min=0) * (boxes2[:, 3] - boxes2[:, 1]).clamp(min=0)
@@ -1441,7 +1479,7 @@ def build_layer_target_scalar_bbox(
                 return None
             pred_xywh = pred_row[:4]
             anchor_xywh = anchor_xywh.to(dtype=pred_xywh.dtype, device=pred_xywh.device)
-            return F.smooth_l1_loss(pred_xywh, anchor_xywh, reduction="mean")
+            return (1.0 - _bbox_ciou_xywh_tensor(pred_xywh, anchor_xywh)).mean()
         return None
 
     losses = build_pseudo_label_losses_for_candidates(

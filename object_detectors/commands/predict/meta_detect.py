@@ -37,6 +37,28 @@ def run_meta_detect_csv(config, run_dir):
         union = area1 + area2 - inter
         return inter / union.clamp(min=1e-12)
 
+    def _boxes_to_original_xyxy(boxes: torch.Tensor, ratio, pad, image_tensor: torch.Tensor):
+        if boxes.numel() == 0:
+            return boxes.clone()
+        out = boxes.clone()
+        ratio_w, ratio_h = float(ratio[0]), float(ratio[1])
+        pad_w, pad_h = float(pad[0]), float(pad[1])
+        img_h = int(image_tensor.shape[-2])
+        img_w = int(image_tensor.shape[-1])
+        out[..., [0, 2]] = (out[..., [0, 2]] - pad_w) / max(ratio_w, 1e-12)
+        out[..., [1, 3]] = (out[..., [1, 3]] - pad_h) / max(ratio_h, 1e-12)
+        out[..., [0, 2]] = out[..., [0, 2]].clamp(0, img_w)
+        out[..., [1, 3]] = out[..., [1, 3]].clamp(0, img_h)
+        return out
+
+    dataloader = create_dataloader(config, split=split)
+    if len(dataloader.dataset) == 0:
+        raise ValueError("Loaded 0 images. Check dataset root/image_dir/split configuration in YAML.")
+
+    detector, device = build_detector(config)
+    num_classes = len(detector.names) if detector.names is not None else int(config.get("model", {}).get("num_classes", 0))
+    output_feature_names = ["prob_sum"] + [f"prob_{i}" for i in range(max(0, num_classes))]
+
     output_csv = run_dir / "meta_detect.csv"
     meta_feature_names = [
         "num_candidate_boxes",
@@ -53,20 +75,19 @@ def run_meta_detect_csv(config, run_dir):
     if unit == "bbox":
         fieldnames = [
             "image_id", "image_path", "pred_idx", "raw_pred_idx", "xmin", "ymin", "xmax", "ymax", "score", "pred_class",
+            *output_feature_names,
             *meta_feature_names,
         ]
     else:
         fieldnames = ["image_id", "image_path"]
+        for feature_name in output_feature_names:
+            for metric_name in vector_reduction:
+                fieldnames.append(f"{feature_name}_{metric_name}")
         for feature_name in meta_feature_names:
             for metric_name in vector_reduction:
                 fieldnames.append(f"{feature_name}_{metric_name}")
         fieldnames.append("num_preds")
 
-    dataloader = create_dataloader(config, split=split)
-    if len(dataloader.dataset) == 0:
-        raise ValueError("Loaded 0 images. Check dataset root/image_dir/split configuration in YAML.")
-
-    detector, device = build_detector(config)
     raw_prof = RawComputeProfiler(run_dir=run_dir, uncertainty=uncertainty, unit=unit)
     with open(output_csv, "w", newline="", encoding="utf-8") as output_file:
         writer = csv.DictWriter(output_file, fieldnames=fieldnames)
@@ -75,7 +96,7 @@ def run_meta_detect_csv(config, run_dir):
             dataloader, desc=f"Object Detector ({mode} - {uncertainty})", total=len(dataloader)
         ):
             image_list = _as_image_list(images)
-            infer_batch, _ratios, _pads, _resized_chws = _prepare_infer_batch(detector, image_list, device, auto=False)
+            infer_batch, ratios, pads, _resized_chws = _prepare_infer_batch(detector, image_list, device, auto=False)
             with torch.no_grad():
                 model_output = detector.model(infer_batch, augment=False)
                 raw_prediction = model_output[0] if isinstance(model_output, (tuple, list)) else model_output
@@ -111,6 +132,7 @@ def run_meta_detect_csv(config, run_dir):
                 if raw.numel() == 0:
                     continue
                 raw_xyxy = _xywh_to_xyxy_tensor(raw[:, :4])
+                raw_xyxy_orig = _boxes_to_original_xyxy(raw_xyxy, ratios[sample_idx], pads[sample_idx], image_list[sample_idx])
                 raw_obj = raw[:, 4] if raw.shape[1] > 4 else torch.ones((raw.shape[0],), device=device)
                 raw_cls = raw[:, 5:] if raw.shape[1] > 5 else torch.zeros((raw.shape[0], 0), device=device)
                 if raw_cls.numel() > 0:
@@ -121,21 +143,35 @@ def run_meta_detect_csv(config, run_dir):
                 raw_score = raw_obj * raw_cls_max
 
                 image_feature_rows = []
+                image_output_rows = []
                 for pred_idx, (box, score, pred_class_name) in enumerate(zip(pred_boxes, pred_scores, pred_class_names)):
                     fbox = torch.tensor(box, dtype=torch.float32, device=device)
+                    fbox_orig = _boxes_to_original_xyxy(fbox.view(1, 4), ratios[sample_idx], pads[sample_idx], image_list[sample_idx]).view(4)
                     raw_pred_idx = int(raw_keep_b[pred_idx].detach().cpu().item()) if pred_idx < int(raw_keep_b.shape[0]) else pred_idx
                     cls_idx = int(pred_class_ids[pred_idx]) if pred_idx < len(pred_class_ids) else -1
                     ious = _iou_1vN(fbox, raw_xyxy)
                     class_mask = (raw_cls_idx == cls_idx) if cls_idx >= 0 else torch.ones_like(raw_score, dtype=torch.bool)
                     cand_mask = class_mask & (raw_score > score_threshold) & (ious > iou_threshold)
 
-                    cand_boxes = raw_xyxy[cand_mask]
+                    cand_boxes = raw_xyxy_orig[cand_mask]
                     cand_scores = raw_score[cand_mask]
                     cand_ious = ious[cand_mask]
                     if cand_boxes.numel() == 0:
-                        cand_boxes = fbox.view(1, 4)
+                        cand_boxes = fbox_orig.view(1, 4)
                         cand_scores = torch.tensor([float(score)], dtype=torch.float32, device=device)
                         cand_ious = torch.zeros((1,), dtype=torch.float32, device=device)
+
+                    if 0 <= raw_pred_idx < int(raw_cls.shape[0]) and raw_cls.numel() > 0:
+                        pred_probs = raw_cls[raw_pred_idx].detach().float()
+                    else:
+                        pred_probs = torch.zeros((num_classes,), dtype=torch.float32, device=device)
+                    prob_values = {"prob_sum": float(pred_probs.sum().detach().cpu().item()) if pred_probs.numel() else 0.0}
+                    for prob_idx in range(max(0, num_classes)):
+                        prob_values[f"prob_{prob_idx}"] = (
+                            float(pred_probs[prob_idx].detach().cpu().item())
+                            if prob_idx < int(pred_probs.shape[0])
+                            else 0.0
+                        )
 
                     x = 0.5 * (cand_boxes[:, 0] + cand_boxes[:, 2])
                     y = 0.5 * (cand_boxes[:, 1] + cand_boxes[:, 3])
@@ -148,7 +184,7 @@ def run_meta_detect_csv(config, run_dir):
                     iou_pb = torch.where(cand_ious == 1.0, torch.zeros_like(cand_ious), cand_ious)
                     iou_pb_pos = iou_pb[iou_pb > 0]
 
-                    fx1, fy1, fx2, fy2 = float(box[0]), float(box[1]), float(box[2]), float(box[3])
+                    fx1, fy1, fx2, fy2 = [float(v.detach().cpu().item()) for v in fbox_orig]
                     fsize = float((0.5 * ((0.5 * (fx1 + fx2)) - abs(0.5 * (fx1 - fx2)))) * (0.5 * ((0.5 * (fy1 + fy2)) - abs(0.5 * (fy1 - fy2)))))
                     fcircum = float(abs(fx2 - fx1) + abs(fy2 - fy1))
                     fsize_circum = float(((0.5 * abs(fx2 - fx1)) * (0.5 * abs(fy2 - fy1))) / max(abs(fx2 - fx1) + abs(fy2 - fy1), 1e-12))
@@ -189,11 +225,13 @@ def run_meta_detect_csv(config, run_dir):
                                 "ymax": fy2,
                                 "score": float(score),
                                 "pred_class": pred_class_name,
+                                **prob_values,
                                 **feature_row,
                             }
                         )
                     else:
                         image_feature_rows.append(feature_row)
+                        image_output_rows.append(prob_values)
                 if unit == "image":
                     batch_items += 1
                     row = {
@@ -201,6 +239,25 @@ def run_meta_detect_csv(config, run_dir):
                         "image_path": image_path,
                         "num_preds": len(image_feature_rows),
                     }
+                    for feature_name in output_feature_names:
+                        if len(image_output_rows) == 0:
+                            stats = {
+                                "1-norm": 0.0,
+                                "2-norm": 0.0,
+                                "min": 0.0,
+                                "max": 0.0,
+                                "mean": 0.0,
+                                "std": 0.0,
+                            }
+                        else:
+                            vec = torch.tensor(
+                                [float(r[feature_name]) for r in image_output_rows],
+                                dtype=torch.float32,
+                                device=device,
+                            )
+                            stats = map_grad_tensor_to_numbers(vec)
+                        for metric_name in vector_reduction:
+                            row[f"{feature_name}_{metric_name}"] = float(stats[metric_name])
                     for feature_name in meta_feature_names:
                         if len(image_feature_rows) == 0:
                             stats = {
