@@ -217,7 +217,7 @@ def _collect_gradient_norms(
         for layer_name, grad_tensor in zip(target_layers, grads):
             norm = 0.0
             if grad_tensor is not None:
-                norm = float(torch.linalg.vector_norm(grad_tensor.detach().float()).detach().cpu().item())
+                norm = float(grad_tensor.detach().float().abs().sum().detach().cpu().item())
             out[_grad_norm_col(target_name, layer_name)] = norm
         del grads
     detector.zero_grad(set_to_none=True)
