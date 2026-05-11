@@ -24,45 +24,19 @@ def _grad_norm_col(target_name, layer_name):
 class _LayerOutputGradNormBuffer:
     def __init__(self, model, target_layers):
         self.target_layers = list(target_layers)
-        modules = dict(model.named_modules())
-        self.handles = []
-        self.norms = {}
-        for layer_name in self.target_layers:
-            if layer_name not in modules:
-                raise ValueError(f"Gradient layer not found in model.named_modules(): {layer_name}")
-            module = modules[layer_name]
-            if hasattr(module, "register_full_backward_hook"):
-                self.handles.append(
-                    module.register_full_backward_hook(
-                        lambda _module, _grad_input, grad_output, name=layer_name: self._hook(name, grad_output)
-                    )
-                )
-            else:
-                self.handles.append(
-                    module.register_backward_hook(
-                        lambda _module, _grad_input, grad_output, name=layer_name: self._hook(name, grad_output)
-                    )
-                )
+        self.layer_params = [resolve_layer_parameter(model, layer_name) for layer_name in self.target_layers]
+        self.original_requires_grad = [bool(param.requires_grad) for param in self.layer_params]
+        for param in self.layer_params:
+            param.requires_grad_(True)
 
-    def _hook(self, layer_name, grad_output):
-        if grad_output is None or len(grad_output) == 0 or grad_output[0] is None:
-            return None
-        grad = grad_output[0].detach()
-        norm = float(torch.linalg.vector_norm(grad.float()).detach().cpu().item())
-        self.norms[layer_name] = norm
-        return None
-
-    def clear(self):
-        self.norms.clear()
-
-    def values(self):
-        return {layer_name: float(self.norms.get(layer_name, 0.0)) for layer_name in self.target_layers}
+    def clear_grads(self):
+        for param in self.layer_params:
+            param.grad = None
 
     def remove(self):
-        self.clear()
-        for handle in self.handles:
-            handle.remove()
-        self.handles = []
+        self.clear_grads()
+        for param, requires_grad in zip(self.layer_params, self.original_requires_grad):
+            param.requires_grad_(requires_grad)
 
 
 def _class_name(names, cls_idx):
@@ -220,6 +194,7 @@ def _collect_gradient_norms(
     raw_b,
     logit_b,
     cand_indices,
+    sample_idx,
 ):
     out = {}
     for target_name in PREDICTION_DUMP_GRAD_TARGETS:
@@ -232,12 +207,21 @@ def _collect_gradient_norms(
         if scalar is None or not getattr(scalar, "requires_grad", False):
             continue
         detector.zero_grad(set_to_none=True)
-        grad_buffer.clear()
-        scalar.backward(retain_graph=True)
-        for layer_name, norm in grad_buffer.values().items():
+        grad_buffer.clear_grads()
+        grads = torch.autograd.grad(
+            scalar,
+            grad_buffer.layer_params,
+            retain_graph=True,
+            allow_unused=True,
+        )
+        for layer_name, grad_tensor in zip(target_layers, grads):
+            norm = 0.0
+            if grad_tensor is not None:
+                norm = float(torch.linalg.vector_norm(grad_tensor.detach().float()).detach().cpu().item())
             out[_grad_norm_col(target_name, layer_name)] = norm
+        del grads
     detector.zero_grad(set_to_none=True)
-    grad_buffer.clear()
+    grad_buffer.clear_grads()
     return out
 
 
@@ -752,6 +736,7 @@ def run_prediction_dump_csv(config, run_dir):
                                 raw_b=raw_b,
                                 logit_b=logit_b.detach() if logit_b is not None else None,
                                 cand_indices=cand_indices,
+                                sample_idx=sample_idx,
                             )
                         anchor_cx = anchor_cy = anchor_w = anchor_h = 0.0
                         if prior_row is not None and prior_row.shape[0] >= 4:
