@@ -419,7 +419,7 @@ def _tp_fp_class_box_panel(body: list[str], df, feature: str, x0: float, y0: flo
 
 
 def _tp_fp_null_comparison_svg(path: Path, df, metrics_df=None) -> str:
-    width, height = 1720, 1075
+    width, height = 1720, 1995
     margin_x, margin_y = 80, 90
     panel_w, panel_h = 330, 205
     gap_x, gap_y = 78, 110
@@ -442,6 +442,18 @@ def _tp_fp_null_comparison_svg(path: Path, df, metrics_df=None) -> str:
         ("hist", "obj_cand_bce_loss", "obj cand BCE loss"),
         ("class", "cls_cand_kl", "cls cand KL by class"),
         ("hist", "bbox_cand_log_area_ratio", "bbox cand log area ratio"),
+        ("hist", "score_null_diff_grad_norm_model_24_m_0", "m.0 grad: score null diff"),
+        ("hist", "obj_null_bce_loss_grad_norm_model_24_m_0", "m.0 grad: obj null BCE"),
+        ("hist", "cls_uniform_kl_grad_norm_model_24_m_0", "m.0 grad: cls uniform KL"),
+        ("hist", "bbox_anchor_log_area_ratio_grad_norm_model_24_m_0", "m.0 grad: bbox log area"),
+        ("hist", "score_null_diff_grad_norm_model_24_m_1", "m.1 grad: score null diff"),
+        ("hist", "obj_null_bce_loss_grad_norm_model_24_m_1", "m.1 grad: obj null BCE"),
+        ("hist", "cls_uniform_kl_grad_norm_model_24_m_1", "m.1 grad: cls uniform KL"),
+        ("hist", "bbox_anchor_log_area_ratio_grad_norm_model_24_m_1", "m.1 grad: bbox log area"),
+        ("hist", "score_null_diff_grad_norm_model_24_m_2", "m.2 grad: score null diff"),
+        ("hist", "obj_null_bce_loss_grad_norm_model_24_m_2", "m.2 grad: obj null BCE"),
+        ("hist", "cls_uniform_kl_grad_norm_model_24_m_2", "m.2 grad: cls uniform KL"),
+        ("hist", "bbox_anchor_log_area_ratio_grad_norm_model_24_m_2", "m.2 grad: bbox log area"),
     ]
     metric_lookup = {}
     if metrics_df is not None and not metrics_df.empty and "feature" in metrics_df.columns:
@@ -454,7 +466,7 @@ def _tp_fp_null_comparison_svg(path: Path, df, metrics_df=None) -> str:
             _tp_fp_class_box_panel(body, df, feature, x0, y0, panel_w, panel_h, title, metric_lookup=metric_lookup)
         else:
             _tp_fp_hist_panel(body, df, feature, x0, y0, panel_w, panel_h, title, metric_lookup=metric_lookup)
-    return _write_svg(path, width, height, "TP/FP Raw vs Null/Cand Feature Comparison", body)
+    return _write_svg(path, width, height, "TP/FP Raw vs Null/Cand/Gradient Feature Comparison", body)
 
 
 def _tp_fp_hist_grid_svg(path: Path, df, features: list[str], metrics_df=None) -> str:
@@ -666,6 +678,18 @@ def save_prediction_distribution_plots(out_dir: Path, *, df, enabled=None, image
         "cand_area_min",
         "cand_area_max",
         "cand_area_std",
+        "score_null_diff_grad_norm_model_24_m_0",
+        "obj_null_bce_loss_grad_norm_model_24_m_0",
+        "cls_uniform_kl_grad_norm_model_24_m_0",
+        "bbox_anchor_log_area_ratio_grad_norm_model_24_m_0",
+        "score_null_diff_grad_norm_model_24_m_1",
+        "obj_null_bce_loss_grad_norm_model_24_m_1",
+        "cls_uniform_kl_grad_norm_model_24_m_1",
+        "bbox_anchor_log_area_ratio_grad_norm_model_24_m_1",
+        "score_null_diff_grad_norm_model_24_m_2",
+        "obj_null_bce_loss_grad_norm_model_24_m_2",
+        "cls_uniform_kl_grad_norm_model_24_m_2",
+        "bbox_anchor_log_area_ratio_grad_norm_model_24_m_2",
         "max_iou",
         "tp",
     ]
@@ -796,6 +820,18 @@ def save_prediction_distribution_plots(out_dir: Path, *, df, enabled=None, image
             "cand_area_min",
             "cand_area_max",
             "cand_area_std",
+            "score_null_diff_grad_norm_model_24_m_0",
+            "obj_null_bce_loss_grad_norm_model_24_m_0",
+            "cls_uniform_kl_grad_norm_model_24_m_0",
+            "bbox_anchor_log_area_ratio_grad_norm_model_24_m_0",
+            "score_null_diff_grad_norm_model_24_m_1",
+            "obj_null_bce_loss_grad_norm_model_24_m_1",
+            "cls_uniform_kl_grad_norm_model_24_m_1",
+            "bbox_anchor_log_area_ratio_grad_norm_model_24_m_1",
+            "score_null_diff_grad_norm_model_24_m_2",
+            "obj_null_bce_loss_grad_norm_model_24_m_2",
+            "cls_uniform_kl_grad_norm_model_24_m_2",
+            "bbox_anchor_log_area_ratio_grad_norm_model_24_m_2",
             "max_iou",
             "tp",
         ]

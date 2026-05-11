@@ -1,12 +1,140 @@
 from commands.predict.common import *
 
 
+PREDICTION_DUMP_GRAD_TARGETS = [
+    "score_null_diff",
+    "obj_null_bce_loss",
+    "cls_uniform_kl",
+    "bbox_anchor_log_area_ratio",
+]
+
+
+def _safe_layer_col_name(layer_name):
+    return str(layer_name).replace(".", "_").replace("/", "_").replace("\\", "_")
+
+
+def _grad_norm_col(target_name, layer_name):
+    return f"{target_name}_grad_norm_{_safe_layer_col_name(layer_name)}"
+
+
+class _LayerOutputGradNormBuffer:
+    def __init__(self, model, target_layers):
+        self.target_layers = list(target_layers)
+        modules = dict(model.named_modules())
+        self.handles = []
+        self.norms = {}
+        for layer_name in self.target_layers:
+            if layer_name not in modules:
+                raise ValueError(f"Gradient layer not found in model.named_modules(): {layer_name}")
+            module = modules[layer_name]
+            if hasattr(module, "register_full_backward_hook"):
+                self.handles.append(
+                    module.register_full_backward_hook(
+                        lambda _module, _grad_input, grad_output, name=layer_name: self._hook(name, grad_output)
+                    )
+                )
+            else:
+                self.handles.append(
+                    module.register_backward_hook(
+                        lambda _module, _grad_input, grad_output, name=layer_name: self._hook(name, grad_output)
+                    )
+                )
+
+    def _hook(self, layer_name, grad_output):
+        if grad_output is None or len(grad_output) == 0 or grad_output[0] is None:
+            return None
+        grad = grad_output[0].detach()
+        norm = float(torch.linalg.vector_norm(grad.float()).detach().cpu().item())
+        self.norms[layer_name] = norm
+        return None
+
+    def clear(self):
+        self.norms.clear()
+
+    def values(self):
+        return {layer_name: float(self.norms.get(layer_name, 0.0)) for layer_name in self.target_layers}
+
+    def remove(self):
+        self.clear()
+        for handle in self.handles:
+            handle.remove()
+        self.handles = []
+
+
 def _class_name(names, cls_idx):
     if isinstance(names, dict):
         return names.get(cls_idx, str(cls_idx))
     if isinstance(names, list) and 0 <= cls_idx < len(names):
         return names[cls_idx]
     return str(cls_idx)
+
+
+def _prediction_dump_gradient_config(config):
+    pd_cfg = ((config.get("output", {}) or {}).get("prediction_dump", {}) or {})
+    grad_cfg = pd_cfg.get("gradient", {}) or {}
+    enabled = bool(grad_cfg.get("enabled", False))
+    layers = grad_cfg.get("layer", ["model.24.m.0", "model.24.m.1", "model.24.m.2"])
+    if isinstance(layers, str):
+        layers = [layers]
+    layers = [str(v).strip() for v in layers if str(v).strip()]
+    return enabled, layers
+
+
+def _prob_distribution_for_grad(raw_row, logit_row=None):
+    if logit_row is not None and getattr(logit_row, "numel", lambda: 0)() > 0:
+        return torch.softmax(logit_row.float(), dim=-1)
+    if raw_row is not None and raw_row.shape[0] > 5:
+        probs = raw_row[5:].float().clamp(min=1e-12)
+        return probs / probs.sum().clamp(min=1e-12)
+    device = raw_row.device if raw_row is not None else "cpu"
+    return torch.zeros((0,), dtype=torch.float32, device=device)
+
+
+def _null_gradient_scalars(raw_row, logit_row, cls_idx, prior_row):
+    eps = 1e-12
+    out = {}
+    device = raw_row.device
+    obj = raw_row[4].float().clamp(min=1e-6, max=1.0 - 1e-6) if raw_row.shape[0] > 4 else torch.ones((), device=device)
+    probs = _prob_distribution_for_grad(raw_row, logit_row)
+    n_cls = int(probs.shape[0]) if probs.numel() else 0
+    cls_conf = probs[int(cls_idx)].clamp(min=eps) if cls_idx >= 0 and n_cls > int(cls_idx) else torch.zeros((), device=device)
+    null_score = 0.5 * ((1.0 / float(n_cls)) if n_cls > 0 else 0.0)
+    out["score_null_diff"] = (obj * cls_conf) - float(null_score)
+    out["obj_null_bce_loss"] = -(0.5 * torch.log(obj) + 0.5 * torch.log(1.0 - obj))
+    if n_cls > 0:
+        entropy = -(probs.clamp(min=eps) * torch.log(probs.clamp(min=eps))).sum()
+        out["cls_uniform_kl"] = torch.log(torch.tensor(float(n_cls), dtype=probs.dtype, device=probs.device)) - entropy
+    else:
+        out["cls_uniform_kl"] = raw_row.sum() * 0.0
+    if prior_row is not None and prior_row.shape[0] >= 4 and raw_row.shape[0] >= 4:
+        pred_w = raw_row[2].float().clamp(min=eps)
+        pred_h = raw_row[3].float().clamp(min=eps)
+        anchor_w = prior_row[2].float().clamp(min=eps)
+        anchor_h = prior_row[3].float().clamp(min=eps)
+        out["bbox_anchor_log_area_ratio"] = torch.log((pred_w * pred_h) / (anchor_w * anchor_h).clamp(min=eps))
+    else:
+        out["bbox_anchor_log_area_ratio"] = raw_row[:4].sum() * 0.0
+    return out
+
+
+def _collect_null_gradient_norms(detector, grad_buffer, target_layers, raw_row, logit_row, cls_idx, prior_row):
+    out = {}
+    for target_name in PREDICTION_DUMP_GRAD_TARGETS:
+        for layer_name in target_layers:
+            out[_grad_norm_col(target_name, layer_name)] = 0.0
+    scalars = _null_gradient_scalars(raw_row, logit_row, cls_idx, prior_row)
+    for target_name in PREDICTION_DUMP_GRAD_TARGETS:
+        scalar = scalars.get(target_name)
+        if scalar is None or not getattr(scalar, "requires_grad", False):
+            continue
+        detector.zero_grad(set_to_none=True)
+        grad_buffer.clear()
+        scalar.backward(retain_graph=True)
+        for layer_name, norm in grad_buffer.values().items():
+            out[_grad_norm_col(target_name, layer_name)] = norm
+    detector.zero_grad(set_to_none=True)
+    grad_buffer.clear()
+    return out
 
 
 def _null_target_stats(raw_row, logit_row, cls_idx, obj, score):
@@ -260,6 +388,12 @@ def run_prediction_dump_csv(config, run_dir):
         return
 
     output_csv = run_dir / "prediction_dump.csv"
+    gradient_enabled, gradient_layers = _prediction_dump_gradient_config(config)
+    gradient_columns = [
+        _grad_norm_col(target_name, layer_name)
+        for layer_name in gradient_layers
+        for target_name in PREDICTION_DUMP_GRAD_TARGETS
+    ]
     fieldnames = [
         "image_id",
         "image_path",
@@ -330,6 +464,7 @@ def run_prediction_dump_csv(config, run_dir):
         "cand_area_std",
         "cand_score_threshold",
         "cand_iou_threshold",
+        *gradient_columns,
         "max_iou",
         "tp",
     ]
@@ -341,198 +476,254 @@ def run_prediction_dump_csv(config, run_dir):
 
     detector, device = build_detector(config)
     nms_kwargs = _resolve_detector_nms_kwargs(detector)
+    grad_buffer = _LayerOutputGradNormBuffer(detector.model, gradient_layers) if gradient_enabled else None
     raw_prof = RawComputeProfiler(run_dir=run_dir, uncertainty=uncertainty, unit=unit)
     total_images = 0
     total_predictions = 0
 
-    with open(output_csv, "w", newline="", encoding="utf-8") as output_file:
-        writer = csv.DictWriter(output_file, fieldnames=fieldnames)
-        writer.writeheader()
+    try:
+        with open(output_csv, "w", newline="", encoding="utf-8") as output_file:
+            writer = csv.DictWriter(output_file, fieldnames=fieldnames)
+            writer.writeheader()
 
-        for images, targets in tqdm(
-            dataloader, desc=f"Object Detector ({mode} - {uncertainty})", total=len(dataloader)
-        ):
-            image_list = _as_image_list(images)
-            total_images += len(image_list)
-            detector.zero_grad(set_to_none=True)
-            infer_batch, ratios, pads, _resized_chws = _prepare_infer_batch(detector, image_list, device, auto=False)
-            with torch.no_grad():
-                model_output = detector.model(infer_batch, augment=False)
-                raw_prediction = model_output[0] if isinstance(model_output, (tuple, list)) else model_output
-                raw_logits = (
-                    model_output[1]
-                    if isinstance(model_output, (tuple, list)) and len(model_output) > 1
-                    else None
-                )
-                raw_priors = (
-                    model_output[3]
-                    if isinstance(model_output, (tuple, list)) and len(model_output) > 3
-                    else None
-                )
-                nms_logits = _resolve_nms_logits(raw_prediction, raw_logits)
-                selected_preds, _selected_logits, _selected_objectness, selected_indices = detector.non_max_suppression(
-                    prediction=raw_prediction,
-                    logits=nms_logits,
-                    conf_thres=nms_kwargs["conf_thres"],
-                    iou_thres=nms_kwargs["iou_thres"],
-                    classes=nms_kwargs["classes"],
-                    agnostic=nms_kwargs["agnostic"],
-                    max_det=nms_kwargs["max_det"],
-                    return_indices=True,
-                )
+            for images, targets in tqdm(
+                dataloader, desc=f"Object Detector ({mode} - {uncertainty})", total=len(dataloader)
+            ):
+                image_list = _as_image_list(images)
+                total_images += len(image_list)
+                detector.zero_grad(set_to_none=True)
+                infer_batch, ratios, pads, _resized_chws = _prepare_infer_batch(detector, image_list, device, auto=False)
+                if gradient_enabled:
+                    model_output = detector.model(infer_batch, augment=False)
+                    raw_prediction = model_output[0] if isinstance(model_output, (tuple, list)) else model_output
+                    raw_logits = (
+                        model_output[1]
+                        if isinstance(model_output, (tuple, list)) and len(model_output) > 1
+                        else None
+                    )
+                    raw_priors = (
+                        model_output[3]
+                        if isinstance(model_output, (tuple, list)) and len(model_output) > 3
+                        else None
+                    )
+                    nms_prediction = raw_prediction.detach()
+                    nms_raw_logits = raw_logits.detach() if raw_logits is not None else None
+                    nms_logits = _resolve_nms_logits(nms_prediction, nms_raw_logits)
+                    selected_preds, _selected_logits, _selected_objectness, selected_indices = detector.non_max_suppression(
+                        prediction=nms_prediction,
+                        logits=nms_logits,
+                        conf_thres=nms_kwargs["conf_thres"],
+                        iou_thres=nms_kwargs["iou_thres"],
+                        classes=nms_kwargs["classes"],
+                        agnostic=nms_kwargs["agnostic"],
+                        max_det=nms_kwargs["max_det"],
+                        return_indices=True,
+                    )
+                else:
+                    with torch.no_grad():
+                        model_output = detector.model(infer_batch, augment=False)
+                        raw_prediction = model_output[0] if isinstance(model_output, (tuple, list)) else model_output
+                        raw_logits = (
+                            model_output[1]
+                            if isinstance(model_output, (tuple, list)) and len(model_output) > 1
+                            else None
+                        )
+                        raw_priors = (
+                            model_output[3]
+                            if isinstance(model_output, (tuple, list)) and len(model_output) > 3
+                            else None
+                        )
+                        nms_logits = _resolve_nms_logits(raw_prediction, raw_logits)
+                        selected_preds, _selected_logits, _selected_objectness, selected_indices = detector.non_max_suppression(
+                            prediction=raw_prediction,
+                            logits=nms_logits,
+                            conf_thres=nms_kwargs["conf_thres"],
+                            iou_thres=nms_kwargs["iou_thres"],
+                            classes=nms_kwargs["classes"],
+                            agnostic=nms_kwargs["agnostic"],
+                            max_det=nms_kwargs["max_det"],
+                            return_indices=True,
+                        )
 
-            t_raw = raw_prof.start()
-            batch_items = 0
-            for sample_idx in range(len(image_list)):
-                target = targets[sample_idx]
-                image_id = int(target["image_id"][0].item())
-                image_path = target["path"]
-                det = selected_preds[sample_idx]
-                raw_keep_b = selected_indices[sample_idx]
-                raw_b = raw_prediction[sample_idx].detach().float()
-                pred_boxes = det[:, :4].detach().cpu().tolist()
-                pred_scores = det[:, 4].detach().cpu().tolist() if det.shape[1] > 4 else []
-                pred_cls_ids = (
-                    det[:, 5].long().detach().cpu().tolist()
-                    if det.shape[1] > 5
-                    else [0 for _ in range(int(det.shape[0]))]
-                )
-                pred_class_names = [_class_name(detector.names, int(cls_idx)) for cls_idx in pred_cls_ids]
-                gt_boxes = map_boxes_to_letterbox(target["boxes"], ratios[sample_idx], pads[sample_idx])
-                gt_class_names = _resolve_gt_class_names(target, catid_to_name)
-                tp_flags, best_ious = assign_tp_to_predictions(
-                    gt_boxes=gt_boxes,
-                    gt_class_names=gt_class_names,
-                    pred_boxes=pred_boxes,
-                    pred_class_names=pred_class_names,
-                    pred_scores=pred_scores,
-                    iou_match_threshold=iou_match_threshold,
-                )
-                batch_items += int(det.shape[0])
-                total_predictions += int(det.shape[0])
+                t_raw = raw_prof.start()
+                batch_items = 0
+                for sample_idx in range(len(image_list)):
+                    target = targets[sample_idx]
+                    image_id = int(target["image_id"][0].item())
+                    image_path = target["path"]
+                    det = selected_preds[sample_idx]
+                    raw_keep_b = selected_indices[sample_idx]
+                    raw_b_grad = raw_prediction[sample_idx].float()
+                    raw_b = raw_b_grad.detach()
+                    pred_boxes = det[:, :4].detach().cpu().tolist()
+                    pred_scores = det[:, 4].detach().cpu().tolist() if det.shape[1] > 4 else []
+                    pred_cls_ids = (
+                        det[:, 5].long().detach().cpu().tolist()
+                        if det.shape[1] > 5
+                        else [0 for _ in range(int(det.shape[0]))]
+                    )
+                    pred_class_names = [_class_name(detector.names, int(cls_idx)) for cls_idx in pred_cls_ids]
+                    gt_boxes = map_boxes_to_letterbox(target["boxes"], ratios[sample_idx], pads[sample_idx])
+                    gt_class_names = _resolve_gt_class_names(target, catid_to_name)
+                    tp_flags, best_ious = assign_tp_to_predictions(
+                        gt_boxes=gt_boxes,
+                        gt_class_names=gt_class_names,
+                        pred_boxes=pred_boxes,
+                        pred_class_names=pred_class_names,
+                        pred_scores=pred_scores,
+                        iou_match_threshold=iou_match_threshold,
+                    )
+                    batch_items += int(det.shape[0])
+                    total_predictions += int(det.shape[0])
 
-                for pred_idx, box in enumerate(det):
-                    raw_pred_idx = (
-                        int(raw_keep_b[pred_idx].detach().cpu().item())
-                        if pred_idx < int(raw_keep_b.shape[0])
-                        else pred_idx
-                    )
-                    cls_idx = int(pred_cls_ids[pred_idx]) if pred_idx < len(pred_cls_ids) else -1
-                    xmin = float(box[0].detach().cpu().item())
-                    ymin = float(box[1].detach().cpu().item())
-                    xmax = float(box[2].detach().cpu().item())
-                    ymax = float(box[3].detach().cpu().item())
-                    w = max(0.0, xmax - xmin)
-                    h = max(0.0, ymax - ymin)
-                    area = w * h
-                    obj = 0.0
-                    cls_conf = 0.0
-                    raw_row = None
-                    logit_row = None
-                    prior_row = None
-                    if 0 <= raw_pred_idx < int(raw_b.shape[0]):
-                        raw_row = raw_b[raw_pred_idx]
-                        obj = float(raw_row[4].detach().cpu().item()) if raw_row.shape[0] > 4 else 1.0
-                        if cls_idx >= 0 and raw_row.shape[0] > 5 + cls_idx:
-                            cls_conf = float(raw_row[5 + cls_idx].detach().cpu().item())
-                    if raw_logits is not None and sample_idx < int(raw_logits.shape[0]) and 0 <= raw_pred_idx < int(raw_logits.shape[1]):
-                        logit_row = raw_logits[sample_idx, raw_pred_idx]
-                    if raw_priors is not None and sample_idx < int(raw_priors.shape[0]) and 0 <= raw_pred_idx < int(raw_priors.shape[1]):
-                        prior_row = raw_priors[sample_idx, raw_pred_idx].detach().float()
-                    score = float(box[4].detach().cpu().item())
-                    if cls_conf == 0.0 and obj > 1e-12:
-                        cls_conf = score / obj
-                    null_stats = _null_target_stats(raw_row, logit_row, cls_idx, obj, score)
-                    logit_b = raw_logits[sample_idx] if raw_logits is not None and sample_idx < int(raw_logits.shape[0]) else None
-                    cand_stats = _cand_target_stats(
-                        raw_b=raw_b,
-                        logit_b=logit_b,
-                        raw_pred_idx=raw_pred_idx,
-                        cls_idx=cls_idx,
-                        pred_box_xyxy=box[:4].detach().float(),
-                        pred_obj=obj,
-                        pred_score=score,
-                        pred_area=area,
-                        iou_threshold=nms_kwargs["iou_thres"],
-                        score_threshold=0.1,
-                    )
-                    anchor_cx = anchor_cy = anchor_w = anchor_h = 0.0
-                    if prior_row is not None and prior_row.shape[0] >= 4:
-                        anchor_cx = float(prior_row[0].detach().cpu().item())
-                        anchor_cy = float(prior_row[1].detach().cpu().item())
-                        anchor_w = float(prior_row[2].detach().cpu().item())
-                        anchor_h = float(prior_row[3].detach().cpu().item())
-                    anchor_area = max(0.0, anchor_w) * max(0.0, anchor_h)
-                    anchor_aspect_ratio = anchor_w / max(anchor_h, 1e-12)
-                    cx = 0.5 * (xmin + xmax)
-                    cy = 0.5 * (ymin + ymax)
-                    dx = cx - anchor_cx
-                    dy = cy - anchor_cy
-                    w_ratio = w / max(anchor_w, 1e-12)
-                    h_ratio = h / max(anchor_h, 1e-12)
-                    area_ratio = area / max(anchor_area, 1e-12)
-                    anchor_xmin = anchor_cx - 0.5 * anchor_w
-                    anchor_ymin = anchor_cy - 0.5 * anchor_h
-                    anchor_xmax = anchor_cx + 0.5 * anchor_w
-                    anchor_ymax = anchor_cy + 0.5 * anchor_h
-                    bbox_anchor_ciou = _ciou_xyxy(
-                        (xmin, ymin, xmax, ymax),
-                        (anchor_xmin, anchor_ymin, anchor_xmax, anchor_ymax),
-                    )
+                    for pred_idx, box in enumerate(det):
+                        raw_pred_idx = (
+                            int(raw_keep_b[pred_idx].detach().cpu().item())
+                            if pred_idx < int(raw_keep_b.shape[0])
+                            else pred_idx
+                        )
+                        cls_idx = int(pred_cls_ids[pred_idx]) if pred_idx < len(pred_cls_ids) else -1
+                        xmin = float(box[0].detach().cpu().item())
+                        ymin = float(box[1].detach().cpu().item())
+                        xmax = float(box[2].detach().cpu().item())
+                        ymax = float(box[3].detach().cpu().item())
+                        w = max(0.0, xmax - xmin)
+                        h = max(0.0, ymax - ymin)
+                        area = w * h
+                        obj = 0.0
+                        cls_conf = 0.0
+                        raw_row = None
+                        raw_row_grad = None
+                        logit_row = None
+                        logit_row_grad = None
+                        prior_row = None
+                        prior_row_grad = None
+                        if 0 <= raw_pred_idx < int(raw_b.shape[0]):
+                            raw_row = raw_b[raw_pred_idx]
+                            raw_row_grad = raw_b_grad[raw_pred_idx]
+                            obj = float(raw_row[4].detach().cpu().item()) if raw_row.shape[0] > 4 else 1.0
+                            if cls_idx >= 0 and raw_row.shape[0] > 5 + cls_idx:
+                                cls_conf = float(raw_row[5 + cls_idx].detach().cpu().item())
+                        if raw_logits is not None and sample_idx < int(raw_logits.shape[0]) and 0 <= raw_pred_idx < int(raw_logits.shape[1]):
+                            logit_row_grad = raw_logits[sample_idx, raw_pred_idx]
+                            logit_row = logit_row_grad.detach()
+                        if raw_priors is not None and sample_idx < int(raw_priors.shape[0]) and 0 <= raw_pred_idx < int(raw_priors.shape[1]):
+                            prior_row_grad = raw_priors[sample_idx, raw_pred_idx].float()
+                            prior_row = prior_row_grad.detach()
+                        score = float(box[4].detach().cpu().item())
+                        if cls_conf == 0.0 and obj > 1e-12:
+                            cls_conf = score / obj
+                        null_stats = _null_target_stats(raw_row, logit_row, cls_idx, obj, score)
+                        logit_b = raw_logits[sample_idx] if raw_logits is not None and sample_idx < int(raw_logits.shape[0]) else None
+                        cand_stats = _cand_target_stats(
+                            raw_b=raw_b,
+                            logit_b=logit_b.detach() if logit_b is not None else None,
+                            raw_pred_idx=raw_pred_idx,
+                            cls_idx=cls_idx,
+                            pred_box_xyxy=box[:4].detach().float(),
+                            pred_obj=obj,
+                            pred_score=score,
+                            pred_area=area,
+                            iou_threshold=nms_kwargs["iou_thres"],
+                            score_threshold=0.1,
+                        )
+                        gradient_stats = {col: 0.0 for col in gradient_columns}
+                        if gradient_enabled and grad_buffer is not None and raw_row_grad is not None:
+                            gradient_stats = _collect_null_gradient_norms(
+                                detector=detector,
+                                grad_buffer=grad_buffer,
+                                target_layers=gradient_layers,
+                                raw_row=raw_row_grad,
+                                logit_row=logit_row_grad,
+                                cls_idx=cls_idx,
+                                prior_row=prior_row_grad,
+                            )
+                        anchor_cx = anchor_cy = anchor_w = anchor_h = 0.0
+                        if prior_row is not None and prior_row.shape[0] >= 4:
+                            anchor_cx = float(prior_row[0].detach().cpu().item())
+                            anchor_cy = float(prior_row[1].detach().cpu().item())
+                            anchor_w = float(prior_row[2].detach().cpu().item())
+                            anchor_h = float(prior_row[3].detach().cpu().item())
+                        anchor_area = max(0.0, anchor_w) * max(0.0, anchor_h)
+                        anchor_aspect_ratio = anchor_w / max(anchor_h, 1e-12)
+                        cx = 0.5 * (xmin + xmax)
+                        cy = 0.5 * (ymin + ymax)
+                        dx = cx - anchor_cx
+                        dy = cy - anchor_cy
+                        w_ratio = w / max(anchor_w, 1e-12)
+                        h_ratio = h / max(anchor_h, 1e-12)
+                        area_ratio = area / max(anchor_area, 1e-12)
+                        anchor_xmin = anchor_cx - 0.5 * anchor_w
+                        anchor_ymin = anchor_cy - 0.5 * anchor_h
+                        anchor_xmax = anchor_cx + 0.5 * anchor_w
+                        anchor_ymax = anchor_cy + 0.5 * anchor_h
+                        bbox_anchor_ciou = _ciou_xyxy(
+                            (xmin, ymin, xmax, ymax),
+                            (anchor_xmin, anchor_ymin, anchor_xmax, anchor_ymax),
+                        )
 
-                    writer.writerow(
-                        {
-                            "image_id": image_id,
-                            "image_path": image_path,
-                            "pred_idx": pred_idx,
-                            "raw_pred_idx": raw_pred_idx,
-                            "xmin": xmin,
-                            "ymin": ymin,
-                            "xmax": xmax,
-                            "ymax": ymax,
-                            "cx": cx,
-                            "cy": cy,
-                            "w": w,
-                            "h": h,
-                            "area": area,
-                            "aspect_ratio": w / max(h, 1e-12),
-                            "anchor_cx": anchor_cx,
-                            "anchor_cy": anchor_cy,
-                            "anchor_w": anchor_w,
-                            "anchor_h": anchor_h,
-                            "anchor_area": anchor_area,
-                            "anchor_aspect_ratio": anchor_aspect_ratio,
-                            "bbox_anchor_dx": dx,
-                            "bbox_anchor_dy": dy,
-                            "bbox_anchor_center_l2": float((dx * dx + dy * dy) ** 0.5),
-                            "bbox_anchor_w_ratio": w_ratio,
-                            "bbox_anchor_h_ratio": h_ratio,
-                            "bbox_anchor_area_ratio": area_ratio,
-                            "bbox_anchor_log_w_ratio": float(np.log(max(w_ratio, 1e-12))),
-                            "bbox_anchor_log_h_ratio": float(np.log(max(h_ratio, 1e-12))),
-                            "bbox_anchor_log_area_ratio": float(np.log(max(area_ratio, 1e-12))),
-                            "bbox_anchor_aspect_ratio_diff": (w / max(h, 1e-12)) - anchor_aspect_ratio,
-                            "bbox_anchor_ciou": bbox_anchor_ciou,
-                            "bbox_anchor_ciou_loss": 1.0 - bbox_anchor_ciou,
-                            "obj": obj,
-                            "cls_conf": cls_conf,
-                            "score": score,
-                            "pred_class": pred_class_names[pred_idx] if pred_idx < len(pred_class_names) else _class_name(detector.names, cls_idx),
-                            "pred_class_id": cls_idx,
-                            **null_stats,
-                            **cand_stats,
-                            "max_iou": float(best_ious[pred_idx]) if pred_idx < len(best_ious) else 0.0,
-                            "tp": int(tp_flags[pred_idx]) if pred_idx < len(tp_flags) else 0,
-                        }
-                    )
-            raw_prof.end(t_raw, batch_items)
-            del infer_batch, raw_prediction, raw_logits, raw_priors, selected_preds, selected_indices
+                        writer.writerow(
+                            {
+                                "image_id": image_id,
+                                "image_path": image_path,
+                                "pred_idx": pred_idx,
+                                "raw_pred_idx": raw_pred_idx,
+                                "xmin": xmin,
+                                "ymin": ymin,
+                                "xmax": xmax,
+                                "ymax": ymax,
+                                "cx": cx,
+                                "cy": cy,
+                                "w": w,
+                                "h": h,
+                                "area": area,
+                                "aspect_ratio": w / max(h, 1e-12),
+                                "anchor_cx": anchor_cx,
+                                "anchor_cy": anchor_cy,
+                                "anchor_w": anchor_w,
+                                "anchor_h": anchor_h,
+                                "anchor_area": anchor_area,
+                                "anchor_aspect_ratio": anchor_aspect_ratio,
+                                "bbox_anchor_dx": dx,
+                                "bbox_anchor_dy": dy,
+                                "bbox_anchor_center_l2": float((dx * dx + dy * dy) ** 0.5),
+                                "bbox_anchor_w_ratio": w_ratio,
+                                "bbox_anchor_h_ratio": h_ratio,
+                                "bbox_anchor_area_ratio": area_ratio,
+                                "bbox_anchor_log_w_ratio": float(np.log(max(w_ratio, 1e-12))),
+                                "bbox_anchor_log_h_ratio": float(np.log(max(h_ratio, 1e-12))),
+                                "bbox_anchor_log_area_ratio": float(np.log(max(area_ratio, 1e-12))),
+                                "bbox_anchor_aspect_ratio_diff": (w / max(h, 1e-12)) - anchor_aspect_ratio,
+                                "bbox_anchor_ciou": bbox_anchor_ciou,
+                                "bbox_anchor_ciou_loss": 1.0 - bbox_anchor_ciou,
+                                "obj": obj,
+                                "cls_conf": cls_conf,
+                                "score": score,
+                                "pred_class": pred_class_names[pred_idx] if pred_idx < len(pred_class_names) else _class_name(detector.names, cls_idx),
+                                "pred_class_id": cls_idx,
+                                **null_stats,
+                                **cand_stats,
+                                **gradient_stats,
+                                "max_iou": float(best_ious[pred_idx]) if pred_idx < len(best_ious) else 0.0,
+                                "tp": int(tp_flags[pred_idx]) if pred_idx < len(tp_flags) else 0,
+                            }
+                        )
+                raw_prof.end(t_raw, batch_items)
+                del infer_batch, raw_prediction, raw_logits, raw_priors, selected_preds, selected_indices
+                if device.type == "cuda":
+                    torch.cuda.empty_cache()
+    finally:
+        if grad_buffer is not None:
+            grad_buffer.remove()
 
     summary = {
         "output_csv": str(output_csv),
         "total_images": int(total_images),
         "total_predictions": int(total_predictions),
         "mean_predictions_per_image": (float(total_predictions) / total_images) if total_images else 0.0,
+        "gradient_enabled": bool(gradient_enabled),
+        "gradient_layers": list(gradient_layers),
+        "gradient_targets": list(PREDICTION_DUMP_GRAD_TARGETS),
     }
     with open(run_dir / "prediction_dump_summary.json", "w", encoding="utf-8") as f:
         json.dump(summary, f, ensure_ascii=False, indent=2)
