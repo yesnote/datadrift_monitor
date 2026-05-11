@@ -51,7 +51,7 @@ def _null_target_stats(raw_row, logit_row, cls_idx, obj, score):
         "obj_null_abs_diff": abs(float(obj) - null_obj),
         "obj_null_bce_loss": float(obj_null_bce_loss),
         "cls_null_abs_diff": abs(float(cls_prob) - null_cls_conf),
-        "score_null_abs_diff": abs(float(score) - null_score),
+        "score_null_diff": float(score) - null_score,
         "cls_entropy": entropy,
         "cls_entropy_norm": entropy_norm,
         "cls_uniform_kl": uniform_kl,
@@ -111,10 +111,21 @@ def _iou_1vN_xyxy(box: torch.Tensor, boxes: torch.Tensor):
     return inter / union.clamp(min=1e-12)
 
 
-def _cand_target_stats(raw_b, logit_b, raw_pred_idx, cls_idx, pred_box_xyxy, pred_obj, pred_score, pred_area, iou_threshold):
+def _cand_target_stats(
+    raw_b,
+    logit_b,
+    raw_pred_idx,
+    cls_idx,
+    pred_box_xyxy,
+    pred_obj,
+    pred_score,
+    pred_area,
+    iou_threshold,
+    score_threshold=0.1,
+):
     eps = 1e-12
     zero = {
-        "score_cand_abs_diff": 0.0,
+        "score_cand_diff": 0.0,
         "obj_cand_bce_loss": 0.0,
         "cls_cand_kl": 0.0,
         "bbox_cand_log_area_ratio": 0.0,
@@ -133,43 +144,53 @@ def _cand_target_stats(raw_b, logit_b, raw_pred_idx, cls_idx, pred_box_xyxy, pre
         raw_cls_idx = torch.zeros((raw_b.shape[0],), dtype=torch.long, device=raw_b.device)
     raw_score = raw_obj * raw_cls_max
     class_mask = (raw_cls_idx == int(cls_idx)) if cls_idx >= 0 else torch.ones_like(raw_score, dtype=torch.bool)
-    cand_mask = class_mask & (ious >= float(iou_threshold))
+    cand_mask = class_mask & (ious >= float(iou_threshold)) & (raw_score >= float(score_threshold))
     cand_mask[raw_pred_idx] = False
 
     if bool(cand_mask.any()):
         cand_indices = cand_mask.nonzero(as_tuple=False).view(-1)
-        cand_idx = int(cand_indices[torch.argmax(raw_score[cand_indices])].detach().cpu().item())
     else:
-        cand_idx = int(raw_pred_idx)
-
-    cand_row = raw_b[cand_idx]
-    cand_obj = float(cand_row[4].detach().cpu().item()) if cand_row.shape[0] > 4 else 1.0
-    pred_obj_clamped = min(max(float(pred_obj), 1e-6), 1.0 - 1e-6)
-    cand_obj_clamped = min(max(cand_obj, 1e-6), 1.0 - 1e-6)
-    obj_cand_bce_loss = -(
-        cand_obj_clamped * np.log(pred_obj_clamped)
-        + (1.0 - cand_obj_clamped) * np.log(1.0 - pred_obj_clamped)
-    )
+        cand_indices = torch.tensor([int(raw_pred_idx)], dtype=torch.long, device=raw_b.device)
 
     pred_dist = _prob_distribution(raw_b[raw_pred_idx], logit_b[raw_pred_idx] if logit_b is not None and raw_pred_idx < int(logit_b.shape[0]) else None)
-    cand_dist = _prob_distribution(cand_row, logit_b[cand_idx] if logit_b is not None and cand_idx < int(logit_b.shape[0]) else None)
-    if pred_dist.numel() and cand_dist.numel() and int(pred_dist.shape[0]) == int(cand_dist.shape[0]):
-        pred_probs = pred_dist.clamp(min=eps)
-        cand_probs = cand_dist.clamp(min=eps)
-        cls_cand_kl = float((cand_probs * (torch.log(cand_probs) - torch.log(pred_probs))).sum().detach().cpu().item())
-    else:
-        cls_cand_kl = 0.0
+    pred_obj_clamped = min(max(float(pred_obj), 1e-6), 1.0 - 1e-6)
+    score_diffs = []
+    obj_bces = []
+    cls_kls = []
+    area_ratios = []
+    for cand_idx_tensor in cand_indices:
+        cand_idx = int(cand_idx_tensor.detach().cpu().item())
+        cand_row = raw_b[cand_idx]
+        cand_obj = float(cand_row[4].detach().cpu().item()) if cand_row.shape[0] > 4 else 1.0
+        cand_obj_clamped = min(max(cand_obj, 1e-6), 1.0 - 1e-6)
+        obj_bces.append(
+            -(
+                cand_obj_clamped * np.log(pred_obj_clamped)
+                + (1.0 - cand_obj_clamped) * np.log(1.0 - pred_obj_clamped)
+            )
+        )
 
-    cand_xyxy = raw_xyxy[cand_idx]
-    cand_w = max(0.0, float((cand_xyxy[2] - cand_xyxy[0]).detach().cpu().item()))
-    cand_h = max(0.0, float((cand_xyxy[3] - cand_xyxy[1]).detach().cpu().item()))
-    cand_area = cand_w * cand_h
-    cand_score = float(raw_score[cand_idx].detach().cpu().item())
+        cand_dist = _prob_distribution(cand_row, logit_b[cand_idx] if logit_b is not None and cand_idx < int(logit_b.shape[0]) else None)
+        if pred_dist.numel() and cand_dist.numel() and int(pred_dist.shape[0]) == int(cand_dist.shape[0]):
+            pred_probs = pred_dist.clamp(min=eps)
+            cand_probs = cand_dist.clamp(min=eps)
+            cls_kls.append(float((cand_probs * (torch.log(cand_probs) - torch.log(pred_probs))).sum().detach().cpu().item()))
+        else:
+            cls_kls.append(0.0)
+
+        cand_xyxy = raw_xyxy[cand_idx]
+        cand_w = max(0.0, float((cand_xyxy[2] - cand_xyxy[0]).detach().cpu().item()))
+        cand_h = max(0.0, float((cand_xyxy[3] - cand_xyxy[1]).detach().cpu().item()))
+        cand_area = cand_w * cand_h
+        cand_score = float(raw_score[cand_idx].detach().cpu().item())
+        score_diffs.append(float(pred_score) - cand_score)
+        area_ratios.append(float(np.log(max(float(pred_area), eps) / max(float(cand_area), eps))))
+
     return {
-        "score_cand_abs_diff": abs(float(pred_score) - cand_score),
-        "obj_cand_bce_loss": float(obj_cand_bce_loss),
-        "cls_cand_kl": cls_cand_kl,
-        "bbox_cand_log_area_ratio": float(np.log(max(float(pred_area), eps) / max(float(cand_area), eps))),
+        "score_cand_diff": float(np.mean(score_diffs)) if score_diffs else 0.0,
+        "obj_cand_bce_loss": float(np.mean(obj_bces)) if obj_bces else 0.0,
+        "cls_cand_kl": float(np.mean(cls_kls)) if cls_kls else 0.0,
+        "bbox_cand_log_area_ratio": float(np.mean(area_ratios)) if area_ratios else 0.0,
     }
 
 
@@ -234,11 +255,11 @@ def run_prediction_dump_csv(config, run_dir):
         "obj_null_abs_diff",
         "obj_null_bce_loss",
         "cls_null_abs_diff",
-        "score_null_abs_diff",
+        "score_null_diff",
         "cls_entropy",
         "cls_entropy_norm",
         "cls_uniform_kl",
-        "score_cand_abs_diff",
+        "score_cand_diff",
         "obj_cand_bce_loss",
         "cls_cand_kl",
         "bbox_cand_log_area_ratio",
@@ -366,6 +387,7 @@ def run_prediction_dump_csv(config, run_dir):
                         pred_score=score,
                         pred_area=area,
                         iou_threshold=nms_kwargs["iou_thres"],
+                        score_threshold=0.1,
                     )
                     anchor_cx = anchor_cy = anchor_w = anchor_h = 0.0
                     if prior_row is not None and prior_row.shape[0] >= 4:
