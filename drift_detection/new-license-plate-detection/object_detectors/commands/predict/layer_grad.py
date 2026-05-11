@@ -825,6 +825,7 @@ def run_layer_grad_csv(config, run_dir):
     layer_map_reduction = parsed["layer_map_reduction"]
     layer_vector_reduction = parsed["layer_vector_reduction"]
     layer_pseudo_gt = parsed.get("layer_pseudo_gt", "cand")
+    layer_cand_score_threshold = float(parsed.get("layer_cand_score_threshold", 0.01))
     pre_nms = bool(parsed.get("pre_nms", False))
     pre_nms_ratio = float(parsed.get("pre_nms_ratio", 1.0))
     save_image_enabled = bool(parsed.get("save_image_enabled", False))
@@ -1268,6 +1269,7 @@ def run_layer_grad_csv(config, run_dir):
                         pre_nms=pre_nms,
                         pre_nms_ratio=pre_nms_ratio,
                         pseudo_gt=viz_pseudo_gt if viz_enabled else layer_pseudo_gt,
+                        cand_score_threshold=layer_cand_score_threshold,
                     )
                 else:
                     batch_grad_stats_all = [{} for _ in range(len(image_list))]
@@ -1289,6 +1291,7 @@ def run_layer_grad_csv(config, run_dir):
                         map_reduction=layer_map_reduction,
                         vector_reduction=layer_vector_reduction,
                         pseudo_gt=layer_pseudo_gt,
+                        cand_score_threshold=layer_cand_score_threshold,
                     )
                     if csv_writer is not None:
                         for bbox_row in bbox_rows:
