@@ -434,11 +434,11 @@ def _tp_fp_null_comparison_svg(path: Path, df, metrics_df=None) -> str:
         ("hist", "obj", "obj"),
         ("class", "cls_conf", "cls conf by class"),
         ("hist", "area", "bbox area"),
-        ("hist", "score_null_abs_diff", "score null abs diff"),
+        ("hist", "score_null_diff", "score null diff"),
         ("hist", "obj_null_bce_loss", "obj null BCE loss"),
         ("class", "cls_uniform_kl", "cls uniform kl by class"),
         ("hist", "bbox_anchor_log_area_ratio", "bbox anchor log area ratio"),
-        ("hist", "score_cand_abs_diff", "score cand abs diff"),
+        ("hist", "score_cand_diff", "score cand diff"),
         ("hist", "obj_cand_bce_loss", "obj cand BCE loss"),
         ("class", "cls_cand_kl", "cls cand KL by class"),
         ("hist", "bbox_cand_log_area_ratio", "bbox cand log area ratio"),
@@ -598,10 +598,10 @@ def save_prediction_distribution_plots(out_dir: Path, *, df, enabled=None, image
         "obj_null_abs_diff",
         "obj_null_bce_loss",
         "cls_null_abs_diff",
-        "score_null_abs_diff",
+        "score_null_diff",
         "cls_entropy_norm",
         "cls_uniform_kl",
-        "score_cand_abs_diff",
+        "score_cand_diff",
         "obj_cand_bce_loss",
         "cls_cand_kl",
         "bbox_cand_log_area_ratio",
@@ -616,7 +616,7 @@ def save_prediction_distribution_plots(out_dir: Path, *, df, enabled=None, image
 
     if _enabled(enabled, "box_violin"):
         paths = []
-        for metric in ["score", "obj", "cls_conf", "score_null_abs_diff", "cls_uniform_kl", "max_iou"]:
+        for metric in ["score", "obj", "cls_conf", "score_null_diff", "cls_uniform_kl", "max_iou"]:
             if df.empty or metric not in df.columns or "pred_class" not in df.columns:
                 paths.append(_empty_svg(out_dir / "box_violin" / f"{metric}_by_class.svg", f"{metric} by class"))
                 continue
@@ -636,7 +636,7 @@ def save_prediction_distribution_plots(out_dir: Path, *, df, enabled=None, image
             ("bbox_anchor_center_l2", "score"),
             ("bbox_anchor_log_area_ratio", "score"),
             ("score", "max_iou"),
-            ("score_null_abs_diff", "max_iou"),
+            ("score_null_diff", "max_iou"),
             ("cls_entropy_norm", "score"),
         ]:
             paths.append(_scatter_svg(out_dir / "scatter" / f"{x_col}_vs_{y_col}.svg", _numeric_series(df, x_col), _numeric_series(df, y_col), f"{x_col} vs {y_col}", x_col, y_col))
@@ -708,10 +708,10 @@ def save_prediction_distribution_plots(out_dir: Path, *, df, enabled=None, image
             "obj_null_abs_diff",
             "obj_null_bce_loss",
             "cls_null_abs_diff",
-            "score_null_abs_diff",
+            "score_null_diff",
             "cls_entropy_norm",
             "cls_uniform_kl",
-            "score_cand_abs_diff",
+            "score_cand_diff",
             "obj_cand_bce_loss",
             "cls_cand_kl",
             "bbox_cand_log_area_ratio",
