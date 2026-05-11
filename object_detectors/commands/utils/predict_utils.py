@@ -359,6 +359,7 @@ def parse_output_config(output_cfg):
     layer_disc_topk = 3
     layer_disc_fn_non_fn_map_root = ""
     layer_ref_map_root = ""
+    layer_cand_score_threshold = 0.01
 
     if uncertainty == "feature_grad":
         g = as_dict(feature_grad_cfg.get("gradient", {}))
@@ -400,6 +401,7 @@ def parse_output_config(output_cfg):
         t = g.get("target", "cand_target")
         t_policy = str(t).strip().lower() if t is not None else "null_target"
         layer_pseudo_gt = "uniform" if t_policy in {"null_target", "null"} else "cand"
+        layer_cand_score_threshold = as_float(g.get("cand_score_threshold", 0.01), 0.01)
         disc_cfg = as_dict(g.get("disc_layers", {}))
         layer_disc_separation_score = (
             str(disc_cfg.get("separation_score", "effect_size")).strip().lower() or "effect_size"
@@ -566,6 +568,7 @@ def parse_output_config(output_cfg):
         "layer_map_reduction": layer_map_reduction,
         "layer_vector_reduction": layer_vector_reduction,
         "layer_pseudo_gt": layer_pseudo_gt,
+        "layer_cand_score_threshold": float(layer_cand_score_threshold),
         "layer_ref_mode": layer_ref_mode,
         "layer_ref_type": layer_ref_type,
         "layer_ref_prototype_mode": layer_ref_prototype_mode,
@@ -1388,6 +1391,7 @@ def build_pseudo_label_losses_for_candidates(
     pred_img: torch.Tensor,
     raw_idx: int,
     iou_threshold: float,
+    score_threshold: float = 0.01,
 ):
     if raw_idx >= pred_img.shape[0]:
         return None
@@ -1400,7 +1404,10 @@ def build_pseudo_label_losses_for_candidates(
         pseudo_box_xyxy = _xywh_to_xyxy_tensor(pseudo_row[:4].view(1, 4))
         ious = _box_iou_tensor(pred_boxes_xyxy, pseudo_box_xyxy).squeeze(1)
         pred_cls = torch.argmax(pred_img[:, 5:].detach(), dim=1)
-        candidate_mask = (ious >= float(iou_threshold)) & (pred_cls == pseudo_cls)
+        obj = pred_img[:, 4].detach()
+        cls_max = pred_img[:, 5:].detach().max(dim=1).values if pred_img.shape[1] > 5 else torch.ones_like(obj)
+        score = obj * cls_max
+        candidate_mask = (ious >= float(iou_threshold)) & (pred_cls == pseudo_cls) & (score >= float(score_threshold))
         if not bool(candidate_mask.any()):
             candidate_mask = torch.zeros_like(pred_cls, dtype=torch.bool)
             candidate_mask[raw_idx] = True
@@ -1447,6 +1454,7 @@ def build_layer_target_scalar_bbox(
     iou_threshold,
     pseudo_gt="cand",
     anchor_xywh=None,
+    cand_score_threshold=0.01,
 ):
     if target_value == "obj":
         if raw_idx >= pred_img.shape[0]:
@@ -1486,6 +1494,7 @@ def build_layer_target_scalar_bbox(
         pred_img=pred_img,
         raw_idx=raw_idx,
         iou_threshold=iou_threshold,
+        score_threshold=cand_score_threshold,
     )
     if losses is not None and target_value in losses:
         return losses[target_value]
@@ -1500,6 +1509,7 @@ def collect_bbox_layer_grads_per_target(
     map_reduction="none",
     vector_reduction=None,
     pseudo_gt="cand",
+    cand_score_threshold=0.01,
 ):
     layer_params = [resolve_layer_parameter(detector.model, layer_name) for layer_name in target_layers]
     original_requires_grad = [bool(p.requires_grad) for p in layer_params]
@@ -1551,6 +1561,7 @@ def collect_bbox_layer_grads_per_target(
                     iou_threshold=iou_threshold,
                     pseudo_gt=pseudo_gt,
                     anchor_xywh=anchor_row,
+                    cand_score_threshold=cand_score_threshold,
                 )
 
                 if target_scalar is None:
@@ -1608,6 +1619,7 @@ def collect_batch_image_layer_grads_per_target(
     pre_nms=True,
     pre_nms_ratio=1.0,
     pseudo_gt="cand",
+    cand_score_threshold=0.01,
 ):
     if not hasattr(torch, "func") or not hasattr(torch.func, "vmap") or not hasattr(torch.func, "grad"):
         raise RuntimeError(
@@ -1702,6 +1714,7 @@ def collect_batch_image_layer_grads_per_target(
                             iou_threshold=iou_threshold,
                             pseudo_gt=pseudo_gt,
                             anchor_xywh=anchor_row,
+                            cand_score_threshold=cand_score_threshold,
                         )
                         if scalar is not None:
                             loss_terms.append(scalar)
