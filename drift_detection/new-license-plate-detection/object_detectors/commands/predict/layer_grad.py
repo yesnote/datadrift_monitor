@@ -1,6 +1,17 @@
 from commands.predict.common import *
 
 
+def _safe_npz_key(value):
+    text = str(value)
+    return "".join(ch if ch.isalnum() or ch in {"_", "-"} else "_" for ch in text)
+
+
+def _gradient_to_np_array(value):
+    if isinstance(value, torch.Tensor):
+        return value.detach().float().cpu().numpy().reshape(-1).astype(np.float32, copy=False)
+    return np.asarray(value, dtype=np.float32).reshape(-1)
+
+
 def run_layer_grad_csv(config, run_dir):
     run_dir = Path(run_dir)
     mode = str(config.get("mode", "predict"))
@@ -21,6 +32,8 @@ def run_layer_grad_csv(config, run_dir):
         return
 
     output_csv = run_dir / "layer_grad.csv"
+    gradients_dir = run_dir / "gradients"
+    gradients_dir.mkdir(parents=True, exist_ok=True)
 
     dataloader = create_dataloader(config, split=split)
     if len(dataloader.dataset) == 0:
@@ -48,9 +61,9 @@ def run_layer_grad_csv(config, run_dir):
         csv_writer = csv.DictWriter(csv_file_handle, fieldnames=fieldnames)
         csv_writer.writeheader()
 
-        for images, targets in tqdm(
+        for batch_idx, (images, targets) in enumerate(tqdm(
             dataloader, desc=f"Object Detector ({mode} - {uncertainty})", total=len(dataloader)
-        ):
+        )):
             image_list = _as_image_list(images)
             infer_batch, _ratios, _pads, _resized_chws = _prepare_infer_batch(detector, image_list, device, auto=False)
             stage_seconds = {
@@ -60,6 +73,11 @@ def run_layer_grad_csv(config, run_dir):
                 "backpropagation_sec": 0.0,
             }
             batch_items = 0
+            batch_csv_rows = []
+            batch_grad_arrays = {}
+            npz_name = f"layer_grad_batch_{batch_idx:06d}.npz"
+            npz_rel_path = (Path("gradients") / npz_name).as_posix()
+            npz_path = gradients_dir / npz_name
 
             for sample_idx in range(len(image_list)):
                 target = targets[sample_idx]
@@ -93,10 +111,21 @@ def run_layer_grad_csv(config, run_dir):
                         "pred_class": bbox_row["pred_class"],
                     }
                     for grad_key, grad_value in bbox_row["grad_stats"].items():
-                        row[grad_key] = json.dumps(grad_value, separators=(",", ":"))
-                    csv_writer.writerow(row)
+                        array_key = (
+                            f"s{sample_idx:03d}_p{int(bbox_row['pred_idx']):06d}_"
+                            f"r{int(bbox_row['raw_pred_idx']):06d}_{_safe_npz_key(grad_key)}"
+                        )
+                        batch_grad_arrays[array_key] = _gradient_to_np_array(grad_value)
+                        row[grad_key] = f"{npz_rel_path}::{array_key}"
+                    batch_csv_rows.append(row)
                 batch_items += int(len(bbox_rows))
                 del bbox_rows
+
+            if batch_grad_arrays:
+                np.savez(npz_path, **batch_grad_arrays)
+            for row in batch_csv_rows:
+                csv_writer.writerow(row)
+            csv_file_handle.flush()
 
             timing.record(
                 num_images=len(image_list),
@@ -111,6 +140,7 @@ def run_layer_grad_csv(config, run_dir):
     timing_csv, timing_json = timing.save()
 
     print(f"Saved results CSV: {output_csv}")
+    print(f"Saved gradient arrays: {gradients_dir}")
     print(f"Saved timing: {timing_csv}")
     print(f"Saved timing summary: {timing_json}")
 
