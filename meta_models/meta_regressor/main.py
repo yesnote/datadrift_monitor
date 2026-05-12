@@ -52,12 +52,12 @@ def normalize_input_roots(raw_value) -> list[str]:
 
 
 def parse_root_info(root_path: Path) -> tuple[str, str, str]:
-    # Current format: .../runs/{model_group}/{time}_{cue}_{target?}
+    # Current format: .../object_detectors/runs/{time}_{cue}_{target?}
+    # Legacy format:  .../runs/{model_group}/{time}_{cue}_{target?}
     # Legacy format:  .../runs/{model_group}/{cue}/{time}
-    # Legacy format:  .../runs/{model_group}/{time}_{cue}
     parent = root_path.parent
-    if parent.name in {"fn_detectors", "tp_classifiers"}:
-        model_group = parent.name
+    if parent.name == "runs":
+        model_group = "bbox_predictions"
         run_name = root_path.name
         match = re.match(r"^\d{2}-\d{2}-\d{4}_\d{2};\d{2}_(.+)$", run_name)
         tail = match.group(1) if match else run_name
@@ -69,20 +69,14 @@ def parse_root_info(root_path: Path) -> tuple[str, str, str]:
                 return model_group, cue_name, tail[len(prefix):]
         return model_group, tail, ""
 
-    if parent.parent.name in {"fn_detectors", "tp_classifiers"}:
-        model_group = parent.parent.name
-        cue = parent.name
-        return model_group, cue, ""
-
     raise ValueError(
-        "dataset root must follow object_detectors/runs/{fn_detectors|tp_classifiers}/{time}_{cue}_{target?} "
-        "or legacy formats."
+        "dataset root must follow object_detectors/runs/{time}_{cue}_{target?} "
     )
 
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--config", type=str, default="meta_models/meta_regressor/configs/train_iou_regressor.yaml")
+    parser.add_argument("--config", type=str, default="meta_models/meta_regressor/configs/train_meta_regressor.yaml")
     args = parser.parse_args()
 
     config_path = resolve_config_path(args.config)
@@ -123,7 +117,7 @@ def main() -> None:
         warnings.warn(msg)
         raise ValueError(msg)
 
-    cue_for_run = input_cue if mode == "train" else f"{input_cue}_iou_test"
+    cue_for_run = input_cue if mode == "train" else f"{input_cue}_meta_regressor_test"
     run_dir = create_run_dir(model_group=input_group, cue=cue_for_run, target_value=input_target).resolve()
     save_used_config(config_path, run_dir)
     if mode == "train":

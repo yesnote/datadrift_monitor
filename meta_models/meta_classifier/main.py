@@ -53,12 +53,12 @@ def normalize_input_roots(raw_value) -> list[str]:
 
 
 def parse_root_info(root_path: Path) -> tuple[str, str, str]:
-    # Current format: .../runs/{model_group}/{time}_{cue}_{target?}
+    # Current format: .../object_detectors/runs/{time}_{cue}_{target?}
+    # Legacy format:  .../runs/{model_group}/{time}_{cue}_{target?}
     # Legacy format:  .../runs/{model_group}/{cue}/{time}
-    # Legacy format:  .../runs/{model_group}/{time}_{cue}
     parent = root_path.parent
-    if parent.name in {"fn_detectors", "tp_classifiers"}:
-        model_group = parent.name
+    if parent.name == "runs":
+        model_group = "bbox_predictions"
         run_name = root_path.name
         match = re.match(r"^\d{2}-\d{2}-\d{4}_\d{2};\d{2}_(.+)$", run_name)
         tail = match.group(1) if match else run_name
@@ -70,20 +70,14 @@ def parse_root_info(root_path: Path) -> tuple[str, str, str]:
                 return model_group, cue_name, tail[len(prefix):]
         return model_group, tail, ""
 
-    if parent.parent.name in {"fn_detectors", "tp_classifiers"}:
-        model_group = parent.parent.name
-        cue = parent.name
-        return model_group, cue, ""
-
     raise ValueError(
-        "dataset root must follow object_detectors/runs/{fn_detectors|tp_classifiers}/{time}_{cue}_{target?} "
-        "or legacy formats."
+        "dataset root must follow object_detectors/runs/{time}_{cue}_{target?} "
     )
 
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--config", type=str, default="meta_models/meta_classifier/configs/train_error_detector.yaml")
+    parser.add_argument("--config", type=str, default="meta_models/meta_classifier/configs/train_meta_classifier.yaml")
     args = parser.parse_args()
 
     config_path = resolve_config_path(args.config)
@@ -107,7 +101,7 @@ def main() -> None:
         name_b = str(compare_cfg.get("name_b", "")).strip() or run_b.name
         safe_a = "".join(ch if ch.isalnum() or ch in {"-", "_"} else "_" for ch in name_a).strip("_").lower() or "a"
         safe_b = "".join(ch if ch.isalnum() or ch in {"-", "_"} else "_" for ch in name_b).strip("_").lower() or "b"
-        run_dir = create_run_dir(model_group="comparisons", cue="tp_classifier_compare", target_value=f"{safe_a}_vs_{safe_b}").resolve()
+        run_dir = create_run_dir(model_group="comparisons", cue="meta_classifier_compare", target_value=f"{safe_a}_vs_{safe_b}").resolve()
         save_used_config(config_path, run_dir)
         run_compare(config, run_dir)
         return

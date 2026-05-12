@@ -332,7 +332,7 @@ def parse_output_config(output_cfg):
     layer_target_values = []
     layer_target_layers = []
     layer_map_reduction = "none"
-    layer_vector_reduction = ["1-norm", "2-norm", "min", "max", "mean", "std"]
+    layer_vector_reduction = []
     layer_pseudo_gt = "cand"
     layer_cand_score_threshold = 0.01
 

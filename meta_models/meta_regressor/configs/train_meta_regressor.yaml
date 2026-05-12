@@ -5,12 +5,12 @@ model:
   device: cpu                 # cpu | cuda
   random_seed: 42
   search: false
-  search_scoring: neg_mean_absolute_error
+  search_scoring: r2
 
 dataset:
   input_root:
-    - object_detectors/runs/tp_classifiers/00-00-0000_00;00_layer_grad_cand_target_loss
-  gt_root: object_detectors/runs/tp_classifiers/00-00-0000_00;00_gt
+    - object_detectors/runs/00-00-0000_00;00_layer_grad_cand_target_loss
+  gt_root: object_detectors/runs/00-00-0000_00;00_gt
 
 experiment:
   process: repeat             # kfold | repeat
