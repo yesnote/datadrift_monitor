@@ -10,6 +10,7 @@ model:
 
 dataset:
   used_dataset: coco
+  used_ratio: 1.0
   
   coco:
     root: D:/SEONGJIN/datasets/COCO

@@ -1,23 +1,23 @@
 from commands.predict.common import *
 
-def run_entropy_csv(config, run_dir):
+def run_class_probability_csv(config, run_dir):
     run_dir = Path(run_dir)
     mode = str(config.get("mode", "predict"))
-    uncertainty = "entropy"
+    uncertainty = "class_probability"
 
     dataset_cfg = config.get("dataset", {})
     split = dataset_cfg.get("split", "val")
     parsed = parse_output_config(config.get("output", {}))
     save_csv = parsed["save_csv_enabled"]
     unit = parsed["unit"]
-    entropy_vector_reduction = parsed["entropy_vector_reduction"]
+    vector_reduction = parsed["class_probability_vector_reduction"]
     pre_nms = bool(parsed.get("pre_nms", False))
     pre_nms_ratio = float(parsed.get("pre_nms_ratio", 1.0))
 
     if not save_csv:
         return
     if unit not in {"image", "bbox"}:
-        raise ValueError("output.uncertainty='entropy' requires output.unit in {'image','bbox'}.")
+        raise ValueError("output.uncertainty='class_probability' requires output.unit in {'image','bbox'}.")
 
     dataloader = create_dataloader(config, split=split)
     if len(dataloader.dataset) == 0:
@@ -29,29 +29,26 @@ def run_entropy_csv(config, run_dir):
         run_dir=run_dir,
         uncertainty=uncertainty,
         unit=unit,
-        stages=["detector_inference_sec", "feature_compute_sec"],
+        stages=["detector_inference_sec"],
         device=device,
     )
     num_classes = len(detector.names) if detector.names is not None else 80
-    output_csv = run_dir / "entropy.csv"
-    fieldnames = ["image_id", "image_path"]
+    output_csv = run_dir / "class_probability.csv"
     if unit == "bbox":
-        fieldnames.extend(
-            [
-                "pred_idx",
-                "raw_pred_idx",
-                "xmin",
-                "ymin",
-                "xmax",
-                "ymax",
-                "score",
-                "pred_class",
-                "entropy",
-            ]
-        )
+        fieldnames = [
+            "image_id",
+            "image_path",
+            "pred_idx",
+            "raw_pred_idx",
+            "xmin",
+            "ymin",
+            "xmax",
+            "ymax",
+            "score",
+            "pred_class",
+        ] + [f"prob_{i}" for i in range(num_classes)]
     else:
-        fieldnames.extend(entropy_vector_reduction)
-        fieldnames.append("num_preds")
+        fieldnames = ["image_id", "image_path"] + [f"{k}_vector" for k in vector_reduction] + ["num_preds"]
 
     with open(output_csv, "w", newline="", encoding="utf-8") as output_file:
         writer = csv.DictWriter(output_file, fieldnames=fieldnames)
@@ -100,7 +97,6 @@ def run_entropy_csv(config, run_dir):
                         )
             detector_inference_sec = timing.elapsed(t_detector)
 
-            t_feature = timing.start()
             batch_items = 0
             for sample_idx in range(len(image_list)):
                 target = targets[sample_idx]
@@ -123,11 +119,7 @@ def run_entropy_csv(config, run_dir):
                             if int(raw_keep_b.shape[0]) > 0 and raw_prediction[sample_idx].shape[1] > 5
                             else torch.zeros((0, num_classes), dtype=torch.float32, device=device)
                         )
-                    selected_probs = torch.softmax(selected_logits, dim=-1) if selected_logits.numel() else selected_logits
-                    if selected_probs.numel():
-                        pred_entropy = -torch.sum(selected_probs * torch.log(selected_probs.clamp(min=1e-12)), dim=-1)
-                    else:
-                        pred_entropy = torch.zeros((0,), device=device)
+                    pred_probs = torch.softmax(selected_logits, dim=-1) if selected_logits.numel() else selected_logits
                     for pred_idx, box in enumerate(det):
                         raw_pred_idx = int(raw_keep_b[pred_idx].detach().cpu().item()) if pred_idx < int(raw_keep_b.shape[0]) else pred_idx
                         cls_idx = int(box[5].detach().cpu().item()) if box.shape[0] > 5 else 0
@@ -137,33 +129,28 @@ def run_entropy_csv(config, run_dir):
                             pred_class = detector.names[cls_idx]
                         else:
                             pred_class = str(cls_idx)
-                        entropy_val = (
-                            float(pred_entropy[pred_idx].detach().cpu().item())
-                            if pred_idx < pred_entropy.shape[0]
-                            else 0.0
-                        )
-                        writer.writerow(
-                            {
-                                "image_id": image_id,
-                                "image_path": image_path,
-                                "pred_idx": pred_idx,
-                                "raw_pred_idx": raw_pred_idx,
-                                "xmin": float(box[0]),
-                                "ymin": float(box[1]),
-                                "xmax": float(box[2]),
-                                "ymax": float(box[3]),
-                                "score": float(box[4]),
-                                "pred_class": pred_class,
-                                "entropy": entropy_val,
-                            }
-                        )
+                        row = {
+                            "image_id": image_id,
+                            "image_path": image_path,
+                            "pred_idx": pred_idx,
+                            "raw_pred_idx": raw_pred_idx,
+                            "xmin": float(box[0]),
+                            "ymin": float(box[1]),
+                            "xmax": float(box[2]),
+                            "ymax": float(box[3]),
+                            "score": float(box[4]),
+                            "pred_class": pred_class,
+                        }
+                        if pred_idx < pred_probs.shape[0]:
+                            probs = pred_probs[pred_idx].detach().cpu().tolist()
+                        else:
+                            probs = [0.0] * num_classes
+                        for class_idx in range(num_classes):
+                            row[f"prob_{class_idx}"] = float(probs[class_idx]) if class_idx < len(probs) else 0.0
+                        writer.writerow(row)
                 else:
                     pred_logits = logits[sample_idx] if logits else torch.zeros((0, num_classes), device=device)
                     pred_probs = torch.softmax(pred_logits, dim=-1) if pred_logits.numel() else pred_logits
-                    if pred_probs.numel():
-                        pred_entropy = -torch.sum(pred_probs * torch.log(pred_probs.clamp(min=1e-12)), dim=-1)
-                    else:
-                        pred_entropy = torch.zeros((0,), device=device)
                     if pre_nms and raw_prediction is not None:
                         if raw_logits is not None:
                             pre_logits = raw_logits[sample_idx].detach().float()
@@ -182,38 +169,40 @@ def run_entropy_csv(config, run_dir):
                             pre_probs = pre_probs[keep_idx]
                         else:
                             pre_probs = torch.zeros((0, num_classes), dtype=torch.float32, device=device)
-                        if pre_probs.numel():
-                            entropy_tensor = -torch.sum(pre_probs * torch.log(pre_probs.clamp(min=1e-12)), dim=-1)
-                        else:
-                            entropy_tensor = torch.zeros((0,), device=device)
+                        probs_np = pre_probs.detach().cpu().numpy() if pre_probs.numel() else None
+                        num_preds = int(pre_probs.shape[0])
                     else:
-                        entropy_tensor = pred_entropy
-
-                    num_preds = int(entropy_tensor.shape[0])
+                        probs_np = pred_probs.detach().cpu().numpy() if pred_probs.numel() else None
+                        num_preds = int(pred_probs.shape[0])
                     batch_items += 1
-                    if num_preds == 0:
-                        stat_all = {
-                            "1-norm": 0.0,
-                            "2-norm": 0.0,
-                            "min": 0.0,
-                            "max": 0.0,
-                            "mean": 0.0,
-                            "std": 0.0,
-                        }
-                    else:
-                        stat_all = map_grad_tensor_to_numbers(entropy_tensor.detach().float().reshape(-1))
-                    row = {"image_id": image_id, "image_path": image_path, "num_preds": num_preds}
-                    for metric_name in entropy_vector_reduction:
-                        row[metric_name] = float(stat_all[metric_name])
+                    row = {
+                        "image_id": image_id,
+                        "image_path": image_path,
+                        "num_preds": num_preds,
+                    }
+                    for metric_name in vector_reduction:
+                        if probs_np is None or num_preds == 0:
+                            vec = [0.0] * num_classes
+                        elif metric_name == "1-norm":
+                            vec = np.sum(np.abs(probs_np), axis=0).astype(float).tolist()
+                        elif metric_name == "2-norm":
+                            vec = np.sqrt(np.sum(np.square(probs_np), axis=0)).astype(float).tolist()
+                        elif metric_name == "min":
+                            vec = np.min(probs_np, axis=0).astype(float).tolist()
+                        elif metric_name == "max":
+                            vec = np.max(probs_np, axis=0).astype(float).tolist()
+                        elif metric_name == "mean":
+                            vec = np.mean(probs_np, axis=0).astype(float).tolist()
+                        elif metric_name == "std":
+                            vec = np.std(probs_np, axis=0).astype(float).tolist()
+                        else:
+                            vec = [0.0] * num_classes
+                        row[f"{metric_name}_vector"] = json.dumps(vec, separators=(",", ":"))
                     writer.writerow(row)
-            feature_compute_sec = timing.elapsed(t_feature)
             timing.record(
                 num_images=len(image_list),
                 num_predictions=batch_items,
-                stage_seconds={
-                    "detector_inference_sec": detector_inference_sec,
-                    "feature_compute_sec": feature_compute_sec,
-                },
+                stage_seconds={"detector_inference_sec": detector_inference_sec},
             )
             if unit == "bbox":
                 del infer_batch, raw_prediction, raw_logits, selected_preds, selected_indices
@@ -229,4 +218,4 @@ def run_entropy_csv(config, run_dir):
     print(f"Saved timing: {timing_csv}")
     print(f"Saved timing summary: {timing_json}")
 
-__all__ = ["run_entropy_csv"]
+__all__ = ["run_class_probability_csv"]

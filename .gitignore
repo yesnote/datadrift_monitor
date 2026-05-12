@@ -2,7 +2,8 @@
 code_references/
 codex_plans/
 object_detectors/runs/
-error_detectors/runs/
+meta_models/meta_classifier/runs/
+meta_models/meta_regressor/runs/
 visualizers/runs/
 __pycache__/
 *.xlsx

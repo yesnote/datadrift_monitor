@@ -88,7 +88,13 @@ def run_meta_detect_csv(config, run_dir):
                 fieldnames.append(f"{feature_name}_{metric_name}")
         fieldnames.append("num_preds")
 
-    raw_prof = RawComputeProfiler(run_dir=run_dir, uncertainty=uncertainty, unit=unit)
+    timing = StageTimingProfiler(
+        run_dir=run_dir,
+        uncertainty=uncertainty,
+        unit=unit,
+        stages=["detector_inference_sec", "candidate_search_sec", "feature_compute_sec"],
+        device=device,
+    )
     with open(output_csv, "w", newline="", encoding="utf-8") as output_file:
         writer = csv.DictWriter(output_file, fieldnames=fieldnames)
         writer.writeheader()
@@ -97,6 +103,7 @@ def run_meta_detect_csv(config, run_dir):
         ):
             image_list = _as_image_list(images)
             infer_batch, ratios, pads, _resized_chws = _prepare_infer_batch(detector, image_list, device, auto=False)
+            t_detector = timing.start()
             with torch.no_grad():
                 model_output = detector.model(infer_batch, augment=False)
                 raw_prediction = model_output[0] if isinstance(model_output, (tuple, list)) else model_output
@@ -110,8 +117,10 @@ def run_meta_detect_csv(config, run_dir):
                     agnostic=detector.agnostic,
                     return_indices=True,
                 )
+            detector_inference_sec = timing.elapsed(t_detector)
 
-            t_raw = raw_prof.start()
+            candidate_search_sec = 0.0
+            feature_compute_sec = 0.0
             batch_items = 0
             for sample_idx in range(len(image_list)):
                 target = targets[sample_idx]
@@ -128,8 +137,10 @@ def run_meta_detect_csv(config, run_dir):
                     for cls_id in pred_class_ids
                 ]
 
+                t_candidate = timing.start()
                 raw = raw_prediction[sample_idx].detach().float()
                 if raw.numel() == 0:
+                    candidate_search_sec += timing.elapsed(t_candidate)
                     continue
                 raw_xyxy = _xywh_to_xyxy_tensor(raw[:, :4])
                 raw_xyxy_orig = _boxes_to_original_xyxy(raw_xyxy, ratios[sample_idx], pads[sample_idx], image_list[sample_idx])
@@ -141,10 +152,12 @@ def run_meta_detect_csv(config, run_dir):
                     raw_cls_max = torch.ones_like(raw_obj)
                     raw_cls_idx = torch.zeros((raw.shape[0],), dtype=torch.long, device=device)
                 raw_score = raw_obj * raw_cls_max
+                candidate_search_sec += timing.elapsed(t_candidate)
 
                 image_feature_rows = []
                 image_output_rows = []
                 for pred_idx, (box, score, pred_class_name) in enumerate(zip(pred_boxes, pred_scores, pred_class_names)):
+                    t_candidate = timing.start()
                     fbox = torch.tensor(box, dtype=torch.float32, device=device)
                     fbox_orig = _boxes_to_original_xyxy(fbox.view(1, 4), ratios[sample_idx], pads[sample_idx], image_list[sample_idx]).view(4)
                     raw_pred_idx = int(raw_keep_b[pred_idx].detach().cpu().item()) if pred_idx < int(raw_keep_b.shape[0]) else pred_idx
@@ -160,7 +173,9 @@ def run_meta_detect_csv(config, run_dir):
                         cand_boxes = fbox_orig.view(1, 4)
                         cand_scores = torch.tensor([float(score)], dtype=torch.float32, device=device)
                         cand_ious = torch.zeros((1,), dtype=torch.float32, device=device)
+                    candidate_search_sec += timing.elapsed(t_candidate)
 
+                    t_feature = timing.start()
                     if 0 <= raw_pred_idx < int(raw_cls.shape[0]) and raw_cls.numel() > 0:
                         pred_probs = raw_cls[raw_pred_idx].detach().float()
                     else:
@@ -212,6 +227,7 @@ def run_meta_detect_csv(config, run_dir):
                         "score_min": score_min, "score_max": score_max, "score_mean": score_mean, "score_std": score_std,
                         "iou_pb_min": iou_pb_min, "iou_pb_max": iou_pb_max, "iou_pb_mean": iou_pb_mean, "iou_pb_std": iou_pb_std,
                     }
+                    feature_compute_sec += timing.elapsed(t_feature)
                     if unit == "bbox":
                         writer.writerow(
                             {
@@ -280,15 +296,23 @@ def run_meta_detect_csv(config, run_dir):
                     writer.writerow(row)
                 else:
                     batch_items += int(len(pred_boxes))
-            raw_prof.end(t_raw, batch_items)
+            timing.record(
+                num_images=len(image_list),
+                num_predictions=batch_items,
+                stage_seconds={
+                    "detector_inference_sec": detector_inference_sec,
+                    "candidate_search_sec": candidate_search_sec,
+                    "feature_compute_sec": feature_compute_sec,
+                },
+            )
             del infer_batch, model_output, raw_prediction, raw_logits, selected_preds, selected_indices
 
     del detector
     if device.type == "cuda":
         torch.cuda.empty_cache()
-    timing_csv, timing_json = raw_prof.save()
+    timing_csv, timing_json = timing.save()
     print(f"Saved results CSV: {output_csv}")
-    print(f"Saved raw compute timing: {timing_csv}")
-    print(f"Saved raw compute timing summary: {timing_json}")
+    print(f"Saved timing: {timing_csv}")
+    print(f"Saved timing summary: {timing_json}")
 
 __all__ = ["run_meta_detect_csv"]

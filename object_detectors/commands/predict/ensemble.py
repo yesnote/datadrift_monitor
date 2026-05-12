@@ -79,7 +79,13 @@ def run_ensemble_csv(config, run_dir):
     class_names_hint = None
     n_classes_actual = None
     device = torch.device("cpu")
-    raw_prof = RawComputeProfiler(run_dir=run_dir, uncertainty=uncertainty, unit=unit)
+    timing = StageTimingProfiler(
+        run_dir=run_dir,
+        uncertainty=uncertainty,
+        unit=unit,
+        stages=["detector_inference_sec", "prediction_matching_sec", "feature_compute_sec"],
+        device=device,
+    )
 
     detectors = []
     try:
@@ -89,6 +95,7 @@ def run_ensemble_csv(config, run_dir):
                 n_classes_hint = len(detector.names) if detector.names is not None else 80
                 class_names_hint = detector.names
             detectors.append(detector)
+        timing.device = device
 
         if n_classes_hint is None:
             n_classes_hint = 80
@@ -161,7 +168,11 @@ def run_ensemble_csv(config, run_dir):
                 feature_runs = []
                 det_boxes = None
                 raw_keep_indices = None
+                detector_inference_total_sec = 0.0
+                prediction_matching_sec = 0.0
+                feature_compute_sec = 0.0
                 for det_idx, detector in enumerate(detectors):
+                    t_detector = timing.start()
                     with torch.no_grad():
                         det_output = detector.model(infer_batch, augment=False)
                         det_raw_pred = det_output[0] if isinstance(det_output, (tuple, list)) else det_output
@@ -178,7 +189,9 @@ def run_ensemble_csv(config, run_dir):
                             max_det=nms_kwargs["max_det"],
                             return_indices=True,
                         )
+                    detector_inference_total_sec += timing.elapsed(t_detector)
 
+                    t_feature = timing.start()
                     pred_batch = det_raw_pred.detach().float()
                     bbox_xyxy = _xywh_to_xyxy_tensor(pred_batch[..., :4])
                     score_vec = pred_batch[..., 4].unsqueeze(-1)
@@ -194,8 +207,10 @@ def run_ensemble_csv(config, run_dir):
                             f"All ensemble weights must have the same class count: {n_classes_actual} vs {class_count}."
                         )
                     feature_runs.append(run_features)
+                    feature_compute_sec += timing.elapsed(t_feature)
 
                     if det_idx == 0:
+                        t_matching = timing.start()
                         det_boxes = []
                         raw_keep_indices = []
                         for b in range(batch_size):
@@ -207,14 +222,17 @@ def run_ensemble_csv(config, run_dir):
                             )
                             det_boxes.append(det_b.detach().cpu())
                             raw_keep_indices.append([int(v) for v in raw_keep_b.detach().cpu().tolist()])
+                        prediction_matching_sec += timing.elapsed(t_matching)
 
+                t_feature = timing.start()
                 runs_tensor = torch.stack(feature_runs, dim=0)  # [M, B, N, F]
-                t_raw = raw_prof.start()
                 mean = runs_tensor.mean(dim=0)
                 std = runs_tensor.std(dim=0, unbiased=False)
+                feature_compute_sec += timing.elapsed(t_feature)
                 del runs_tensor, feature_runs, infer_batch
 
                 batch_items = 0
+                t_matching = timing.start()
                 for b in range(len(image_ids)):
                     image_id = int(image_ids[b])
                     image_path = str(image_paths[b])
@@ -342,7 +360,16 @@ def run_ensemble_csv(config, run_dir):
                                     row[f"prob_{class_idx}_std_{stat_alias[key]}"] = val
                         writer.writerow(row)
                         batch_items += 1
-                raw_prof.end(t_raw, batch_items)
+                prediction_matching_sec += timing.elapsed(t_matching)
+                timing.record(
+                    num_images=batch_size,
+                    num_predictions=batch_items,
+                    stage_seconds={
+                        "detector_inference_sec": detector_inference_total_sec,
+                        "prediction_matching_sec": prediction_matching_sec,
+                        "feature_compute_sec": feature_compute_sec,
+                    },
+                )
                 del mean, std
     except Exception:
         raise
@@ -354,9 +381,9 @@ def run_ensemble_csv(config, run_dir):
 
     if device.type == "cuda":
         torch.cuda.empty_cache()
-    timing_csv, timing_json = raw_prof.save()
+    timing_csv, timing_json = timing.save()
     print(f"Saved results CSV: {output_csv}")
-    print(f"Saved raw compute timing: {timing_csv}")
-    print(f"Saved raw compute timing summary: {timing_json}")
+    print(f"Saved timing: {timing_csv}")
+    print(f"Saved timing summary: {timing_json}")
 
 __all__ = ["run_ensemble_csv"]

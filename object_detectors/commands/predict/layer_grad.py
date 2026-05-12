@@ -805,55 +805,20 @@ def run_layer_grad_csv(config, run_dir):
     unit = parsed["unit"]
     target_values = [str(v) for v in parsed["layer_target_values"]]
     target_layers = parsed["layer_target_layers"]
-    if isinstance(target_layers, (list, tuple)):
-        _disc_tokens = [str(v).strip().lower() for v in target_layers]
-    else:
-        _disc_tokens = [str(target_layers).strip().lower()]
-    disc_enabled = any(tok == "disc_layers" for tok in _disc_tokens)
-    ref_type = str(parsed.get("layer_ref_type", "prototype")).strip().lower()
-    ref_mode = str(parsed.get("layer_ref_prototype_mode", parsed.get("layer_ref_mode", "none"))).strip().lower()
-    ref_subspace_mode = str(parsed.get("layer_ref_subspace_mode", "none")).strip().lower()
-    ref_subspace_centering = str(parsed.get("layer_ref_subspace_centering", "centered")).strip().lower()
-    ref_subspace_rank_mode = str(parsed.get("layer_ref_subspace_rank_mode", "energy")).strip().lower()
-    ref_subspace_energy_threshold = float(parsed.get("layer_ref_subspace_energy_threshold", 0.95))
-    ref_subspace_k = max(1, int(parsed.get("layer_ref_subspace_k", 10)))
-    ref_subspace_max_samples = max(1, int(parsed.get("layer_ref_subspace_max_samples", 1000)))
-    disc_separation_score = str(parsed.get("layer_disc_separation_score", "effect_size")).strip().lower()
-    disc_topk = max(1, int(parsed.get("layer_disc_topk", 3)))
-    disc_fn_non_fn_map_root = str(parsed.get("layer_disc_fn_non_fn_map_root", "")).strip()
-    layer_ref_map_root = str(parsed.get("layer_ref_map_root", "")).strip()
     layer_map_reduction = parsed["layer_map_reduction"]
     layer_vector_reduction = parsed["layer_vector_reduction"]
     layer_pseudo_gt = parsed.get("layer_pseudo_gt", "cand")
     layer_cand_score_threshold = float(parsed.get("layer_cand_score_threshold", 0.01))
-    layer_bbox_loss = str(parsed.get("layer_bbox_loss", "ciou")).strip().lower()
-    pre_nms = bool(parsed.get("pre_nms", False))
-    pre_nms_ratio = float(parsed.get("pre_nms_ratio", 1.0))
+    layer_bbox_loss = "ciou"
     save_image_enabled = bool(parsed.get("save_image_enabled", False))
     per_image_enabled = bool(parsed.get("save_image_layer_grad_per_image_enabled", False))
     per_image_step = max(1, int(parsed.get("save_image_layer_grad_per_image_step", 1)))
     per_image_max_num = max(0, int(parsed.get("save_image_layer_grad_per_image_max_num", 0)))
-    image_reference_enabled = bool(parsed.get("save_image_layer_grad_reference_enabled", False))
-    image_reference_groups = [g for g in parsed.get("save_image_layer_grad_reference_groups", ["fn", "non_fn"]) if g in {"fn", "non_fn", "noise"}]
-    if not image_reference_groups:
-        image_reference_groups = ["fn", "non_fn"]
-    csv_reference_enabled = bool(parsed.get("save_image_layer_grad_csv_reference_enabled", False))
-    csv_reference_groups = [g for g in parsed.get("save_image_layer_grad_csv_reference_groups", ["fn", "non_fn"]) if g in {"fn", "non_fn", "noise"}]
-    if not csv_reference_groups:
-        csv_reference_groups = ["fn", "non_fn"]
-    reference_enabled = bool(image_reference_enabled or csv_reference_enabled)
-    reference_groups = image_reference_groups if image_reference_enabled else csv_reference_groups
-    used_raw = dataset_cfg.get("used_dataset", [])
-    if isinstance(used_raw, str):
-        used_list = [used_raw.strip().lower()]
-    elif isinstance(used_raw, (list, tuple)):
-        used_list = [str(v).strip().lower() for v in used_raw if str(v).strip()]
-    else:
-        used_list = []
-    null_image_mode = "null_image" in used_list
-    all_groups = ["noise"] if null_image_mode else ["fn", "non_fn"]
-    if null_image_mode:
-        reference_groups = ["noise"]
+    image_reference_enabled = False
+    csv_reference_enabled = False
+    reference_enabled = False
+    reference_groups = ["fn", "non_fn"]
+    all_groups = ["fn", "non_fn"]
     viz_enabled = bool(unit == "image" and (per_image_enabled or reference_enabled))
     viz_normalize = "layer_minmax"
     viz_target_values = [str(v) for v in list(parsed.get("save_image_layer_grad_target_values", target_values))]
@@ -872,8 +837,6 @@ def run_layer_grad_csv(config, run_dir):
         conv_min_samples = int(parsed.get("save_image_layer_grad_csv_convergence_min_samples", 200))
         conv_max_samples = int(parsed.get("save_image_layer_grad_csv_convergence_max_samples", 20000))
     convergence_mode = bool(reference_enabled)
-    if null_image_mode:
-        viz_gt_csv = ""
     if reference_enabled and ("fn" in reference_groups) and not viz_gt_csv:
         raise ValueError("output.layer_grad.reference.gt is required when reference.group includes 'fn'.")
     viz_save_final_raw_map = bool(parsed.get("save_image_layer_grad_save_final_raw_map", True))
@@ -916,13 +879,20 @@ def run_layer_grad_csv(config, run_dir):
         raise ValueError("Loaded 0 images. Check dataset root/image_dir/split configuration in YAML.")
 
     detector, device = build_detector(config)
-    raw_prof = RawComputeProfiler(run_dir=run_dir, uncertainty=uncertainty, unit=unit)
-    all_conv_layers = expand_layer_names(detector.model, ["all_conv"])
-    all_conv_name_to_idx = {name: idx for idx, name in enumerate(all_conv_layers)}
-    if disc_enabled:
-        target_layers = expand_layer_names(detector.model, ["all_conv"])
-    else:
-        target_layers = expand_layer_names(detector.model, target_layers)
+    timing = StageTimingProfiler(
+        run_dir=run_dir,
+        uncertainty=uncertainty,
+        unit=unit,
+        stages=["detector_inference_sec", "candidate_search_sec", "loss_compute_sec", "backpropagation_sec"],
+        device=device,
+    )
+    conv_layers = [
+        name
+        for name, module in detector.model.named_modules()
+        if name and isinstance(module, torch.nn.Conv2d)
+    ]
+    conv_name_to_idx = {name: idx for idx, name in enumerate(conv_layers)}
+    target_layers = expand_layer_names(detector.model, target_layers)
     if not viz_target_values:
         viz_target_values = list(target_values)
     if not viz_target_layers:
@@ -930,167 +900,23 @@ def run_layer_grad_csv(config, run_dir):
     viz_target_layers = expand_layer_names(detector.model, viz_target_layers)
     collect_target_values = list(dict.fromkeys(list(target_values) + list(viz_target_values)))
     active_target_values = list(viz_target_values)
-    disc_summary = {
-        "enabled": bool(disc_enabled),
-        "config": {
-            "ref_corrected": {
-                "mode": ref_type,
-                "prototype_mode": ref_mode,
-                "subspace_mode": ref_subspace_mode,
-            },
-            "separation_score": disc_separation_score,
-            "topk": int(disc_topk),
-            "fn_non_fn_map": disc_fn_non_fn_map_root,
-            "ref_map": layer_ref_map_root,
-        },
-        "selected_layers": [],
-    }
+    layer_adjustment_summary = {"enabled": False, "selected_layers": []}
+    disc_enabled = False
+    disc_summary = layer_adjustment_summary
+    synthetic_dataset_mode = False
+    ref_type = "none"
+    ref_mode = "none"
+    ref_subspace_mode = "none"
+    ref_subspace_centering = "centered"
+    ref_subspace_rank_mode = "energy"
+    ref_subspace_energy_threshold = 0.95
+    ref_subspace_k = 10
+    ref_subspace_max_samples = 1000
     disc_rows = []
     noise_map_for_target_layers_by_target = {}
     subspace_models_by_target = {}
     subspace_stats_rows = []
     subspace_spectra_rows = []
-
-    print(
-        "[INFO] layer_grad gradient options "
-        f"(ref_corrected.mode={ref_type}, prototype.mode={ref_mode}, subspace.mode={ref_subspace_mode})"
-    )
-    if ref_type == "none":
-        ref_mode = "none"
-    if ref_type == "subspace":
-        print(
-            "[INFO] layer_grad subspace options "
-            f"(centering={ref_subspace_centering}, rank_mode={ref_subspace_rank_mode}, "
-            f"energy_threshold={f'{ref_subspace_energy_threshold:.3f}'.rstrip('0').rstrip('.')}, "
-            f"k={ref_subspace_k}, max_samples={ref_subspace_max_samples})"
-        )
-
-    if disc_enabled:
-        if unit != "image":
-            raise ValueError("gradient.layer='disc_layers' requires output.layer_grad.unit='image'.")
-        if ref_type == "subspace":
-            raise NotImplementedError("gradient.layer='disc_layers' with ref_corrected.mode='subspace' is not implemented yet.")
-        if ref_mode not in {"none", "subtract", "product", "proj_removal"}:
-            raise ValueError("gradient.ref_corrected must be one of {'none','subtract','product','proj_removal'}.")
-        if not disc_fn_non_fn_map_root:
-            raise ValueError("gradient.layer='disc_layers' requires gradient.disc_layers.fn_non_fn_map.")
-        if ref_mode != "none" and not layer_ref_map_root:
-            raise ValueError("gradient.ref_corrected!='none' requires gradient.ref_map.")
-        if disc_separation_score not in {"effect_size", "fisher_ratio"}:
-            raise ValueError("gradient.disc_layers.separation_score must be one of {'effect_size','fisher_ratio'}.")
-
-        disc_maps, disc_map_paths = _load_disc_source_maps_multi(
-            disc_fn_non_fn_map_root,
-            layer_ref_map_root if ref_mode != "none" else None,
-            target_values=active_target_values,
-        )
-        fn_map_by_target = disc_maps["fn_raw"]
-        non_fn_map_by_target = disc_maps["non_fn_raw"]
-        noise_map_by_target = disc_maps.get("noise_raw", {})
-
-        score_sum_by_layer = {int(i): 0.0 for i in range(len(target_layers))}
-        score_by_target = {}
-        for tv in active_target_values:
-            fn_map_t = fn_map_by_target.get(tv, np.zeros((0, 0), dtype=np.float32))
-            non_fn_map_t = non_fn_map_by_target.get(tv, np.zeros((0, 0), dtype=np.float32))
-            noise_map_t = noise_map_by_target.get(tv, np.zeros((0, 0), dtype=np.float32))
-            rows_t = _compute_disc_layer_scores(
-                layer_names=target_layers,
-                fn_map=fn_map_t,
-                non_fn_map=non_fn_map_t,
-                ref_map=noise_map_t,
-                ref_mode=ref_mode,
-                separation_score=disc_separation_score,
-            )
-            score_by_target[tv] = {int(r["layer_idx"]): float(r["score"]) for r in rows_t}
-            for r in rows_t:
-                li = int(r["layer_idx"])
-                score_sum_by_layer[li] = float(score_sum_by_layer.get(li, 0.0)) + float(r["score"])
-        disc_rows = []
-        for li, layer_name in enumerate(target_layers):
-            row = {"layer_idx": int(li), "layer_name": str(layer_name), "score": float(score_sum_by_layer.get(li, float("-inf")))}
-            for tv in active_target_values:
-                row[f"score_{tv}"] = float(score_by_target.get(tv, {}).get(li, float("-inf")))
-            disc_rows.append(row)
-        disc_rows = sorted(disc_rows, key=lambda x: x["score"], reverse=True)
-        for rank, row in enumerate(disc_rows, start=1):
-            row["rank"] = int(rank)
-        selected_layers = []
-        for row in disc_rows:
-            if np.isfinite(float(row["score"])):
-                selected_layers.append(str(row["layer_name"]))
-            if len(selected_layers) >= int(disc_topk):
-                break
-        if not selected_layers:
-            raise ValueError("disc_layers mining failed: no finite separation score was computed.")
-        selected_set = set(selected_layers)
-        for row in disc_rows:
-            row["selected"] = int(row["layer_name"] in selected_set)
-
-        target_layers = list(selected_layers)
-        viz_target_layers = list(selected_layers)
-        print(
-            "[INFO] discriminative layers "
-            f"(ref_corrected.mode={ref_type}, prototype.mode={ref_mode}, score={disc_separation_score}, topk={int(disc_topk)}): "
-            + ", ".join(selected_layers)
-        )
-        selected_indices = [int(row["layer_idx"]) for row in disc_rows if int(row.get("selected", 0)) == 1]
-        if ref_mode != "none":
-            for tv in active_target_values:
-                nm = noise_map_by_target.get(tv, np.zeros((0, 0), dtype=np.float32))
-                if selected_indices and nm.ndim == 2 and max(selected_indices) < int(nm.shape[0]):
-                    noise_map_for_target_layers_by_target[tv] = nm[selected_indices, :].astype(np.float32, copy=True)
-                else:
-                    noise_map_for_target_layers_by_target[tv] = np.zeros((len(selected_indices), 0), dtype=np.float32)
-        disc_summary["map_paths"] = disc_map_paths
-        disc_summary["selected_layers"] = list(selected_layers)
-    elif ref_type == "subspace":
-        if unit != "image":
-            raise ValueError("gradient.ref_corrected.mode='subspace' requires output.layer_grad.unit='image'.")
-        if not layer_ref_map_root:
-            raise ValueError("gradient.ref_corrected.mode='subspace' requires gradient.ref_corrected.ref_map.")
-        if ref_subspace_mode not in {"proj", "orth"}:
-            raise ValueError("gradient.ref_corrected.subspace.mode must be one of {'proj','orth'}.")
-        subspace_models_by_target, subspace_stats_rows, subspace_spectra_rows = _build_noise_subspace_models(
-            layer_ref_map_root,
-            target_values=target_values,
-            centering=ref_subspace_centering,
-            rank_mode=ref_subspace_rank_mode,
-            energy_threshold=ref_subspace_energy_threshold,
-            fixed_k=ref_subspace_k,
-            max_samples=ref_subspace_max_samples,
-        )
-        if not subspace_stats_rows:
-            raise ValueError("No valid subspace model could be built from noise per-image CSVs.")
-        for r in subspace_stats_rows:
-            print(
-                "[INFO] subspace "
-                f"target={r['target']} layer_idx={r['layer_idx']} n={r['n_samples']} d={r['dim']} "
-                f"rank={r['rank']} energy={r['energy_kept']:.4f}"
-            )
-        if save_subspace_plot:
-            _save_subspace_cumvar_plot(
-                subspace_spectra_rows,
-                run_dir / "images" / "subspace_cumvar.png",
-                max_samples=ref_subspace_max_samples,
-            )
-    elif ref_mode != "none":
-        if ref_mode not in {"subtract", "product", "proj_removal"}:
-            raise ValueError("gradient.ref_corrected must be one of {'none','subtract','product','proj_removal'}.")
-        if not layer_ref_map_root:
-            raise ValueError("gradient.ref_corrected!='none' requires gradient.ref_map.")
-        target_indices = [int(all_conv_name_to_idx[name]) for name in target_layers if name in all_conv_name_to_idx]
-        noise_map_name = "noise_raw_map"
-        noise_map_by_target = _load_map_nodes_csv_multi(
-            _resolve_ref_map_path(layer_ref_map_root, noise_map_name),
-            target_values=active_target_values,
-        )
-        for tv in active_target_values:
-            nm = noise_map_by_target.get(tv, np.zeros((0, 0), dtype=np.float32))
-            if target_indices and nm.ndim == 2 and max(target_indices) < int(nm.shape[0]):
-                noise_map_for_target_layers_by_target[tv] = nm[target_indices, :].astype(np.float32, copy=True)
-            else:
-                noise_map_for_target_layers_by_target[tv] = np.zeros((len(target_indices), 0), dtype=np.float32)
 
     fieldnames = ["image_id", "image_path"]
     if unit == "bbox":
@@ -1101,16 +927,16 @@ def run_layer_grad_csv(config, run_dir):
 
     layer_param_shapes = {}
     target_layer_indices_for_subspace = [
-        int(all_conv_name_to_idx[layer_name])
+        int(conv_name_to_idx[layer_name])
         for layer_name in target_layers
-        if layer_name in all_conv_name_to_idx
+        if layer_name in conv_name_to_idx
     ]
     viz_target_layer_indices = [
-        int(all_conv_name_to_idx[layer_name])
+        int(conv_name_to_idx[layer_name])
         for layer_name in viz_target_layers
-        if layer_name in all_conv_name_to_idx
+        if layer_name in conv_name_to_idx
     ]
-    need_transform_maps = bool(save_csv and unit == "image" and ((ref_mode != "none") or (ref_type == "subspace")))
+    need_transform_maps = False
     if unit == "image" and (viz_enabled or need_transform_maps):
         shape_layers = list(dict.fromkeys(list(viz_target_layers) + list(target_layers)))
         for layer_name in shape_layers:
@@ -1248,7 +1074,12 @@ def run_layer_grad_csv(config, run_dir):
                 break
             image_list = _as_image_list(images)
             infer_batch, ratios, pads, _resized_chws = _prepare_infer_batch(detector, image_list, device, auto=False)
-            t_raw = raw_prof.start()
+            stage_seconds = {
+                "detector_inference_sec": 0.0,
+                "candidate_search_sec": 0.0,
+                "loss_compute_sec": 0.0,
+                "backpropagation_sec": 0.0,
+            }
             batch_items = 0
             batch_preds = None
             batch_grad_stats_all = None
@@ -1267,11 +1098,13 @@ def run_layer_grad_csv(config, run_dir):
                         target_layers=required_layers,
                         map_reduction=layer_map_reduction,
                         vector_reduction=[],
-                        pre_nms=pre_nms,
-                        pre_nms_ratio=pre_nms_ratio,
+                        pre_nms=False,
+                        pre_nms_ratio=1.0,
                         pseudo_gt=viz_pseudo_gt if viz_enabled else layer_pseudo_gt,
                         cand_score_threshold=layer_cand_score_threshold,
                         bbox_loss=layer_bbox_loss,
+                        timing_accumulator=stage_seconds,
+                        timing_device=device,
                     )
                 else:
                     batch_grad_stats_all = [{} for _ in range(len(image_list))]
@@ -1295,6 +1128,8 @@ def run_layer_grad_csv(config, run_dir):
                         pseudo_gt=layer_pseudo_gt,
                         cand_score_threshold=layer_cand_score_threshold,
                         bbox_loss=layer_bbox_loss,
+                        timing_accumulator=stage_seconds,
+                        timing_device=device,
                     )
                     if csv_writer is not None:
                         for bbox_row in bbox_rows:
@@ -1320,7 +1155,7 @@ def run_layer_grad_csv(config, run_dir):
                     fn_flag = None
                     st = None
                     if viz_enabled:
-                        if null_image_mode:
+                        if synthetic_dataset_mode:
                             group_key = "noise"
                         else:
                             if viz_gt_csv:
@@ -1339,8 +1174,10 @@ def run_layer_grad_csv(config, run_dir):
                             if fn_flag is None:
                                 if batch_preds is None:
                                     detector.zero_grad(set_to_none=True)
+                                    t_detector = timing.start()
                                     with torch.no_grad():
                                         batch_preds, _bz_logits, _bz_obj, _bz_feat = detector(infer_batch)
+                                    stage_seconds["detector_inference_sec"] += timing.elapsed(t_detector)
                                 pred_boxes = batch_preds[0][sample_idx]
                                 pred_class_names = batch_preds[2][sample_idx]
                                 gt_boxes = map_boxes_to_letterbox(target["boxes"], ratios[sample_idx], pads[sample_idx])
@@ -1534,7 +1371,11 @@ def run_layer_grad_csv(config, run_dir):
                                     _save_heatmap_png(_normalize_layer_map(m, mode=viz_normalize), out_path)
                                     per_image_saved[group_key][tv] += 1
                     del grad_stats_all
-            raw_prof.end(t_raw, batch_items)
+            timing.record(
+                num_images=len(image_list),
+                num_predictions=batch_items,
+                stage_seconds=stage_seconds,
+            )
             del infer_batch
             if batch_preds is not None:
                 del batch_preds
@@ -1578,7 +1419,7 @@ def run_layer_grad_csv(config, run_dir):
                             _normalize_layer_map(m, mode=viz_normalize),
                             viz_dir / f"{g}_final_norm_{tv}_map.png",
                         )
-            if (not null_image_mode) and viz_save_profile:
+            if (not synthetic_dataset_mode) and viz_save_profile:
                 for tv in active_target_values:
                     fn_m = group_states.get("fn", {}).get("targets", {}).get(tv, {}).get("mean_raw")
                     non_m = group_states.get("non_fn", {}).get("targets", {}).get(tv, {}).get("mean_raw")
@@ -1665,7 +1506,7 @@ def run_layer_grad_csv(config, run_dir):
                 "min_samples": conv_min_samples,
                 "max_samples": conv_max_samples,
             },
-            "null_image_mode": bool(null_image_mode),
+            "synthetic_dataset_mode": bool(synthetic_dataset_mode),
             "group_total_counts": group_total_counts,
             "group_converged": group_converged,
             "group_final_delta_l2": group_final_delta_l2,
@@ -1780,7 +1621,7 @@ def run_layer_grad_csv(config, run_dir):
     del detector
     if device.type == "cuda":
         torch.cuda.empty_cache()
-    timing_csv, timing_json = raw_prof.save()
+    timing_csv, timing_json = timing.save()
 
     if save_csv:
         print(f"Saved results CSV: {output_csv}")
@@ -1788,8 +1629,8 @@ def run_layer_grad_csv(config, run_dir):
         print(f"Saved layer-grad maps: {viz_dir}")
         if tb_log_dir is not None:
             print(f"Saved layer-grad TensorBoard logs: {tb_log_dir}")
-    print(f"Saved raw compute timing: {timing_csv}")
-    print(f"Saved raw compute timing summary: {timing_json}")
+    print(f"Saved timing: {timing_csv}")
+    print(f"Saved timing summary: {timing_json}")
 
 
 

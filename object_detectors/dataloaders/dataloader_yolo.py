@@ -1,10 +1,11 @@
+import hashlib
+import math
 from pathlib import Path
 
-from torch.utils.data import ConcatDataset, DataLoader
+from torch.utils.data import ConcatDataset, DataLoader, Subset
 import yaml
 
 from dataloaders.datasets.coco import COCODataset
-from dataloaders.datasets.null_image import NullImageDataset
 from dataloaders.datasets.openimages import OpenImagesDataset
 from dataloaders.datasets.voc import VOCDataset
 
@@ -72,22 +73,43 @@ def _build_single_dataset(name, dataset_cfg, root, split_key, img_size):
             min_gt_boxes=min_gt_boxes,
         )
 
-    if name == "null_image":
-        if "num_samples" not in dataset_cfg:
-            raise ValueError("dataset.null_image.num_samples is required.")
-        return NullImageDataset(
-            num_samples=dataset_cfg["num_samples"],
-            img_size=img_size,
-            seed=dataset_cfg.get("seed"),
-        )
-
     raise ValueError(f"Unsupported dataset name: {name}")
+
+
+def _sample_key(dataset, index, dataset_name, split_key):
+    if hasattr(dataset, "images") and index < len(getattr(dataset, "images")):
+        sample_id = str(dataset.images[index])
+    elif hasattr(dataset, "samples") and index < len(getattr(dataset, "samples")):
+        sample = dataset.samples[index]
+        sample_id = str(sample.get("image_path", index)) if isinstance(sample, dict) else str(index)
+    else:
+        sample_id = str(index)
+    return f"{dataset_name}|{split_key}|{sample_id}"
+
+
+def _apply_used_ratio(dataset, dataset_cfg, dataset_name, split_key):
+    ratio = float(dataset_cfg.get("used_ratio", 1.0))
+    if not (0.0 < ratio <= 1.0):
+        raise ValueError(f"dataset.used_ratio for '{dataset_name}' must be in (0, 1].")
+    n = len(dataset)
+    if ratio >= 1.0 or n == 0:
+        return dataset
+
+    keep = max(1, int(math.ceil(n * ratio)))
+    ranked = []
+    for idx in range(n):
+        key = _sample_key(dataset, idx, dataset_name, split_key)
+        digest = hashlib.sha256(key.encode("utf-8")).hexdigest()
+        ranked.append((digest, idx))
+    selected = sorted(idx for _digest, idx in sorted(ranked)[:keep])
+    return Subset(dataset, selected)
 
 
 def build_dataset(config, split="train"):
     mode = get_mode(config)
     root_dataset_cfg = config["dataset"]
     names = _normalize_dataset_names(root_dataset_cfg)
+    used_ratios = root_dataset_cfg.get("used_ratio", 1.0)
 
     if isinstance(split, (list, tuple)):
         split_keys = [str(v).strip() for v in split if str(v).strip()]
@@ -98,24 +120,29 @@ def build_dataset(config, split="train"):
         raise ValueError(
             f"Length mismatch: used_dataset has {len(names)} entries but split has {len(split_keys)} entries."
         )
+    if isinstance(used_ratios, (list, tuple)):
+        ratio_values = [float(v) for v in used_ratios]
+    else:
+        ratio_values = [float(used_ratios)] * len(names)
+    if len(ratio_values) != len(names):
+        raise ValueError(
+            f"Length mismatch: used_dataset has {len(names)} entries but dataset.used_ratio has {len(ratio_values)} entries."
+        )
 
     datasets = []
     img_size = config["model"]["img_size"]
-    for name, split_key in zip(names, split_keys):
+    for name, split_key, used_ratio in zip(names, split_keys, ratio_values):
         if name not in root_dataset_cfg:
             raise ValueError(f"dataset.used_dataset includes '{name}' but dataset.{name} is not defined.")
-        dataset_cfg = root_dataset_cfg[name]
+        dataset_cfg = dict(root_dataset_cfg[name])
+        dataset_cfg["used_ratio"] = used_ratio
 
-        if name == "null_image" and mode != "predict":
-            raise ValueError("dataset.null_image is supported only when mode='predict'.")
-
-        root = None
-        if name != "null_image":
-            root_path = Path(dataset_cfg["root"])
-            if not root_path.is_absolute():
-                root_path = (PROJECT_ROOT / root_path).resolve()
-            root = str(root_path)
-        datasets.append(_build_single_dataset(name, dataset_cfg, root, split_key, img_size))
+        root_path = Path(dataset_cfg["root"])
+        if not root_path.is_absolute():
+            root_path = (PROJECT_ROOT / root_path).resolve()
+        root = str(root_path)
+        dataset = _build_single_dataset(name, dataset_cfg, root, split_key, img_size)
+        datasets.append(_apply_used_ratio(dataset, dataset_cfg, name, split_key))
 
     if len(datasets) == 1:
         return datasets[0]

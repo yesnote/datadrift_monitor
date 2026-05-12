@@ -27,10 +27,7 @@ from commands.utils.predict_utils import (
     enable_forced_mc_dropout_on_yolov5_head,
     collect_bbox_gradients_per_target,
     collect_bbox_layer_grads_per_target,
-    collect_batch_feature_gradients_per_target,
-    collect_image_features_per_layer,
     collect_batch_image_layer_grads_per_target,
-    create_layer_grad_buffer,
     draw_predictions,
     get_fn_gt_indices,
     get_pre_nms_keep_indices,
@@ -156,47 +153,65 @@ def _mc_dropout_single_csv_writer(write_queue, output_csv, fieldnames):
                 writer.writerows(batch_rows)
 
 
-class RawComputeProfiler:
-    def __init__(self, run_dir, uncertainty, unit):
+def _sync_timing_device(device=None):
+    if torch.cuda.is_available():
+        if device is None:
+            torch.cuda.synchronize()
+        else:
+            dev = torch.device(device)
+            if dev.type == "cuda":
+                torch.cuda.synchronize(dev)
+
+
+class StageTimingProfiler:
+    def __init__(self, run_dir, uncertainty, unit, stages=None, device=None):
         self.run_dir = Path(run_dir)
         self.uncertainty = str(uncertainty)
         self.unit = str(unit)
+        self.stages = list(stages or [])
+        self.device = device
         self.records = []
         self._batch_idx = 0
 
-    def start(self):
+    def start(self, device=None):
+        _sync_timing_device(self.device if device is None else device)
         return time.perf_counter()
 
-    def end(self, start_t, num_items):
-        elapsed = max(0.0, float(time.perf_counter() - start_t))
-        n = int(max(0, num_items))
-        self.records.append(
-            {
-                "batch_idx": self._batch_idx,
-                "num_items": n,
-                "elapsed_sec": elapsed,
-                "items_per_sec": (float(n) / elapsed) if elapsed > 0 else 0.0,
-            }
-        )
+    def elapsed(self, start_t, device=None):
+        _sync_timing_device(self.device if device is None else device)
+        return max(0.0, float(time.perf_counter() - start_t))
+
+    def record(self, num_images, num_predictions, stage_seconds):
+        row = {
+            "batch_idx": self._batch_idx,
+            "num_images": int(max(0, num_images)),
+            "num_predictions": int(max(0, num_predictions)),
+        }
+        for name in self.stages:
+            row[name] = float(stage_seconds.get(name, 0.0))
+        for name, value in stage_seconds.items():
+            if name not in row:
+                row[name] = float(value)
+                if name not in self.stages:
+                    self.stages.append(name)
+        row["total_sec"] = float(sum(row.get(name, 0.0) for name in self.stages))
+        self.records.append(row)
         self._batch_idx += 1
 
     def save(self):
         timing_dir = self.run_dir / "timing"
         timing_dir.mkdir(parents=True, exist_ok=True)
-        csv_path = timing_dir / f"{self.uncertainty}_raw_compute_timing.csv"
-        json_path = timing_dir / f"{self.uncertainty}_raw_compute_timing.json"
+        csv_path = timing_dir / f"{self.uncertainty}_timing.csv"
+        json_path = timing_dir / f"{self.uncertainty}_timing.json"
 
         total_batches = len(self.records)
-        total_items = int(sum(r["num_items"] for r in self.records))
-        total_sec = float(sum(r["elapsed_sec"] for r in self.records))
-        mean_batch_sec = (total_sec / total_batches) if total_batches > 0 else 0.0
-        mean_item_ms = ((total_sec / total_items) * 1000.0) if total_items > 0 else 0.0
-        items_per_sec = (total_items / total_sec) if total_sec > 0 else 0.0
+        total_images = int(sum(r["num_images"] for r in self.records))
+        total_predictions = int(sum(r["num_predictions"] for r in self.records))
+        stage_totals = {name: float(sum(r.get(name, 0.0) for r in self.records)) for name in self.stages}
+        total_sec = float(sum(stage_totals.values()))
 
         with open(csv_path, "w", newline="", encoding="utf-8") as f:
-            writer = csv.DictWriter(
-                f, fieldnames=["batch_idx", "num_items", "elapsed_sec", "items_per_sec"]
-            )
+            writer = csv.DictWriter(f, fieldnames=["batch_idx", "num_images", "num_predictions", *self.stages, "total_sec"])
             writer.writeheader()
             for r in self.records:
                 writer.writerow(r)
@@ -204,13 +219,24 @@ class RawComputeProfiler:
         summary = {
             "uncertainty": self.uncertainty,
             "unit": self.unit,
-            "interval": "after_detector_output_to_raw_uncertainty_done",
+            "stages": list(self.stages),
             "total_batches": total_batches,
-            "total_items": total_items,
+            "total_images": total_images,
+            "total_predictions": total_predictions,
+            "stage_total_sec": stage_totals,
             "total_elapsed_sec": total_sec,
-            "mean_elapsed_sec_per_batch": mean_batch_sec,
-            "mean_elapsed_ms_per_item": mean_item_ms,
-            "items_per_sec": items_per_sec,
+            "mean_stage_sec_per_batch": {
+                name: (value / total_batches) if total_batches > 0 else 0.0
+                for name, value in stage_totals.items()
+            },
+            "mean_stage_ms_per_image": {
+                name: ((value / total_images) * 1000.0) if total_images > 0 else 0.0
+                for name, value in stage_totals.items()
+            },
+            "mean_stage_ms_per_prediction": {
+                name: ((value / total_predictions) * 1000.0) if total_predictions > 0 else 0.0
+                for name, value in stage_totals.items()
+            },
             "batch_csv": str(csv_path),
         }
         with open(json_path, "w", encoding="utf-8") as f:

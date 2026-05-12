@@ -91,26 +91,9 @@ def main():
         uncertainty = str(parsed_output.get("uncertainty", ""))
         target_tag = ""
         run_base_subdir = None
-        save_csv_cfg = config.get("output", {}).get("save_csv", {})
-        if uncertainty == "feature_grad":
-            raw_vals = save_csv_cfg.get("feature_grad", {}).get("target_value", [])
-            raw_list = [str(v).strip().lower() for v in (raw_vals if isinstance(raw_vals, list) else [raw_vals]) if str(v).strip()]
-            if raw_list == ["loss"]:
-                target_tag = "loss"
-            else:
-                vals = parsed_output.get("target_values", [])
-                target_tag = "-".join([str(v).strip().lower() for v in vals if str(v).strip()])
-        elif uncertainty == "layer_grad":
+        if uncertainty == "layer_grad":
             layer_grad_cfg = config.get("output", {}).get("layer_grad", {})
             grad_cfg = layer_grad_cfg.get("gradient", {})
-            ref_corr_cfg = grad_cfg.get("ref_corrected", {}) if isinstance(grad_cfg.get("ref_corrected", {}), dict) else {}
-            ref_common_cfg = layer_grad_cfg.get("reference", {})
-            ref_img_cfg = layer_grad_cfg.get("save_image", {}).get("reference", {})
-            ref_csv_cfg = layer_grad_cfg.get("save_csv", {}).get("reference", {})
-            ref_img_progress_cfg = ref_img_cfg.get("progress", {})
-            ref_img_final_cfg = ref_img_cfg.get("final", {})
-            ref_csv_progress_cfg = ref_csv_cfg.get("progress", {})
-            ref_csv_final_cfg = ref_csv_cfg.get("final", {})
 
             raw_target = grad_cfg.get("target", "cand_target")
             grad_target = str(raw_target).strip().lower() if raw_target is not None else "null_target"
@@ -119,74 +102,46 @@ def main():
             scalar_list = [str(v).strip().lower() for v in (raw_vals if isinstance(raw_vals, list) else [raw_vals]) if str(v).strip()]
             scalar_tag = "-".join(scalar_list) if scalar_list else "loss"
 
-            ref_img_enabled = any(
-                bool(ref_img_progress_cfg.get(k, False))
-                for k in ("raw_map", "norm_map")
-            ) or any(
-                bool(ref_img_final_cfg.get(k, False))
-                for k in ("raw_map", "norm_map", "profile")
-            )
-            ref_csv_enabled = any(
-                bool(ref_csv_progress_cfg.get(k, False))
-                for k in ("log", "raw_map", "norm_map")
-            ) or any(
-                bool(ref_csv_final_cfg.get(k, False))
-                for k in ("raw_map", "norm_map")
-            )
-            save_reference = 1 if (ref_img_enabled or ref_csv_enabled) else 0
-            if save_reference == 1:
-                run_base_subdir = "references"
-
             target_tag = f"{grad_target}_{scalar_tag}"
-            ref_mode = str(ref_corr_cfg.get("mode", "none")).strip().lower() or "none"
-            if ref_mode != "none":
-                if ref_mode == "prototype":
-                    proto_cfg = ref_corr_cfg.get("prototype", {}) if isinstance(ref_corr_cfg.get("prototype", {}), dict) else {}
-                    proto_mode = str(proto_cfg.get("mode", "none")).strip().lower() or "none"
-                    target_tag += f"_{ref_mode}_{proto_mode}"
-                elif ref_mode == "subspace":
-                    sub_cfg = ref_corr_cfg.get("subspace", {}) if isinstance(ref_corr_cfg.get("subspace", {}), dict) else {}
-                    sub_mode = str(sub_cfg.get("mode", "orth")).strip().lower() or "orth"
-                    centering = str(sub_cfg.get("centering", "centered")).strip().lower() or "centered"
-                    rank_cfg = sub_cfg.get("rank", {}) if isinstance(sub_cfg.get("rank", {}), dict) else {}
-                    rank_mode = str(rank_cfg.get("mode", "energy")).strip().lower() or "energy"
-                    if rank_mode == "fixed_k":
-                        rank_tag = f"k{int(rank_cfg.get('k', 10))}"
-                    else:
-                        thr = float(rank_cfg.get("energy_threshold", 0.95))
-                        thr_txt = f"{thr:.3f}".rstrip("0").rstrip(".")
-                        rank_tag = f"e{thr_txt}"
-                    target_tag += f"_{ref_mode}_{sub_mode}_{centering}_{rank_tag}"
-                else:
-                    target_tag += f"_{ref_mode}"
-            if save_reference == 1:
-                used_raw = config.get("dataset", {}).get("used_dataset", [])
-                if isinstance(used_raw, str):
-                    used_list = [used_raw.strip().lower()]
-                elif isinstance(used_raw, (list, tuple)):
-                    used_list = [str(v).strip().lower() for v in used_raw if str(v).strip()]
-                else:
-                    used_list = []
-                if "null_image" in used_list:
-                    groups = ["noise"]
-                else:
-                    groups = [str(v).strip().lower() for v in ref_common_cfg.get("group", []) if str(v).strip()]
-                if groups:
-                    target_tag += f"_{'-'.join(groups)}"
+
+        if uncertainty == "deterministic":
+            deterministic_uncertainties = ["score", "class_probability", "entropy", "energy"]
+            if args.run_dir:
+                base_dir = _resolve_run_dir(args.run_dir)
+                timestamp = datetime.now().strftime("%m-%d-%Y_%H;%M")
+                run_dir = {
+                    name: (base_dir / f"{timestamp}_{name}").resolve()
+                    for name in deterministic_uncertainties
+                }
+            else:
+                run_dir = {
+                    name: create_run_dir(
+                        uncertainty=name,
+                        target_value="",
+                        base_subdir=run_base_subdir,
+                    ).resolve()
+                    for name in deterministic_uncertainties
+                }
+            for child_dir in run_dir.values():
+                child_dir.mkdir(parents=True, exist_ok=True)
+                save_used_config(config_path, child_dir)
+            run_predict(config, run_dir)
+            for name, child_dir in run_dir.items():
+                save_run_summary(child_dir, uncertainty=name)
+            return
 
         if args.run_dir:
             run_dir = _resolve_run_dir(args.run_dir)
         else:
             run_dir = create_run_dir(
-                uncertainty=parsed_output.get("uncertainty"),
-                unit=parsed_output.get("unit"),
+                uncertainty=uncertainty,
                 target_value=target_tag,
                 base_subdir=run_base_subdir,
             ).resolve()
         run_dir.mkdir(parents=True, exist_ok=True)
         save_used_config(config_path, run_dir)
         run_predict(config, run_dir)
-        save_run_summary(run_dir, uncertainty=parsed_output.get("uncertainty", ""), unit=parsed_output.get("unit", ""))
+        save_run_summary(run_dir, uncertainty=parsed_output.get("uncertainty", ""))
         return
 
     if mode == "train":

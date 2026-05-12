@@ -1,9 +1,0 @@
-mode: test
-
-model:
-  model_root: error_detectors/runs/fn_detectors/03-30-2026_12;00_feature_grad
-
-dataset:
-  input_root:
-    - object_detectors/runs/fn_detectors/03-12-2026_18;34_feature_grad
-  gt_root: object_detectors/runs/fn_detectors/03-27-2026_17;54_gt
