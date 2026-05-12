@@ -92,7 +92,7 @@ output:
     gradient:
       scalar: [loss]
       layer: ["model.24.m.0", "model.24.m.1", "model.24.m.2"]
-      reduction: [l1_norm, l2_norm, min, max, mean, std]  # [] saves raw gradient vectors to gradients/*.npz
+      reduction: [l1_norm, l2_norm, min, max, mean, std]  # [] saves raw gradient vectors
       target: cand_target # cand_target | null_target
       cand_score_threshold: 0.1
     save_csv:
