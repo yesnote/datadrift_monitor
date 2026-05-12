@@ -83,7 +83,7 @@ output:
       enabled: false
 
   meta_detect:
-    score_threshold: 0.1
+    score_threshold: 0.0
     iou_threshold: 0.45
     save_csv:
       enabled: false
@@ -94,6 +94,6 @@ output:
       layer: ["model.24.m.0", "model.24.m.1", "model.24.m.2"]
       reduction: [l1_norm, l2_norm, min, max, mean, std]  # [] saves raw gradient vectors
       target: cand_target # cand_target | null_target
-      cand_score_threshold: 0.1
+      cand_score_threshold: 0.0
     save_csv:
       enabled: true
