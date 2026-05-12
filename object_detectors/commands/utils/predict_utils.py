@@ -275,6 +275,7 @@ def parse_output_config(output_cfg):
     layer_target_values = []
     layer_target_layers = []
     layer_map_reduction = "none"
+    layer_gradient_reduction = []
     layer_pseudo_gt = "cand"
     layer_cand_score_threshold = 0.01
 
@@ -287,6 +288,31 @@ def parse_output_config(output_cfg):
                 exp.extend(["obj_loss", "cls_loss", "bbox_loss"] if v == "loss" else [v])
             layer_target_values = list(dict.fromkeys(exp))
         layer_target_layers = normalize_to_list(g.get("layer", []))
+        reduction_aliases = {
+            "1-norm": "l1_norm",
+            "1_norm": "l1_norm",
+            "l1": "l1_norm",
+            "l1_norm": "l1_norm",
+            "2-norm": "l2_norm",
+            "2_norm": "l2_norm",
+            "l2": "l2_norm",
+            "l2_norm": "l2_norm",
+            "min": "min",
+            "max": "max",
+            "mean": "mean",
+            "std": "std",
+        }
+        layer_gradient_reduction = []
+        for reduction_name in normalize_to_list(g.get("reduction", [])):
+            key = str(reduction_name).strip().lower().replace("-", "_")
+            normalized = reduction_aliases.get(key)
+            if normalized is None:
+                raise ValueError(
+                    "Unsupported layer_grad.gradient.reduction value "
+                    f"'{reduction_name}'. Supported values: l1_norm, l2_norm, min, max, mean, std."
+                )
+            if normalized not in layer_gradient_reduction:
+                layer_gradient_reduction.append(normalized)
         t = g.get("target", "cand_target")
         t_policy = str(t).strip().lower() if t is not None else "null_target"
         layer_pseudo_gt = "uniform" if t_policy in {"null_target", "null"} else "cand"
@@ -312,6 +338,7 @@ def parse_output_config(output_cfg):
         "layer_target_values": layer_target_values,
         "layer_target_layers": layer_target_layers,
         "layer_map_reduction": layer_map_reduction,
+        "layer_gradient_reduction": layer_gradient_reduction,
         "layer_pseudo_gt": layer_pseudo_gt,
         "layer_cand_score_threshold": float(layer_cand_score_threshold),
         "layer_bbox_loss": "ciou",
@@ -497,15 +524,15 @@ def collect_gradients_per_target(
 
 def map_grad_tensor_to_numbers(v):
     if v is None:
-        return {"1-norm": 0.0, "2-norm": 0.0, "min": 0.0, "max": 0.0, "mean": 0.0, "std": 0.0}
+        return {"l1_norm": 0.0, "l2_norm": 0.0, "min": 0.0, "max": 0.0, "mean": 0.0, "std": 0.0}
     if not isinstance(v, torch.Tensor):
         v = torch.tensor(v, dtype=torch.float32)
     v = v.detach().float().reshape(-1)
     if v.numel() == 0:
-        return {"1-norm": 0.0, "2-norm": 0.0, "min": 0.0, "max": 0.0, "mean": 0.0, "std": 0.0}
+        return {"l1_norm": 0.0, "l2_norm": 0.0, "min": 0.0, "max": 0.0, "mean": 0.0, "std": 0.0}
     return {
-        "1-norm": float(torch.norm(v, p=1).detach().cpu().item()),
-        "2-norm": float(torch.norm(v, p=2).detach().cpu().item()),
+        "l1_norm": float(torch.norm(v, p=1).detach().cpu().item()),
+        "l2_norm": float(torch.norm(v, p=2).detach().cpu().item()),
         "min": float(v.min().detach().cpu().item()),
         "max": float(v.max().detach().cpu().item()),
         "mean": float(torch.mean(v).detach().cpu().item()),
@@ -582,8 +609,8 @@ def format_gradient_output(grad_tensor, vector_reduction, map_reduction="none"):
 
 def zero_grad_numbers():
     return {
-        "1-norm": 0.0,
-        "2-norm": 0.0,
+        "l1_norm": 0.0,
+        "l2_norm": 0.0,
         "min": 0.0,
         "max": 0.0,
         "mean": 0.0,
@@ -873,7 +900,9 @@ def collect_bbox_layer_grads_per_target(
 
                 if target_scalar is None:
                     for layer_name in target_layers:
-                        grad_stats[f"{target_value}_{layer_name}"] = []
+                        grad_stats[f"{target_value}_{layer_name}"] = (
+                            {metric: 0.0 for metric in vector_reduction} if vector_reduction else []
+                        )
                     del model_output, raw_prediction, raw_logits, raw_anchor_priors, pred_img, logit_img, anchor_img, anchor_row
                     continue
 
