@@ -37,7 +37,7 @@ def _energy_from_probs(probs):
     )
 
 
-def run_basic_uncertainties_csv(config, run_dir, uncertainties):
+def run_deterministic_uncertainties_csv(config, run_dir, uncertainties):
     if isinstance(run_dir, dict):
         run_dirs = {str(k): Path(v) for k, v in run_dir.items()}
     else:
@@ -128,7 +128,7 @@ def run_basic_uncertainties_csv(config, run_dir, uncertainties):
             )
 
         for images, targets in tqdm(
-            dataloader, desc=f"Object Detector ({mode} - basic uncertainties)", total=len(dataloader)
+            dataloader, desc=f"Object Detector ({mode} - deterministic)", total=len(dataloader)
         ):
             image_list = _as_image_list(images)
             detector.zero_grad(set_to_none=True)
@@ -260,4 +260,4 @@ def run_basic_uncertainties_csv(config, run_dir, uncertainties):
         print(f"Saved timing summary: {timing_json}")
 
 
-__all__ = ["run_basic_uncertainties_csv"]
+__all__ = ["run_deterministic_uncertainties_csv"]

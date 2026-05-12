@@ -1,6 +1,6 @@
 import torch
 
-from commands.predict.basic import run_basic_uncertainties_csv
+from commands.predict.deterministic import run_deterministic_uncertainties_csv
 from commands.predict.registry import resolve_predict_runner
 from commands.utils.predict_utils import parse_output_config
 
@@ -13,7 +13,7 @@ def run_predict(config, run_dir):
         device = "cpu"
     print(f"[INFO] device={device}")
     if uncertainty == "deterministic":
-        run_basic_uncertainties_csv(
+        run_deterministic_uncertainties_csv(
             config,
             run_dir,
             uncertainties=["score", "class_probability", "entropy", "energy"],
