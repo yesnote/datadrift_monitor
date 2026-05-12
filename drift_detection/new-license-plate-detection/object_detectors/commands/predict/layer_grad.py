@@ -25,6 +25,7 @@ def run_layer_grad_csv(config, run_dir):
     target_values = [str(v) for v in parsed["layer_target_values"]]
     target_layers = parsed["layer_target_layers"]
     layer_map_reduction = parsed["layer_map_reduction"]
+    layer_gradient_reduction = parsed["layer_gradient_reduction"]
     layer_pseudo_gt = parsed.get("layer_pseudo_gt", "cand")
     layer_cand_score_threshold = float(parsed.get("layer_cand_score_threshold", 0.01))
 
@@ -32,8 +33,10 @@ def run_layer_grad_csv(config, run_dir):
         return
 
     output_csv = run_dir / "layer_grad.csv"
+    save_raw_gradients = not layer_gradient_reduction
     gradients_dir = run_dir / "gradients"
-    gradients_dir.mkdir(parents=True, exist_ok=True)
+    if save_raw_gradients:
+        gradients_dir.mkdir(parents=True, exist_ok=True)
 
     dataloader = create_dataloader(config, split=split)
     if len(dataloader.dataset) == 0:
@@ -55,7 +58,11 @@ def run_layer_grad_csv(config, run_dir):
     ]
     for target_value in target_values:
         for layer_name in target_layers:
-            fieldnames.append(f"{target_value}_{layer_name}")
+            grad_key = f"{target_value}_{layer_name}"
+            if save_raw_gradients:
+                fieldnames.append(grad_key)
+            else:
+                fieldnames.extend(f"{grad_key}_{metric}" for metric in layer_gradient_reduction)
 
     with open(output_csv, "w", newline="", encoding="utf-8") as csv_file_handle:
         csv_writer = csv.DictWriter(csv_file_handle, fieldnames=fieldnames)
@@ -75,9 +82,10 @@ def run_layer_grad_csv(config, run_dir):
             batch_items = 0
             batch_csv_rows = []
             batch_grad_arrays = {}
-            npz_name = f"layer_grad_batch_{batch_idx:06d}.npz"
-            npz_rel_path = (Path("gradients") / npz_name).as_posix()
-            npz_path = gradients_dir / npz_name
+            if save_raw_gradients:
+                npz_name = f"layer_grad_batch_{batch_idx:06d}.npz"
+                npz_rel_path = (Path("gradients") / npz_name).as_posix()
+                npz_path = gradients_dir / npz_name
 
             for sample_idx in range(len(image_list)):
                 target = targets[sample_idx]
@@ -90,7 +98,7 @@ def run_layer_grad_csv(config, run_dir):
                     target_values=target_values,
                     target_layers=target_layers,
                     map_reduction=layer_map_reduction,
-                    vector_reduction=[],
+                    vector_reduction=layer_gradient_reduction,
                     pseudo_gt=layer_pseudo_gt,
                     cand_score_threshold=layer_cand_score_threshold,
                     bbox_loss="ciou",
@@ -111,17 +119,23 @@ def run_layer_grad_csv(config, run_dir):
                         "pred_class": bbox_row["pred_class"],
                     }
                     for grad_key, grad_value in bbox_row["grad_stats"].items():
-                        array_key = (
-                            f"s{sample_idx:03d}_p{int(bbox_row['pred_idx']):06d}_"
-                            f"r{int(bbox_row['raw_pred_idx']):06d}_{_safe_npz_key(grad_key)}"
-                        )
-                        batch_grad_arrays[array_key] = _gradient_to_np_array(grad_value)
-                        row[grad_key] = f"{npz_rel_path}::{array_key}"
+                        if save_raw_gradients:
+                            array_key = (
+                                f"s{sample_idx:03d}_p{int(bbox_row['pred_idx']):06d}_"
+                                f"r{int(bbox_row['raw_pred_idx']):06d}_{_safe_npz_key(grad_key)}"
+                            )
+                            batch_grad_arrays[array_key] = _gradient_to_np_array(grad_value)
+                            row[grad_key] = f"{npz_rel_path}::{array_key}"
+                        else:
+                            for metric in layer_gradient_reduction:
+                                row[f"{grad_key}_{metric}"] = float(
+                                    grad_value.get(metric, 0.0) if isinstance(grad_value, dict) else 0.0
+                                )
                     batch_csv_rows.append(row)
                 batch_items += int(len(bbox_rows))
                 del bbox_rows
 
-            if batch_grad_arrays:
+            if save_raw_gradients and batch_grad_arrays:
                 np.savez(npz_path, **batch_grad_arrays)
             for row in batch_csv_rows:
                 csv_writer.writerow(row)
@@ -140,7 +154,8 @@ def run_layer_grad_csv(config, run_dir):
     timing_csv, timing_json = timing.save()
 
     print(f"Saved results CSV: {output_csv}")
-    print(f"Saved gradient arrays: {gradients_dir}")
+    if save_raw_gradients:
+        print(f"Saved gradient arrays: {gradients_dir}")
     print(f"Saved timing: {timing_csv}")
     print(f"Saved timing summary: {timing_json}")
 
