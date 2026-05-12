@@ -12,12 +12,9 @@ def run_meta_detect_csv(config, run_dir):
     unit = parsed["unit"]
     score_threshold = float(parsed["meta_detect_score_threshold"])
     iou_threshold = float(parsed["meta_detect_iou_threshold"])
-    vector_reduction = parsed["meta_detect_vector_reduction"]
 
     if not save_csv:
         return
-    if unit not in {"image", "bbox"}:
-        raise ValueError("output.uncertainty='meta_detect' requires output.unit in {'image','bbox'}.")
 
     def _stats(v: torch.Tensor):
         if v is None or v.numel() == 0:
@@ -72,21 +69,11 @@ def run_meta_detect_csv(config, run_dir):
         "score_min", "score_max", "score_mean", "score_std",
         "iou_pb_min", "iou_pb_max", "iou_pb_mean", "iou_pb_std",
     ]
-    if unit == "bbox":
-        fieldnames = [
-            "image_id", "image_path", "pred_idx", "raw_pred_idx", "xmin", "ymin", "xmax", "ymax", "score", "pred_class",
-            *output_feature_names,
-            *meta_feature_names,
-        ]
-    else:
-        fieldnames = ["image_id", "image_path"]
-        for feature_name in output_feature_names:
-            for metric_name in vector_reduction:
-                fieldnames.append(f"{feature_name}_{metric_name}")
-        for feature_name in meta_feature_names:
-            for metric_name in vector_reduction:
-                fieldnames.append(f"{feature_name}_{metric_name}")
-        fieldnames.append("num_preds")
+    fieldnames = [
+        "image_id", "image_path", "pred_idx", "raw_pred_idx", "xmin", "ymin", "xmax", "ymax", "score", "pred_class",
+        *output_feature_names,
+        *meta_feature_names,
+    ]
 
     timing = StageTimingProfiler(
         run_dir=run_dir,
@@ -154,8 +141,6 @@ def run_meta_detect_csv(config, run_dir):
                 raw_score = raw_obj * raw_cls_max
                 candidate_search_sec += timing.elapsed(t_candidate)
 
-                image_feature_rows = []
-                image_output_rows = []
                 for pred_idx, (box, score, pred_class_name) in enumerate(zip(pred_boxes, pred_scores, pred_class_names)):
                     t_candidate = timing.start()
                     fbox = torch.tensor(box, dtype=torch.float32, device=device)
@@ -228,74 +213,23 @@ def run_meta_detect_csv(config, run_dir):
                         "iou_pb_min": iou_pb_min, "iou_pb_max": iou_pb_max, "iou_pb_mean": iou_pb_mean, "iou_pb_std": iou_pb_std,
                     }
                     feature_compute_sec += timing.elapsed(t_feature)
-                    if unit == "bbox":
-                        writer.writerow(
-                            {
-                                "image_id": image_id,
-                                "image_path": image_path,
-                                "pred_idx": pred_idx,
-                                "raw_pred_idx": raw_pred_idx,
-                                "xmin": fx1,
-                                "ymin": fy1,
-                                "xmax": fx2,
-                                "ymax": fy2,
-                                "score": float(score),
-                                "pred_class": pred_class_name,
-                                **prob_values,
-                                **feature_row,
-                            }
-                        )
-                    else:
-                        image_feature_rows.append(feature_row)
-                        image_output_rows.append(prob_values)
-                if unit == "image":
-                    batch_items += 1
-                    row = {
-                        "image_id": image_id,
-                        "image_path": image_path,
-                        "num_preds": len(image_feature_rows),
-                    }
-                    for feature_name in output_feature_names:
-                        if len(image_output_rows) == 0:
-                            stats = {
-                                "1-norm": 0.0,
-                                "2-norm": 0.0,
-                                "min": 0.0,
-                                "max": 0.0,
-                                "mean": 0.0,
-                                "std": 0.0,
-                            }
-                        else:
-                            vec = torch.tensor(
-                                [float(r[feature_name]) for r in image_output_rows],
-                                dtype=torch.float32,
-                                device=device,
-                            )
-                            stats = map_grad_tensor_to_numbers(vec)
-                        for metric_name in vector_reduction:
-                            row[f"{feature_name}_{metric_name}"] = float(stats[metric_name])
-                    for feature_name in meta_feature_names:
-                        if len(image_feature_rows) == 0:
-                            stats = {
-                                "1-norm": 0.0,
-                                "2-norm": 0.0,
-                                "min": 0.0,
-                                "max": 0.0,
-                                "mean": 0.0,
-                                "std": 0.0,
-                            }
-                        else:
-                            vec = torch.tensor(
-                                [float(r[feature_name]) for r in image_feature_rows],
-                                dtype=torch.float32,
-                                device=device,
-                            )
-                            stats = map_grad_tensor_to_numbers(vec)
-                        for metric_name in vector_reduction:
-                            row[f"{feature_name}_{metric_name}"] = float(stats[metric_name])
-                    writer.writerow(row)
-                else:
-                    batch_items += int(len(pred_boxes))
+                    writer.writerow(
+                        {
+                            "image_id": image_id,
+                            "image_path": image_path,
+                            "pred_idx": pred_idx,
+                            "raw_pred_idx": raw_pred_idx,
+                            "xmin": fx1,
+                            "ymin": fy1,
+                            "xmax": fx2,
+                            "ymax": fy2,
+                            "score": float(score),
+                            "pred_class": pred_class_name,
+                            **prob_values,
+                            **feature_row,
+                        }
+                    )
+                batch_items += int(len(pred_boxes))
             timing.record(
                 num_images=len(image_list),
                 num_predictions=batch_items,

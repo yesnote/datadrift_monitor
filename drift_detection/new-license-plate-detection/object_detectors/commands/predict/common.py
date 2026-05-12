@@ -25,9 +25,7 @@ from commands.utils.predict_utils import (
     build_layer_target_scalar_bbox,
     build_detector,
     enable_forced_mc_dropout_on_yolov5_head,
-    collect_bbox_gradients_per_target,
     collect_bbox_layer_grads_per_target,
-    collect_batch_image_layer_grads_per_target,
     draw_predictions,
     get_fn_gt_indices,
     get_pre_nms_keep_indices,
@@ -172,6 +170,12 @@ class StageTimingProfiler:
         self.device = device
         self.records = []
         self._batch_idx = 0
+        self.timing_dir = self.run_dir / "timing"
+        self.csv_path = self.timing_dir / f"{self.uncertainty}_timing.csv"
+        self.json_path = self.timing_dir / f"{self.uncertainty}_timing.json"
+        self._csv_file = None
+        self._csv_writer = None
+        self._fieldnames = None
 
     def start(self, device=None):
         _sync_timing_device(self.device if device is None else device)
@@ -196,25 +200,57 @@ class StageTimingProfiler:
                     self.stages.append(name)
         row["total_sec"] = float(sum(row.get(name, 0.0) for name in self.stages))
         self.records.append(row)
+        self._write_csv_row(row)
         self._batch_idx += 1
 
-    def save(self):
-        timing_dir = self.run_dir / "timing"
-        timing_dir.mkdir(parents=True, exist_ok=True)
-        csv_path = timing_dir / f"{self.uncertainty}_timing.csv"
-        json_path = timing_dir / f"{self.uncertainty}_timing.json"
+    def _current_fieldnames(self):
+        return ["batch_idx", "num_images", "num_predictions", *self.stages, "total_sec"]
 
+    def _open_csv(self):
+        self.timing_dir.mkdir(parents=True, exist_ok=True)
+        self._fieldnames = self._current_fieldnames()
+        self._csv_file = open(self.csv_path, "w", newline="", encoding="utf-8")
+        self._csv_writer = csv.DictWriter(self._csv_file, fieldnames=self._fieldnames)
+        self._csv_writer.writeheader()
+        self._csv_file.flush()
+
+    def _close_csv(self):
+        if self._csv_file is not None:
+            self._csv_file.flush()
+            self._csv_file.close()
+        self._csv_file = None
+        self._csv_writer = None
+
+    def _rewrite_csv(self):
+        self._close_csv()
+        self._open_csv()
+        for record in self.records:
+            self._csv_writer.writerow(record)
+        self._csv_file.flush()
+
+    def _write_csv_row(self, row):
+        fieldnames = self._current_fieldnames()
+        if self._csv_writer is None:
+            self._open_csv()
+        elif fieldnames != self._fieldnames:
+            self._rewrite_csv()
+            return
+        self._csv_writer.writerow(row)
+        self._csv_file.flush()
+
+    def save(self):
+        self.timing_dir.mkdir(parents=True, exist_ok=True)
+        if self._csv_writer is None:
+            self._open_csv()
+            for record in self.records:
+                self._csv_writer.writerow(record)
+        elif self._csv_file is not None:
+            self._csv_file.flush()
         total_batches = len(self.records)
         total_images = int(sum(r["num_images"] for r in self.records))
         total_predictions = int(sum(r["num_predictions"] for r in self.records))
         stage_totals = {name: float(sum(r.get(name, 0.0) for r in self.records)) for name in self.stages}
         total_sec = float(sum(stage_totals.values()))
-
-        with open(csv_path, "w", newline="", encoding="utf-8") as f:
-            writer = csv.DictWriter(f, fieldnames=["batch_idx", "num_images", "num_predictions", *self.stages, "total_sec"])
-            writer.writeheader()
-            for r in self.records:
-                writer.writerow(r)
 
         summary = {
             "uncertainty": self.uncertainty,
@@ -237,10 +273,11 @@ class StageTimingProfiler:
                 name: ((value / total_predictions) * 1000.0) if total_predictions > 0 else 0.0
                 for name, value in stage_totals.items()
             },
-            "batch_csv": str(csv_path),
+            "batch_csv": str(self.csv_path),
         }
-        with open(json_path, "w", encoding="utf-8") as f:
+        with open(self.json_path, "w", encoding="utf-8") as f:
             json.dump(summary, f, ensure_ascii=False, indent=2)
-        return csv_path, json_path
+        self._close_csv()
+        return self.csv_path, self.json_path
 
 __all__ = [name for name in globals().keys() if not name.startswith("__")]
