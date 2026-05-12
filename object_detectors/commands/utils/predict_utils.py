@@ -700,11 +700,14 @@ def build_pseudo_label_losses_for_candidates(
     iou_threshold: float,
     score_threshold: float = 0.01,
     bbox_loss: str = "ciou",
+    timing_accumulator=None,
+    timing_device=None,
 ):
     if raw_idx >= pred_img.shape[0]:
         return None
 
     eps = 1e-6
+    t_candidate = _start_timing(timing_device)
     with torch.no_grad():
         pseudo_row = pred_img[raw_idx].detach()
         pseudo_cls = int(torch.argmax(pseudo_row[5:]).item())
@@ -719,7 +722,9 @@ def build_pseudo_label_losses_for_candidates(
         if not bool(candidate_mask.any()):
             candidate_mask = torch.zeros_like(pred_cls, dtype=torch.bool)
             candidate_mask[raw_idx] = True
+    _add_elapsed_timing(timing_accumulator, "candidate_search_sec", t_candidate, timing_device)
 
+    t_loss = _start_timing(timing_device)
     candidate_pred = pred_img[candidate_mask]
     pseudo_box_target = pseudo_row[:4].view(1, 4).expand(candidate_pred.shape[0], -1)
     bbox_loss_value = _bbox_loss_xywh_tensor(candidate_pred[:, :4], pseudo_box_target, mode=bbox_loss, reduction="sum")
@@ -733,12 +738,14 @@ def build_pseudo_label_losses_for_candidates(
     cls_target[:, pseudo_cls] = 1.0
     cls_loss = F.binary_cross_entropy(cls_prob, cls_target, reduction="sum")
 
-    return {
+    losses = {
         "bbox_loss": bbox_loss_value,
         "obj_loss": obj_loss,
         "cls_loss": cls_loss,
         "loss": bbox_loss_value + obj_loss + cls_loss,
     }
+    _add_elapsed_timing(timing_accumulator, "loss_compute_sec", t_loss, timing_device)
+    return losses
 
 
 def _bbox_loss_xywh_tensor(pred_xywh: torch.Tensor, target_xywh: torch.Tensor, mode: str = "ciou", reduction: str = "mean"):
@@ -840,28 +847,29 @@ def collect_bbox_layer_grads_per_target(
         param.requires_grad_(True)
 
     t_detector = _start_timing(timing_device)
+    model_output = detector.model(input_tensor.detach(), augment=False)
+    raw_prediction = model_output[0] if isinstance(model_output, (tuple, list)) else model_output
+    raw_logits = model_output[1] if isinstance(model_output, (tuple, list)) and len(model_output) > 1 else None
+    raw_anchor_priors = model_output[3] if isinstance(model_output, (tuple, list)) and len(model_output) > 3 else None
     with torch.no_grad():
-        model_output = detector.model(input_tensor.detach(), augment=False)
-        raw_prediction = model_output[0] if isinstance(model_output, (tuple, list)) else model_output
-        raw_logits = model_output[1] if isinstance(model_output, (tuple, list)) and len(model_output) > 1 else None
-        raw_anchor_priors = model_output[3] if isinstance(model_output, (tuple, list)) and len(model_output) > 3 else None
-    _add_elapsed_timing(timing_accumulator, "detector_inference_sec", t_detector, timing_device)
-    t_candidate = _start_timing(timing_device)
-    with torch.no_grad():
+        nms_prediction = raw_prediction.detach().clone()
+        nms_logits = raw_logits.detach().clone() if raw_logits is not None else None
         selected_preds, _selected_logits, _selected_objectness, selected_indices = detector.non_max_suppression(
-            raw_prediction,
-            raw_logits,
+            nms_prediction,
+            nms_logits,
             detector.confidence,
             detector.iou_thresh,
             classes=None,
             agnostic=detector.agnostic,
             return_indices=True,
         )
-    if pseudo_gt != "uniform":
-        _add_elapsed_timing(timing_accumulator, "candidate_search_sec", t_candidate, timing_device)
+    _add_elapsed_timing(timing_accumulator, "detector_inference_sec", t_detector, timing_device)
 
     det = selected_preds[0] if selected_preds else torch.zeros((0, 6), device=input_tensor.device)
     raw_keep_indices = selected_indices[0] if selected_indices else torch.zeros((0,), dtype=torch.long, device=input_tensor.device)
+    pred_img = raw_prediction[0]
+    logit_img = raw_logits[0] if raw_logits is not None else pred_img[:, 5:]
+    anchor_img = raw_anchor_priors[0] if raw_anchor_priors is not None else None
 
     rows = []
     num_boxes = int(det.shape[0])
@@ -870,50 +878,55 @@ def collect_bbox_layer_grads_per_target(
         for bbox_idx in range(num_boxes):
             raw_idx = int(raw_keep_indices[bbox_idx].detach().cpu().item())
             grad_stats = {}
+            pseudo_losses = None
             for target_value in target_values:
                 detector.zero_grad(set_to_none=True)
 
-                t_detector = _start_timing(timing_device)
-                model_output = detector.model(input_tensor.detach(), augment=False)
-                raw_prediction = model_output[0] if isinstance(model_output, (tuple, list)) else model_output
-                raw_logits = model_output[1] if isinstance(model_output, (tuple, list)) and len(model_output) > 1 else None
-                raw_anchor_priors = model_output[3] if isinstance(model_output, (tuple, list)) and len(model_output) > 3 else None
-                pred_img = raw_prediction[0]
-                logit_img = raw_logits[0] if raw_logits is not None else pred_img[:, 5:]
-                anchor_img = raw_anchor_priors[0] if raw_anchor_priors is not None else None
                 anchor_row = anchor_img[raw_idx] if (anchor_img is not None and raw_idx < anchor_img.shape[0]) else None
-                _add_elapsed_timing(timing_accumulator, "detector_inference_sec", t_detector, timing_device)
 
-                t_loss = _start_timing(timing_device)
-                target_scalar = build_layer_target_scalar_bbox(
-                    target_value=target_value,
-                    pred_img=pred_img,
-                    logit_img=logit_img,
-                    raw_idx=raw_idx,
-                    iou_threshold=iou_threshold,
-                    pseudo_gt=pseudo_gt,
-                    anchor_xywh=anchor_row,
-                    cand_score_threshold=cand_score_threshold,
-                    bbox_loss=bbox_loss,
-                )
-                _add_elapsed_timing(timing_accumulator, "loss_compute_sec", t_loss, timing_device)
+                if pseudo_gt != "uniform" and target_value in {"bbox_loss", "obj_loss", "cls_loss", "loss"}:
+                    if pseudo_losses is None:
+                        pseudo_losses = build_pseudo_label_losses_for_candidates(
+                            pred_img=pred_img,
+                            raw_idx=raw_idx,
+                            iou_threshold=iou_threshold,
+                            score_threshold=cand_score_threshold,
+                            bbox_loss=bbox_loss,
+                            timing_accumulator=timing_accumulator,
+                            timing_device=timing_device,
+                        )
+                    target_scalar = pseudo_losses[target_value] if pseudo_losses is not None and target_value in pseudo_losses else None
+                else:
+                    t_loss = _start_timing(timing_device)
+                    target_scalar = build_layer_target_scalar_bbox(
+                        target_value=target_value,
+                        pred_img=pred_img,
+                        logit_img=logit_img,
+                        raw_idx=raw_idx,
+                        iou_threshold=iou_threshold,
+                        pseudo_gt=pseudo_gt,
+                        anchor_xywh=anchor_row,
+                        cand_score_threshold=cand_score_threshold,
+                        bbox_loss=bbox_loss,
+                    )
+                    _add_elapsed_timing(timing_accumulator, "loss_compute_sec", t_loss, timing_device)
 
                 if target_scalar is None:
                     for layer_name in target_layers:
                         grad_stats[f"{target_value}_{layer_name}"] = (
                             {metric: 0.0 for metric in vector_reduction} if vector_reduction else []
                         )
-                    del model_output, raw_prediction, raw_logits, raw_anchor_priors, pred_img, logit_img, anchor_img, anchor_row
                     continue
 
                 t_backprop = _start_timing(timing_device)
                 grads = torch.autograd.grad(
                     target_scalar,
                     layer_params,
-                    retain_graph=False,
+                    retain_graph=True,
                     allow_unused=True,
                 )
                 _add_elapsed_timing(timing_accumulator, "backpropagation_sec", t_backprop, timing_device)
+                t_feature = _start_timing(timing_device)
                 for layer_idx, layer_name in enumerate(target_layers):
                     key = f"{target_value}_{layer_name}"
                     grad_tensor = grads[layer_idx]
@@ -922,8 +935,9 @@ def collect_bbox_layer_grads_per_target(
                         vector_reduction=vector_reduction,
                         map_reduction=map_reduction,
                     )
+                _add_elapsed_timing(timing_accumulator, "feature_compute_sec", t_feature, timing_device)
 
-                del model_output, raw_prediction, raw_logits, raw_anchor_priors, pred_img, logit_img, anchor_img, anchor_row, target_scalar, grads
+                del target_scalar, grads
 
             cls_idx = int(det[bbox_idx, 5].detach().cpu().item())
             rows.append(
@@ -943,6 +957,7 @@ def collect_bbox_layer_grads_per_target(
         for param, req_grad in zip(layer_params, original_requires_grad):
             param.requires_grad_(req_grad)
         detector.zero_grad(set_to_none=True)
+        del model_output, raw_prediction, raw_logits, raw_anchor_priors, pred_img, logit_img, anchor_img
 
     return rows
 
