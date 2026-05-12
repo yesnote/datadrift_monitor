@@ -23,6 +23,7 @@ except Exception:  # pragma: no cover
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
+_NPZ_FEATURE_CACHE: dict[Path, Any] = {}
 
 
 @dataclass
@@ -47,6 +48,18 @@ def flatten_numeric(obj: Any) -> list[float]:
         text = obj.strip()
         if not text:
             return []
+        if "::" in text:
+            npz_path_raw, array_key = text.split("::", 1)
+            npz_path = Path(npz_path_raw)
+            if npz_path.is_file():
+                npz_path = npz_path.resolve()
+                data = _NPZ_FEATURE_CACHE.get(npz_path)
+                if data is None:
+                    data = np.load(npz_path, allow_pickle=False)
+                    _NPZ_FEATURE_CACHE[npz_path] = data
+                if array_key in data.files:
+                    return data[array_key].astype(np.float32, copy=False).reshape(-1).astype(float).tolist()
+            return []
         try:
             return flatten_numeric(json.loads(text))
         except Exception:
@@ -62,6 +75,21 @@ def flatten_numeric(obj: Any) -> list[float]:
             out.extend(flatten_numeric(item))
         return out
     return []
+
+
+def resolve_npz_feature_references(df: pd.DataFrame, feature_columns: list[str], root: Path) -> None:
+    root = Path(root)
+    for col in feature_columns:
+        def _resolve(value):
+            if not isinstance(value, str) or "::" not in value:
+                return value
+            npz_part, array_key = value.split("::", 1)
+            npz_path = Path(npz_part)
+            if not npz_path.is_absolute():
+                npz_path = (root / npz_path).resolve()
+            return f"{npz_path}::{array_key}"
+
+        df[col] = df[col].map(_resolve)
 
 
 def infer_feature_spec(df: pd.DataFrame, grad_columns: list[str]) -> FeatureSpec:
@@ -309,6 +337,8 @@ def load_training_dataframe(dataset_cfg: dict[str, Any]) -> tuple[pd.DataFrame, 
         feature_columns = [c for c in feature_df.columns if c not in meta_columns]
         if not feature_columns:
             raise ValueError(f"No input feature columns found in {input_csv}")
+        if input_cue == "layer_grad":
+            resolve_npz_feature_references(feature_df, feature_columns, input_root)
         suffix_target = f"_{input_target}" if input_target else ""
         prefix_base = f"{input_cue}{suffix_target}__"
         seen_count = int(prefix_seen_count.get(prefix_base, 0))
