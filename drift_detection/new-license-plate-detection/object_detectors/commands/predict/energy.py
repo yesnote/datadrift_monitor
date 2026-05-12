@@ -25,7 +25,13 @@ def run_energy_csv(config, run_dir):
 
     detector, device = build_detector(config)
     nms_kwargs = _resolve_detector_nms_kwargs(detector)
-    raw_prof = RawComputeProfiler(run_dir=run_dir, uncertainty=uncertainty, unit=unit)
+    timing = StageTimingProfiler(
+        run_dir=run_dir,
+        uncertainty=uncertainty,
+        unit=unit,
+        stages=["detector_inference_sec", "feature_compute_sec"],
+        device=device,
+    )
     num_classes = len(detector.names) if detector.names is not None else 80
     output_csv = run_dir / "energy.csv"
     fieldnames = ["image_id", "image_path"]
@@ -61,6 +67,7 @@ def run_energy_csv(config, run_dir):
             raw_logits = None
             selected_preds = None
             selected_indices = None
+            t_detector = timing.start()
             with torch.no_grad():
                 if unit == "bbox":
                     model_output = detector.model(infer_batch, augment=False)
@@ -91,8 +98,9 @@ def run_energy_csv(config, run_dir):
                             if isinstance(model_output, (tuple, list)) and len(model_output) > 1
                             else None
                         )
+            detector_inference_sec = timing.elapsed(t_detector)
 
-            t_raw = raw_prof.start()
+            t_feature = timing.start()
             batch_items = 0
             for sample_idx in range(len(image_list)):
                 target = targets[sample_idx]
@@ -223,7 +231,15 @@ def run_energy_csv(config, run_dir):
                     for metric_name in energy_vector_reduction:
                         row[metric_name] = float(stat_all[metric_name])
                     writer.writerow(row)
-            raw_prof.end(t_raw, batch_items)
+            feature_compute_sec = timing.elapsed(t_feature)
+            timing.record(
+                num_images=len(image_list),
+                num_predictions=batch_items,
+                stage_seconds={
+                    "detector_inference_sec": detector_inference_sec,
+                    "feature_compute_sec": feature_compute_sec,
+                },
+            )
             if unit == "bbox":
                 del infer_batch, raw_prediction, raw_logits, selected_preds, selected_indices
             else:
@@ -232,10 +248,10 @@ def run_energy_csv(config, run_dir):
     del detector
     if device.type == "cuda":
         torch.cuda.empty_cache()
-    timing_csv, timing_json = raw_prof.save()
+    timing_csv, timing_json = timing.save()
 
     print(f"Saved results CSV: {output_csv}")
-    print(f"Saved raw compute timing: {timing_csv}")
-    print(f"Saved raw compute timing summary: {timing_json}")
+    print(f"Saved timing: {timing_csv}")
+    print(f"Saved timing summary: {timing_json}")
 
 __all__ = ["run_energy_csv"]

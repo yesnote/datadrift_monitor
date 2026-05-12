@@ -9,15 +9,10 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 def create_run_dir(uncertainty=None, unit=None, target_value=None, base_subdir=None):
     run_name = datetime.now().strftime("%m-%d-%Y_%H;%M")
     uncertainty_name = str(uncertainty or "predict").lower()
-    unit_name = str(unit or "").lower()
     target_name = str(target_value or "").strip().lower()
 
     if base_subdir:
         base_dir = PROJECT_ROOT / "runs" / str(base_subdir)
-    elif unit_name == "image":
-        base_dir = PROJECT_ROOT / "runs" / "fn_detectors"
-    elif unit_name == "bbox":
-        base_dir = PROJECT_ROOT / "runs" / "tp_classifiers"
     else:
         base_dir = PROJECT_ROOT / "runs"
 
@@ -64,11 +59,10 @@ def _count_rows(csv_path: Path) -> int | None:
         return sum(1 for _ in reader)
 
 
-def save_run_summary(run_dir: Path, uncertainty: str, unit: str) -> Path:
+def save_run_summary(run_dir: Path, uncertainty: str) -> Path:
     run_dir = Path(run_dir)
     summary = {
         "uncertainty": str(uncertainty),
-        "unit": str(unit),
     }
 
     fn_stats = _count_ratio(run_dir / "fn.csv", "fn")
@@ -85,16 +79,9 @@ def save_run_summary(run_dir: Path, uncertainty: str, unit: str) -> Path:
         summary["tp_count"] = tp_count
         summary["tp_ratio"] = tp_ratio
 
-    grad_rows = _count_rows(run_dir / "feature_grad.csv")
-    if grad_rows is not None:
-        summary["feature_grad_rows"] = grad_rows
     score_rows = _count_rows(run_dir / "score.csv")
     if score_rows is not None:
         summary["score_rows"] = score_rows
-    prediction_dump_rows = _count_rows(run_dir / "prediction_dump.csv")
-    if prediction_dump_rows is not None:
-        summary["prediction_dump_rows"] = prediction_dump_rows
-
     out_path = run_dir / "run_summary.json"
     with open(out_path, "w", encoding="utf-8") as f:
         import json

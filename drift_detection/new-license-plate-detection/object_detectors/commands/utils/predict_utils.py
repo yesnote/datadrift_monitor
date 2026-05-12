@@ -1,5 +1,6 @@
 ﻿import json
 import math
+import time
 from pathlib import Path
 
 import cv2
@@ -11,6 +12,30 @@ import torch.nn as nn
 from models.yolo.models.yolo_v5_object_detector import YOLOV5TorchObjectDetector
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
+
+
+def _sync_timing_device(device=None):
+    if not torch.cuda.is_available():
+        return
+    if device is None:
+        torch.cuda.synchronize()
+        return
+    dev = torch.device(device)
+    if dev.type == "cuda":
+        torch.cuda.synchronize(dev)
+
+
+def _start_timing(device=None):
+    _sync_timing_device(device)
+    return time.perf_counter()
+
+
+def _add_elapsed_timing(timing_accumulator, stage_name, start_time, device=None):
+    _sync_timing_device(device)
+    if timing_accumulator is not None:
+        timing_accumulator[stage_name] = float(timing_accumulator.get(stage_name, 0.0)) + (
+            time.perf_counter() - start_time
+        )
 
 
 def box_iou_xyxy(box_a, box_b):
@@ -243,11 +268,6 @@ def expand_layer_names(model, layer_names):
         token = str(name).strip()
         if not token:
             continue
-        if token.lower() == "all_conv":
-            for mod_name, mod in model.named_modules():
-                if mod_name and isinstance(mod, nn.Conv2d) and mod_name not in resolved:
-                    resolved.append(mod_name)
-            continue
         if token not in resolved:
             resolved.append(token)
     return resolved
@@ -269,75 +289,43 @@ def parse_output_config(output_cfg):
         except Exception:
             return d
 
-    def as_count_or_inf(v, d):
-        if isinstance(v, str) and v.strip().lower() == "inf":
-            return math.inf
-        try:
-            return int(v)
-        except Exception:
-            return d
+    uncertainty = str(output_cfg.get("uncertainty", "gt")).strip().lower()
+    if not uncertainty:
+        uncertainty = "gt"
+    supported = {
+        "deterministic",
+        "gt",
+        "score",
+        "class_probability",
+        "entropy",
+        "energy",
+        "mc_dropout",
+        "ensemble",
+        "meta_detect",
+        "layer_grad",
+    }
+    if uncertainty not in supported:
+        raise ValueError(f"Unsupported uncertainty: {uncertainty}")
 
-    uncertainty = str(output_cfg.get("uncertainty", "gt")).lower()
     active = as_dict(output_cfg.get(uncertainty, {}))
     save_csv_cfg = active.get("save_csv", {})
     save_image_cfg = as_dict(active.get("save_image", {}))
     save_csv = as_dict(save_csv_cfg)
-    layer_grad_common_cfg = active if uncertainty == "layer_grad" else save_csv
-    layer_grad_data_cfg = as_dict(save_csv.get("data", {})) if uncertainty == "layer_grad" else {}
+    save_csv_enabled = bool(save_csv.get("enabled", bool(save_csv_cfg) if isinstance(save_csv_cfg, bool) else False))
+    unit = "bbox"
+    pre_nms = False
+    pre_nms_ratio = 1.0
 
-    if uncertainty == "layer_grad":
-        save_csv_enabled = bool(layer_grad_data_cfg.get("enabled", False))
-    else:
-        save_csv_enabled = bool(save_csv.get("enabled", bool(save_csv_cfg) if isinstance(save_csv_cfg, bool) else False))
-    if uncertainty in {"layer_grad", "gt", "score", "full_softmax", "entropy", "energy", "mc_dropout", "ensemble", "meta_detect", "feature", "feature_grad", "prediction_dump"}:
-        unit_cfg = active
-    else:
-        unit_cfg = layer_grad_common_cfg
-    unit = str(unit_cfg.get("unit", "image")).lower()
-    if uncertainty in {"layer_grad", "score", "full_softmax", "entropy", "energy", "feature_grad"}:
-        pre_nms_source_cfg = active
-    else:
-        pre_nms_source_cfg = layer_grad_common_cfg
-    pre_nms_cfg = as_dict(pre_nms_source_cfg.get("pre_nms", {}))
-    pre_nms = bool(pre_nms_cfg.get("enabled", False))
-    pre_nms_ratio = as_float(pre_nms_cfg.get("ratio", 1.0), 1.0)
-
-    gt_cfg = active if uncertainty in {"gt", "prediction_dump"} else {}
-    score_cfg = save_csv if uncertainty == "score" else {}
+    gt_cfg = active if uncertainty == "gt" else {}
     meta_detect_cfg = active if uncertainty == "meta_detect" else {}
-    meta_detect_csv_cfg = save_csv if uncertainty == "meta_detect" else {}
     mc_dropout_cfg = active if uncertainty == "mc_dropout" else {}
-    mc_dropout_csv_cfg = save_csv if uncertainty == "mc_dropout" else {}
-    ensemble_cfg = save_csv if uncertainty == "ensemble" else {}
-    energy_cfg = save_csv if uncertainty == "energy" else {}
-    entropy_cfg = save_csv if uncertainty == "entropy" else {}
-    full_softmax_cfg = save_csv if uncertainty == "full_softmax" else {}
-    feature_cfg = active if uncertainty == "feature" else {}
-    feature_csv_cfg = save_csv if uncertainty == "feature" else {}
-    feature_grad_cfg = active if uncertainty == "feature_grad" else {}
-    feature_grad_csv_cfg = save_csv if uncertainty == "feature_grad" else {}
-    layer_grad_cfg = layer_grad_common_cfg if uncertainty == "layer_grad" else {}
+    layer_grad_cfg = active if uncertainty == "layer_grad" else {}
 
     gt_iou_match_threshold = as_float(gt_cfg.get("iou_match_threshold", 0.5), 0.5)
     meta_detect_score_threshold = as_float(meta_detect_cfg.get("score_threshold", 0.0), 0.0)
     meta_detect_iou_threshold = as_float(meta_detect_cfg.get("iou_threshold", 0.45), 0.45)
-    meta_detect_vector_reduction = normalize_vector_reduction(meta_detect_csv_cfg.get("vector_reduction", ["L1", "L2", "min", "max", "mean", "std"]))
     mc_num_runs = as_int(mc_dropout_cfg.get("num_runs", 30), 30)
     mc_dropout_rate = as_float(mc_dropout_cfg.get("dropout_rate", 0.5), 0.5)
-    mc_queue_maxsize = as_int(mc_dropout_cfg.get("queue_maxsize", 8), 8)
-    mc_vector_reduction = normalize_vector_reduction(mc_dropout_csv_cfg.get("vector_reduction", ["L1", "L2", "min", "max", "mean", "std"]))
-    ensemble_vector_reduction = normalize_vector_reduction(ensemble_cfg.get("vector_reduction", ["L1", "L2", "min", "max", "mean", "std"]))
-    score_vector_reduction = normalize_vector_reduction(score_cfg.get("vector_reduction", ["L1", "L2", "min", "max", "mean", "std"]))
-    energy_vector_reduction = normalize_vector_reduction(energy_cfg.get("vector_reduction", ["L1", "L2", "min", "max", "mean", "std"]))
-    entropy_vector_reduction = normalize_vector_reduction(entropy_cfg.get("vector_reduction", ["L1", "L2", "min", "max", "mean", "std"]))
-    full_softmax_vector_reduction = normalize_vector_reduction(full_softmax_cfg.get("vector_reduction", ["L1", "L2", "min", "max", "mean", "std"]))
-
-    feature_target_layers = normalize_to_list(feature_cfg.get("layer", []))
-    feature_reduction_cfg = as_dict(feature_csv_cfg.get("reduction", {}))
-    feature_map_reduction = str(feature_reduction_cfg.get("map", "energy")).strip().lower()
-    feature_vector_reduction = normalize_vector_reduction(
-        feature_reduction_cfg.get("vector", ["L1", "L2", "min", "max", "mean", "std"])
-    )
 
     target_values = []
     target_layers = []
@@ -346,37 +334,10 @@ def parse_output_config(output_cfg):
     layer_map_reduction = "none"
     layer_vector_reduction = ["1-norm", "2-norm", "min", "max", "mean", "std"]
     layer_pseudo_gt = "cand"
-    layer_ref_mode = "none"
-    layer_ref_type = "prototype"
-    layer_ref_prototype_mode = "none"
-    layer_ref_subspace_mode = "none"
-    layer_ref_subspace_centering = "centered"
-    layer_ref_subspace_rank_mode = "energy"
-    layer_ref_subspace_energy_threshold = 0.95
-    layer_ref_subspace_k = 10
-    layer_ref_subspace_max_samples = 1000
-    layer_disc_separation_score = "effect_size"
-    layer_disc_topk = 3
-    layer_disc_fn_non_fn_map_root = ""
-    layer_ref_map_root = ""
     layer_cand_score_threshold = 0.01
-    layer_bbox_loss = "ciou"
 
-    if uncertainty == "feature_grad":
-        g = as_dict(feature_grad_cfg.get("gradient", {}))
-        r = as_dict(feature_grad_csv_cfg.get("reduction", {}))
-        target_values = [v.lower() for v in normalize_to_list(g.get("scalar", ["obj"]))]
-        if "loss" in target_values:
-            exp = []
-            for v in target_values:
-                exp.extend(["obj_loss", "cls_loss", "bbox_loss"] if v == "loss" else [v])
-            target_values = list(dict.fromkeys(exp))
-        target_layers = normalize_to_list(g.get("layer", []))
-        feature_map_reduction = str(r.get("map", "energy")).strip().lower()
-        feature_vector_reduction = normalize_vector_reduction(r.get("vector", ["L1", "L2", "min", "max", "mean", "std"]))
-    elif uncertainty == "layer_grad":
+    if uncertainty == "layer_grad":
         g = as_dict(layer_grad_cfg.get("gradient", {}))
-        r = as_dict(layer_grad_data_cfg.get("reduction", {}))
         layer_target_values = [v.lower() for v in normalize_to_list(g.get("scalar", ["loss"]))]
         if "loss" in layer_target_values:
             exp = []
@@ -384,164 +345,14 @@ def parse_output_config(output_cfg):
                 exp.extend(["obj_loss", "cls_loss", "bbox_loss"] if v == "loss" else [v])
             layer_target_values = list(dict.fromkeys(exp))
         layer_target_layers = normalize_to_list(g.get("layer", []))
-        layer_map_reduction = str(r.get("map", "none")).strip().lower()
-        layer_vector_reduction = normalize_vector_reduction(r.get("vector", ["L1", "L2", "min", "max", "mean", "std"]))
-        ref_cfg = as_dict(g.get("ref_corrected", {}))
-        layer_ref_type = str(ref_cfg.get("mode", "prototype")).strip().lower() or "prototype"
-        prototype_cfg = as_dict(ref_cfg.get("prototype", {}))
-        subspace_cfg = as_dict(ref_cfg.get("subspace", {}))
-        subspace_rank_cfg = as_dict(subspace_cfg.get("rank", {}))
-        layer_ref_prototype_mode = str(prototype_cfg.get("mode", "none")).strip().lower() or "none"
-        layer_ref_subspace_mode = str(subspace_cfg.get("mode", "none")).strip().lower() or "none"
-        layer_ref_subspace_centering = str(subspace_cfg.get("centering", "centered")).strip().lower() or "centered"
-        layer_ref_subspace_rank_mode = str(subspace_rank_cfg.get("mode", "energy")).strip().lower() or "energy"
-        layer_ref_subspace_energy_threshold = as_float(subspace_rank_cfg.get("energy_threshold", 0.95), 0.95)
-        layer_ref_subspace_k = max(1, as_int(subspace_rank_cfg.get("k", 10), 10))
-        layer_ref_subspace_max_samples = max(1, as_int(subspace_cfg.get("max_samples", 1000), 1000))
-        layer_ref_mode = layer_ref_prototype_mode
         t = g.get("target", "cand_target")
         t_policy = str(t).strip().lower() if t is not None else "null_target"
         layer_pseudo_gt = "uniform" if t_policy in {"null_target", "null"} else "cand"
         layer_cand_score_threshold = as_float(g.get("cand_score_threshold", 0.01), 0.01)
-        layer_bbox_loss = str(g.get("bbox_loss", "ciou")).strip().lower() or "ciou"
-        if layer_bbox_loss not in {"smooth_l1", "ciou", "log_area_ratio"}:
-            raise ValueError("layer_grad.gradient.bbox_loss must be one of: smooth_l1, ciou, log_area_ratio")
-        disc_cfg = as_dict(g.get("disc_layers", {}))
-        layer_disc_separation_score = (
-            str(disc_cfg.get("separation_score", "effect_size")).strip().lower() or "effect_size"
-        )
-        layer_disc_topk = max(1, as_int(disc_cfg.get("topk", 3), 3))
-        layer_disc_fn_non_fn_map_root = str(disc_cfg.get("fn_non_fn_map", "")).strip()
-        layer_ref_map_root = str(ref_cfg.get("ref_map", "")).strip()
 
     save_image_enabled = bool(save_image_cfg.get("enabled", bool(save_image_cfg)))
     gt_image_step = as_int(save_image_cfg.get("step", 1), 1)
     gt_image_max_num = as_int(save_image_cfg.get("max_num", 1), 1)
-
-    layer_grad_image_per_image_enabled = False
-    layer_grad_image_per_image_step = 1
-    layer_grad_image_per_image_max_num = 0
-    layer_grad_image_ref_enabled = False
-    layer_grad_image_ref_groups = ["fn", "non_fn"]
-    layer_grad_image_save_final_raw_map = False
-    layer_grad_image_save_final_norm_map = False
-    layer_grad_image_save_profile = False
-    layer_grad_image_save_progress_raw_map = False
-    layer_grad_image_save_progress_norm_map = False
-    layer_grad_image_progress_step = 10
-    layer_grad_image_save_reference_per_image_raw_map = False
-    layer_grad_image_save_reference_per_image_norm_map = False
-    layer_grad_image_reference_per_image_step = 10
-    layer_grad_image_save_subspace = False
-    layer_grad_image_gt_csv = ""
-    layer_grad_image_num_fn = math.inf
-    layer_grad_image_num_non_fn = math.inf
-    layer_img_target_values = ["obj_loss", "cls_loss", "bbox_loss"]
-    layer_img_target_layers = []
-    layer_grad_image_pseudo_gt = "cand"
-    layer_grad_image_delta_metric = "l2"
-    layer_grad_image_delta_l2_tol = 1e-4
-    layer_grad_image_patience = 20
-    layer_grad_image_min_samples = 200
-    layer_grad_image_max_samples = 20000
-    layer_grad_ref_csv_enabled = False
-    layer_grad_ref_groups = ["fn", "non_fn"]
-    layer_grad_ref_delta_l2_tol = 1e-4
-    layer_grad_ref_patience = 20
-    layer_grad_ref_min_samples = 200
-    layer_grad_ref_max_samples = 20000
-    layer_grad_ref_save_running_log = False
-    layer_grad_ref_save_final_raw_map_csv = False
-    layer_grad_ref_save_final_norm_map_csv = False
-    layer_grad_ref_save_progress_raw_map_csv = False
-    layer_grad_ref_save_progress_norm_map_csv = False
-    layer_grad_ref_progress_step = 10
-    layer_grad_ref_save_per_image_raw_map_csv = False
-    layer_grad_ref_save_per_image_norm_map_csv = False
-    layer_grad_ref_per_image_step = 10
-
-    if uncertainty == "layer_grad":
-        lg = layer_grad_cfg
-        common_ref_cfg = as_dict(lg.get("reference", {}))
-        per_image_cfg = as_dict(save_image_cfg.get("inferenced_image", {}))
-        ref_img_cfg = as_dict(save_image_cfg.get("reference", {}))
-        ref_img_per_image_cfg = as_dict(ref_img_cfg.get("per_image", {}))
-        ref_img_progress_cfg = as_dict(ref_img_cfg.get("progress", {}))
-        ref_img_final_cfg = as_dict(ref_img_cfg.get("final", {}))
-        conv_cfg = common_ref_cfg
-        layer_grad_image_per_image_enabled = bool(per_image_cfg.get("enabled", False))
-        layer_grad_image_per_image_step = as_int(per_image_cfg.get("step", 1), 1)
-        layer_grad_image_per_image_max_num = as_int(per_image_cfg.get("max_num", 0), 0)
-        layer_grad_image_ref_groups = [g.lower() for g in normalize_to_list(common_ref_cfg.get("group", ["fn", "non_fn"]))]
-        layer_grad_image_save_final_raw_map = bool(ref_img_final_cfg.get("raw_map", False))
-        layer_grad_image_save_final_norm_map = bool(ref_img_final_cfg.get("norm_map", False))
-        layer_grad_image_save_profile = bool(ref_img_final_cfg.get("profile", False))
-        layer_grad_image_save_progress_raw_map = bool(ref_img_progress_cfg.get("raw_map", False))
-        layer_grad_image_save_progress_norm_map = bool(ref_img_progress_cfg.get("norm_map", False))
-        layer_grad_image_progress_step = as_int(ref_img_progress_cfg.get("step", 10), 10)
-        layer_grad_image_save_reference_per_image_raw_map = bool(ref_img_per_image_cfg.get("raw_map", False))
-        layer_grad_image_save_reference_per_image_norm_map = bool(ref_img_per_image_cfg.get("norm_map", False))
-        layer_grad_image_reference_per_image_step = as_int(ref_img_per_image_cfg.get("step", 10), 10)
-        subspace_img_cfg = as_dict(save_image_cfg.get("subspace", {}))
-        layer_grad_image_save_subspace = bool(subspace_img_cfg.get("enabled", False))
-        layer_grad_image_ref_enabled = any([
-            bool(layer_grad_image_save_progress_raw_map),
-            bool(layer_grad_image_save_progress_norm_map),
-            bool(layer_grad_image_save_reference_per_image_raw_map),
-            bool(layer_grad_image_save_reference_per_image_norm_map),
-            bool(layer_grad_image_save_final_raw_map),
-            bool(layer_grad_image_save_final_norm_map),
-            bool(layer_grad_image_save_profile),
-        ])
-
-        gt_dir = str(common_ref_cfg.get("gt", "")).strip()
-        if gt_dir:
-            layer_grad_image_gt_csv = str((Path(gt_dir) / "fn.csv").as_posix())
-
-        g = as_dict(layer_grad_cfg.get("gradient", {}))
-        layer_img_target_values = [v.lower() for v in normalize_to_list(g.get("scalar", ["loss"]))]
-        if "loss" in layer_img_target_values:
-            exp = []
-            for v in layer_img_target_values:
-                exp.extend(["obj_loss", "cls_loss", "bbox_loss"] if v == "loss" else [v])
-            layer_img_target_values = list(dict.fromkeys(exp))
-        layer_img_target_layers = normalize_to_list(g.get("layer", []))
-        t = g.get("target", "cand_target")
-        t_policy = str(t).strip().lower() if t is not None else "null_target"
-        layer_grad_image_pseudo_gt = "uniform" if t_policy in {"null_target", "null"} else "cand"
-
-        layer_grad_image_delta_l2_tol = as_float(conv_cfg.get("delta", 1e-4), 1e-4)
-        layer_grad_image_patience = as_int(conv_cfg.get("patience", 20), 20)
-        layer_grad_image_min_samples = as_int(conv_cfg.get("min_samples", 200), 200)
-        layer_grad_image_max_samples = as_int(conv_cfg.get("max_samples", 20000), 20000)
-
-        ref_csv_cfg = as_dict(save_csv.get("reference", {}))
-        ref_csv_per_image_cfg = as_dict(ref_csv_cfg.get("per_image", {}))
-        ref_csv_progress_cfg = as_dict(ref_csv_cfg.get("progress", {}))
-        ref_csv_final_cfg = as_dict(ref_csv_cfg.get("final", {}))
-        layer_grad_ref_groups = [g.lower() for g in normalize_to_list(common_ref_cfg.get("group", ["fn", "non_fn"]))]
-        layer_grad_ref_delta_l2_tol = as_float(common_ref_cfg.get("delta", 1e-4), 1e-4)
-        layer_grad_ref_patience = as_int(common_ref_cfg.get("patience", 20), 20)
-        layer_grad_ref_min_samples = as_int(common_ref_cfg.get("min_samples", 200), 200)
-        layer_grad_ref_max_samples = as_int(common_ref_cfg.get("max_samples", 20000), 20000)
-        layer_grad_ref_save_running_log = bool(ref_csv_progress_cfg.get("log", True))
-        layer_grad_ref_save_per_image_raw_map_csv = bool(ref_csv_per_image_cfg.get("raw_map", False))
-        layer_grad_ref_save_per_image_norm_map_csv = bool(ref_csv_per_image_cfg.get("norm_map", False))
-        layer_grad_ref_per_image_step = as_int(ref_csv_per_image_cfg.get("step", 10), 10)
-        layer_grad_ref_save_progress_raw_map_csv = bool(ref_csv_progress_cfg.get("raw_map", False))
-        layer_grad_ref_save_progress_norm_map_csv = bool(ref_csv_progress_cfg.get("norm_map", False))
-        layer_grad_ref_progress_step = as_int(ref_csv_progress_cfg.get("step", 10), 10)
-        layer_grad_ref_save_final_raw_map_csv = bool(ref_csv_final_cfg.get("raw_map", True))
-        layer_grad_ref_save_final_norm_map_csv = bool(ref_csv_final_cfg.get("norm_map", True))
-        layer_grad_ref_csv_enabled = any([
-            bool(layer_grad_ref_save_running_log),
-            bool(layer_grad_ref_save_per_image_raw_map_csv),
-            bool(layer_grad_ref_save_per_image_norm_map_csv),
-            bool(layer_grad_ref_save_progress_raw_map_csv),
-            bool(layer_grad_ref_save_progress_norm_map_csv),
-            bool(layer_grad_ref_save_final_raw_map_csv),
-            bool(layer_grad_ref_save_final_norm_map_csv),
-        ])
 
     return {
         "save_csv_enabled": save_csv_enabled,
@@ -552,19 +363,15 @@ def parse_output_config(output_cfg):
         "gt_iou_match_threshold": gt_iou_match_threshold,
         "meta_detect_score_threshold": meta_detect_score_threshold,
         "meta_detect_iou_threshold": meta_detect_iou_threshold,
-        "meta_detect_vector_reduction": meta_detect_vector_reduction,
+        "meta_detect_vector_reduction": [],
         "mc_num_runs": mc_num_runs,
         "mc_dropout_rate": mc_dropout_rate,
-        "mc_queue_maxsize": mc_queue_maxsize,
-        "mc_vector_reduction": mc_vector_reduction,
-        "ensemble_vector_reduction": ensemble_vector_reduction,
-        "score_vector_reduction": score_vector_reduction,
-        "energy_vector_reduction": energy_vector_reduction,
-        "entropy_vector_reduction": entropy_vector_reduction,
-        "full_softmax_vector_reduction": full_softmax_vector_reduction,
-        "feature_target_layers": feature_target_layers,
-        "feature_map_reduction": feature_map_reduction,
-        "feature_vector_reduction": feature_vector_reduction,
+        "mc_vector_reduction": [],
+        "ensemble_vector_reduction": [],
+        "score_vector_reduction": [],
+        "energy_vector_reduction": [],
+        "entropy_vector_reduction": [],
+        "class_probability_vector_reduction": [],
         "target_values": target_values,
         "target_layers": target_layers,
         "layer_target_values": layer_target_values,
@@ -573,64 +380,64 @@ def parse_output_config(output_cfg):
         "layer_vector_reduction": layer_vector_reduction,
         "layer_pseudo_gt": layer_pseudo_gt,
         "layer_cand_score_threshold": float(layer_cand_score_threshold),
-        "layer_bbox_loss": layer_bbox_loss,
-        "layer_ref_mode": layer_ref_mode,
-        "layer_ref_type": layer_ref_type,
-        "layer_ref_prototype_mode": layer_ref_prototype_mode,
-        "layer_ref_subspace_mode": layer_ref_subspace_mode,
-        "layer_ref_subspace_centering": layer_ref_subspace_centering,
-        "layer_ref_subspace_rank_mode": layer_ref_subspace_rank_mode,
-        "layer_ref_subspace_energy_threshold": layer_ref_subspace_energy_threshold,
-        "layer_ref_subspace_k": layer_ref_subspace_k,
-        "layer_ref_subspace_max_samples": layer_ref_subspace_max_samples,
-        "layer_disc_separation_score": layer_disc_separation_score,
-        "layer_disc_topk": layer_disc_topk,
-        "layer_disc_fn_non_fn_map_root": layer_disc_fn_non_fn_map_root,
-        "layer_ref_map_root": layer_ref_map_root,
+        "layer_bbox_loss": "ciou",
+        "layer_ref_mode": "none",
+        "layer_ref_type": "none",
+        "layer_ref_prototype_mode": "none",
+        "layer_ref_subspace_mode": "none",
+        "layer_ref_subspace_centering": "centered",
+        "layer_ref_subspace_rank_mode": "energy",
+        "layer_ref_subspace_energy_threshold": 0.95,
+        "layer_ref_subspace_k": 10,
+        "layer_ref_subspace_max_samples": 1000,
+        "layer_disc_separation_score": "effect_size",
+        "layer_disc_topk": 3,
+        "layer_disc_fn_non_fn_map_root": "",
+        "layer_ref_map_root": "",
         "save_image_enabled": save_image_enabled,
         "save_image_gt_step": gt_image_step,
         "save_image_gt_max_num": gt_image_max_num,
-        "save_image_layer_grad_target_values": layer_img_target_values,
-        "save_image_layer_grad_target_layers": layer_img_target_layers,
-        "save_image_layer_grad_pseudo_gt": layer_grad_image_pseudo_gt,
-        "save_image_layer_grad_num_fn": layer_grad_image_num_fn,
-        "save_image_layer_grad_num_non_fn": layer_grad_image_num_non_fn,
-        "save_image_layer_grad_gt_csv": layer_grad_image_gt_csv,
-        "save_image_layer_grad_per_image_enabled": layer_grad_image_per_image_enabled,
-        "save_image_layer_grad_per_image_step": layer_grad_image_per_image_step,
-        "save_image_layer_grad_per_image_max_num": layer_grad_image_per_image_max_num,
-        "save_image_layer_grad_reference_enabled": layer_grad_image_ref_enabled,
-        "save_image_layer_grad_reference_groups": layer_grad_image_ref_groups,
-        "save_image_layer_grad_convergence_delta_metric": layer_grad_image_delta_metric,
-        "save_image_layer_grad_convergence_delta_l2_tol": layer_grad_image_delta_l2_tol,
-        "save_image_layer_grad_convergence_patience": layer_grad_image_patience,
-        "save_image_layer_grad_convergence_min_samples": layer_grad_image_min_samples,
-        "save_image_layer_grad_convergence_max_samples": layer_grad_image_max_samples,
-        "save_image_layer_grad_save_final_raw_map": layer_grad_image_save_final_raw_map,
-        "save_image_layer_grad_save_final_norm_map": layer_grad_image_save_final_norm_map,
-        "save_image_layer_grad_save_profile": layer_grad_image_save_profile,
-        "save_image_layer_grad_save_progress_raw_map": layer_grad_image_save_progress_raw_map,
-        "save_image_layer_grad_save_progress_norm_map": layer_grad_image_save_progress_norm_map,
-        "save_image_layer_grad_progress_step": layer_grad_image_progress_step,
-        "save_image_layer_grad_save_reference_per_image_raw_map": layer_grad_image_save_reference_per_image_raw_map,
-        "save_image_layer_grad_save_reference_per_image_norm_map": layer_grad_image_save_reference_per_image_norm_map,
-        "save_image_layer_grad_reference_per_image_step": layer_grad_image_reference_per_image_step,
-        "save_image_layer_grad_save_subspace": layer_grad_image_save_subspace,
-        "save_image_layer_grad_csv_reference_enabled": layer_grad_ref_csv_enabled,
-        "save_image_layer_grad_csv_reference_groups": layer_grad_ref_groups,
-        "save_image_layer_grad_csv_convergence_delta_l2_tol": layer_grad_ref_delta_l2_tol,
-        "save_image_layer_grad_csv_convergence_patience": layer_grad_ref_patience,
-        "save_image_layer_grad_csv_convergence_min_samples": layer_grad_ref_min_samples,
-        "save_image_layer_grad_csv_convergence_max_samples": layer_grad_ref_max_samples,
-        "save_image_layer_grad_csv_save_running_log": layer_grad_ref_save_running_log,
-        "save_image_layer_grad_csv_save_per_image_raw_map_csv": layer_grad_ref_save_per_image_raw_map_csv,
-        "save_image_layer_grad_csv_save_per_image_norm_map_csv": layer_grad_ref_save_per_image_norm_map_csv,
-        "save_image_layer_grad_csv_per_image_step": layer_grad_ref_per_image_step,
-        "save_image_layer_grad_csv_save_final_raw_map_csv": layer_grad_ref_save_final_raw_map_csv,
-        "save_image_layer_grad_csv_save_final_norm_map_csv": layer_grad_ref_save_final_norm_map_csv,
-        "save_image_layer_grad_csv_save_progress_raw_map_csv": layer_grad_ref_save_progress_raw_map_csv,
-        "save_image_layer_grad_csv_save_progress_norm_map_csv": layer_grad_ref_save_progress_norm_map_csv,
-        "save_image_layer_grad_csv_progress_step": layer_grad_ref_progress_step,
+        "save_image_layer_grad_target_values": layer_target_values,
+        "save_image_layer_grad_target_layers": layer_target_layers,
+        "save_image_layer_grad_pseudo_gt": layer_pseudo_gt,
+        "save_image_layer_grad_num_fn": math.inf,
+        "save_image_layer_grad_num_non_fn": math.inf,
+        "save_image_layer_grad_gt_csv": "",
+        "save_image_layer_grad_per_image_enabled": False,
+        "save_image_layer_grad_per_image_step": 1,
+        "save_image_layer_grad_per_image_max_num": 0,
+        "save_image_layer_grad_reference_enabled": False,
+        "save_image_layer_grad_reference_groups": [],
+        "save_image_layer_grad_convergence_delta_metric": "l2",
+        "save_image_layer_grad_convergence_delta_l2_tol": 1e-4,
+        "save_image_layer_grad_convergence_patience": 20,
+        "save_image_layer_grad_convergence_min_samples": 200,
+        "save_image_layer_grad_convergence_max_samples": 20000,
+        "save_image_layer_grad_save_final_raw_map": False,
+        "save_image_layer_grad_save_final_norm_map": False,
+        "save_image_layer_grad_save_profile": False,
+        "save_image_layer_grad_save_progress_raw_map": False,
+        "save_image_layer_grad_save_progress_norm_map": False,
+        "save_image_layer_grad_progress_step": 10,
+        "save_image_layer_grad_save_reference_per_image_raw_map": False,
+        "save_image_layer_grad_save_reference_per_image_norm_map": False,
+        "save_image_layer_grad_reference_per_image_step": 10,
+        "save_image_layer_grad_save_subspace": False,
+        "save_image_layer_grad_csv_reference_enabled": False,
+        "save_image_layer_grad_csv_reference_groups": [],
+        "save_image_layer_grad_csv_convergence_delta_l2_tol": 1e-4,
+        "save_image_layer_grad_csv_convergence_patience": 20,
+        "save_image_layer_grad_csv_convergence_min_samples": 200,
+        "save_image_layer_grad_csv_convergence_max_samples": 20000,
+        "save_image_layer_grad_csv_save_running_log": False,
+        "save_image_layer_grad_csv_save_per_image_raw_map_csv": False,
+        "save_image_layer_grad_csv_save_per_image_norm_map_csv": False,
+        "save_image_layer_grad_csv_per_image_step": 10,
+        "save_image_layer_grad_csv_save_final_raw_map_csv": False,
+        "save_image_layer_grad_csv_save_final_norm_map_csv": False,
+        "save_image_layer_grad_csv_save_progress_raw_map_csv": False,
+        "save_image_layer_grad_csv_save_progress_norm_map_csv": False,
+        "save_image_layer_grad_csv_progress_step": 10,
     }
 
 
@@ -804,6 +611,8 @@ def collect_batch_feature_gradients_per_target(
     vector_reduction=None,
     pre_nms=True,
     pre_nms_ratio=1.0,
+    timing_accumulator=None,
+    timing_device=None,
 ):
     if not hasattr(torch, "func") or not hasattr(torch.func, "vmap") or not hasattr(torch.func, "grad"):
         raise RuntimeError(
@@ -866,6 +675,7 @@ def collect_batch_feature_gradients_per_target(
 
         iou_threshold = float(getattr(detector, "iou_thresh", 0.45))
         for target_idx, target_value in enumerate(target_values):
+            t_loss = _start_timing(timing_device)
             scalar_list = []
             valid_mask = []
             for b in range(batch_size):
@@ -912,6 +722,7 @@ def collect_batch_feature_gradients_per_target(
                 else:
                     valid_mask.append(True)
                 scalar_list.append(target_scalar)
+            _add_elapsed_timing(timing_accumulator, "loss_compute_sec", t_loss, timing_device)
 
             if not any(valid_mask):
                 continue
@@ -929,7 +740,9 @@ def collect_batch_feature_gradients_per_target(
                     allow_unused=True,
                 )
 
+            t_backprop = _start_timing(timing_device)
             batched_grads = torch.func.vmap(_single_vjp)(eye)
+            _add_elapsed_timing(timing_accumulator, "backpropagation_sec", t_backprop, timing_device)
             for b in range(batch_size):
                 if not valid_mask[b]:
                     continue
@@ -1397,7 +1210,7 @@ def build_pseudo_label_losses_for_candidates(
     raw_idx: int,
     iou_threshold: float,
     score_threshold: float = 0.01,
-    bbox_loss: str = "smooth_l1",
+    bbox_loss: str = "ciou",
 ):
     if raw_idx >= pred_img.shape[0]:
         return None
@@ -1542,17 +1355,23 @@ def collect_bbox_layer_grads_per_target(
     pseudo_gt="cand",
     cand_score_threshold=0.01,
     bbox_loss: str = "ciou",
+    timing_accumulator=None,
+    timing_device=None,
 ):
     layer_params = [resolve_layer_parameter(detector.model, layer_name) for layer_name in target_layers]
     original_requires_grad = [bool(p.requires_grad) for p in layer_params]
     for param in layer_params:
         param.requires_grad_(True)
 
+    t_detector = _start_timing(timing_device)
     with torch.no_grad():
         model_output = detector.model(input_tensor.detach(), augment=False)
         raw_prediction = model_output[0] if isinstance(model_output, (tuple, list)) else model_output
         raw_logits = model_output[1] if isinstance(model_output, (tuple, list)) and len(model_output) > 1 else None
         raw_anchor_priors = model_output[3] if isinstance(model_output, (tuple, list)) and len(model_output) > 3 else None
+    _add_elapsed_timing(timing_accumulator, "detector_inference_sec", t_detector, timing_device)
+    t_candidate = _start_timing(timing_device)
+    with torch.no_grad():
         selected_preds, _selected_logits, _selected_objectness, selected_indices = detector.non_max_suppression(
             raw_prediction,
             raw_logits,
@@ -1562,6 +1381,8 @@ def collect_bbox_layer_grads_per_target(
             agnostic=detector.agnostic,
             return_indices=True,
         )
+    if pseudo_gt != "uniform":
+        _add_elapsed_timing(timing_accumulator, "candidate_search_sec", t_candidate, timing_device)
 
     det = selected_preds[0] if selected_preds else torch.zeros((0, 6), device=input_tensor.device)
     raw_keep_indices = selected_indices[0] if selected_indices else torch.zeros((0,), dtype=torch.long, device=input_tensor.device)
@@ -1576,6 +1397,7 @@ def collect_bbox_layer_grads_per_target(
             for target_value in target_values:
                 detector.zero_grad(set_to_none=True)
 
+                t_detector = _start_timing(timing_device)
                 model_output = detector.model(input_tensor.detach(), augment=False)
                 raw_prediction = model_output[0] if isinstance(model_output, (tuple, list)) else model_output
                 raw_logits = model_output[1] if isinstance(model_output, (tuple, list)) and len(model_output) > 1 else None
@@ -1584,7 +1406,9 @@ def collect_bbox_layer_grads_per_target(
                 logit_img = raw_logits[0] if raw_logits is not None else pred_img[:, 5:]
                 anchor_img = raw_anchor_priors[0] if raw_anchor_priors is not None else None
                 anchor_row = anchor_img[raw_idx] if (anchor_img is not None and raw_idx < anchor_img.shape[0]) else None
+                _add_elapsed_timing(timing_accumulator, "detector_inference_sec", t_detector, timing_device)
 
+                t_loss = _start_timing(timing_device)
                 target_scalar = build_layer_target_scalar_bbox(
                     target_value=target_value,
                     pred_img=pred_img,
@@ -1596,6 +1420,7 @@ def collect_bbox_layer_grads_per_target(
                     cand_score_threshold=cand_score_threshold,
                     bbox_loss=bbox_loss,
                 )
+                _add_elapsed_timing(timing_accumulator, "loss_compute_sec", t_loss, timing_device)
 
                 if target_scalar is None:
                     for layer_name in target_layers:
@@ -1603,12 +1428,14 @@ def collect_bbox_layer_grads_per_target(
                     del model_output, raw_prediction, raw_logits, raw_anchor_priors, pred_img, logit_img, anchor_img, anchor_row
                     continue
 
+                t_backprop = _start_timing(timing_device)
                 grads = torch.autograd.grad(
                     target_scalar,
                     layer_params,
                     retain_graph=False,
                     allow_unused=True,
                 )
+                _add_elapsed_timing(timing_accumulator, "backpropagation_sec", t_backprop, timing_device)
                 for layer_idx, layer_name in enumerate(target_layers):
                     key = f"{target_value}_{layer_name}"
                     grad_tensor = grads[layer_idx]
@@ -1654,6 +1481,8 @@ def collect_batch_image_layer_grads_per_target(
     pseudo_gt="cand",
     cand_score_threshold=0.01,
     bbox_loss: str = "ciou",
+    timing_accumulator=None,
+    timing_device=None,
 ):
     if not hasattr(torch, "func") or not hasattr(torch.func, "vmap") or not hasattr(torch.func, "grad"):
         raise RuntimeError(
@@ -1676,11 +1505,14 @@ def collect_batch_image_layer_grads_per_target(
 
     try:
         detector.zero_grad(set_to_none=True)
+        t_detector = _start_timing(timing_device)
         model_output = detector.model(input_tensor.detach(), augment=False)
         raw_prediction = model_output[0] if isinstance(model_output, (tuple, list)) else model_output
         raw_logits = model_output[1] if isinstance(model_output, (tuple, list)) and len(model_output) > 1 else None
         raw_anchor_priors = model_output[3] if isinstance(model_output, (tuple, list)) and len(model_output) > 3 else None
+        _add_elapsed_timing(timing_accumulator, "detector_inference_sec", t_detector, timing_device)
 
+        t_candidate = _start_timing(timing_device)
         with torch.no_grad():
             _selected_preds, _selected_logits, _selected_objectness, selected_indices = detector.non_max_suppression(
                 raw_prediction.detach(),
@@ -1691,6 +1523,8 @@ def collect_batch_image_layer_grads_per_target(
                 agnostic=detector.agnostic,
                 return_indices=True,
             )
+        if pseudo_gt != "uniform":
+            _add_elapsed_timing(timing_accumulator, "candidate_search_sec", t_candidate, timing_device)
         if selected_indices is None:
             selected_indices = []
         raw_keep_indices_by_sample = []
@@ -1967,8 +1801,6 @@ def assign_tp_to_predictions(
         best_gt_idx = -1
         best_iou = 0.0
         for gt_idx, (gt_box, gt_name) in enumerate(zip(gt_boxes, gt_class_names)):
-            if gt_idx in matched_gt_indices:
-                continue
             if not classes_match(gt_name, pred_name):
                 continue
             iou = box_iou_xyxy(gt_box, pred_box)
@@ -1977,7 +1809,7 @@ def assign_tp_to_predictions(
                 best_gt_idx = gt_idx
 
         best_ious[pred_idx] = float(best_iou)
-        if best_gt_idx >= 0 and best_iou >= iou_match_threshold:
+        if best_gt_idx >= 0 and best_gt_idx not in matched_gt_indices and best_iou >= iou_match_threshold:
             tp_flags[pred_idx] = 1
             matched_gt_indices.add(best_gt_idx)
 

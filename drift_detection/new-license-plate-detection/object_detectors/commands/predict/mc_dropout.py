@@ -12,7 +12,6 @@ def run_mc_dropout_csv(config, run_dir):
     unit = parsed["unit"]
     num_runs = int(parsed["mc_num_runs"])
     dropout_rate = float(parsed["mc_dropout_rate"])
-    queue_maxsize = int(parsed["mc_queue_maxsize"])
     vector_reduction = parsed["mc_vector_reduction"]
 
     if not save_csv:
@@ -37,7 +36,13 @@ def run_mc_dropout_csv(config, run_dir):
         raise ValueError("Loaded 0 images. Check dataset root/image_dir/split configuration in YAML.")
 
     detector, device = build_detector(config)
-    raw_prof = RawComputeProfiler(run_dir=run_dir, uncertainty=uncertainty, unit=unit)
+    timing = StageTimingProfiler(
+        run_dir=run_dir,
+        uncertainty=uncertainty,
+        unit=unit,
+        stages=["detector_inference_sec", "prediction_matching_sec", "feature_compute_sec"],
+        device=device,
+    )
     n_classes_hint = len(detector.names) if detector.names is not None else 80
 
     output_csv = run_dir / "mc_dropout.csv"
@@ -127,7 +132,7 @@ def run_mc_dropout_csv(config, run_dir):
     for h in probe_handles:
         h.remove()
 
-    write_queue: queue.Queue = queue.Queue(maxsize=queue_maxsize)
+    write_queue: queue.Queue = queue.Queue()
     writer_thread = threading.Thread(
         target=_mc_dropout_single_csv_writer,
         args=(write_queue, output_csv, fieldnames),
@@ -157,6 +162,12 @@ def run_mc_dropout_csv(config, run_dir):
             del batch_tensors
 
             # 1) Deterministic forward once: get final NMS predictions and raw pre-NMS indices.
+            detector_inference_sec = 0.0
+            prediction_matching_sec = 0.0
+            feature_compute_sec = 0.0
+
+            # Deterministic forward once: get final NMS predictions and raw pre-NMS indices.
+            t_matching = timing.start()
             with torch.no_grad():
                 det_output = detector.model(infer_batch, augment=False)
                 det_raw_pred = det_output[0] if isinstance(det_output, (tuple, list)) else det_output
@@ -170,8 +181,8 @@ def run_mc_dropout_csv(config, run_dir):
                     agnostic=detector.agnostic,
                     return_indices=True,
                 )
+            prediction_matching_sec += timing.elapsed(t_matching)
 
-            t_raw = raw_prof.start()
             feat_mean = None
             feat_m2 = None
             n_candidates = None
@@ -183,6 +194,7 @@ def run_mc_dropout_csv(config, run_dir):
                 with torch.no_grad():
                     for _ in range(num_runs):
                         detector.zero_grad(set_to_none=True)
+                        t_detector = timing.start()
                         model_output = detector.model(infer_batch, augment=False)
                         raw_prediction = model_output[0] if isinstance(model_output, (tuple, list)) else model_output
                         raw_logits = (
@@ -190,7 +202,9 @@ def run_mc_dropout_csv(config, run_dir):
                             if isinstance(model_output, (tuple, list)) and len(model_output) > 1
                             else None
                         )
+                        detector_inference_sec += timing.elapsed(t_detector)
 
+                        t_feature = timing.start()
                         pred_batch = raw_prediction.detach().float()
                         bbox_xyxy = _xywh_to_xyxy_tensor(pred_batch[..., :4])
                         score_vec = pred_batch[..., 4].unsqueeze(-1)
@@ -213,6 +227,7 @@ def run_mc_dropout_csv(config, run_dir):
                         delta = run_features - feat_mean
                         feat_mean = feat_mean + delta / run_count
                         feat_m2 = feat_m2 + delta * (run_features - feat_mean)
+                        feature_compute_sec += timing.elapsed(t_feature)
             finally:
                 for h in mc_handles:
                     h.remove()
@@ -221,10 +236,13 @@ def run_mc_dropout_csv(config, run_dir):
                 del infer_batch
                 continue
 
+            t_feature = timing.start()
             feat_std = torch.sqrt(torch.clamp(feat_m2 / max(run_count, 1), min=0.0))
+            feature_compute_sec += timing.elapsed(t_feature)
             batch_rows = []
             batch_items = 0
 
+            t_matching = timing.start()
             for b in range(batch_size):
                 image_id = image_ids[b]
                 image_path = image_paths[b]
@@ -347,9 +365,18 @@ def run_mc_dropout_csv(config, run_dir):
                                 row[f"prob_{class_idx}_std_{stat_alias[key]}"] = val
                     batch_rows.append(row)
                     batch_items += 1
+            prediction_matching_sec += timing.elapsed(t_matching)
 
             write_queue.put(batch_rows)
-            raw_prof.end(t_raw, batch_items)
+            timing.record(
+                num_images=batch_size,
+                num_predictions=batch_items,
+                stage_seconds={
+                    "detector_inference_sec": detector_inference_sec,
+                    "prediction_matching_sec": prediction_matching_sec,
+                    "feature_compute_sec": feature_compute_sec,
+                },
+            )
 
             del selected_preds, selected_indices
             del infer_batch
@@ -367,10 +394,10 @@ def run_mc_dropout_csv(config, run_dir):
     del detector
     if device.type == "cuda":
         torch.cuda.empty_cache()
-    timing_csv, timing_json = raw_prof.save()
+    timing_csv, timing_json = timing.save()
 
     print(f"Saved results CSV: {output_csv}")
-    print(f"Saved raw compute timing: {timing_csv}")
-    print(f"Saved raw compute timing summary: {timing_json}")
+    print(f"Saved timing: {timing_csv}")
+    print(f"Saved timing summary: {timing_json}")
 
 __all__ = ["run_mc_dropout_csv"]

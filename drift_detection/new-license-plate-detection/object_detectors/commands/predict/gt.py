@@ -147,6 +147,7 @@ def run_tp_csv(config, run_dir):
         "score",
         "pred_class",
         "max_iou",
+        "gt_iou",
         "tp",
     ]
 
@@ -227,6 +228,7 @@ def run_tp_csv(config, run_dir):
                             "score": float(score),
                             "pred_class": pred_class,
                             "max_iou": float(best_ious[pred_idx]),
+                            "gt_iou": float(best_ious[pred_idx]),
                             "tp": int(tp_flags[pred_idx]),
                         }
                     )

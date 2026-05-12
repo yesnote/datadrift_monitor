@@ -9,13 +9,13 @@ model:
   device: cuda
 
 dataset:
-  used_dataset:   # coco | voc | openimages | null_image
+  used_dataset:   # coco | voc | openimages
     - coco
-    # - null_image
   split:  # train | val | test
     - train
-    # - val
-  
+  used_ratio:
+    - 1.0
+
   coco:
     root: D:/SEONGJIN/datasets/COCO
     train_split: train2017
@@ -26,17 +26,13 @@ dataset:
     train_annotation_file: instances_train2017.json
     val_annotation_file: instances_val2017.json
     test_annotation_file: instances_test2017.json
-  
+
   openimages:
     root: D:/SEONGJIN/datasets/OIDv4_ToolKit/OID/Dataset
     train_split: train
     val_split: validation
     test_split: test
-    min_gt_boxes: 1  # keep only images with at least this many GT boxes
-
-  null_image:
-    num_samples: 20000
-    # seed: 1234  # optional
+    min_gt_boxes: 1
 
 dataloader:
   batch_size: 8
@@ -46,174 +42,54 @@ dataloader:
   shuffle_eval: false
 
 output:
-  uncertainty: layer_grad  # gt | score | full_softmax | entropy | energy | mc_dropout | ensemble | meta_detect | feature | feature_grad | layer_grad
+  uncertainty: layer_grad  # deterministic | gt | score | class_probability | entropy | energy | mc_dropout | ensemble | meta_detect | layer_grad
 
   gt:
-    unit: image  # image | bbox
     iou_match_threshold: 0.45
     save_csv:
       enabled: false
-    
     save_image:
-      enabled: true
+      enabled: false
       step: 10
       max_num: 10
 
   score:
-    unit: image  # image | bbox
-    pre_nms:
-      enabled: false
-      ratio: 1.0
     save_csv:
       enabled: false
-      vector_reduction: [L1, L2, min, max, mean, std]
 
-  full_softmax:
-    unit: image  # image | bbox
-    pre_nms:
-      enabled: false
-      ratio: 1.0
+  class_probability:
     save_csv:
       enabled: false
-      vector_reduction: [L1, L2, min, max, mean, std]
 
   entropy:
-    unit: image  # image | bbox
-    pre_nms:
-      enabled: false
-      ratio: 1.0
     save_csv:
       enabled: false
-      vector_reduction: [L1, L2, min, max, mean, std]
 
   energy:
-    unit: image  # image | bbox
-    pre_nms:
-      enabled: false
-      ratio: 1.0
     save_csv:
       enabled: false
-      vector_reduction: [L1, L2, min, max, mean, std]
 
   mc_dropout:
-    unit: image  # image | bbox
     num_runs: 30
     dropout_rate: 0.5
-    queue_maxsize: 2
     save_csv:
       enabled: false
-      vector_reduction: [L1, L2, min, max, mean, std]
 
   ensemble:
-    unit: image  # image | bbox
     save_csv:
       enabled: false
-      vector_reduction: [L1, L2, min, max, mean, std]
 
   meta_detect:
-    unit: image  # image | bbox
     score_threshold: 0.1
     iou_threshold: 0.45
     save_csv:
       enabled: false
-      vector_reduction: [L1, L2, min, max, mean, std]
-
-  feature:
-    unit: image  # image only
-    layer: ["model.24.m.0", "model.24.m.1", "model.24.m.2"]
-    save_csv:
-      enabled: false
-      reduction:
-        map: none  # none | energy
-        vector: [L1, L2, min, max, mean, std]
-
-  feature_grad:
-    unit: image  # image | bbox
-    pre_nms:
-      enabled: false
-      ratio: 1.0
-    gradient:
-      scalar: [obj, cls]
-      layer: ["model.24.m.0", "model.24.m.1", "model.24.m.2"]
-    save_csv:
-      enabled: false
-      reduction:
-        map: none
-        vector: [L1, L2, min, max, mean, std]
 
   layer_grad:
-    unit: image  # image | bbox
-    pre_nms:
-      enabled: false
-      ratio: 0.0
     gradient:
       scalar: [loss]
-      layer: ["model.24.m.0", "model.24.m.1", "model.24.m.2"] # all_conv | disc_layers | ["model.24.m.0", "model.24.m.1", "model.24.m.2"]
-      target: null_target # cand_target | null_target
-      cand_score_threshold: 0.01
-      bbox_loss: ciou # smooth_l1 | ciou | log_area_ratio
-      ref_corrected:
-        mode: prototype # prototype | subspace | none
-        ref_map: object_detectors/runs/references/04-22-2026_19;16_layer_grad_null_target_loss_noise
-        prototype:
-          mode: none # subtract | product | proj_removal | none
-        subspace:
-          mode: orth # proj | orth
-          centering: centered # centered | uncentered
-          max_samples: 1000
-          rank:
-            mode: energy # energy | fixed_k
-            energy_threshold: 0.95 # (0, 1]
-            k: 10
-      disc_layers:
-        fn_non_fn_map: object_detectors/runs/references/04-23-2026_00;40_layer_grad_null_target_loss_fn-non_fn
-        separation_score: effect_size # effect_size | fisher_ratio
-        topk: 3
-    reference:
-      gt: object_detectors/runs/fn_detectors/04-07-2026_14;09_gt
-      group: [fn, non_fn]
-      delta: 5.0e-4
-      patience: 20
-      min_samples: 200
-      max_samples: 20000
-
+      layer: ["model.24.m.0", "model.24.m.1", "model.24.m.2"]
+      target: cand_target # cand_target | null_target
+      cand_score_threshold: 0.1
     save_csv:
-      data:
-        enabled: true
-        reduction:
-          map: none
-          vector: [L1, L2, min, max, mean, std]
-      reference:
-        per_image:
-          raw_map: false
-          norm_map: false
-          step: 10
-        progress:
-          log: false # tensorboard event log
-          raw_map: false
-          norm_map: false
-          step: 10
-        final:
-          raw_map: false
-          norm_map: false # layer min-max normalization
-    
-    save_image:
-      inferenced_image:
-        enabled: false
-        step: 10
-        max_num: 10
-      subspace:
-        enabled: true
-      reference:
-        per_image:
-          raw_map: false
-          norm_map: false
-          step: 10
-        progress:
-          raw_map: false
-          norm_map: false
-          step: 10
-        final:
-          raw_map: false
-          norm_map: false # layer min-max normalization
-          profile: false
+      enabled: true
