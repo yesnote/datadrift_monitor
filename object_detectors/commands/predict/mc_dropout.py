@@ -95,7 +95,8 @@ def run_mc_dropout_csv(config, run_dir):
             feature_compute_sec = 0.0
 
             # Deterministic forward once: get final NMS predictions and raw pre-NMS indices.
-            t_matching = timing.start()
+            # Count this as detector inference because it is a model forward plus NMS.
+            t_detector = timing.start()
             with torch.no_grad():
                 det_output = detector.model(infer_batch, augment=False)
                 det_raw_pred = det_output[0] if isinstance(det_output, (tuple, list)) else det_output
@@ -109,7 +110,7 @@ def run_mc_dropout_csv(config, run_dir):
                     agnostic=detector.agnostic,
                     return_indices=True,
                 )
-            prediction_matching_sec += timing.elapsed(t_matching)
+            detector_inference_sec += timing.elapsed(t_detector)
 
             feat_mean = None
             feat_m2 = None
