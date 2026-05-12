@@ -430,7 +430,7 @@ def _tp_fp_null_comparison_svg(path: Path, df, metrics_df=None) -> str:
     ]
     panels = [
         ("hist", "obj", "obj"),
-        ("class", "cls_conf", "cls conf by class"),
+        ("hist", "cls_conf", "cls conf"),
         ("hist", "area", "bbox area"),
         ("hist", "obj_null_bce_loss", "obj null BCE loss"),
         ("hist", "cls_uniform_kl", "cls uniform KL"),
