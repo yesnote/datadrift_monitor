@@ -12,12 +12,9 @@ def run_mc_dropout_csv(config, run_dir):
     unit = parsed["unit"]
     num_runs = int(parsed["mc_num_runs"])
     dropout_rate = float(parsed["mc_dropout_rate"])
-    vector_reduction = parsed["mc_vector_reduction"]
 
     if not save_csv:
         return
-    if unit not in {"image", "bbox"}:
-        raise ValueError("output.uncertainty='mc_dropout' requires output.unit in {'image','bbox'}.")
 
     # Windows OpenMP + subprocess workers can conflict in MC-dropout runs.
     # Force single-process data loading here to avoid libiomp duplicate init crashes.
@@ -46,84 +43,15 @@ def run_mc_dropout_csv(config, run_dir):
     n_classes_hint = len(detector.names) if detector.names is not None else 80
 
     output_csv = run_dir / "mc_dropout.csv"
-    stat_keys = list(vector_reduction)
-    stat_alias = {
-        "1-norm": "l1",
-        "2-norm": "l2",
-        "min": "min",
-        "max": "max",
-        "mean": "mean",
-        "std": "std",
-    }
-
-    def stats_from_tensor(vec):
-        if vec is None or vec.numel() == 0:
-            return {
-                "1-norm": 0.0,
-                "2-norm": 0.0,
-                "min": 0.0,
-                "max": 0.0,
-                "mean": 0.0,
-                "std": 0.0,
-            }
-        v = vec.detach().float().reshape(-1)
-        return {
-            "1-norm": float(torch.norm(v, p=1).item()),
-            "2-norm": float(torch.norm(v, p=2).item()),
-            "min": float(torch.min(v).item()),
-            "max": float(torch.max(v).item()),
-            "mean": float(torch.mean(v).item()),
-            "std": float(torch.std(v, unbiased=False).item()),
-        }
-
-    fieldnames = ["image_id", "image_path"]
-    if unit == "bbox":
-        fieldnames.extend(
-            [
-                "pred_idx",
-                "raw_pred_idx",
-                "xmin",
-                "ymin",
-                "xmax",
-                "ymax",
-                "score",
-                "pred_class",
-                "xmin_mean",
-                "ymin_mean",
-                "xmax_mean",
-                "ymax_mean",
-                "score_mean",
-                "xmin_std",
-                "ymin_std",
-                "xmax_std",
-                "ymax_std",
-                "score_std",
-            ]
-        )
-        for class_idx in range(n_classes_hint):
-            fieldnames.append(f"prob_{class_idx}_mean")
-            fieldnames.append(f"prob_{class_idx}_std")
-    else:
-        fieldnames.append("num_preds")
-        for prefix in (
-            "xmin_mean",
-            "ymin_mean",
-            "xmax_mean",
-            "ymax_mean",
-            "xmin_std",
-            "ymin_std",
-            "xmax_std",
-            "ymax_std",
-            "score_mean",
-            "score_std",
-        ):
-            for key in stat_keys:
-                fieldnames.append(f"{prefix}_{stat_alias[key]}")
-        for class_idx in range(n_classes_hint):
-            for key in stat_keys:
-                fieldnames.append(f"prob_{class_idx}_mean_{stat_alias[key]}")
-            for key in stat_keys:
-                fieldnames.append(f"prob_{class_idx}_std_{stat_alias[key]}")
+    fieldnames = [
+        "image_id", "image_path", "pred_idx", "raw_pred_idx",
+        "xmin", "ymin", "xmax", "ymax", "score", "pred_class",
+        "xmin_mean", "ymin_mean", "xmax_mean", "ymax_mean", "score_mean",
+        "xmin_std", "ymin_std", "xmax_std", "ymax_std", "score_std",
+    ]
+    for class_idx in range(n_classes_hint):
+        fieldnames.append(f"prob_{class_idx}_mean")
+        fieldnames.append(f"prob_{class_idx}_std")
 
     # Probe once to notify if forced-dropout hooks are unavailable on this model.
     probe_handles = enable_forced_mc_dropout_on_yolov5_head(detector.model, dropout_rate)
@@ -261,110 +189,36 @@ def run_mc_dropout_csv(config, run_dir):
                     if 0 <= raw_idx < n_candidates:
                         valid_pairs.append((pred_idx, raw_idx))
 
-                if unit == "bbox":
-                    for pred_idx, raw_idx in valid_pairs:
-                        cls_idx = int(det_b[pred_idx, 5].detach().cpu().item()) if det_b.shape[1] > 5 else -1
-                        row = {
-                            "image_id": image_id,
-                            "image_path": image_path,
-                            "pred_idx": pred_idx,
-                            "raw_pred_idx": raw_idx,
-                            "xmin": float(det_b[pred_idx, 0].detach().cpu().item()),
-                            "ymin": float(det_b[pred_idx, 1].detach().cpu().item()),
-                            "xmax": float(det_b[pred_idx, 2].detach().cpu().item()),
-                            "ymax": float(det_b[pred_idx, 3].detach().cpu().item()),
-                            "score": float(det_b[pred_idx, 4].detach().cpu().item()) if det_b.shape[1] > 4 else 0.0,
-                            "pred_class": detector.names[cls_idx] if (detector.names is not None and cls_idx >= 0) else cls_idx,
-                            "xmin_mean": float(feat_mean_cpu[raw_idx, 0].item()),
-                            "ymin_mean": float(feat_mean_cpu[raw_idx, 1].item()),
-                            "xmax_mean": float(feat_mean_cpu[raw_idx, 2].item()),
-                            "ymax_mean": float(feat_mean_cpu[raw_idx, 3].item()),
-                            "score_mean": float(feat_mean_cpu[raw_idx, 4].item()),
-                            "xmin_std": float(feat_std_cpu[raw_idx, 0].item()),
-                            "ymin_std": float(feat_std_cpu[raw_idx, 1].item()),
-                            "xmax_std": float(feat_std_cpu[raw_idx, 2].item()),
-                            "ymax_std": float(feat_std_cpu[raw_idx, 3].item()),
-                            "score_std": float(feat_std_cpu[raw_idx, 4].item()),
-                        }
-                        class_count = int(n_classes) if n_classes is not None else 0
-                        for class_idx in range(class_count):
-                            row[f"prob_{class_idx}_mean"] = float(feat_mean_cpu[raw_idx, 5 + class_idx].item())
-                            row[f"prob_{class_idx}_std"] = float(feat_std_cpu[raw_idx, 5 + class_idx].item())
-                        batch_rows.append(row)
-                    batch_items += int(len(valid_pairs))
-                else:
-                    raw_indices = list(range(n_candidates))
-                    row = {"image_id": image_id, "image_path": image_path, "num_preds": len(raw_indices)}
-                    if len(raw_indices) == 0:
-                        for prefix in (
-                            "xmin_mean",
-                            "ymin_mean",
-                            "xmax_mean",
-                            "ymax_mean",
-                            "xmin_std",
-                            "ymin_std",
-                            "xmax_std",
-                            "ymax_std",
-                            "score_mean",
-                            "score_std",
-                        ):
-                            for key in stat_keys:
-                                row[f"{prefix}_{stat_alias[key]}"] = 0.0
-                        for class_idx in range(n_classes_hint):
-                            for key in stat_keys:
-                                row[f"prob_{class_idx}_mean_{stat_alias[key]}"] = 0.0
-                            for key in stat_keys:
-                                row[f"prob_{class_idx}_std_{stat_alias[key]}"] = 0.0
-                    else:
-                        raw_indices_tensor = torch.tensor(raw_indices, dtype=torch.long, device=feat_mean_cpu.device)
-                        feat_mean_sel = feat_mean_cpu.index_select(0, raw_indices_tensor)
-                        feat_std_sel = feat_std_cpu.index_select(0, raw_indices_tensor)
-                        xmin_mean_vec = feat_mean_sel[:, 0].reshape(-1)
-                        ymin_mean_vec = feat_mean_sel[:, 1].reshape(-1)
-                        xmax_mean_vec = feat_mean_sel[:, 2].reshape(-1)
-                        ymax_mean_vec = feat_mean_sel[:, 3].reshape(-1)
-                        xmin_std_vec = feat_std_sel[:, 0].reshape(-1)
-                        ymin_std_vec = feat_std_sel[:, 1].reshape(-1)
-                        xmax_std_vec = feat_std_sel[:, 2].reshape(-1)
-                        ymax_std_vec = feat_std_sel[:, 3].reshape(-1)
-                        score_mean_vec = feat_mean_sel[:, 4].reshape(-1)
-                        score_std_vec = feat_std_sel[:, 4].reshape(-1)
-
-                        for key, val in stats_from_tensor(xmin_mean_vec).items():
-                            row[f"xmin_mean_{stat_alias[key]}"] = val
-                        for key, val in stats_from_tensor(ymin_mean_vec).items():
-                            row[f"ymin_mean_{stat_alias[key]}"] = val
-                        for key, val in stats_from_tensor(xmax_mean_vec).items():
-                            row[f"xmax_mean_{stat_alias[key]}"] = val
-                        for key, val in stats_from_tensor(ymax_mean_vec).items():
-                            row[f"ymax_mean_{stat_alias[key]}"] = val
-                        for key, val in stats_from_tensor(xmin_std_vec).items():
-                            row[f"xmin_std_{stat_alias[key]}"] = val
-                        for key, val in stats_from_tensor(ymin_std_vec).items():
-                            row[f"ymin_std_{stat_alias[key]}"] = val
-                        for key, val in stats_from_tensor(xmax_std_vec).items():
-                            row[f"xmax_std_{stat_alias[key]}"] = val
-                        for key, val in stats_from_tensor(ymax_std_vec).items():
-                            row[f"ymax_std_{stat_alias[key]}"] = val
-                        for key, val in stats_from_tensor(score_mean_vec).items():
-                            row[f"score_mean_{stat_alias[key]}"] = val
-                        for key, val in stats_from_tensor(score_std_vec).items():
-                            row[f"score_std_{stat_alias[key]}"] = val
-
-                        class_count = int(n_classes) if n_classes is not None else 0
-                        for class_idx in range(n_classes_hint):
-                            if class_idx < class_count:
-                                prob_mean_vec = feat_mean_sel[:, 5 + class_idx].reshape(-1)
-                                prob_std_vec = feat_std_sel[:, 5 + class_idx].reshape(-1)
-                            else:
-                                prob_mean_vec = torch.zeros((0,), dtype=torch.float32, device=feat_mean_cpu.device)
-                                prob_std_vec = torch.zeros((0,), dtype=torch.float32, device=feat_mean_cpu.device)
-                            for key, val in stats_from_tensor(prob_mean_vec).items():
-                                row[f"prob_{class_idx}_mean_{stat_alias[key]}"] = val
-                            for key, val in stats_from_tensor(prob_std_vec).items():
-                                row[f"prob_{class_idx}_std_{stat_alias[key]}"] = val
+                for pred_idx, raw_idx in valid_pairs:
+                    cls_idx = int(det_b[pred_idx, 5].detach().cpu().item()) if det_b.shape[1] > 5 else -1
+                    row = {
+                        "image_id": image_id,
+                        "image_path": image_path,
+                        "pred_idx": pred_idx,
+                        "raw_pred_idx": raw_idx,
+                        "xmin": float(det_b[pred_idx, 0].detach().cpu().item()),
+                        "ymin": float(det_b[pred_idx, 1].detach().cpu().item()),
+                        "xmax": float(det_b[pred_idx, 2].detach().cpu().item()),
+                        "ymax": float(det_b[pred_idx, 3].detach().cpu().item()),
+                        "score": float(det_b[pred_idx, 4].detach().cpu().item()) if det_b.shape[1] > 4 else 0.0,
+                        "pred_class": detector.names[cls_idx] if (detector.names is not None and cls_idx >= 0) else cls_idx,
+                        "xmin_mean": float(feat_mean_cpu[raw_idx, 0].item()),
+                        "ymin_mean": float(feat_mean_cpu[raw_idx, 1].item()),
+                        "xmax_mean": float(feat_mean_cpu[raw_idx, 2].item()),
+                        "ymax_mean": float(feat_mean_cpu[raw_idx, 3].item()),
+                        "score_mean": float(feat_mean_cpu[raw_idx, 4].item()),
+                        "xmin_std": float(feat_std_cpu[raw_idx, 0].item()),
+                        "ymin_std": float(feat_std_cpu[raw_idx, 1].item()),
+                        "xmax_std": float(feat_std_cpu[raw_idx, 2].item()),
+                        "ymax_std": float(feat_std_cpu[raw_idx, 3].item()),
+                        "score_std": float(feat_std_cpu[raw_idx, 4].item()),
+                    }
+                    class_count = int(n_classes) if n_classes is not None else 0
+                    for class_idx in range(class_count):
+                        row[f"prob_{class_idx}_mean"] = float(feat_mean_cpu[raw_idx, 5 + class_idx].item())
+                        row[f"prob_{class_idx}_std"] = float(feat_std_cpu[raw_idx, 5 + class_idx].item())
                     batch_rows.append(row)
-                    batch_items += 1
+                batch_items += int(len(valid_pairs))
             prediction_matching_sec += timing.elapsed(t_matching)
 
             write_queue.put(batch_rows)
