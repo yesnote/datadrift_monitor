@@ -433,10 +433,10 @@ def _tp_fp_null_comparison_svg(path: Path, df, metrics_df=None) -> str:
         ("class", "cls_conf", "cls conf by class"),
         ("hist", "area", "bbox area"),
         ("hist", "obj_null_bce_loss", "obj null BCE loss"),
-        ("class", "cls_uniform_kl", "cls uniform KL by class"),
+        ("hist", "cls_uniform_kl", "cls uniform KL"),
         ("hist", "bbox_null_ciou_loss", "bbox null CIoU loss"),
         ("hist", "obj_cand_bce_loss", "obj cand BCE loss"),
-        ("class", "cls_cand_onehot_bce_loss", "cls cand one-hot BCE loss by class"),
+        ("hist", "cls_cand_onehot_bce_loss", "cls cand one-hot BCE loss"),
         ("hist", "bbox_cand_ciou_loss", "bbox cand CIoU loss"),
     ]
     for layer_suffix, layer_label in [
