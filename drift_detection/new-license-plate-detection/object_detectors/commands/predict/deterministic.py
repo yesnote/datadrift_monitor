@@ -127,12 +127,37 @@ def run_deterministic_uncertainties_csv(config, run_dir, uncertainties):
                 device=device,
             )
 
+        needs_warmup = True
         for images, targets in tqdm(
             dataloader, desc=f"Object Detector ({mode} - deterministic)", total=len(dataloader)
         ):
             image_list = _as_image_list(images)
             detector.zero_grad(set_to_none=True)
             infer_batch, _ratios, _pads, _resized_chws = _prepare_infer_batch(detector, image_list, device, auto=False)
+
+            if needs_warmup:
+                with torch.no_grad():
+                    warmup_output = detector.model(infer_batch, augment=False)
+                    warmup_prediction = warmup_output[0] if isinstance(warmup_output, (tuple, list)) else warmup_output
+                    warmup_logits = (
+                        warmup_output[1]
+                        if isinstance(warmup_output, (tuple, list)) and len(warmup_output) > 1
+                        else None
+                    )
+                    warmup_nms_logits = _resolve_nms_logits(warmup_prediction, warmup_logits)
+                    detector.non_max_suppression(
+                        prediction=warmup_prediction,
+                        logits=warmup_nms_logits,
+                        conf_thres=nms_kwargs["conf_thres"],
+                        iou_thres=nms_kwargs["iou_thres"],
+                        classes=nms_kwargs["classes"],
+                        agnostic=nms_kwargs["agnostic"],
+                        max_det=nms_kwargs["max_det"],
+                        return_indices=True,
+                    )
+                _sync_timing_device(device)
+                del warmup_output, warmup_prediction, warmup_logits, warmup_nms_logits
+                needs_warmup = False
 
             t_detector = next(iter(profilers.values())).start()
             with torch.no_grad():
