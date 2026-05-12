@@ -14,7 +14,7 @@ from sklearn.model_selection import GridSearchCV, StratifiedKFold, train_test_sp
 from tqdm import tqdm
 
 from losses.loss import compute_ace, compute_ece, evaluate_classifier
-from models.error_detector import build_estimator, param_grid
+from models.meta_classifier import build_estimator, param_grid
 from commands.utils.plot_utils import save_eval_plots
 
 try:
@@ -159,12 +159,12 @@ def load_object(path: Path) -> Any:
 
 
 def parse_root_info(root_path: Path) -> tuple[str, str, str]:
-    # Current format: .../runs/{model_group}/{time}_{cue}_{target?}
+    # Current format: .../object_detectors/runs/{time}_{cue}_{target?}
+    # Legacy format:  .../runs/{model_group}/{time}_{cue}_{target?}
     # Legacy format:  .../runs/{model_group}/{cue}/{time}
-    # Legacy format:  .../runs/{model_group}/{time}_{cue}
     parent = root_path.parent
-    if parent.name in {"fn_detectors", "tp_classifiers"}:
-        model_group = parent.name
+    if parent.name == "runs":
+        model_group = "bbox_predictions"
         run_name = root_path.name
         match = re.match(r"^\d{2}-\d{2}-\d{4}_\d{2};\d{2}_(.+)$", run_name)
         tail = match.group(1) if match else run_name
@@ -176,14 +176,8 @@ def parse_root_info(root_path: Path) -> tuple[str, str, str]:
                 return model_group, cue_name, tail[len(prefix):]
         return model_group, tail, ""
 
-    if parent.parent.name in {"fn_detectors", "tp_classifiers"}:
-        model_group = parent.parent.name
-        cue = parent.name
-        return model_group, cue, ""
-
     raise ValueError(
-        "dataset root must follow object_detectors/runs/{fn_detectors|tp_classifiers}/{time}_{cue}_{target?} "
-        "or legacy formats."
+        "dataset root must follow object_detectors/runs/{time}_{cue}_{target?} "
     )
 
 
@@ -238,14 +232,7 @@ def load_training_dataframe(dataset_cfg: dict[str, Any]) -> tuple[pd.DataFrame, 
         "energy": "energy.csv",
         "ensemble": "ensemble.csv",
     }
-    if input_group == "fn_detectors":
-        gt_csv = gt_root / "fn.csv"
-        label_col = "fn"
-        if not gt_csv.is_file():
-            raise FileNotFoundError(f"fn.csv not found: {gt_csv}")
-        gt_df = pd.read_csv(gt_csv)[["image_id", "image_path", label_col]]
-        base_merge_keys = ["image_id", "image_path"]
-    elif input_group == "tp_classifiers":
+    if input_group == "bbox_predictions":
         gt_csv = gt_root / "tp.csv"
         label_col = "tp"
         if not gt_csv.is_file():
@@ -276,7 +263,7 @@ def load_training_dataframe(dataset_cfg: dict[str, Any]) -> tuple[pd.DataFrame, 
     else:
         raise ValueError(
             "Unsupported model group from dataset roots: "
-            f"'{input_group}'. Expected 'fn_detectors' or 'tp_classifiers'."
+            f"'{input_group}'. Expected bbox prediction runs."
         )
 
     merged = gt_df.copy()
@@ -296,53 +283,49 @@ def load_training_dataframe(dataset_cfg: dict[str, Any]) -> tuple[pd.DataFrame, 
             raise FileNotFoundError(f"{input_csv_name} not found: {input_csv}")
         feature_df = pd.read_csv(input_csv)
 
-        if input_group == "fn_detectors":
-            merge_keys = ["image_id", "image_path"]
-            meta_columns = {"image_id", "image_path", "num_preds", label_col}
-        else:
-            raw_merge_keys = ["image_id", "image_path", "raw_pred_idx"]
-            pred_merge_keys = ["image_id", "image_path", "pred_idx"]
-            bbox_merge_keys = ["image_id", "image_path", "xmin", "ymin", "xmax", "ymax"]
-            has_feature_raw = set(raw_merge_keys).issubset(feature_df.columns)
-            has_feature_pred = set(pred_merge_keys).issubset(feature_df.columns)
-            has_feature_bbox = set(bbox_merge_keys).issubset(feature_df.columns)
-            has_merged_raw = set(raw_merge_keys).issubset(merged.columns)
-            has_merged_bbox = set(bbox_merge_keys).issubset(merged.columns)
-            has_merged_pred = set(pred_merge_keys).issubset(merged.columns)
-            prefer_raw = set(base_merge_keys) == set(raw_merge_keys)
-            prefer_pred = set(base_merge_keys) == set(pred_merge_keys)
+        raw_merge_keys = ["image_id", "image_path", "raw_pred_idx"]
+        pred_merge_keys = ["image_id", "image_path", "pred_idx"]
+        bbox_merge_keys = ["image_id", "image_path", "xmin", "ymin", "xmax", "ymax"]
+        has_feature_raw = set(raw_merge_keys).issubset(feature_df.columns)
+        has_feature_pred = set(pred_merge_keys).issubset(feature_df.columns)
+        has_feature_bbox = set(bbox_merge_keys).issubset(feature_df.columns)
+        has_merged_raw = set(raw_merge_keys).issubset(merged.columns)
+        has_merged_bbox = set(bbox_merge_keys).issubset(merged.columns)
+        has_merged_pred = set(pred_merge_keys).issubset(merged.columns)
+        prefer_raw = set(base_merge_keys) == set(raw_merge_keys)
+        prefer_pred = set(base_merge_keys) == set(pred_merge_keys)
 
-            if prefer_raw and has_feature_raw and has_merged_raw:
-                merge_keys = raw_merge_keys
-            elif prefer_pred and has_feature_pred and has_merged_pred:
-                merge_keys = pred_merge_keys
-            elif has_feature_raw and has_merged_raw:
-                merge_keys = raw_merge_keys
-            elif has_feature_bbox and has_merged_bbox:
-                merge_keys = bbox_merge_keys
-            elif has_feature_pred and has_merged_pred:
-                merge_keys = pred_merge_keys
-            else:
-                raise ValueError(
-                    f"Cannot match {input_csv_name} to tp.csv using keys available in current merged dataframe. "
-                    f"base={base_merge_keys}, feature_has_raw={has_feature_raw}, feature_has_pred={has_feature_pred}, feature_has_bbox={has_feature_bbox}."
-                )
-            meta_columns = {
-                "image_id",
-                "image_path",
-                "pred_idx",
-                "raw_pred_idx",
-                "xmin",
-                "ymin",
-                "xmax",
-                "ymax",
-                "score",
-                "pred_class",
-                "max_iou",
-                label_col,
-            }
-            if input_cue == "score":
-                meta_columns.discard("score")
+        if prefer_raw and has_feature_raw and has_merged_raw:
+            merge_keys = raw_merge_keys
+        elif prefer_pred and has_feature_pred and has_merged_pred:
+            merge_keys = pred_merge_keys
+        elif has_feature_raw and has_merged_raw:
+            merge_keys = raw_merge_keys
+        elif has_feature_bbox and has_merged_bbox:
+            merge_keys = bbox_merge_keys
+        elif has_feature_pred and has_merged_pred:
+            merge_keys = pred_merge_keys
+        else:
+            raise ValueError(
+                f"Cannot match {input_csv_name} to tp.csv using keys available in current merged dataframe. "
+                f"base={base_merge_keys}, feature_has_raw={has_feature_raw}, feature_has_pred={has_feature_pred}, feature_has_bbox={has_feature_bbox}."
+            )
+        meta_columns = {
+            "image_id",
+            "image_path",
+            "pred_idx",
+            "raw_pred_idx",
+            "xmin",
+            "ymin",
+            "xmax",
+            "ymax",
+            "score",
+            "pred_class",
+            "max_iou",
+            label_col,
+        }
+        if input_cue == "score":
+            meta_columns.discard("score")
 
         feature_columns = [c for c in feature_df.columns if c not in meta_columns]
         if not feature_columns:
@@ -369,7 +352,7 @@ def load_training_dataframe(dataset_cfg: dict[str, Any]) -> tuple[pd.DataFrame, 
 
         merged_next = merged.merge(feature_df, on=merge_keys, how="inner")
         if (
-            input_group == "tp_classifiers"
+            input_group == "bbox_predictions"
             and merged_next.empty
             and merge_keys in (
                 ["image_id", "image_path", "raw_pred_idx"],
@@ -463,7 +446,7 @@ def run_train(config: dict[str, Any], run_dir: Path) -> Path:
             raise ValueError("experiment.kfold.num_fold must be >= 2.")
         used_num_fold = num_fold
         kfold = StratifiedKFold(n_splits=num_fold, shuffle=True, random_state=random_seed)
-        split_iter = tqdm(enumerate(kfold.split(x, y)), desc="Error Detector (kfold)", total=num_fold, unit="fold")
+        split_iter = tqdm(enumerate(kfold.split(x, y)), desc="Meta Classifier (kfold)", total=num_fold, unit="fold")
         for i, (train_idx, test_idx) in split_iter:
             x_train, x_test = x[train_idx], x[test_idx]
             y_train, y_test = y[train_idx], y[test_idx]
@@ -490,7 +473,7 @@ def run_train(config: dict[str, Any], run_dir: Path) -> Path:
             raise ValueError("experiment.repeat.repeats must be >= 1.")
         used_split = split
         used_repeats = repeats
-        split_iter = tqdm(range(repeats), desc="Error Detector (repeat)", total=repeats, unit="split")
+        split_iter = tqdm(range(repeats), desc="Meta Classifier (repeat)", total=repeats, unit="split")
         for i in split_iter:
             x_train, x_test, y_train, y_test = train_test_split(
                 x,

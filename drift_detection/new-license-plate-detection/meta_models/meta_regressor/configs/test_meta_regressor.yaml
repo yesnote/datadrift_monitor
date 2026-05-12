@@ -1,0 +1,9 @@
+mode: test
+
+model:
+  model_root: meta_models/meta_regressor/runs/bbox_predictions/00-00-0000_00;00_layer_grad_cand_target_loss
+
+dataset:
+  input_root:
+    - object_detectors/runs/00-00-0000_00;00_layer_grad_cand_target_loss
+  gt_root: object_detectors/runs/00-00-0000_00;00_gt
