@@ -47,7 +47,13 @@ def run_layer_grad_csv(config, run_dir):
         run_dir=run_dir,
         uncertainty=uncertainty,
         unit=unit,
-        stages=["detector_inference_sec", "candidate_search_sec", "loss_compute_sec", "backpropagation_sec"],
+        stages=[
+            "detector_inference_sec",
+            "candidate_search_sec",
+            "loss_compute_sec",
+            "backpropagation_sec",
+            "feature_compute_sec",
+        ],
         device=device,
     )
     target_layers = expand_layer_names(detector.model, target_layers)
@@ -78,6 +84,7 @@ def run_layer_grad_csv(config, run_dir):
                 "candidate_search_sec": 0.0,
                 "loss_compute_sec": 0.0,
                 "backpropagation_sec": 0.0,
+                "feature_compute_sec": 0.0,
             }
             batch_items = 0
             batch_csv_rows = []
