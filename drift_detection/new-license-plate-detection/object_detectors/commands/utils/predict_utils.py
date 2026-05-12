@@ -332,7 +332,6 @@ def parse_output_config(output_cfg):
     layer_target_values = []
     layer_target_layers = []
     layer_map_reduction = "none"
-    layer_vector_reduction = []
     layer_pseudo_gt = "cand"
     layer_cand_score_threshold = 0.01
 
@@ -377,7 +376,6 @@ def parse_output_config(output_cfg):
         "layer_target_values": layer_target_values,
         "layer_target_layers": layer_target_layers,
         "layer_map_reduction": layer_map_reduction,
-        "layer_vector_reduction": layer_vector_reduction,
         "layer_pseudo_gt": layer_pseudo_gt,
         "layer_cand_score_threshold": float(layer_cand_score_threshold),
         "layer_bbox_loss": "ciou",

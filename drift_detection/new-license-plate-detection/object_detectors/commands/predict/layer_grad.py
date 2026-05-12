@@ -806,7 +806,6 @@ def run_layer_grad_csv(config, run_dir):
     target_values = [str(v) for v in parsed["layer_target_values"]]
     target_layers = parsed["layer_target_layers"]
     layer_map_reduction = parsed["layer_map_reduction"]
-    layer_vector_reduction = parsed["layer_vector_reduction"]
     layer_pseudo_gt = parsed.get("layer_pseudo_gt", "cand")
     layer_cand_score_threshold = float(parsed.get("layer_cand_score_threshold", 0.01))
     layer_bbox_loss = "ciou"
@@ -1124,7 +1123,7 @@ def run_layer_grad_csv(config, run_dir):
                         target_values=target_values,
                         target_layers=target_layers,
                         map_reduction=layer_map_reduction,
-                        vector_reduction=layer_vector_reduction,
+                        vector_reduction=[],
                         pseudo_gt=layer_pseudo_gt,
                         cand_score_threshold=layer_cand_score_threshold,
                         bbox_loss=layer_bbox_loss,
@@ -1241,17 +1240,9 @@ def run_layer_grad_csv(config, run_dir):
                                         grad_value = []
                                 else:
                                     grad_value = grad_stats_all.get(grad_key, [])
-                                if layer_vector_reduction:
-                                    vec = torch.tensor(_vector_from_grad_value(grad_value), dtype=torch.float32)
-                                    stats = map_grad_tensor_to_numbers(vec)
-                                    row[grad_key] = json.dumps(
-                                        {k: float(stats[k]) for k in layer_vector_reduction},
-                                        separators=(",", ":"),
-                                    )
-                                else:
-                                    if isinstance(grad_value, torch.Tensor):
-                                        grad_value = grad_value.detach().float().cpu().tolist()
-                                    row[grad_key] = json.dumps(grad_value, separators=(",", ":"))
+                                if isinstance(grad_value, torch.Tensor):
+                                    grad_value = grad_value.detach().float().cpu().tolist()
+                                row[grad_key] = json.dumps(grad_value, separators=(",", ":"))
                         csv_writer.writerow(row)
 
                     if viz_enabled and group_key is not None:
