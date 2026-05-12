@@ -4,17 +4,18 @@ task: prediction_distribution
 input:
   # Either provide run_roots containing prediction_dump.csv or direct csv_paths.
   run_roots:
-    - object_detectors/runs/tp_classifiers/05-11-2026_20;53_prediction_dump
+    - object_detectors/runs/tp_classifiers/05-12-2026_13;08_prediction_dump
   csv_paths: []
   max_rows: 0
 
 plots:
   enabled:
-    - overview
-    - histogram
-    - box_violin
-    - scatter
-    - heatmap
-    - rank_curve
-    - count_distribution
-    - correlation
+    - tp_fp_null_cand_comparison
+    # - overview
+    # - histogram
+    # - box_violin
+    # - scatter
+    # - heatmap
+    # - rank_curve
+    # - count_distribution
+    # - correlation
