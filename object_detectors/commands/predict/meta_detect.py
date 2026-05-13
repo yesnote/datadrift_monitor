@@ -16,11 +16,17 @@ def run_meta_detect_csv(config, run_dir):
     if not save_csv:
         return
 
-    def _stats(v: torch.Tensor):
+    def _stats_tensor(v: torch.Tensor, device):
         if v is None or v.numel() == 0:
-            return 0.0, 0.0, 0.0, 0.0
+            zero = torch.zeros((), dtype=torch.float32, device=device)
+            return zero, zero, zero, zero
         x = v.detach().float().reshape(-1)
-        return float(torch.min(x).item()), float(torch.max(x).item()), float(torch.mean(x).item()), float(torch.std(x, unbiased=False).item())
+        return torch.min(x), torch.max(x), torch.mean(x), torch.std(x, unbiased=False)
+
+    def _to_float(value):
+        if isinstance(value, torch.Tensor):
+            return float(value.detach().cpu().item())
+        return float(value)
 
     def _iou_1vN(box: torch.Tensor, boxes: torch.Tensor):
         if boxes.numel() == 0:
@@ -165,12 +171,12 @@ def run_meta_detect_csv(config, run_dir):
                         pred_probs = raw_cls[raw_pred_idx].detach().float()
                     else:
                         pred_probs = torch.zeros((num_classes,), dtype=torch.float32, device=device)
-                    prob_values = {"prob_sum": float(pred_probs.sum().detach().cpu().item()) if pred_probs.numel() else 0.0}
+                    prob_values = {"prob_sum": pred_probs.sum() if pred_probs.numel() else torch.zeros((), dtype=torch.float32, device=device)}
                     for prob_idx in range(max(0, num_classes)):
                         prob_values[f"prob_{prob_idx}"] = (
-                            float(pred_probs[prob_idx].detach().cpu().item())
+                            pred_probs[prob_idx]
                             if prob_idx < int(pred_probs.shape[0])
-                            else 0.0
+                            else torch.zeros((), dtype=torch.float32, device=device)
                         )
 
                     x = 0.5 * (cand_boxes[:, 0] + cand_boxes[:, 2])
@@ -184,20 +190,22 @@ def run_meta_detect_csv(config, run_dir):
                     iou_pb = torch.where(cand_ious == 1.0, torch.zeros_like(cand_ious), cand_ious)
                     iou_pb_pos = iou_pb[iou_pb > 0]
 
-                    fx1, fy1, fx2, fy2 = [float(v.detach().cpu().item()) for v in fbox_orig]
-                    fsize = float((0.5 * ((0.5 * (fx1 + fx2)) - abs(0.5 * (fx1 - fx2)))) * (0.5 * ((0.5 * (fy1 + fy2)) - abs(0.5 * (fy1 - fy2)))))
-                    fcircum = float(abs(fx2 - fx1) + abs(fy2 - fy1))
-                    fsize_circum = float(((0.5 * abs(fx2 - fx1)) * (0.5 * abs(fy2 - fy1))) / max(abs(fx2 - fx1) + abs(fy2 - fy1), 1e-12))
+                    fx1_t, fy1_t, fx2_t, fy2_t = fbox_orig.unbind()
+                    fsize = (0.5 * ((0.5 * (fx1_t + fx2_t)) - torch.abs(0.5 * (fx1_t - fx2_t)))) * (
+                        0.5 * ((0.5 * (fy1_t + fy2_t)) - torch.abs(0.5 * (fy1_t - fy2_t)))
+                    )
+                    fcircum = torch.abs(fx2_t - fx1_t) + torch.abs(fy2_t - fy1_t)
+                    fsize_circum = ((0.5 * torch.abs(fx2_t - fx1_t)) * (0.5 * torch.abs(fy2_t - fy1_t))) / fcircum.clamp(min=1e-12)
 
-                    x_min, x_max, x_mean, x_std = _stats(x)
-                    y_min, y_max, y_mean, y_std = _stats(y)
-                    w_min, w_max, w_mean, w_std = _stats(w)
-                    h_min, h_max, h_mean, h_std = _stats(h)
-                    size_min, size_max, size_mean, size_std = _stats(size_vals)
-                    circum_min, circum_max, circum_mean, circum_std = _stats(circum_vals)
-                    size_circum_min, size_circum_max, size_circum_mean, size_circum_std = _stats(size_circum_vals)
-                    score_min, score_max, score_mean, score_std = _stats(cand_scores)
-                    iou_pb_min, iou_pb_max, iou_pb_mean, iou_pb_std = _stats(iou_pb_pos)
+                    x_min, x_max, x_mean, x_std = _stats_tensor(x, device)
+                    y_min, y_max, y_mean, y_std = _stats_tensor(y, device)
+                    w_min, w_max, w_mean, w_std = _stats_tensor(w, device)
+                    h_min, h_max, h_mean, h_std = _stats_tensor(h, device)
+                    size_min, size_max, size_mean, size_std = _stats_tensor(size_vals, device)
+                    circum_min, circum_max, circum_mean, circum_std = _stats_tensor(circum_vals, device)
+                    size_circum_min, size_circum_max, size_circum_mean, size_circum_std = _stats_tensor(size_circum_vals, device)
+                    score_min, score_max, score_mean, score_std = _stats_tensor(cand_scores, device)
+                    iou_pb_min, iou_pb_max, iou_pb_mean, iou_pb_std = _stats_tensor(iou_pb_pos, device)
 
                     feature_row = {
                         "num_candidate_boxes": float(cand_boxes.shape[0]),
@@ -213,6 +221,9 @@ def run_meta_detect_csv(config, run_dir):
                         "iou_pb_min": iou_pb_min, "iou_pb_max": iou_pb_max, "iou_pb_mean": iou_pb_mean, "iou_pb_std": iou_pb_std,
                     }
                     feature_compute_sec += timing.elapsed(t_feature)
+                    prob_values = {key: _to_float(value) for key, value in prob_values.items()}
+                    feature_row = {key: _to_float(value) for key, value in feature_row.items()}
+                    fx1, fy1, fx2, fy2 = [_to_float(v) for v in fbox_orig]
                     writer.writerow(
                         {
                             "image_id": image_id,
