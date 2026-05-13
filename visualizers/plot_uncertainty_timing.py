@@ -19,7 +19,7 @@ OUTPUT_ROOT = Path(__file__).resolve().parent / "runs"
 OUTPUT_FILENAME = "uncertainty_timing_per_prediction.png"
 METRIC = "mean_stage_ms_per_prediction"
 TITLE = "Uncertainty Timing Comparison"
-FIGSIZE = (10.0, 4.0)
+FIGSIZE = (11.8, 5.5)
 
 DEFAULT_STAGE_ORDER = [
     "detector_inference_sec",
