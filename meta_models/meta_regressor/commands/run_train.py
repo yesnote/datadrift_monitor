@@ -335,6 +335,8 @@ def load_training_dataframe(dataset_cfg: dict[str, Any]) -> tuple[pd.DataFrame, 
             meta_columns.discard("score")
 
         feature_columns = [c for c in feature_df.columns if c not in meta_columns]
+        if input_cue in {"mc_dropout", "ensemble"}:
+            feature_columns = [c for c in feature_columns if str(c).endswith("_std")]
         if not feature_columns:
             raise ValueError(f"No input feature columns found in {input_csv}")
         if input_cue == "layer_grad":
