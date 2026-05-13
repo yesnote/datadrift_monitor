@@ -9,7 +9,7 @@ model:
   device: cuda
 
 dataset:
-  used_dataset: coco
+  used_dataset: voc
   used_ratio: 1.0
   
   coco:
@@ -24,10 +24,9 @@ dataset:
     test_annotation_file: instances_test2017.json
   
   voc:
-    root: object_detectors/datasets/VOCdevkit/VOC2012
+    root: D:/DataDrift/datasets/VOC/VOCdevkit/VOC2012
     train_split: train
     val_split: val
-    test_split: test
   
   openimages:
     root: object_detectors/datasets/openimages

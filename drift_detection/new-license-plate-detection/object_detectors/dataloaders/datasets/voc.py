@@ -23,7 +23,8 @@ class VOCDataset(Dataset):
         self.image_dir = os.path.join(root, "JPEGImages")
         self.annotation_dir = os.path.join(root, "Annotations")
         self.split_file = os.path.join(root, "ImageSets", "Main", f"{split}.txt")
-        self.class_to_idx = {name: idx for idx, name in enumerate(pascal_voc_names)}
+        self.class_names = pascal_voc_names[1:]
+        self.class_to_idx = {name: idx for idx, name in enumerate(self.class_names)}
         self.images = self._resolve_images()
 
     def _resolve_images(self):
@@ -54,7 +55,9 @@ class VOCDataset(Dataset):
         if os.path.isfile(ann_path):
             root = ET.parse(ann_path).getroot()
             for obj in root.findall("object"):
-                label_name = obj.findtext("name", default="__background__")
+                label_name = obj.findtext("name", default="").strip()
+                if label_name not in self.class_to_idx:
+                    continue
                 bbox = obj.find("bndbox")
                 if bbox is None:
                     continue
@@ -63,7 +66,7 @@ class VOCDataset(Dataset):
                 xmax = float(bbox.findtext("xmax", default="0"))
                 ymax = float(bbox.findtext("ymax", default="0"))
                 boxes.append([xmin, ymin, xmax, ymax])
-                labels.append(self.class_to_idx.get(label_name, 0))
+                labels.append(self.class_to_idx[label_name])
                 gt_class_names.append(label_name)
 
         target = {

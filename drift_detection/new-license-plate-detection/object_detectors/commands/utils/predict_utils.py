@@ -9,6 +9,7 @@ import torch
 import torch.nn.functional as F
 import torch.nn as nn
 
+from dataloaders.utils.data_utils import pascal_voc_names
 from models.yolo.models.yolo_v5_object_detector import YOLOV5TorchObjectDetector
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -137,6 +138,29 @@ def load_gt_category_maps(config, split):
     return {}
 
 
+def _resolve_detector_class_names(config):
+    model_cfg = config.get("model", {})
+    configured_names = model_cfg.get("class_names")
+    if configured_names:
+        if isinstance(configured_names, str):
+            return [name.strip() for name in configured_names.split(",") if name.strip()]
+        return [str(v) for v in configured_names]
+
+    used_dataset, _dataset_cfg = get_dataset_cfg(config)
+    if used_dataset in {"voc", "pascal_voc"}:
+        return list(pascal_voc_names[1:])
+    if used_dataset == "__multi__":
+        dataset_root_cfg = config.get("dataset", {})
+        used_raw = dataset_root_cfg.get("used_dataset", [])
+        if isinstance(used_raw, str):
+            names = [used_raw.strip().lower()]
+        else:
+            names = [str(v).strip().lower() for v in used_raw if str(v).strip()]
+        if names and all(name in {"voc", "pascal_voc"} for name in names):
+            return list(pascal_voc_names[1:])
+    return None
+
+
 def build_detector(config, model_weight=None):
     torch.backends.cudnn.benchmark = False
     model_cfg = config["model"]
@@ -161,7 +185,7 @@ def build_detector(config, model_weight=None):
         model_weight=str(weight_path),
         device=device,
         img_size=(model_cfg["img_size"], model_cfg["img_size"]),
-        names=None,
+        names=_resolve_detector_class_names(config),
         mode="eval",
         confidence=confidence,
         iou_thresh=iou_thresh,

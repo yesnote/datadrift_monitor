@@ -16,13 +16,13 @@ model:
 
 dataset:
   used_dataset:   # coco | voc | openimages
-    - coco
+    - voc
     # - coco
-  split:  # train | val | test
-    - train
+  split:  # train | val
+    - val
     # - val
   used_ratio:
-    - 0.05
+    - 1.0
     # - 1.0
 
   coco:
@@ -35,6 +35,11 @@ dataset:
     train_annotation_file: instances_train2017.json
     val_annotation_file: instances_val2017.json
     test_annotation_file: instances_test2017.json
+
+  voc:
+    root: D:/DataDrift/datasets/VOC/VOCdevkit/VOC2012
+    train_split: train
+    val_split: val
 
   openimages:
     root: D:/SEONGJIN/datasets/OIDv4_ToolKit/OID/Dataset
