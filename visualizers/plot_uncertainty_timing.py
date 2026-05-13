@@ -173,11 +173,7 @@ def plot_stacked_timing(records, output_path, title, figsize):
             ax.legend(loc="upper left", bbox_to_anchor=(1.01, 1.0), frameon=False)
         return bottoms
 
-    def draw_axis_break_marks(ax_bottom, ax_top):
-        kwargs = dict(transform=ax_top.transAxes, color="#333333", clip_on=False, linewidth=1.4)
-        ax_top.plot((-0.018, 0.018), (-0.035, 0.035), **kwargs)
-        ax_top.plot((0.035, 0.071), (-0.035, 0.035), **kwargs)
-
+    def draw_axis_break_marks(ax_bottom):
         kwargs = dict(transform=ax_bottom.transAxes, color="#333333", clip_on=False, linewidth=1.4)
         ax_bottom.plot((-0.018, 0.018), (0.965, 1.035), **kwargs)
         ax_bottom.plot((0.035, 0.071), (0.965, 1.035), **kwargs)
@@ -216,7 +212,7 @@ def plot_stacked_timing(records, output_path, title, figsize):
         for ax in axes:
             ax.grid(axis="y", linestyle="--", linewidth=0.6, alpha=0.35)
 
-        draw_axis_break_marks(ax_bottom, ax_top)
+        draw_axis_break_marks(ax_bottom)
 
     fig.tight_layout(rect=(0.0, 0.0, 0.82, 1.0))
     output_path = Path(output_path)
