@@ -120,7 +120,7 @@ def _plot_single_feature(results_df: pd.DataFrame, out_path: Path) -> None:
     x = np.arange(len(df))
     fig_width = max(12.0, 0.18 * len(df) + 4.0)
     fig, ax = plt.subplots(figsize=(fig_width, 6.0))
-    ax.bar(x, df["auroc_mean"], color="#4C78A8", label="AUROC")
+    ax.plot(x, df["auroc_mean"], color="#4C78A8", linewidth=1.8, marker="o", markersize=2.5, label="AUROC")
     ax.plot(x, df["ap_mean"], color="#E45756", linewidth=1.8, marker="o", markersize=2.5, label="AP")
     ax.set_ylim(0.0, 1.0)
     ax.set_ylabel("Classification performance")
