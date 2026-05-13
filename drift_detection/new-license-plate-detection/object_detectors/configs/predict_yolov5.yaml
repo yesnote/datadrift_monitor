@@ -16,13 +16,13 @@ model:
 
 dataset:
   used_dataset:   # coco | voc | openimages
-    - voc
+    - coco
     # - coco
   split:  # train | val
-    - val
+    - train
     # - val
   used_ratio:
-    - 1.0
+    - 0.05
     # - 1.0
 
   coco:
