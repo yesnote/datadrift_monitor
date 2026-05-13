@@ -12,6 +12,12 @@ def _gradient_to_np_array(value):
     return np.asarray(value, dtype=np.float32).reshape(-1)
 
 
+def _scalar_to_float(value):
+    if isinstance(value, torch.Tensor):
+        return float(value.detach().cpu().item())
+    return float(value)
+
+
 def run_layer_grad_csv(config, run_dir):
     run_dir = Path(run_dir)
     mode = str(config.get("mode", "predict"))
@@ -135,9 +141,8 @@ def run_layer_grad_csv(config, run_dir):
                             row[grad_key] = f"{npz_rel_path}::{array_key}"
                         else:
                             for metric in layer_gradient_reduction:
-                                row[f"{grad_key}_{metric}"] = float(
-                                    grad_value.get(metric, 0.0) if isinstance(grad_value, dict) else 0.0
-                                )
+                                value = grad_value.get(metric, 0.0) if isinstance(grad_value, dict) else 0.0
+                                row[f"{grad_key}_{metric}"] = _scalar_to_float(value)
                     batch_csv_rows.append(row)
                 batch_items += int(len(bbox_rows))
                 del bbox_rows

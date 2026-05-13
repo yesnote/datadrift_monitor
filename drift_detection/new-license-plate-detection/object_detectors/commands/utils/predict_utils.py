@@ -531,12 +531,12 @@ def map_grad_tensor_to_numbers(v):
     if v.numel() == 0:
         return {"l1_norm": 0.0, "l2_norm": 0.0, "min": 0.0, "max": 0.0, "mean": 0.0, "std": 0.0}
     return {
-        "l1_norm": float(torch.norm(v, p=1).detach().cpu().item()),
-        "l2_norm": float(torch.norm(v, p=2).detach().cpu().item()),
-        "min": float(v.min().detach().cpu().item()),
-        "max": float(v.max().detach().cpu().item()),
-        "mean": float(torch.mean(v).detach().cpu().item()),
-        "std": float(torch.std(v, unbiased=False).detach().cpu().item()),
+        "l1_norm": torch.norm(v, p=1),
+        "l2_norm": torch.norm(v, p=2),
+        "min": v.min(),
+        "max": v.max(),
+        "mean": torch.mean(v),
+        "std": torch.std(v, unbiased=False),
     }
 
 
@@ -602,7 +602,7 @@ def format_gradient_output(grad_tensor, vector_reduction, map_reduction="none"):
         reduced = grad_tensor.reshape(-1)
 
     if not vector_reduction:
-        return reduced.detach().cpu().tolist()
+        return reduced.detach()
     stats = map_grad_tensor_to_numbers(reduced)
     return {k: stats[k] for k in vector_reduction}
 
