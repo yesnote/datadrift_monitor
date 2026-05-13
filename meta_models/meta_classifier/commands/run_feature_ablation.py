@@ -140,7 +140,21 @@ def _plot_cumulative(results_df: pd.DataFrame, out_path: Path) -> None:
     fig, ax = plt.subplots(figsize=(8.0, 5.5))
     ax.plot(results_df["num_features"], results_df["auroc_mean"], label="AUROC", linewidth=2.0)
     ax.plot(results_df["num_features"], results_df["ap_mean"], label="AP", linewidth=2.0)
-    ax.set_ylim(0.0, 1.0)
+    y_values = np.concatenate(
+        [
+            results_df["auroc_mean"].to_numpy(dtype=np.float64),
+            results_df["ap_mean"].to_numpy(dtype=np.float64),
+        ]
+    )
+    y_values = y_values[np.isfinite(y_values)]
+    if y_values.size:
+        y_min = float(np.min(y_values))
+        y_max = float(np.max(y_values))
+        y_span = max(y_max - y_min, 0.02)
+        pad = max(0.01, y_span * 0.15)
+        ax.set_ylim(max(0.0, y_min - pad), min(1.0, y_max + pad))
+    else:
+        ax.set_ylim(0.0, 1.0)
     ax.set_xlabel("Number of features")
     ax.set_ylabel("Classification performance")
     ax.set_title("Cumulative MetaDetect Feature Performance")
