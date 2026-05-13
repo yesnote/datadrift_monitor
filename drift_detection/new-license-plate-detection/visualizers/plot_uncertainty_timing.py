@@ -2,6 +2,8 @@ import json
 from datetime import datetime
 from pathlib import Path
 
+import numpy as np
+
 RUN_PATHS = [
     r"object_detectors/runs/05-12-2026_19;06_score",
     r"object_detectors/runs/05-12-2026_19;06_class_probability",
@@ -80,12 +82,11 @@ def load_timing_record(path, metric):
 
     run_dir = path.parent.parent
     uncertainty = str(data.get("uncertainty") or path.name.replace("_timing.json", ""))
-    label = f"{uncertainty}\n{run_dir.name}"
     return {
         "path": path,
         "run_dir": run_dir,
         "uncertainty": uncertainty,
-        "label": label,
+        "label": f"{uncertainty}\n{run_dir.name}",
         "values": {str(k): float(v) for k, v in values.items()},
         "total_predictions": int(data.get("total_predictions", 0)),
     }
@@ -135,13 +136,10 @@ def plot_stacked_timing(records, output_path, title, figsize):
     stages = ordered_stages(records)
     labels = [record["label"] for record in records]
     x = list(range(len(records)))
-
-    fig_width = max(figsize[0], 1.1 * len(records) + 3.0)
-    totals = [
-        sum(record["values"].get(stage, 0.0) for stage in stages) for record in records
-    ]
+    totals = [sum(record["values"].get(stage, 0.0) for stage in stages) for record in records]
     break_limits = broken_axis_limits(totals)
 
+    fig_width = max(figsize[0], 1.1 * len(records) + 3.0)
     if break_limits is None:
         fig, ax = plt.subplots(figsize=(fig_width, figsize[1]))
         axes = [ax]
@@ -155,7 +153,7 @@ def plot_stacked_timing(records, output_path, title, figsize):
         )
         axes = [ax_top, ax_bottom]
 
-    def _draw_bars(ax, show_legend=False):
+    def draw_bars(ax, show_legend=False):
         bottoms = [0.0 for _ in records]
         for stage in stages:
             heights = [record["values"].get(stage, 0.0) for record in records]
@@ -170,14 +168,30 @@ def plot_stacked_timing(records, output_path, title, figsize):
                 edgecolor="white",
                 linewidth=0.6,
             )
-            bottoms[:] = [bottom + height for bottom, height in zip(bottoms, heights)]
+            bottoms = [bottom + height for bottom, height in zip(bottoms, heights)]
         if show_legend:
             ax.legend(loc="upper left", bbox_to_anchor=(1.01, 1.0), frameon=False)
         return bottoms
 
+    def draw_bar_break_marks(ax_bottom, ax_top, lower_top, upper_bottom, upper_top):
+        break_indices = [idx for idx, total in enumerate(totals) if total > upper_bottom]
+        for idx in break_indices:
+            width = 0.72
+            xs = np.linspace(idx - width / 2.0, idx + width / 2.0, 96)
+
+            bottom_amp = max(lower_top * 0.018, 0.001)
+            bottom_wave = lower_top * 0.965 + bottom_amp * np.sin(np.linspace(0.0, 4.0 * np.pi, xs.size))
+            ax_bottom.plot(xs, bottom_wave, color="white", linewidth=7.0, solid_capstyle="round", zorder=20, clip_on=False)
+            ax_bottom.plot(xs, bottom_wave, color="#333333", linewidth=1.4, zorder=21, clip_on=False)
+
+            top_amp = max((upper_top - upper_bottom) * 0.04, 0.001)
+            top_wave = upper_bottom + top_amp * np.sin(np.linspace(0.0, 4.0 * np.pi, xs.size))
+            ax_top.plot(xs, top_wave, color="white", linewidth=7.0, solid_capstyle="round", zorder=20, clip_on=False)
+            ax_top.plot(xs, top_wave, color="#333333", linewidth=1.4, zorder=21, clip_on=False)
+
     if break_limits is None:
         ax = axes[0]
-        bottoms = _draw_bars(ax, show_legend=True)
+        bottoms = draw_bars(ax, show_legend=True)
         for idx, total in enumerate(bottoms):
             ax.text(idx, total, f"{total:.2f}", ha="center", va="bottom", fontsize=8)
         ax.set_title(title)
@@ -188,8 +202,9 @@ def plot_stacked_timing(records, output_path, title, figsize):
     else:
         lower_top, upper_bottom, upper_top = break_limits
         ax_top, ax_bottom = axes
-        _draw_bars(ax_top, show_legend=True)
-        _draw_bars(ax_bottom, show_legend=False)
+        draw_bars(ax_top, show_legend=True)
+        draw_bars(ax_bottom, show_legend=False)
+
         ax_bottom.set_ylim(0.0, lower_top)
         ax_top.set_ylim(upper_bottom, upper_top)
         ax_top.spines["bottom"].set_visible(False)
@@ -199,9 +214,7 @@ def plot_stacked_timing(records, output_path, title, figsize):
 
         for idx, total in enumerate(totals):
             target_ax = ax_top if total > upper_bottom else ax_bottom
-            target_ax.text(
-                idx, total, f"{total:.2f}", ha="center", va="bottom", fontsize=8
-            )
+            target_ax.text(idx, total, f"{total:.2f}", ha="center", va="bottom", fontsize=8)
 
         ax_top.set_title(title)
         ax_bottom.set_ylabel("Mean stage time per prediction (ms)")
@@ -210,32 +223,12 @@ def plot_stacked_timing(records, output_path, title, figsize):
         for ax in axes:
             ax.grid(axis="y", linestyle="--", linewidth=0.6, alpha=0.35)
 
-        # Wave-like break markers on both sides of the split axis.
-        for xpos, ha in [(-0.015, "right"), (1.015, "left")]:
-            ax_top.text(
-                xpos,
-                -0.06,
-                "≈",
-                transform=ax_top.transAxes,
-                ha=ha,
-                va="center",
-                fontsize=16,
-            )
-            ax_bottom.text(
-                xpos,
-                1.02,
-                "≈",
-                transform=ax_bottom.transAxes,
-                ha=ha,
-                va="center",
-                fontsize=16,
-            )
+        draw_bar_break_marks(ax_bottom, ax_top, lower_top, upper_bottom, upper_top)
 
-    fig.tight_layout()
-
+    fig.tight_layout(rect=(0.0, 0.0, 0.82, 1.0))
     output_path = Path(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    fig.savefig(output_path, dpi=200)
+    fig.savefig(output_path, dpi=220, bbox_inches="tight", pad_inches=0.25)
     plt.close(fig)
     return output_path
 
@@ -252,7 +245,6 @@ def main():
         raise FileNotFoundError(f"No *_timing.json files found under: {searched}")
 
     records = [load_timing_record(path, METRIC) for path in timing_paths]
-
     if not records:
         raise ValueError("No timing records to plot.")
 
