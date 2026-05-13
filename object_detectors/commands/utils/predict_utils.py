@@ -718,6 +718,21 @@ def _box_iou_tensor(boxes1: torch.Tensor, boxes2: torch.Tensor) -> torch.Tensor:
     return inter / union.clamp(min=1e-6)
 
 
+def _box_iou_1vN_tensor(box: torch.Tensor, boxes: torch.Tensor) -> torch.Tensor:
+    if boxes.numel() == 0:
+        return torch.zeros((0,), dtype=torch.float32, device=box.device)
+    if box.ndim > 1:
+        box = box.reshape(-1, 4)[0]
+    lt = torch.max(box[:2], boxes[:, :2])
+    rb = torch.min(box[2:], boxes[:, 2:])
+    wh = (rb - lt).clamp(min=0)
+    inter = wh[:, 0] * wh[:, 1]
+    area1 = (box[2] - box[0]).clamp(min=0) * (box[3] - box[1]).clamp(min=0)
+    area2 = (boxes[:, 2] - boxes[:, 0]).clamp(min=0) * (boxes[:, 3] - boxes[:, 1]).clamp(min=0)
+    union = area1 + area2 - inter
+    return inter / union.clamp(min=1e-12)
+
+
 def build_pseudo_label_losses_for_candidates(
     pred_img: torch.Tensor,
     raw_idx: int,
@@ -737,7 +752,7 @@ def build_pseudo_label_losses_for_candidates(
         pseudo_cls = int(torch.argmax(pseudo_row[5:]).item())
         pred_boxes_xyxy = _xywh_to_xyxy_tensor(pred_img[:, :4].detach())
         pseudo_box_xyxy = _xywh_to_xyxy_tensor(pseudo_row[:4].view(1, 4))
-        ious = _box_iou_tensor(pred_boxes_xyxy, pseudo_box_xyxy).squeeze(1)
+        ious = _box_iou_1vN_tensor(pseudo_box_xyxy, pred_boxes_xyxy)
         pred_cls = torch.argmax(pred_img[:, 5:].detach(), dim=1)
         obj = pred_img[:, 4].detach()
         cls_max = pred_img[:, 5:].detach().max(dim=1).values if pred_img.shape[1] > 5 else torch.ones_like(obj)
