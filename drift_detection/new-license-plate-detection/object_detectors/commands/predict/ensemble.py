@@ -126,7 +126,7 @@ def run_ensemble_csv(config, run_dir):
                     prob_mat = pred_batch[..., 5:].detach().float()
                     if prob_mat.numel() == 0 and det_raw_logits is not None:
                         prob_mat = torch.sigmoid(det_raw_logits.detach().float())
-                    run_features = torch.cat([bbox_xyxy, score_vec, prob_mat], dim=2).detach().cpu()
+                    run_features = torch.cat([bbox_xyxy, score_vec, prob_mat], dim=2).detach()
                     class_count = int(run_features.shape[2] - 5)
                     if n_classes_actual is None:
                         n_classes_actual = class_count
@@ -161,11 +161,13 @@ def run_ensemble_csv(config, run_dir):
 
                 batch_items = 0
                 t_matching = timing.start()
+                mean_cpu = mean.detach().float().cpu()
+                std_cpu = std.detach().float().cpu()
                 for b in range(len(image_ids)):
                     image_id = int(image_ids[b])
                     image_path = str(image_paths[b])
-                    mean_b = mean[b]
-                    std_b = std[b]
+                    mean_b = mean_cpu[b]
+                    std_b = std_cpu[b]
                     n_candidates = int(mean_b.shape[0])
 
                     det_b = det_boxes[b]
@@ -223,7 +225,7 @@ def run_ensemble_csv(config, run_dir):
                         "feature_compute_sec": feature_compute_sec,
                     },
                 )
-                del mean, std
+                del mean, std, mean_cpu, std_cpu
     except Exception:
         raise
     finally:
