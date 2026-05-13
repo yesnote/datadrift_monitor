@@ -1,4 +1,5 @@
 import json
+from datetime import datetime
 from pathlib import Path
 
 RUN_PATHS = [
@@ -12,7 +13,8 @@ RUN_PATHS = [
     r"object_detectors/runs/05-13-2026_08;23_layer_grad_cand_target_loss",
 ]
 
-OUTPUT_PATH = r"visualizers/uncertainty_timing_per_prediction.png"
+OUTPUT_ROOT = r"runs"
+OUTPUT_FILENAME = "uncertainty_timing_per_prediction.png"
 METRIC = "mean_stage_ms_per_prediction"
 TITLE = "Uncertainty Timing Comparison"
 FIGSIZE = (10.0, 5.5)
@@ -156,6 +158,11 @@ def plot_stacked_timing(records, output_path, title, figsize):
     return output_path
 
 
+def make_output_path():
+    timestamp = datetime.now().strftime("%m-%d-%Y_%H;%M")
+    return Path(OUTPUT_ROOT) / f"{timestamp}_uncertainty_timing" / OUTPUT_FILENAME
+
+
 def main():
     timing_paths = find_timing_jsons_in_config_order(RUN_PATHS)
     if not timing_paths:
@@ -167,7 +174,7 @@ def main():
     if not records:
         raise ValueError("No timing records to plot.")
 
-    output_path = plot_stacked_timing(records, OUTPUT_PATH, TITLE, FIGSIZE)
+    output_path = plot_stacked_timing(records, make_output_path(), TITLE, FIGSIZE)
     print(f"Saved timing plot: {output_path}")
 
 
