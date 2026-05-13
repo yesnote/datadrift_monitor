@@ -19,7 +19,7 @@ OUTPUT_ROOT = Path(__file__).resolve().parent / "runs"
 OUTPUT_FILENAME = "uncertainty_timing_per_prediction.png"
 METRIC = "mean_stage_ms_per_prediction"
 TITLE = "Uncertainty Timing Comparison"
-FIGSIZE = (10.0, 5.5)
+FIGSIZE = (10.0, 4.6)
 
 DEFAULT_STAGE_ORDER = [
     "detector_inference_sec",
@@ -149,8 +149,8 @@ def plot_stacked_timing(records, output_path, title, figsize):
             2,
             1,
             sharex=True,
-            figsize=(fig_width, figsize[1] + 1.0),
-            gridspec_kw={"height_ratios": [1.0, 3.0], "hspace": 0.06},
+            figsize=(fig_width, figsize[1] + 0.4),
+            gridspec_kw={"height_ratios": [0.75, 2.5], "hspace": 0.06},
         )
         axes = [ax_top, ax_bottom]
 
@@ -174,11 +174,15 @@ def plot_stacked_timing(records, output_path, title, figsize):
             ax.legend(loc="upper left", bbox_to_anchor=(1.01, 1.0), frameon=False)
         return bottoms
 
-    def draw_axis_break_marks(ax_bottom, ax_top):
-        d = 0.018
-        kwargs = dict(color="#333333", clip_on=False, linewidth=1.5)
-        ax_top.plot((-d, d), (-d, d), transform=ax_top.transAxes, **kwargs)
-        ax_bottom.plot((-d, d), (1.0 - d, 1.0 + d), transform=ax_bottom.transAxes, **kwargs)
+    def draw_axis_break_marks(fig, ax_bottom, ax_top):
+        top_box = ax_top.get_position()
+        bottom_box = ax_bottom.get_position()
+        x0 = bottom_box.x0
+        dx = 0.012
+        dy = 0.012
+        kwargs = dict(transform=fig.transFigure, color="#333333", clip_on=False, linewidth=1.5)
+        fig.lines.append(plt.Line2D([x0 - dx, x0 + dx], [top_box.y0 - dy, top_box.y0 + dy], **kwargs))
+        fig.lines.append(plt.Line2D([x0 - dx, x0 + dx], [bottom_box.y1 - dy, bottom_box.y1 + dy], **kwargs))
 
     if break_limits is None:
         ax = axes[0]
@@ -216,7 +220,7 @@ def plot_stacked_timing(records, output_path, title, figsize):
             ax.yaxis.set_major_locator(MultipleLocator(10.0))
             ax.grid(axis="y", linestyle="--", linewidth=0.6, alpha=0.35)
 
-        draw_axis_break_marks(ax_bottom, ax_top)
+        draw_axis_break_marks(fig, ax_bottom, ax_top)
 
     fig.tight_layout(rect=(0.0, 0.0, 0.82, 1.0))
     output_path = Path(output_path)
