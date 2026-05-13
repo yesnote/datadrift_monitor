@@ -7,9 +7,11 @@ from pathlib import Path
 import numpy as np
 import torch
 import torch.nn.functional as F
+import torch.nn as nn
 from tqdm import tqdm
 
 from dataloaders.dataloader_yolo import create_dataloader
+from dataloaders.utils.data_utils import pascal_voc_names
 from losses.loss import build_loss
 from models.yolo.models.experimental import attempt_load
 from models.yolo.utils.general import coco80_to_coco91_class
@@ -145,6 +147,73 @@ def _to_yolo_targets(targets, ratios, pads, img_h, img_w, device):
     return torch.cat(rows, dim=0).to(device=device, dtype=torch.float32)
 
 
+def _active_dataset_names(config):
+    raw = config.get("dataset", {}).get("used_dataset", "")
+    if isinstance(raw, str):
+        names = [raw.strip().lower()]
+    elif isinstance(raw, (list, tuple)):
+        names = [str(v).strip().lower() for v in raw if str(v).strip()]
+    else:
+        names = []
+    return names
+
+
+def _resolve_train_class_names(config):
+    model_cfg = config.get("model", {})
+    configured_names = model_cfg.get("class_names")
+    if configured_names:
+        if isinstance(configured_names, str):
+            return [name.strip() for name in configured_names.split(",") if name.strip()]
+        return [str(v) for v in configured_names]
+
+    names = _active_dataset_names(config)
+    if names and all(name in {"voc", "pascal_voc"} for name in names):
+        return list(pascal_voc_names[1:])
+    if any(name in {"voc", "pascal_voc"} for name in names):
+        raise ValueError("Mixed VOC with non-VOC datasets is not supported because class spaces differ.")
+    return None
+
+
+def _rebuild_detect_head_for_class_count(model, class_names, device):
+    if not class_names:
+        return model
+
+    target_nc = int(len(class_names))
+    detect = model.model[-1]
+    current_nc = int(getattr(detect, "nc", target_nc))
+
+    if current_nc != target_nc:
+        detect.nc = target_nc
+        detect.no = target_nc + 5
+        rebuilt = []
+        for conv in detect.m:
+            new_conv = nn.Conv2d(
+                conv.in_channels,
+                detect.na * detect.no,
+                conv.kernel_size,
+                conv.stride,
+                conv.padding,
+                conv.dilation,
+                conv.groups,
+                bias=conv.bias is not None,
+                padding_mode=conv.padding_mode,
+            )
+            new_conv.to(device=device, dtype=conv.weight.dtype)
+            rebuilt.append(new_conv)
+        detect.m = nn.ModuleList(rebuilt)
+        detect.grid = [torch.empty(0, device=device) for _ in range(detect.nl)]
+        detect.anchor_grid = [torch.empty(0, device=device) for _ in range(detect.nl)]
+        if hasattr(model, "_initialize_biases"):
+            model._initialize_biases()
+
+    model.names = list(class_names)
+    if hasattr(model, "yaml") and isinstance(model.yaml, dict):
+        model.yaml["nc"] = target_nc
+        model.yaml["names"] = list(class_names)
+    model.nc = target_nc
+    return model
+
+
 def _build_model_for_train(config, device):
     model_cfg = config.get("model", {})
     weights = model_cfg.get("weights")
@@ -163,6 +232,9 @@ def _build_model_for_train(config, device):
                     module.reset_parameters()
                 except Exception:
                     continue
+
+    class_names = _resolve_train_class_names(config)
+    model = _rebuild_detect_head_for_class_count(model, class_names, device)
 
     hyp = {
         "box": float(config.get("loss", {}).get("box", 0.05)),
@@ -337,6 +409,8 @@ def run_train(config, run_dir):
         "seed": None if seed is None else int(seed),
         "device": str(device),
         "finetune": bool(use_finetune),
+        "num_classes": int(getattr(model, "nc", getattr(model.model[-1], "nc", 0))),
+        "class_names": list(getattr(model, "names", [])),
         "history": history,
         "best_metric": float(best_metric),
         "weights": {
