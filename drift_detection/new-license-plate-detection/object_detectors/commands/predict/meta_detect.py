@@ -28,18 +28,6 @@ def run_meta_detect_csv(config, run_dir):
             return float(value.detach().cpu().item())
         return float(value)
 
-    def _iou_1vN(box: torch.Tensor, boxes: torch.Tensor):
-        if boxes.numel() == 0:
-            return torch.zeros((0,), dtype=torch.float32, device=box.device)
-        lt = torch.max(box[:2], boxes[:, :2])
-        rb = torch.min(box[2:], boxes[:, 2:])
-        wh = (rb - lt).clamp(min=0)
-        inter = wh[:, 0] * wh[:, 1]
-        area1 = (box[2] - box[0]).clamp(min=0) * (box[3] - box[1]).clamp(min=0)
-        area2 = (boxes[:, 2] - boxes[:, 0]).clamp(min=0) * (boxes[:, 3] - boxes[:, 1]).clamp(min=0)
-        union = area1 + area2 - inter
-        return inter / union.clamp(min=1e-12)
-
     def _boxes_to_original_xyxy(boxes: torch.Tensor, ratio, pad, image_tensor: torch.Tensor):
         if boxes.numel() == 0:
             return boxes.clone()
@@ -130,34 +118,28 @@ def run_meta_detect_csv(config, run_dir):
                     for cls_id in pred_class_ids
                 ]
 
-                raw = raw_prediction[sample_idx].detach().float()
-                if raw.numel() == 0:
+                pred_img = raw_prediction[sample_idx].float()
+                if pred_img.numel() == 0:
                     continue
 
                 raw_xyxy_orig = None
-                for pred_idx, (box, score, pred_class_name) in enumerate(zip(pred_boxes, pred_scores, pred_class_names)):
+                for pred_idx, (box, pred_score, pred_class_name) in enumerate(zip(pred_boxes, pred_scores, pred_class_names)):
                     raw_pred_idx = int(raw_keep_b[pred_idx].detach().cpu().item()) if pred_idx < int(raw_keep_b.shape[0]) else pred_idx
-                    if raw_pred_idx >= int(raw.shape[0]):
+                    if raw_pred_idx >= int(pred_img.shape[0]):
                         continue
 
                     t_candidate = timing.start()
                     with torch.no_grad():
-                        pseudo_row = raw[raw_pred_idx].detach()
-                        raw_xyxy = _xywh_to_xyxy_tensor(raw[:, :4].detach())
-                        pseudo_box_xyxy = _xywh_to_xyxy_tensor(pseudo_row[:4].view(1, 4)).view(4)
-                        ious = _iou_1vN(pseudo_box_xyxy, raw_xyxy)
-                        raw_cls = raw[:, 5:] if raw.shape[1] > 5 else torch.zeros((raw.shape[0], 0), device=device)
-                        if raw_cls.numel() > 0:
-                            pseudo_cls = int(torch.argmax(pseudo_row[5:]).item())
-                            pred_cls = torch.argmax(raw_cls.detach(), dim=1)
-                            cls_max = raw_cls.detach().max(dim=1).values
-                        else:
-                            pseudo_cls = 0
-                            pred_cls = torch.zeros((raw.shape[0],), dtype=torch.long, device=device)
-                            cls_max = torch.ones((raw.shape[0],), dtype=raw.dtype, device=device)
-                        raw_obj = raw[:, 4].detach() if raw.shape[1] > 4 else torch.ones((raw.shape[0],), dtype=raw.dtype, device=device)
-                        raw_score = raw_obj * cls_max
-                        cand_mask = (ious >= float(iou_threshold)) & (pred_cls == pseudo_cls) & (raw_score >= float(score_threshold))
+                        pseudo_row = pred_img[raw_pred_idx].detach()
+                        pseudo_cls = int(torch.argmax(pseudo_row[5:]).item())
+                        raw_xyxy = _xywh_to_xyxy_tensor(pred_img[:, :4].detach())
+                        pseudo_box_xyxy = _xywh_to_xyxy_tensor(pseudo_row[:4].view(1, 4))
+                        ious = _box_iou_1vN_tensor(pseudo_box_xyxy, raw_xyxy)
+                        pred_cls = torch.argmax(pred_img[:, 5:].detach(), dim=1)
+                        obj = pred_img[:, 4].detach()
+                        cls_max = pred_img[:, 5:].detach().max(dim=1).values if pred_img.shape[1] > 5 else torch.ones_like(obj)
+                        score = obj * cls_max
+                        cand_mask = (ious >= float(iou_threshold)) & (pred_cls == pseudo_cls) & (score >= float(score_threshold))
                         if not bool(cand_mask.any()):
                             cand_mask = torch.zeros_like(pred_cls, dtype=torch.bool)
                             cand_mask[raw_pred_idx] = True
@@ -169,8 +151,9 @@ def run_meta_detect_csv(config, run_dir):
                     fbox = torch.tensor(box, dtype=torch.float32, device=device)
                     fbox_orig = _boxes_to_original_xyxy(fbox.view(1, 4), ratios[sample_idx], pads[sample_idx], image_list[sample_idx]).view(4)
                     cand_boxes = raw_xyxy_orig[cand_mask]
-                    cand_scores = raw_score[cand_mask]
+                    cand_scores = score[cand_mask]
                     cand_ious = ious[cand_mask]
+                    raw_cls = pred_img[:, 5:] if pred_img.shape[1] > 5 else torch.zeros((pred_img.shape[0], 0), device=device)
                     if 0 <= raw_pred_idx < int(raw_cls.shape[0]) and raw_cls.numel() > 0:
                         pred_probs = raw_cls[raw_pred_idx].detach().float()
                     else:
@@ -238,7 +221,7 @@ def run_meta_detect_csv(config, run_dir):
                             "ymin": fy1,
                             "xmax": fx2,
                             "ymax": fy2,
-                            "score": float(score),
+                            "score": float(pred_score),
                             "pred_class": pred_class_name,
                             **prob_values,
                             **feature_row,
