@@ -1,7 +1,16 @@
-import argparse
 import json
 from pathlib import Path
 
+
+RUN_PATHS = [
+    r"object_detectors\runs\05-12-2026_19;06_class_probability",
+    r"object_detectors\runs\05-12-2026_19;06_energy",
+]
+
+OUTPUT_PATH = r"visualizers\uncertainty_timing_per_prediction.png"
+METRIC = "mean_stage_ms_per_prediction"
+TITLE = "Uncertainty Timing Comparison"
+FIGSIZE = (10.0, 5.5)
 
 DEFAULT_STAGE_ORDER = [
     "detector_inference_sec",
@@ -40,6 +49,18 @@ def find_timing_jsons(paths):
         elif path.is_dir():
             timing_paths.extend(path.rglob("*_timing.json"))
     return sorted(set(p.resolve() for p in timing_paths))
+
+
+def find_timing_jsons_in_config_order(paths):
+    timing_paths = []
+    seen = set()
+    for raw_path in paths:
+        for timing_path in find_timing_jsons([raw_path]):
+            if timing_path in seen:
+                continue
+            seen.add(timing_path)
+            timing_paths.append(timing_path)
+    return timing_paths
 
 
 def load_timing_record(path, metric):
@@ -130,66 +151,18 @@ def plot_stacked_timing(records, output_path, title, figsize):
     return output_path
 
 
-def parse_args():
-    parser = argparse.ArgumentParser(
-        description="Plot stacked uncertainty timing bars from object_detectors timing JSON files."
-    )
-    parser.add_argument(
-        "paths",
-        nargs="*",
-        default=["object_detectors/runs"],
-        help="Run directories, timing directories, or *_timing.json files. Defaults to object_detectors/runs.",
-    )
-    parser.add_argument(
-        "--output",
-        default="visualizers/uncertainty_timing_per_prediction.png",
-        help="Output image path.",
-    )
-    parser.add_argument(
-        "--metric",
-        default="mean_stage_ms_per_prediction",
-        choices=["mean_stage_ms_per_prediction", "mean_stage_ms_per_image"],
-        help="Timing summary metric to plot.",
-    )
-    parser.add_argument(
-        "--title",
-        default="Uncertainty Timing Comparison",
-        help="Figure title.",
-    )
-    parser.add_argument(
-        "--figsize",
-        nargs=2,
-        type=float,
-        default=(10.0, 5.5),
-        metavar=("WIDTH", "HEIGHT"),
-        help="Minimum figure size in inches.",
-    )
-    parser.add_argument(
-        "--uncertainties",
-        nargs="*",
-        default=None,
-        help="Optional uncertainty names to include, e.g. meta_detect layer_grad.",
-    )
-    return parser.parse_args()
-
-
 def main():
-    args = parse_args()
-    timing_paths = find_timing_jsons(args.paths)
+    timing_paths = find_timing_jsons_in_config_order(RUN_PATHS)
     if not timing_paths:
-        searched = ", ".join(str(Path(p)) for p in args.paths)
+        searched = ", ".join(str(Path(p)) for p in RUN_PATHS)
         raise FileNotFoundError(f"No *_timing.json files found under: {searched}")
 
-    records = [load_timing_record(path, args.metric) for path in timing_paths]
-    if args.uncertainties:
-        allowed = {name.strip() for name in args.uncertainties}
-        records = [record for record in records if record["uncertainty"] in allowed]
-    records = sorted(records, key=lambda r: (r["uncertainty"], str(r["run_dir"])))
+    records = [load_timing_record(path, METRIC) for path in timing_paths]
 
     if not records:
-        raise ValueError("No timing records remain after filtering.")
+        raise ValueError("No timing records to plot.")
 
-    output_path = plot_stacked_timing(records, args.output, args.title, tuple(args.figsize))
+    output_path = plot_stacked_timing(records, OUTPUT_PATH, TITLE, FIGSIZE)
     print(f"Saved timing plot: {output_path}")
 
 
