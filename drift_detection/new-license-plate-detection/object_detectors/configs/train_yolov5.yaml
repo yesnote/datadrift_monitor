@@ -22,7 +22,7 @@ dataset:
     val_annotation_file: instances_val2017.json
   
   voc:
-    root: D:/DataDrift/datasets/VOC/VOCdevkit/VOC2012
+    root: D:/SEONGJIN/datasets/VOC/VOCdevkit/VOC2012
     train_split: train
     val_split: val
   
