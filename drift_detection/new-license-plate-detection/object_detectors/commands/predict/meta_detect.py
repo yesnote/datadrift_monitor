@@ -136,7 +136,6 @@ def run_meta_detect_csv(config, run_dir):
                     candidate_search_sec += timing.elapsed(t_candidate)
                     continue
                 raw_xyxy = _xywh_to_xyxy_tensor(raw[:, :4])
-                raw_xyxy_orig = _boxes_to_original_xyxy(raw_xyxy, ratios[sample_idx], pads[sample_idx], image_list[sample_idx])
                 raw_obj = raw[:, 4] if raw.shape[1] > 4 else torch.ones((raw.shape[0],), device=device)
                 raw_cls = raw[:, 5:] if raw.shape[1] > 5 else torch.zeros((raw.shape[0], 0), device=device)
                 if raw_cls.numel() > 0:
@@ -147,16 +146,22 @@ def run_meta_detect_csv(config, run_dir):
                 raw_score = raw_obj * raw_cls_max
                 candidate_search_sec += timing.elapsed(t_candidate)
 
+                raw_xyxy_orig = None
                 for pred_idx, (box, score, pred_class_name) in enumerate(zip(pred_boxes, pred_scores, pred_class_names)):
-                    t_candidate = timing.start()
-                    fbox = torch.tensor(box, dtype=torch.float32, device=device)
-                    fbox_orig = _boxes_to_original_xyxy(fbox.view(1, 4), ratios[sample_idx], pads[sample_idx], image_list[sample_idx]).view(4)
                     raw_pred_idx = int(raw_keep_b[pred_idx].detach().cpu().item()) if pred_idx < int(raw_keep_b.shape[0]) else pred_idx
                     cls_idx = int(pred_class_ids[pred_idx]) if pred_idx < len(pred_class_ids) else -1
+
+                    t_candidate = timing.start()
+                    fbox = torch.tensor(box, dtype=torch.float32, device=device)
                     ious = _iou_1vN(fbox, raw_xyxy)
                     class_mask = (raw_cls_idx == cls_idx) if cls_idx >= 0 else torch.ones_like(raw_score, dtype=torch.bool)
                     cand_mask = class_mask & (raw_score > score_threshold) & (ious > iou_threshold)
+                    candidate_search_sec += timing.elapsed(t_candidate)
 
+                    t_feature = timing.start()
+                    if raw_xyxy_orig is None:
+                        raw_xyxy_orig = _boxes_to_original_xyxy(raw_xyxy, ratios[sample_idx], pads[sample_idx], image_list[sample_idx])
+                    fbox_orig = _boxes_to_original_xyxy(fbox.view(1, 4), ratios[sample_idx], pads[sample_idx], image_list[sample_idx]).view(4)
                     cand_boxes = raw_xyxy_orig[cand_mask]
                     cand_scores = raw_score[cand_mask]
                     cand_ious = ious[cand_mask]
@@ -164,9 +169,6 @@ def run_meta_detect_csv(config, run_dir):
                         cand_boxes = fbox_orig.view(1, 4)
                         cand_scores = torch.tensor([float(score)], dtype=torch.float32, device=device)
                         cand_ious = torch.zeros((1,), dtype=torch.float32, device=device)
-                    candidate_search_sec += timing.elapsed(t_candidate)
-
-                    t_feature = timing.start()
                     if 0 <= raw_pred_idx < int(raw_cls.shape[0]) and raw_cls.numel() > 0:
                         pred_probs = raw_cls[raw_pred_idx].detach().float()
                     else:
