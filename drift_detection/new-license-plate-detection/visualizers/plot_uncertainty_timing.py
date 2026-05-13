@@ -13,7 +13,7 @@ RUN_PATHS = [
     r"object_detectors/runs/05-13-2026_08;23_layer_grad_cand_target_loss",
 ]
 
-OUTPUT_ROOT = r"runs"
+OUTPUT_ROOT = Path(__file__).resolve().parent / "runs"
 OUTPUT_FILENAME = "uncertainty_timing_per_prediction.png"
 METRIC = "mean_stage_ms_per_prediction"
 TITLE = "Uncertainty Timing Comparison"
