@@ -108,7 +108,7 @@ def broken_axis_limits(totals):
     if len(positive) < 2:
         return None
     largest, second = positive[0], positive[1]
-    if second <= 0.0 or largest < second * 2.5:
+    if second <= 0.0 or largest < second * 2.0:
         return None
     lower_top = second * 1.25
     upper_bottom = largest * 0.88
@@ -137,7 +137,9 @@ def plot_stacked_timing(records, output_path, title, figsize):
     x = list(range(len(records)))
 
     fig_width = max(figsize[0], 1.1 * len(records) + 3.0)
-    totals = [sum(record["values"].get(stage, 0.0) for stage in stages) for record in records]
+    totals = [
+        sum(record["values"].get(stage, 0.0) for stage in stages) for record in records
+    ]
     break_limits = broken_axis_limits(totals)
 
     if break_limits is None:
@@ -197,7 +199,9 @@ def plot_stacked_timing(records, output_path, title, figsize):
 
         for idx, total in enumerate(totals):
             target_ax = ax_top if total > upper_bottom else ax_bottom
-            target_ax.text(idx, total, f"{total:.2f}", ha="center", va="bottom", fontsize=8)
+            target_ax.text(
+                idx, total, f"{total:.2f}", ha="center", va="bottom", fontsize=8
+            )
 
         ax_top.set_title(title)
         ax_bottom.set_ylabel("Mean stage time per prediction (ms)")
@@ -208,8 +212,24 @@ def plot_stacked_timing(records, output_path, title, figsize):
 
         # Wave-like break markers on both sides of the split axis.
         for xpos, ha in [(-0.015, "right"), (1.015, "left")]:
-            ax_top.text(xpos, -0.06, "≈", transform=ax_top.transAxes, ha=ha, va="center", fontsize=16)
-            ax_bottom.text(xpos, 1.02, "≈", transform=ax_bottom.transAxes, ha=ha, va="center", fontsize=16)
+            ax_top.text(
+                xpos,
+                -0.06,
+                "≈",
+                transform=ax_top.transAxes,
+                ha=ha,
+                va="center",
+                fontsize=16,
+            )
+            ax_bottom.text(
+                xpos,
+                1.02,
+                "≈",
+                transform=ax_bottom.transAxes,
+                ha=ha,
+                va="center",
+                fontsize=16,
+            )
 
     fig.tight_layout()
 
