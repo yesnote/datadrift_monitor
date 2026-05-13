@@ -125,6 +125,7 @@ def plot_stacked_timing(records, output_path, title, figsize):
 
         matplotlib.use("Agg")
         import matplotlib.pyplot as plt
+        from matplotlib.ticker import MultipleLocator
     except ModuleNotFoundError as exc:
         raise ModuleNotFoundError(
             "matplotlib is required to draw timing plots. Install it in the environment used for visualization."
@@ -173,10 +174,11 @@ def plot_stacked_timing(records, output_path, title, figsize):
             ax.legend(loc="upper left", bbox_to_anchor=(1.01, 1.0), frameon=False)
         return bottoms
 
-    def draw_axis_break_marks(ax_bottom):
-        kwargs = dict(transform=ax_bottom.transAxes, color="#333333", clip_on=False, linewidth=1.4)
-        ax_bottom.plot((-0.012, 0.012), (0.985, 1.015), **kwargs)
-        ax_bottom.plot((0.014, 0.038), (0.985, 1.015), **kwargs)
+    def draw_axis_break_marks(ax_bottom, ax_top):
+        d = 0.018
+        kwargs = dict(color="#333333", clip_on=False, linewidth=1.5)
+        ax_top.plot((-d, d), (-d, d), transform=ax_top.transAxes, **kwargs)
+        ax_bottom.plot((-d, d), (1.0 - d, 1.0 + d), transform=ax_bottom.transAxes, **kwargs)
 
     if break_limits is None:
         ax = axes[0]
@@ -187,6 +189,7 @@ def plot_stacked_timing(records, output_path, title, figsize):
         ax.set_ylabel("Mean stage time per prediction (ms)")
         ax.set_xticks(x)
         ax.set_xticklabels(labels, rotation=35, ha="right")
+        ax.yaxis.set_major_locator(MultipleLocator(10.0))
         ax.grid(axis="y", linestyle="--", linewidth=0.6, alpha=0.35)
     else:
         lower_top, upper_bottom, upper_top = break_limits
@@ -210,9 +213,10 @@ def plot_stacked_timing(records, output_path, title, figsize):
         ax_bottom.set_xticks(x)
         ax_bottom.set_xticklabels(labels, rotation=35, ha="right")
         for ax in axes:
+            ax.yaxis.set_major_locator(MultipleLocator(10.0))
             ax.grid(axis="y", linestyle="--", linewidth=0.6, alpha=0.35)
 
-        draw_axis_break_marks(ax_bottom)
+        draw_axis_break_marks(ax_bottom, ax_top)
 
     fig.tight_layout(rect=(0.0, 0.0, 0.82, 1.0))
     output_path = Path(output_path)
