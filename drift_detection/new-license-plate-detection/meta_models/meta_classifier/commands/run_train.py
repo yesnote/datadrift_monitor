@@ -225,6 +225,46 @@ def normalize_input_roots(raw_value: Any) -> list[str]:
     return []
 
 
+def normalize_feature_include(raw_value: Any) -> list[str]:
+    if raw_value is None:
+        return []
+    if isinstance(raw_value, str):
+        value = raw_value.strip()
+        return [value] if value else []
+    if isinstance(raw_value, (list, tuple)):
+        out: list[str] = []
+        for item in raw_value:
+            if item is None:
+                continue
+            text = str(item).strip()
+            if text:
+                out.append(text)
+        return out
+    return []
+
+
+def filter_feature_columns(feature_columns: list[str], include_names: list[str]) -> list[str]:
+    if not include_names:
+        return feature_columns
+    include_set = {str(name).strip() for name in include_names if str(name).strip()}
+    selected: list[str] = []
+    for col in feature_columns:
+        name = str(col)
+        if name in include_set:
+            selected.append(col)
+            continue
+        if "class_probability_vector" in include_set and name.startswith("prob_") and name[5:].isdigit():
+            selected.append(col)
+    missing = sorted(
+        name
+        for name in include_set
+        if name != "class_probability_vector" and name not in set(feature_columns)
+    )
+    if missing:
+        warnings.warn(f"Requested feature_include entries were not found and will be ignored: {missing}")
+    return selected
+
+
 def load_training_dataframe(dataset_cfg: dict[str, Any]) -> tuple[pd.DataFrame, str, list[str], dict[str, Any]]:
     input_root_raw_list = normalize_input_roots(dataset_cfg.get("input_root", ""))
     gt_root_raw = str(dataset_cfg.get("gt_root", "")).strip()
@@ -233,6 +273,7 @@ def load_training_dataframe(dataset_cfg: dict[str, Any]) -> tuple[pd.DataFrame, 
 
     input_roots = [resolve_path_value(v) for v in input_root_raw_list]
     gt_root = resolve_path_value(gt_root_raw)
+    feature_include = normalize_feature_include(dataset_cfg.get("feature_include", []))
     input_infos = [parse_root_info(p) for p in input_roots]
     input_groups = {group for group, _cue, _target in input_infos}
     if len(input_groups) != 1:
@@ -358,6 +399,7 @@ def load_training_dataframe(dataset_cfg: dict[str, Any]) -> tuple[pd.DataFrame, 
         feature_columns = [c for c in feature_df.columns if c not in meta_columns]
         if input_cue in {"mc_dropout", "ensemble"}:
             feature_columns = [c for c in feature_columns if str(c).endswith("_std")]
+        feature_columns = filter_feature_columns(feature_columns, feature_include)
         if not feature_columns:
             raise ValueError(f"No input feature columns found in {input_csv}")
         if input_cue == "layer_grad":
@@ -415,6 +457,7 @@ def load_training_dataframe(dataset_cfg: dict[str, Any]) -> tuple[pd.DataFrame, 
         "model_group": input_group,
         "input_uncertainty": input_uncertainties,
         "input_target": input_targets,
+        "feature_include": feature_include,
     }
     return merged, label_col, input_features, root_info
 
