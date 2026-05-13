@@ -103,6 +103,21 @@ def ordered_stages(records):
     return seen
 
 
+def broken_axis_limits(totals):
+    positive = sorted([float(v) for v in totals if float(v) > 0.0], reverse=True)
+    if len(positive) < 2:
+        return None
+    largest, second = positive[0], positive[1]
+    if second <= 0.0 or largest < second * 2.5:
+        return None
+    lower_top = second * 1.25
+    upper_bottom = largest * 0.88
+    upper_top = largest * 1.08
+    if lower_top >= upper_bottom:
+        return None
+    return lower_top, upper_bottom, upper_top
+
+
 def plot_stacked_timing(records, output_path, title, figsize):
     try:
         import matplotlib
@@ -122,33 +137,80 @@ def plot_stacked_timing(records, output_path, title, figsize):
     x = list(range(len(records)))
 
     fig_width = max(figsize[0], 1.1 * len(records) + 3.0)
-    fig, ax = plt.subplots(figsize=(fig_width, figsize[1]))
-    bottoms = [0.0 for _ in records]
+    totals = [sum(record["values"].get(stage, 0.0) for stage in stages) for record in records]
+    break_limits = broken_axis_limits(totals)
 
-    for stage in stages:
-        heights = [record["values"].get(stage, 0.0) for record in records]
-        if not any(value > 0.0 for value in heights):
-            continue
-        ax.bar(
-            x,
-            heights,
-            bottom=bottoms,
-            label=STAGE_LABELS.get(stage, stage),
-            color=STAGE_COLORS.get(stage),
-            edgecolor="white",
-            linewidth=0.6,
+    if break_limits is None:
+        fig, ax = plt.subplots(figsize=(fig_width, figsize[1]))
+        axes = [ax]
+    else:
+        fig, (ax_top, ax_bottom) = plt.subplots(
+            2,
+            1,
+            sharex=True,
+            figsize=(fig_width, figsize[1] + 1.0),
+            gridspec_kw={"height_ratios": [1.0, 3.0], "hspace": 0.06},
         )
-        bottoms = [bottom + height for bottom, height in zip(bottoms, heights)]
+        axes = [ax_top, ax_bottom]
 
-    for idx, total in enumerate(bottoms):
-        ax.text(idx, total, f"{total:.2f}", ha="center", va="bottom", fontsize=8)
+    def _draw_bars(ax, show_legend=False):
+        bottoms = [0.0 for _ in records]
+        for stage in stages:
+            heights = [record["values"].get(stage, 0.0) for record in records]
+            if not any(value > 0.0 for value in heights):
+                continue
+            ax.bar(
+                x,
+                heights,
+                bottom=bottoms,
+                label=STAGE_LABELS.get(stage, stage),
+                color=STAGE_COLORS.get(stage),
+                edgecolor="white",
+                linewidth=0.6,
+            )
+            bottoms[:] = [bottom + height for bottom, height in zip(bottoms, heights)]
+        if show_legend:
+            ax.legend(loc="upper left", bbox_to_anchor=(1.01, 1.0), frameon=False)
+        return bottoms
 
-    ax.set_title(title)
-    ax.set_ylabel("Mean stage time per prediction (ms)")
-    ax.set_xticks(x)
-    ax.set_xticklabels(labels, rotation=35, ha="right")
-    ax.grid(axis="y", linestyle="--", linewidth=0.6, alpha=0.35)
-    ax.legend(loc="upper left", bbox_to_anchor=(1.01, 1.0), frameon=False)
+    if break_limits is None:
+        ax = axes[0]
+        bottoms = _draw_bars(ax, show_legend=True)
+        for idx, total in enumerate(bottoms):
+            ax.text(idx, total, f"{total:.2f}", ha="center", va="bottom", fontsize=8)
+        ax.set_title(title)
+        ax.set_ylabel("Mean stage time per prediction (ms)")
+        ax.set_xticks(x)
+        ax.set_xticklabels(labels, rotation=35, ha="right")
+        ax.grid(axis="y", linestyle="--", linewidth=0.6, alpha=0.35)
+    else:
+        lower_top, upper_bottom, upper_top = break_limits
+        ax_top, ax_bottom = axes
+        _draw_bars(ax_top, show_legend=True)
+        _draw_bars(ax_bottom, show_legend=False)
+        ax_bottom.set_ylim(0.0, lower_top)
+        ax_top.set_ylim(upper_bottom, upper_top)
+        ax_top.spines["bottom"].set_visible(False)
+        ax_bottom.spines["top"].set_visible(False)
+        ax_top.tick_params(labeltop=False, bottom=False)
+        ax_bottom.xaxis.tick_bottom()
+
+        for idx, total in enumerate(totals):
+            target_ax = ax_top if total > upper_bottom else ax_bottom
+            target_ax.text(idx, total, f"{total:.2f}", ha="center", va="bottom", fontsize=8)
+
+        ax_top.set_title(title)
+        ax_bottom.set_ylabel("Mean stage time per prediction (ms)")
+        ax_bottom.set_xticks(x)
+        ax_bottom.set_xticklabels(labels, rotation=35, ha="right")
+        for ax in axes:
+            ax.grid(axis="y", linestyle="--", linewidth=0.6, alpha=0.35)
+
+        # Wave-like break markers on both sides of the split axis.
+        for xpos, ha in [(-0.015, "right"), (1.015, "left")]:
+            ax_top.text(xpos, -0.06, "≈", transform=ax_top.transAxes, ha=ha, va="center", fontsize=16)
+            ax_bottom.text(xpos, 1.02, "≈", transform=ax_bottom.transAxes, ha=ha, va="center", fontsize=16)
+
     fig.tight_layout()
 
     output_path = Path(output_path)
