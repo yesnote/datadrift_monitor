@@ -1,13 +1,18 @@
 import json
 from pathlib import Path
 
-
 RUN_PATHS = [
-    r"object_detectors\runs\05-12-2026_19;06_class_probability",
-    r"object_detectors\runs\05-12-2026_19;06_energy",
+    r"object_detectors/runs/05-12-2026_19;06_score",
+    r"object_detectors/runs/05-12-2026_19;06_class_probability",
+    r"object_detectors/runs/05-12-2026_19;06_entropy",
+    r"object_detectors/runs/05-12-2026_19;06_energy",
+    r"object_detectors/runs/05-12-2026_22;18_mc_dropout",
+    r"object_detectors/runs/05-12-2026_20;49_ensemble",
+    r"object_detectors/runs/05-13-2026_08;45_meta_detect",
+    r"object_detectors/runs/05-13-2026_08;23_layer_grad_cand_target_loss",
 ]
 
-OUTPUT_PATH = r"visualizers\uncertainty_timing_per_prediction.png"
+OUTPUT_PATH = r"visualizers/uncertainty_timing_per_prediction.png"
 METRIC = "mean_stage_ms_per_prediction"
 TITLE = "Uncertainty Timing Comparison"
 FIGSIZE = (10.0, 5.5)
