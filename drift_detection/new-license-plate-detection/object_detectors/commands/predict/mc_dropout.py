@@ -112,11 +112,9 @@ def run_mc_dropout_csv(config, run_dir):
                 )
             detector_inference_sec += timing.elapsed(t_detector)
 
-            feat_mean = None
-            feat_m2 = None
+            feature_runs = []
             n_candidates = None
             n_classes = None
-            run_count = 0
             mc_handles = enable_forced_mc_dropout_on_yolov5_head(detector.model, dropout_rate)
 
             try:
@@ -145,17 +143,11 @@ def run_mc_dropout_csv(config, run_dir):
                         if n_candidates is None:
                             n_candidates = int(run_features.shape[1])
                             n_classes = int(run_features.shape[2] - 5)
-                            feat_dim = 5 + n_classes
-                            feat_mean = torch.zeros((batch_size, n_candidates, feat_dim), device=device)
-                            feat_m2 = torch.zeros((batch_size, n_candidates, feat_dim), device=device)
 
                         if int(run_features.shape[1]) != n_candidates:
                             raise ValueError("Raw candidate count changed across MC runs; expected fixed pre-NMS candidates.")
 
-                        run_count += 1
-                        delta = run_features - feat_mean
-                        feat_mean = feat_mean + delta / run_count
-                        feat_m2 = feat_m2 + delta * (run_features - feat_mean)
+                        feature_runs.append(run_features.detach())
                         feature_compute_sec += timing.elapsed(t_feature)
             finally:
                 for h in mc_handles:
@@ -166,8 +158,11 @@ def run_mc_dropout_csv(config, run_dir):
                 continue
 
             t_feature = timing.start()
-            feat_std = torch.sqrt(torch.clamp(feat_m2 / max(run_count, 1), min=0.0))
+            runs_tensor = torch.stack(feature_runs, dim=0)  # [R, B, N, F]
+            feat_mean = runs_tensor.mean(dim=0)
+            feat_std = runs_tensor.std(dim=0, unbiased=False)
             feature_compute_sec += timing.elapsed(t_feature)
+            del runs_tensor, feature_runs
             batch_rows = []
             batch_items = 0
 
