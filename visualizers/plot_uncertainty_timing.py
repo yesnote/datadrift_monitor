@@ -19,7 +19,7 @@ OUTPUT_ROOT = Path(__file__).resolve().parent / "runs"
 OUTPUT_FILENAME = "uncertainty_timing_per_prediction.png"
 METRIC = "mean_stage_ms_per_prediction"
 TITLE = "Uncertainty Timing Comparison"
-FIGSIZE = (10.0, 4.6)
+FIGSIZE = (10.0, 4.0)
 
 DEFAULT_STAGE_ORDER = [
     "detector_inference_sec",
@@ -137,7 +137,9 @@ def plot_stacked_timing(records, output_path, title, figsize):
     stages = ordered_stages(records)
     labels = [record["label"] for record in records]
     x = list(range(len(records)))
-    totals = [sum(record["values"].get(stage, 0.0) for stage in stages) for record in records]
+    totals = [
+        sum(record["values"].get(stage, 0.0) for stage in stages) for record in records
+    ]
     break_limits = broken_axis_limits(totals)
 
     fig_width = max(figsize[0], 1.1 * len(records) + 3.0)
@@ -180,9 +182,17 @@ def plot_stacked_timing(records, output_path, title, figsize):
         x0 = bottom_box.x0
         dx = 0.012
         dy = 0.012
-        kwargs = dict(transform=fig.transFigure, color="#333333", clip_on=False, linewidth=1.5)
-        fig.lines.append(plt.Line2D([x0 - dx, x0 + dx], [top_box.y0 - dy, top_box.y0 + dy], **kwargs))
-        fig.lines.append(plt.Line2D([x0 - dx, x0 + dx], [bottom_box.y1 - dy, bottom_box.y1 + dy], **kwargs))
+        kwargs = dict(
+            transform=fig.transFigure, color="#333333", clip_on=False, linewidth=1.5
+        )
+        fig.lines.append(
+            plt.Line2D([x0 - dx, x0 + dx], [top_box.y0 - dy, top_box.y0 + dy], **kwargs)
+        )
+        fig.lines.append(
+            plt.Line2D(
+                [x0 - dx, x0 + dx], [bottom_box.y1 - dy, bottom_box.y1 + dy], **kwargs
+            )
+        )
 
     if break_limits is None:
         ax = axes[0]
@@ -210,7 +220,9 @@ def plot_stacked_timing(records, output_path, title, figsize):
 
         for idx, total in enumerate(totals):
             target_ax = ax_top if total > upper_bottom else ax_bottom
-            target_ax.text(idx, total, f"{total:.2f}", ha="center", va="bottom", fontsize=8)
+            target_ax.text(
+                idx, total, f"{total:.2f}", ha="center", va="bottom", fontsize=8
+            )
 
         ax_top.set_title(title)
         ax_bottom.set_ylabel("Mean stage time per prediction (ms)")
