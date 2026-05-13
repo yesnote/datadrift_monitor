@@ -173,21 +173,14 @@ def plot_stacked_timing(records, output_path, title, figsize):
             ax.legend(loc="upper left", bbox_to_anchor=(1.01, 1.0), frameon=False)
         return bottoms
 
-    def draw_bar_break_marks(ax_bottom, ax_top, lower_top, upper_bottom, upper_top):
-        break_indices = [idx for idx, total in enumerate(totals) if total > upper_bottom]
-        for idx in break_indices:
-            width = 0.72
-            xs = np.linspace(idx - width / 2.0, idx + width / 2.0, 96)
+    def draw_axis_break_marks(ax_bottom, ax_top):
+        kwargs = dict(transform=ax_top.transAxes, color="#333333", clip_on=False, linewidth=1.4)
+        ax_top.plot((-0.018, 0.018), (-0.035, 0.035), **kwargs)
+        ax_top.plot((0.035, 0.071), (-0.035, 0.035), **kwargs)
 
-            bottom_amp = max(lower_top * 0.018, 0.001)
-            bottom_wave = lower_top * 0.965 + bottom_amp * np.sin(np.linspace(0.0, 4.0 * np.pi, xs.size))
-            ax_bottom.plot(xs, bottom_wave, color="white", linewidth=7.0, solid_capstyle="round", zorder=20, clip_on=False)
-            ax_bottom.plot(xs, bottom_wave, color="#333333", linewidth=1.4, zorder=21, clip_on=False)
-
-            top_amp = max((upper_top - upper_bottom) * 0.04, 0.001)
-            top_wave = upper_bottom + top_amp * np.sin(np.linspace(0.0, 4.0 * np.pi, xs.size))
-            ax_top.plot(xs, top_wave, color="white", linewidth=7.0, solid_capstyle="round", zorder=20, clip_on=False)
-            ax_top.plot(xs, top_wave, color="#333333", linewidth=1.4, zorder=21, clip_on=False)
+        kwargs = dict(transform=ax_bottom.transAxes, color="#333333", clip_on=False, linewidth=1.4)
+        ax_bottom.plot((-0.018, 0.018), (0.965, 1.035), **kwargs)
+        ax_bottom.plot((0.035, 0.071), (0.965, 1.035), **kwargs)
 
     if break_limits is None:
         ax = axes[0]
@@ -223,7 +216,7 @@ def plot_stacked_timing(records, output_path, title, figsize):
         for ax in axes:
             ax.grid(axis="y", linestyle="--", linewidth=0.6, alpha=0.35)
 
-        draw_bar_break_marks(ax_bottom, ax_top, lower_top, upper_bottom, upper_top)
+        draw_axis_break_marks(ax_bottom, ax_top)
 
     fig.tight_layout(rect=(0.0, 0.0, 0.82, 1.0))
     output_path = Path(output_path)
