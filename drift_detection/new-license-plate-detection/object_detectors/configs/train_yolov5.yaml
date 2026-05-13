@@ -16,12 +16,10 @@ dataset:
     root: D:/SEONGJIN/datasets/COCO
     train_split: train2017
     val_split: val2017
-    test_split: test2017
     image_dir: images
     annotation_dir: annotations
     train_annotation_file: instances_train2017.json
     val_annotation_file: instances_val2017.json
-    test_annotation_file: instances_test2017.json
   
   voc:
     root: D:/DataDrift/datasets/VOC/VOCdevkit/VOC2012

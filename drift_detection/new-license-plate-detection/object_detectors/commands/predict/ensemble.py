@@ -14,8 +14,8 @@ def run_ensemble_csv(config, run_dir):
     if not save_csv:
         return
 
-    model_cfg = config.get("model", {})
-    weights_cfg = model_cfg.get("weights", [])
+    ensemble_cfg = config.get("output", {}).get("ensemble", {})
+    weights_cfg = ensemble_cfg.get("weights", [])
     if isinstance(weights_cfg, str):
         weight_paths = [weights_cfg]
     elif isinstance(weights_cfg, (list, tuple)):
@@ -23,7 +23,7 @@ def run_ensemble_csv(config, run_dir):
     else:
         weight_paths = []
     if not weight_paths:
-        raise ValueError("output.uncertainty='ensemble' requires model.weights to be a non-empty string/list.")
+        raise ValueError("output.uncertainty='ensemble' requires output.ensemble.weights to be a non-empty string/list.")
 
     # Keep loading deterministic and stable across repeated passes.
     dataset = build_dataset(config, split=split)

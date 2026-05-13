@@ -3,12 +3,6 @@ mode: predict
 model:
   type: yolov5
   weights: object_detectors/models/yolo/weights/yolov5x.pt
-  # weights:
-  #   - object_detectors/runs/train/04-14-2026_16;03_yolov5/weights/last.pt
-  #   - object_detectors/runs/train/04-15-2026_13;09_yolov5/weights/last.pt
-  #   - object_detectors/runs/train/04-16-2026_13;20_yolov5/weights/last.pt
-  #   - object_detectors/runs/train/04-27-2026_14;07_yolov5/weights/last.pt
-  #   - object_detectors/runs/train/04-28-2026_13;32_yolov5/weights/last.pt
   img_size: 640
   confidence_threshold: 0.25
   iou_threshold: 0.45
@@ -29,12 +23,10 @@ dataset:
     root: D:/SEONGJIN/datasets/COCO
     train_split: train2017
     val_split: val2017
-    test_split: test2017
     image_dir: images
     annotation_dir: annotations
     train_annotation_file: instances_train2017.json
     val_annotation_file: instances_val2017.json
-    test_annotation_file: instances_test2017.json
 
   voc:
     root: D:/DataDrift/datasets/VOC/VOCdevkit/VOC2012
@@ -90,6 +82,12 @@ output:
       enabled: false
 
   ensemble:
+    weights:
+      - object_detectors/runs/train/04-14-2026_16;03_yolov5/weights/last.pt
+      - object_detectors/runs/train/04-15-2026_13;09_yolov5/weights/last.pt
+      - object_detectors/runs/train/04-16-2026_13;20_yolov5/weights/last.pt
+      - object_detectors/runs/train/04-27-2026_14;07_yolov5/weights/last.pt
+      - object_detectors/runs/train/04-28-2026_13;32_yolov5/weights/last.pt
     save_csv:
       enabled: false
 
