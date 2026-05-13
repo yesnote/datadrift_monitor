@@ -2,7 +2,7 @@ mode: predict
 
 model:
   type: yolov5
-  weights: object_detectors/models/yolo/weights/yolov5x.pt
+  weights: object_detectors/models/yolo/weights/coco/yolov5x.pt
   img_size: 640
   confidence_threshold: 0.25
   iou_threshold: 0.45
@@ -83,11 +83,11 @@ output:
 
   ensemble:
     weights:
-      - object_detectors/runs/train/04-14-2026_16;03_yolov5/weights/last.pt
-      - object_detectors/runs/train/04-15-2026_13;09_yolov5/weights/last.pt
-      - object_detectors/runs/train/04-16-2026_13;20_yolov5/weights/last.pt
-      - object_detectors/runs/train/04-27-2026_14;07_yolov5/weights/last.pt
-      - object_detectors/runs/train/04-28-2026_13;32_yolov5/weights/last.pt
+      - object_detectors/runs/train/coco/04-14-2026_16;03_yolov5/weights/last.pt
+      - object_detectors/runs/train/coco/04-15-2026_13;09_yolov5/weights/last.pt
+      - object_detectors/runs/train/coco/04-16-2026_13;20_yolov5/weights/last.pt
+      - object_detectors/runs/train/coco/04-27-2026_14;07_yolov5/weights/last.pt
+      - object_detectors/runs/train/coco/04-28-2026_13;32_yolov5/weights/last.pt
     save_csv:
       enabled: false
 

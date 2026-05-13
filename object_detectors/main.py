@@ -44,6 +44,20 @@ def _resolve_run_dir(raw_path):
     return (REPO_ROOT / path).resolve()
 
 
+def _dataset_run_subdir(config):
+    raw = config.get("dataset", {}).get("used_dataset", "unknown")
+    if isinstance(raw, str):
+        names = [raw.strip().lower()]
+    elif isinstance(raw, (list, tuple)):
+        names = [str(v).strip().lower() for v in raw if str(v).strip()]
+    else:
+        names = []
+    if not names:
+        return "unknown"
+    safe_names = ["".join(ch if ch.isalnum() or ch in {"_", "-"} else "_" for ch in name) for name in names]
+    return "-".join(safe_names)
+
+
 def _normalize_config_paths(config):
     model_cfg = config.get("model", {})
     weight_path = model_cfg.get("weights")
@@ -149,7 +163,7 @@ def main():
             run_dir = _resolve_run_dir(args.run_dir)
         else:
             timestamp = datetime.now().strftime("%m-%d-%Y_%H;%M")
-            run_dir = (PROJECT_ROOT / "runs" / "train" / f"{timestamp}_yolov5").resolve()
+            run_dir = (PROJECT_ROOT / "runs" / "train" / _dataset_run_subdir(config) / f"{timestamp}_yolov5").resolve()
         run_dir.mkdir(parents=True, exist_ok=True)
         save_used_config(config_path, run_dir)
         run_train(config, run_dir)
