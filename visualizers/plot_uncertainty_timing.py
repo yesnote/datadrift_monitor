@@ -175,8 +175,8 @@ def plot_stacked_timing(records, output_path, title, figsize):
 
     def draw_axis_break_marks(ax_bottom):
         kwargs = dict(transform=ax_bottom.transAxes, color="#333333", clip_on=False, linewidth=1.4)
-        ax_bottom.plot((-0.018, 0.018), (0.965, 1.035), **kwargs)
-        ax_bottom.plot((0.035, 0.071), (0.965, 1.035), **kwargs)
+        ax_bottom.plot((-0.012, 0.012), (0.985, 1.015), **kwargs)
+        ax_bottom.plot((0.014, 0.038), (0.985, 1.015), **kwargs)
 
     if break_limits is None:
         ax = axes[0]
