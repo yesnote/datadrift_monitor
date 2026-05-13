@@ -126,6 +126,8 @@ def main() -> None:
     target_parts = [target for _group, _cue, target in parsed_inputs if target]
     input_cue = "+".join(cue_parts)
     input_target = "+".join(target_parts)
+    if mode == "train" and dataset_cfg.get("feature_include"):
+        input_target = f"{input_target}+key_features" if input_target else "key_features"
     gt_group, _gt_cue, _gt_target = parse_root_info(gt_root)
     if input_group != gt_group:
         msg = (
