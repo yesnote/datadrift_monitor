@@ -14,6 +14,7 @@ if str(PROJECT_ROOT) not in sys.path:
 from commands.run_train import run_train
 from commands.run_test import run_test
 from commands.run_compare import run_compare
+from commands.run_feature_ablation import run_feature_ablation
 from commands.utils.run_utils import create_run_dir, save_used_config
 
 
@@ -87,8 +88,8 @@ def main() -> None:
     config = load_config(config_path)
 
     mode = str(config.get("mode", "train")).strip().lower()
-    if mode not in {"train", "test", "compare"}:
-        raise ValueError(f"Unsupported mode: {mode}. Use 'train', 'test', or 'compare'.")
+    if mode not in {"train", "test", "compare", "feature_ablation"}:
+        raise ValueError(f"Unsupported mode: {mode}. Use 'train', 'test', 'compare', or 'feature_ablation'.")
 
     if mode == "compare":
         compare_cfg = config.get("compare", {})
@@ -134,11 +135,16 @@ def main() -> None:
         warnings.warn(msg)
         raise ValueError(msg)
 
-    cue_for_run = input_cue if mode == "train" else f"{input_cue}_test"
+    if mode == "feature_ablation":
+        cue_for_run = f"{input_cue}_feature_ablation"
+    else:
+        cue_for_run = input_cue if mode == "train" else f"{input_cue}_test"
     run_dir = create_run_dir(model_group=input_group, cue=cue_for_run, target_value=input_target).resolve()
     save_used_config(config_path, run_dir)
     if mode == "train":
         run_train(config, run_dir)
+    elif mode == "feature_ablation":
+        run_feature_ablation(config, run_dir)
     else:
         run_test(config, run_dir)
 
