@@ -166,6 +166,52 @@ def _plot_cumulative(results_df: pd.DataFrame, out_path: Path) -> None:
     plt.close(fig)
 
 
+def _plot_cumulative_delta(results_df: pd.DataFrame, out_path: Path) -> None:
+    if len(results_df) <= 1:
+        fig, ax = plt.subplots(figsize=(8.0, 5.5))
+        ax.text(0.5, 0.5, "Need at least two features for delta plot", ha="center", va="center")
+        ax.set_axis_off()
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        fig.savefig(out_path, dpi=180)
+        plt.close(fig)
+        return
+
+    df = results_df.copy().reset_index(drop=True)
+    df["delta_auroc"] = df["auroc_mean"].diff()
+    df["delta_ap"] = df["ap_mean"].diff()
+    df = df.iloc[1:].reset_index(drop=True)
+
+    x = np.arange(len(df))
+    fig_width = max(10.0, 0.22 * len(df) + 4.0)
+    fig, ax = plt.subplots(figsize=(fig_width, 5.5))
+    ax.axhline(0.0, color="gray", linestyle="--", linewidth=1.2)
+    ax.plot(x, df["delta_auroc"], label="Delta AUROC", color="#4C78A8", linewidth=1.8, marker="o", markersize=3)
+    ax.plot(x, df["delta_ap"], label="Delta AP", color="#E45756", linewidth=1.8, marker="o", markersize=3)
+
+    y_values = np.concatenate(
+        [
+            df["delta_auroc"].to_numpy(dtype=np.float64),
+            df["delta_ap"].to_numpy(dtype=np.float64),
+        ]
+    )
+    y_values = y_values[np.isfinite(y_values)]
+    if y_values.size:
+        y_abs = max(float(np.max(np.abs(y_values))), 0.01)
+        ax.set_ylim(-y_abs * 1.2, y_abs * 1.2)
+
+    ax.set_xlabel("Added feature")
+    ax.set_ylabel("Performance delta")
+    ax.set_title("Cumulative MetaDetect Feature Marginal Delta")
+    ax.set_xticks(x)
+    ax.set_xticklabels(df["added_feature"], rotation=90, fontsize=8)
+    ax.grid(axis="y", linestyle="--", alpha=0.35)
+    ax.legend(loc="best")
+    fig.tight_layout()
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(out_path, dpi=180)
+    plt.close(fig)
+
+
 def run_feature_ablation(config: dict[str, Any], run_dir: Path) -> Path:
     dataset_cfg = config["dataset"]
     model_cfg = config["model"]
@@ -219,6 +265,7 @@ def run_feature_ablation(config: dict[str, Any], run_dir: Path) -> Path:
 
     _plot_single_feature(single_df, plots_dir / "single_feature_performance.png")
     _plot_cumulative(cumulative_df, plots_dir / "cumulative_feature_performance.png")
+    _plot_cumulative_delta(cumulative_df, plots_dir / "cumulative_feature_delta_performance.png")
 
     metadata = {
         "input_root": root_info["input_root"],
