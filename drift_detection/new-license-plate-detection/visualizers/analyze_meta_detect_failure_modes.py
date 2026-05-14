@@ -10,10 +10,11 @@ from sklearn.model_selection import StratifiedKFold, cross_val_predict
 from sklearn.pipeline import make_pipeline
 from sklearn.preprocessing import StandardScaler
 
-
-META_DETECT_ROOT = r"object_detectors/runs/predict/coco/00-00-0000_00;00_meta_detect"
+META_DETECT_ROOT = r"object_detectors/runs/predict/coco/00-00-0000_00;00_meta_detect "
 GT_ROOT = r"object_detectors/runs/predict/coco/00-00-0000_00;00_gt"
-META_CLASSIFIER_RUN_ROOT = r"meta_models/meta_classifier/runs/test/coco/00-00-0000_00;00_meta_detect_test"
+META_CLASSIFIER_RUN_ROOT = (
+    r"meta_models/meta_classifier/runs/test/coco/00-00-0000_00;00_meta_detect_test"
+)
 OUTPUT_ROOT = Path(__file__).resolve().parent / "runs"
 THRESHOLD = 0.5
 NUM_BINS = 5
@@ -88,7 +89,9 @@ def choose_merge_keys(left: pd.DataFrame, right: pd.DataFrame) -> list[str]:
     for keys in KEY_COLUMNS_PRIORITY:
         if all(key in left.columns and key in right.columns for key in keys):
             return keys
-    raise ValueError("Cannot find compatible merge keys. Expected raw_pred_idx, pred_idx, or bbox keys.")
+    raise ValueError(
+        "Cannot find compatible merge keys. Expected raw_pred_idx, pred_idx, or bbox keys."
+    )
 
 
 def load_eval_dataframe(run_root: Path) -> pd.DataFrame:
@@ -131,7 +134,9 @@ def collapse_feature_groups(columns: list[str]) -> list[dict[str, object]]:
     for col in columns:
         if col in prob_set:
             if not inserted_prob:
-                groups.append({"feature": "class_probability_vector", "columns": prob_cols})
+                groups.append(
+                    {"feature": "class_probability_vector", "columns": prob_cols}
+                )
                 inserted_prob = True
             continue
         groups.append({"feature": col, "columns": [col]})
@@ -154,7 +159,9 @@ def safe_metrics(y_true, y_score) -> dict[str, float]:
     return {"auroc": auroc, "ap": ap}
 
 
-def oriented_scalar_scores(values: pd.Series, labels: pd.Series) -> tuple[np.ndarray, bool, float]:
+def oriented_scalar_scores(
+    values: pd.Series, labels: pd.Series
+) -> tuple[np.ndarray, bool, float]:
     scores = pd.to_numeric(values, errors="coerce").fillna(0.0).to_numpy(dtype=float)
     metrics = safe_metrics(labels, scores)
     auroc = metrics["auroc"]
@@ -179,33 +186,46 @@ def vector_cv_scores(x: pd.DataFrame, y: pd.Series) -> np.ndarray:
         LogisticRegression(max_iter=2000, class_weight="balanced", solver="lbfgs"),
     )
     cv = StratifiedKFold(n_splits=n_splits, shuffle=True, random_state=42)
-    return cross_val_predict(model, x.fillna(0.0).to_numpy(dtype=float), y_arr, cv=cv, method="predict_proba")[:, 1]
+    return cross_val_predict(
+        model, x.fillna(0.0).to_numpy(dtype=float), y_arr, cv=cv, method="predict_proba"
+    )[:, 1]
 
 
 def make_output_dir(meta_run: Path, classifier_run: Path) -> Path:
     timestamp = datetime.now().strftime("%m-%d-%Y_%H;%M")
     name = f"{meta_run.name}_{classifier_run.name}"
-    safe_name = "".join(ch if ch.isalnum() or ch in {"_", "-", ";"} else "_" for ch in name).strip("_")
+    safe_name = "".join(
+        ch if ch.isalnum() or ch in {"_", "-", ";"} else "_" for ch in name
+    ).strip("_")
     return OUTPUT_ROOT / f"{timestamp}_meta_detect_failure_modes_{safe_name}"
 
 
-def merge_analysis_dataframe(eval_df: pd.DataFrame, meta_df: pd.DataFrame, tp_df: pd.DataFrame, threshold: float) -> pd.DataFrame:
+def merge_analysis_dataframe(
+    eval_df: pd.DataFrame, meta_df: pd.DataFrame, tp_df: pd.DataFrame, threshold: float
+) -> pd.DataFrame:
     keys = choose_merge_keys(eval_df, meta_df)
     merged = eval_df.merge(meta_df, on=keys, how="left", suffixes=("", "_meta"))
     tp_keys = choose_merge_keys(merged, tp_df)
     tp_extra_cols = [
-        col for col in tp_df.columns
-        if col not in tp_keys and col not in merged.columns
+        col for col in tp_df.columns if col not in tp_keys and col not in merged.columns
     ]
-    merged = merged.merge(tp_df[tp_keys + tp_extra_cols], on=tp_keys, how="left", suffixes=("", "_tp"))
+    merged = merged.merge(
+        tp_df[tp_keys + tp_extra_cols], on=tp_keys, how="left", suffixes=("", "_tp")
+    )
     if "error_type" not in merged.columns:
-        raise ValueError("Merged dataframe is missing error_type. Re-run object detector gt after this update.")
+        raise ValueError(
+            "Merged dataframe is missing error_type. Re-run object detector gt after this update."
+        )
     merged["y_test"] = merged["y_test"].astype(int)
     merged["y_pred"] = pd.to_numeric(merged["y_pred"], errors="coerce").fillna(0.0)
     merged["meta_pred_label"] = (merged["y_pred"] >= float(threshold)).astype(int)
     merged["failure_mode"] = "correct"
-    merged.loc[(merged["y_test"] == 0) & (merged["meta_pred_label"] == 1), "failure_mode"] = "fp_predicted_tp"
-    merged.loc[(merged["y_test"] == 1) & (merged["meta_pred_label"] == 0), "failure_mode"] = "tp_predicted_fp"
+    merged.loc[
+        (merged["y_test"] == 0) & (merged["meta_pred_label"] == 1), "failure_mode"
+    ] = "fp_predicted_tp"
+    merged.loc[
+        (merged["y_test"] == 1) & (merged["meta_pred_label"] == 0), "failure_mode"
+    ] = "tp_predicted_fp"
     return merged
 
 
@@ -222,12 +242,15 @@ def analyze_failures(df: pd.DataFrame, out_dir: Path) -> None:
     count_df.to_csv(out_dir / "failure_by_error_type.csv", index=False)
 
     import matplotlib
+
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
 
     plot_df = count_df[count_df["failure_mode"] != "correct"]
     if not plot_df.empty:
-        pivot = plot_df.pivot_table(index="error_type", columns="failure_mode", values="count", fill_value=0)
+        pivot = plot_df.pivot_table(
+            index="error_type", columns="failure_mode", values="count", fill_value=0
+        )
         ax = pivot.plot(kind="bar", figsize=(9, 4.8))
         ax.set_title("MetaDetect Meta Classifier Failures by Error Type")
         ax.set_ylabel("Count")
@@ -243,7 +266,9 @@ def bin_series(values: pd.Series, num_bins: int) -> pd.Series:
     try:
         return pd.qcut(numeric, q=num_bins, duplicates="drop")
     except ValueError:
-        return pd.cut(numeric, bins=min(num_bins, max(1, numeric.nunique())), duplicates="drop")
+        return pd.cut(
+            numeric, bins=min(num_bins, max(1, numeric.nunique())), duplicates="drop"
+        )
 
 
 def analyze_candidate_informativeness(df: pd.DataFrame, out_dir: Path) -> None:
@@ -260,10 +285,14 @@ def analyze_candidate_informativeness(df: pd.DataFrame, out_dir: Path) -> None:
                     "bin": str(bin_label),
                     "num_samples": int(len(subset)),
                     "num_tp": int(subset["y_test"].sum()),
-                    "tp_ratio": float(subset["y_test"].mean()) if len(subset) else np.nan,
+                    "tp_ratio": (
+                        float(subset["y_test"].mean()) if len(subset) else np.nan
+                    ),
                     "auroc": metrics["auroc"],
                     "ap": metrics["ap"],
-                    "mean_meta_score": float(subset["y_pred"].mean()) if len(subset) else np.nan,
+                    "mean_meta_score": (
+                        float(subset["y_pred"].mean()) if len(subset) else np.nan
+                    ),
                 }
             )
     result = pd.DataFrame(rows)
@@ -272,11 +301,16 @@ def analyze_candidate_informativeness(df: pd.DataFrame, out_dir: Path) -> None:
         return
 
     import matplotlib
+
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
 
     for metric in ["auroc", "ap"]:
-        fig, axes = plt.subplots(len(CANDIDATE_FEATURES), 1, figsize=(10, max(3.0, 2.2 * len(CANDIDATE_FEATURES))))
+        fig, axes = plt.subplots(
+            len(CANDIDATE_FEATURES),
+            1,
+            figsize=(10, max(3.0, 2.2 * len(CANDIDATE_FEATURES))),
+        )
         axes = np.atleast_1d(axes)
         for ax, feature in zip(axes, CANDIDATE_FEATURES):
             sub = result[result["feature"] == feature]
@@ -292,14 +326,23 @@ def analyze_candidate_informativeness(df: pd.DataFrame, out_dir: Path) -> None:
             ax.grid(axis="y", linestyle="--", linewidth=0.5, alpha=0.4)
         axes[-1].set_xlabel("Feature bin")
         fig.tight_layout()
-        fig.savefig(out_dir / f"candidate_informativeness_{metric}.png", dpi=220, bbox_inches="tight")
+        fig.savefig(
+            out_dir / f"candidate_informativeness_{metric}.png",
+            dpi=220,
+            bbox_inches="tight",
+        )
         plt.close(fig)
 
 
-def analyze_error_type_features(df: pd.DataFrame, feature_groups: list[dict[str, object]], out_dir: Path) -> None:
+def analyze_error_type_features(
+    df: pd.DataFrame, feature_groups: list[dict[str, object]], out_dir: Path
+) -> None:
     rows = []
     for error_type in FP_ERROR_TYPES:
-        subset = df[(df["y_test"] == 1) | ((df["y_test"] == 0) & (df["error_type"] == error_type))].copy()
+        subset = df[
+            (df["y_test"] == 1)
+            | ((df["y_test"] == 0) & (df["error_type"] == error_type))
+        ].copy()
         if subset["y_test"].nunique() < 2:
             continue
         for group in feature_groups:
@@ -308,7 +351,9 @@ def analyze_error_type_features(df: pd.DataFrame, feature_groups: list[dict[str,
             if not cols:
                 continue
             if len(cols) == 1:
-                scores, inverted, oriented_auroc = oriented_scalar_scores(subset[cols[0]], subset["y_test"])
+                scores, inverted, oriented_auroc = oriented_scalar_scores(
+                    subset[cols[0]], subset["y_test"]
+                )
                 metrics = safe_metrics(subset["y_test"], scores)
                 metrics["auroc_oriented"] = oriented_auroc
                 metrics["inverted"] = inverted
@@ -337,11 +382,16 @@ def analyze_error_type_features(df: pd.DataFrame, feature_groups: list[dict[str,
         return
 
     import matplotlib
+
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
 
     for error_type in FP_ERROR_TYPES:
-        sub = result[result["error_type"] == error_type].sort_values("auroc_oriented", ascending=False).head(10)
+        sub = (
+            result[result["error_type"] == error_type]
+            .sort_values("auroc_oriented", ascending=False)
+            .head(10)
+        )
         if sub.empty:
             continue
         fig, ax = plt.subplots(figsize=(9, 4.5))
@@ -351,17 +401,31 @@ def analyze_error_type_features(df: pd.DataFrame, feature_groups: list[dict[str,
         ax.set_title(f"Top MetaDetect Features: TP vs {error_type}")
         ax.grid(axis="x", linestyle="--", linewidth=0.5, alpha=0.4)
         fig.tight_layout()
-        fig.savefig(out_dir / f"top_features_{error_type}.png", dpi=220, bbox_inches="tight")
+        fig.savefig(
+            out_dir / f"top_features_{error_type}.png", dpi=220, bbox_inches="tight"
+        )
         plt.close(fig)
 
-    pivot = result.pivot_table(index="error_type", columns="feature", values="auroc_oriented", aggfunc="mean")
+    pivot = result.pivot_table(
+        index="error_type", columns="feature", values="auroc_oriented", aggfunc="mean"
+    )
     top_features = (
-        result.groupby("feature")["auroc_oriented"].max().sort_values(ascending=False).head(25).index.tolist()
+        result.groupby("feature")["auroc_oriented"]
+        .max()
+        .sort_values(ascending=False)
+        .head(25)
+        .index.tolist()
     )
     if top_features:
         heat = pivot[top_features]
         fig, ax = plt.subplots(figsize=(max(10, 0.35 * len(top_features)), 4.2))
-        image = ax.imshow(heat.to_numpy(dtype=float), vmin=0.0, vmax=1.0, cmap="viridis", aspect="auto")
+        image = ax.imshow(
+            heat.to_numpy(dtype=float),
+            vmin=0.0,
+            vmax=1.0,
+            cmap="viridis",
+            aspect="auto",
+        )
         ax.set_xticks(range(len(top_features)))
         ax.set_xticklabels(top_features, rotation=90, fontsize=8)
         ax.set_yticks(range(len(heat.index)))
@@ -369,7 +433,11 @@ def analyze_error_type_features(df: pd.DataFrame, feature_groups: list[dict[str,
         ax.set_title("Error Type Specific Single-Feature AUROC")
         fig.colorbar(image, ax=ax, label="AUROC")
         fig.tight_layout()
-        fig.savefig(out_dir / "single_feature_by_error_type_heatmap.png", dpi=220, bbox_inches="tight")
+        fig.savefig(
+            out_dir / "single_feature_by_error_type_heatmap.png",
+            dpi=220,
+            bbox_inches="tight",
+        )
         plt.close(fig)
 
 
