@@ -104,7 +104,7 @@ def main():
         parsed_output = parse_output_config(config.get("output", {}))
         uncertainty = str(parsed_output.get("uncertainty", ""))
         target_tag = ""
-        run_base_subdir = None
+        run_base_subdir = _dataset_run_subdir(config)
         if uncertainty == "layer_grad":
             layer_grad_cfg = config.get("output", {}).get("layer_grad", {})
             grad_cfg = layer_grad_cfg.get("gradient", {})
