@@ -168,6 +168,7 @@ def parse_root_info(root_path: Path) -> tuple[str, str, str]:
     # Supported formats:
     #   .../object_detectors/runs/{time}_{cue}_{target?}
     #   .../object_detectors/runs/{dataset}/{time}_{cue}_{target?}
+    #   .../object_detectors/runs/{mode}/{dataset}/{time}_{cue}_{target?}
     def _parse_tail(model_group: str, run_name: str) -> tuple[str, str, str]:
         match = re.match(r"^\d{2}-\d{2}-\d{4}_\d{2};\d{2}_(.+)$", run_name)
         tail = match.group(1) if match else run_name
@@ -184,9 +185,11 @@ def parse_root_info(root_path: Path) -> tuple[str, str, str]:
         return _parse_tail("bbox_predictions", root_path.name)
     if parent.parent.name == "runs":
         return _parse_tail(parent.name, root_path.name)
+    if parent.parent.parent.name == "runs":
+        return _parse_tail(parent.name, root_path.name)
 
     raise ValueError(
-        "dataset root must follow object_detectors/runs/{dataset?}/{time}_{cue}_{target?} "
+        "dataset root must follow object_detectors/runs/{mode?}/{dataset?}/{time}_{cue}_{target?} "
     )
 
 
