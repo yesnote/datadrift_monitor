@@ -1,7 +1,7 @@
 mode: feature_ablation
 
 model:
-  type: gb_regressor          # ridge | rf_regressor | gb_regressor | xgb_regressor
+  type: xgb_regressor          # ridge | rf_regressor | gb_regressor | xgb_regressor
   device: cpu                 # cpu | cuda
   random_seed: 42
 
