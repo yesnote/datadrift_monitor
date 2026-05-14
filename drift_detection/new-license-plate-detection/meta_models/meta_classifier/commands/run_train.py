@@ -586,14 +586,16 @@ def run_train(config: dict[str, Any], run_dir: Path) -> Path:
         used_repeats = repeats
         split_iter = tqdm(range(repeats), desc="Meta Classifier (repeat)", total=repeats, unit="split")
         for i in split_iter:
-            x_train, x_test, y_train, y_test = train_test_split(
-                x,
-                y,
+            indices = np.arange(len(y))
+            train_idx, test_idx = train_test_split(
+                indices,
                 test_size=split,
                 random_state=random_seed + i,
                 stratify=y,
                 shuffle=True,
             )
+            x_train, x_test = x[train_idx], x[test_idx]
+            y_train, y_test = y[train_idx], y[test_idx]
             x_train, y_train = apply_augmentation(x_train, y_train, augmentation, random_seed=random_seed + i)
 
             estimator.fit(x_train, y_train)
