@@ -10,10 +10,10 @@ from sklearn.model_selection import StratifiedKFold, cross_val_predict
 from sklearn.pipeline import make_pipeline
 from sklearn.preprocessing import StandardScaler
 
-META_DETECT_ROOT = r"object_detectors/runs/predict/coco/00-00-0000_00;00_meta_detect"
-GT_ROOT = r"object_detectors/runs/predict/coco/00-00-0000_00;00_gt"
+META_DETECT_ROOT = r"object_detectors/runs/predict/coco/05-13-2026_22;25_meta_detect"
+GT_ROOT = r"object_detectors/runs/predict/coco/05-14-2026_23;11_gt"
 META_CLASSIFIER_RUN_ROOT = (
-    r"meta_models/meta_classifier/runs/test/coco/00-00-0000_00;00_meta_detect_test"
+    r"meta_models/meta_classifier/runs/train/coco/05-14-2026_23;17_meta_detect"
 )
 OUTPUT_ROOT = Path(__file__).resolve().parent / "runs"
 THRESHOLD = 0.5
@@ -232,7 +232,9 @@ def merge_analysis_dataframe(
     merged["fp_error_type"] = "tp"
     is_fp = merged["y_test"] == 0
     merged.loc[is_fp, "fp_error_type"] = "localization_fp"
-    merged.loc[is_fp & (merged["error_type"] == "classification_fp"), "fp_error_type"] = "classification_fp"
+    merged.loc[
+        is_fp & (merged["error_type"] == "classification_fp"), "fp_error_type"
+    ] = "classification_fp"
     return merged
 
 
@@ -341,13 +343,18 @@ def analyze_candidate_informativeness(df: pd.DataFrame, out_dir: Path) -> None:
         plt.close(fig)
 
 
-def compute_binned_performance(df: pd.DataFrame, feature: str, scope: str, error_type: str = "all") -> pd.DataFrame:
+def compute_binned_performance(
+    df: pd.DataFrame, feature: str, scope: str, error_type: str = "all"
+) -> pd.DataFrame:
     if feature not in df.columns:
         return pd.DataFrame()
     if scope == "overall":
         subset = df.copy()
     elif scope == "error_type":
-        subset = df[(df["y_test"] == 1) | ((df["y_test"] == 0) & (df["fp_error_type"] == error_type))].copy()
+        subset = df[
+            (df["y_test"] == 1)
+            | ((df["y_test"] == 0) & (df["fp_error_type"] == error_type))
+        ].copy()
     else:
         raise ValueError(f"Unsupported scope: {scope}")
     if subset.empty:
@@ -355,7 +362,9 @@ def compute_binned_performance(df: pd.DataFrame, feature: str, scope: str, error
 
     rows = []
     binned = bin_series(subset[feature], NUM_BINS)
-    for bin_idx, (bin_label, bin_df) in enumerate(subset.groupby(binned, observed=True)):
+    for bin_idx, (bin_label, bin_df) in enumerate(
+        subset.groupby(binned, observed=True)
+    ):
         metrics = safe_metrics(bin_df["y_test"], bin_df["y_pred"])
         rows.append(
             {
@@ -370,14 +379,20 @@ def compute_binned_performance(df: pd.DataFrame, feature: str, scope: str, error
                 "tp_ratio": float(bin_df["y_test"].mean()) if len(bin_df) else np.nan,
                 "auroc": metrics["auroc"],
                 "ap": metrics["ap"],
-                "mean_meta_score": float(bin_df["y_pred"].mean()) if len(bin_df) else np.nan,
+                "mean_meta_score": (
+                    float(bin_df["y_pred"].mean()) if len(bin_df) else np.nan
+                ),
             }
         )
     return pd.DataFrame(rows)
 
 
-def plot_overall_focused_performance(result: pd.DataFrame, feature: str, title: str, out_path: Path) -> None:
-    sub = result[(result["scope"] == "overall") & (result["feature"] == feature)].sort_values("bin_index")
+def plot_overall_focused_performance(
+    result: pd.DataFrame, feature: str, title: str, out_path: Path
+) -> None:
+    sub = result[
+        (result["scope"] == "overall") & (result["feature"] == feature)
+    ].sort_values("bin_index")
     if sub.empty:
         return
     import matplotlib
@@ -399,7 +414,15 @@ def plot_overall_focused_performance(result: pd.DataFrame, feature: str, title: 
     ax.legend(frameon=False)
 
     ax2 = ax.twinx()
-    ax2.plot(x, sub["tp_ratio"], color="#888888", linestyle=":", marker="^", linewidth=1.5, label="TP ratio")
+    ax2.plot(
+        x,
+        sub["tp_ratio"],
+        color="#888888",
+        linestyle=":",
+        marker="^",
+        linewidth=1.5,
+        label="TP ratio",
+    )
     ax2.set_ylim(0.0, 1.0)
     ax2.set_ylabel("TP ratio")
     fig.tight_layout()
@@ -407,8 +430,12 @@ def plot_overall_focused_performance(result: pd.DataFrame, feature: str, title: 
     plt.close(fig)
 
 
-def plot_error_type_focused_performance(result: pd.DataFrame, feature: str, metric: str, title: str, out_path: Path) -> None:
-    sub = result[(result["scope"] == "error_type") & (result["feature"] == feature)].copy()
+def plot_error_type_focused_performance(
+    result: pd.DataFrame, feature: str, metric: str, title: str, out_path: Path
+) -> None:
+    sub = result[
+        (result["scope"] == "error_type") & (result["feature"] == feature)
+    ].copy()
     if sub.empty:
         return
     import matplotlib
@@ -416,7 +443,9 @@ def plot_error_type_focused_performance(result: pd.DataFrame, feature: str, metr
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
 
-    fig, axes = plt.subplots(len(FP_ERROR_TYPES), 1, figsize=(8.8, 3.2 * len(FP_ERROR_TYPES)), sharey=True)
+    fig, axes = plt.subplots(
+        len(FP_ERROR_TYPES), 1, figsize=(8.8, 3.2 * len(FP_ERROR_TYPES)), sharey=True
+    )
     axes = np.atleast_1d(axes)
     for ax, error_type in zip(axes, FP_ERROR_TYPES):
         type_df = sub[sub["error_type"] == error_type].sort_values("bin_index")
@@ -425,7 +454,15 @@ def plot_error_type_focused_performance(result: pd.DataFrame, feature: str, metr
             continue
         x = np.arange(len(type_df))
         ax.plot(x, type_df[metric], marker="o", linewidth=2.0, label=metric.upper())
-        ax.plot(x, type_df["tp_ratio"], color="#888888", linestyle=":", marker="^", linewidth=1.5, label="TP ratio")
+        ax.plot(
+            x,
+            type_df["tp_ratio"],
+            color="#888888",
+            linestyle=":",
+            marker="^",
+            linewidth=1.5,
+            label="TP ratio",
+        )
         ax.set_ylim(0.0, 1.0)
         ax.set_title(f"TP vs {error_type}")
         ax.set_ylabel(metric.upper())
@@ -445,8 +482,14 @@ def analyze_focused_candidate_performance(df: pd.DataFrame, out_dir: Path) -> No
     for _name, feature in FOCUSED_CANDIDATE_FEATURES.items():
         frames.append(compute_binned_performance(df, feature, scope="overall"))
         for error_type in FP_ERROR_TYPES:
-            frames.append(compute_binned_performance(df, feature, scope="error_type", error_type=error_type))
-    result = pd.concat([frame for frame in frames if not frame.empty], ignore_index=True)
+            frames.append(
+                compute_binned_performance(
+                    df, feature, scope="error_type", error_type=error_type
+                )
+            )
+    result = pd.concat(
+        [frame for frame in frames if not frame.empty], ignore_index=True
+    )
     result.to_csv(out_dir / "focused_candidate_performance_by_bin.csv", index=False)
     if result.empty:
         return
