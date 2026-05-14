@@ -1,4 +1,3 @@
-import argparse
 import json
 from datetime import datetime
 from pathlib import Path
@@ -375,16 +374,9 @@ def analyze_error_type_features(df: pd.DataFrame, feature_groups: list[dict[str,
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--meta-detect-root", type=str, default=META_DETECT_ROOT)
-    parser.add_argument("--gt-root", type=str, default=GT_ROOT)
-    parser.add_argument("--meta-classifier-run-root", type=str, default=META_CLASSIFIER_RUN_ROOT)
-    parser.add_argument("--threshold", type=float, default=THRESHOLD)
-    args = parser.parse_args()
-
-    meta_csv = resolve_csv(args.meta_detect_root, "meta_detect.csv")
-    gt_csv = resolve_csv(args.gt_root, "tp.csv")
-    classifier_root = resolve_repo_path(args.meta_classifier_run_root)
+    meta_csv = resolve_csv(META_DETECT_ROOT, "meta_detect.csv")
+    gt_csv = resolve_csv(GT_ROOT, "tp.csv")
+    classifier_root = resolve_repo_path(META_CLASSIFIER_RUN_ROOT)
     eval_df = load_eval_dataframe(classifier_root)
     meta_df = pd.read_csv(meta_csv)
     tp_df = pd.read_csv(gt_csv)
@@ -392,7 +384,7 @@ def main() -> None:
     out_dir = make_output_dir(meta_csv.parent, classifier_root)
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    df = merge_analysis_dataframe(eval_df, meta_df, tp_df, threshold=float(args.threshold))
+    df = merge_analysis_dataframe(eval_df, meta_df, tp_df, threshold=float(THRESHOLD))
     df.to_csv(out_dir / "merged_analysis_dataframe.csv", index=False)
     features = collapse_feature_groups(feature_columns(meta_df))
 
@@ -404,7 +396,7 @@ def main() -> None:
         "meta_detect_csv": str(meta_csv),
         "gt_csv": str(gt_csv),
         "meta_classifier_run_root": str(classifier_root),
-        "threshold": float(args.threshold),
+        "threshold": float(THRESHOLD),
         "num_eval_rows": int(len(eval_df)),
         "num_merged_rows": int(len(df)),
         "num_feature_groups": int(len(features)),
