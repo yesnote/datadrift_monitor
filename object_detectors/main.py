@@ -1,8 +1,11 @@
 import argparse
+from copy import deepcopy
 import os
 import warnings
 from datetime import datetime
 from pathlib import Path
+
+import yaml
 
 # Workaround for duplicated OpenMP runtime initialization on some Windows envs.
 os.environ.setdefault("KMP_DUPLICATE_LIB_OK", "TRUE")
@@ -56,6 +59,26 @@ def _dataset_run_subdir(config):
         return "unknown"
     safe_names = ["".join(ch if ch.isalnum() or ch in {"_", "-"} else "_" for ch in name) for name in names]
     return "-".join(safe_names)
+
+
+def _normalize_training_seeds(config):
+    raw_seed = config.get("training", {}).get("seed")
+    if raw_seed is None:
+        return [None]
+    if isinstance(raw_seed, (list, tuple)):
+        if not raw_seed:
+            return [None]
+        return [int(seed) for seed in raw_seed]
+    return [int(raw_seed)]
+
+
+def _seed_tag(seed):
+    return "seed_none" if seed is None else f"seed{int(seed)}"
+
+
+def _save_effective_config(config, run_dir):
+    with open(Path(run_dir) / "used_config.yaml", "w", encoding="utf-8") as f:
+        yaml.safe_dump(config, f, sort_keys=False, allow_unicode=True)
 
 
 def _normalize_config_paths(config):
@@ -159,14 +182,23 @@ def main():
         return
 
     if mode == "train":
-        if args.run_dir:
-            run_dir = _resolve_run_dir(args.run_dir)
-        else:
-            timestamp = datetime.now().strftime("%m-%d-%Y_%H;%M")
-            run_dir = (PROJECT_ROOT / "runs" / "train" / _dataset_run_subdir(config) / f"{timestamp}_yolov5").resolve()
-        run_dir.mkdir(parents=True, exist_ok=True)
-        save_used_config(config_path, run_dir)
-        run_train(config, run_dir)
+        seeds = _normalize_training_seeds(config)
+        timestamp = datetime.now().strftime("%m-%d-%Y_%H;%M")
+        for seed in seeds:
+            seed_config = deepcopy(config)
+            seed_config.setdefault("training", {})["seed"] = seed
+            if args.run_dir:
+                base_run_dir = _resolve_run_dir(args.run_dir)
+                run_dir = base_run_dir if len(seeds) == 1 else (base_run_dir / _seed_tag(seed)).resolve()
+            else:
+                dir_name = f"{timestamp}_yolov5"
+                if len(seeds) > 1:
+                    dir_name = f"{dir_name}_{_seed_tag(seed)}"
+                run_dir = (PROJECT_ROOT / "runs" / "train" / _dataset_run_subdir(seed_config) / dir_name).resolve()
+            run_dir.mkdir(parents=True, exist_ok=True)
+            _save_effective_config(seed_config, run_dir)
+            print(f"[train] run_dir={run_dir}")
+            run_train(seed_config, run_dir)
         return
 
     raise ValueError(f"Unsupported mode: {mode}. Use 'predict' or 'train'.")
