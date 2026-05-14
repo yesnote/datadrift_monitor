@@ -25,6 +25,8 @@ METADATA_COLUMNS = {
     "pred_class",
 }
 
+CLASS_PROB_VECTOR_NAME = "class_probability_vector"
+
 SEMANTIC_GROUP_ORDER = [
     "class_probability",
     "score",
@@ -81,8 +83,26 @@ def feature_columns(df: pd.DataFrame) -> list[str]:
     return columns
 
 
+def collapse_class_probability_vector(columns: list[str]) -> list[dict[str, object]]:
+    prob_cols = sorted(
+        [col for col in columns if col.startswith("prob_") and col[5:].isdigit()],
+        key=lambda col: int(col[5:]),
+    )
+    prob_set = set(prob_cols)
+    features: list[dict[str, object]] = []
+    inserted_prob_vector = False
+    for col in columns:
+        if col in prob_set:
+            if not inserted_prob_vector:
+                features.append({"name": CLASS_PROB_VECTOR_NAME, "columns": prob_cols})
+                inserted_prob_vector = True
+            continue
+        features.append({"name": col, "columns": [col]})
+    return features
+
+
 def semantic_group(feature_name: str) -> str:
-    if feature_name == "prob_sum" or (feature_name.startswith("prob_") and feature_name[5:].isdigit()):
+    if feature_name in {"prob_sum", CLASS_PROB_VECTOR_NAME}:
         return "class_probability"
     if feature_name.startswith("score_"):
         return "score"
@@ -97,7 +117,7 @@ def semantic_group(feature_name: str) -> str:
 def source_group(feature_name: str) -> str:
     if (
         feature_name == "prob_sum"
-        or (feature_name.startswith("prob_") and feature_name[5:].isdigit())
+        or feature_name == CLASS_PROB_VECTOR_NAME
         or feature_name in {"size", "circum", "size_circum"}
     ):
         return "final_prediction_only"
@@ -121,28 +141,43 @@ def source_group(feature_name: str) -> str:
 def prob_sort_key(feature_name: str) -> tuple[int, int, str]:
     if feature_name == "prob_sum":
         return (0, -1, feature_name)
-    if feature_name.startswith("prob_") and feature_name[5:].isdigit():
-        return (0, int(feature_name[5:]), feature_name)
+    if feature_name == CLASS_PROB_VECTOR_NAME:
+        return (0, 0, feature_name)
     return (1, 0, feature_name)
 
 
-def sort_features(columns: list[str], group_fn, group_order: list[str]) -> tuple[list[str], dict[str, str]]:
+def sort_features(features: list[dict[str, object]], group_fn, group_order: list[str]) -> tuple[list[dict[str, object]], dict[str, str]]:
     group_index = {name: idx for idx, name in enumerate(group_order)}
-    group_by_feature = {col: group_fn(col) for col in columns}
+    group_by_feature = {str(feature["name"]): group_fn(str(feature["name"])) for feature in features}
 
-    def key(col: str):
-        group = group_by_feature[col]
-        return (group_index.get(group, len(group_order)), prob_sort_key(col), col)
+    def key(feature: dict[str, object]):
+        name = str(feature["name"])
+        group = group_by_feature[name]
+        return (group_index.get(group, len(group_order)), prob_sort_key(name), name)
 
-    return sorted(columns, key=key), group_by_feature
+    return sorted(features, key=key), group_by_feature
 
 
-def correlation_matrix(df: pd.DataFrame, columns: list[str]) -> pd.DataFrame:
-    values = df[columns].apply(pd.to_numeric, errors="coerce")
-    corr = values.corr(method="pearson")
-    corr = corr.replace([np.inf, -np.inf], np.nan).fillna(0.0)
-    np.fill_diagonal(corr.values, 1.0)
-    return corr
+def correlation_matrix(df: pd.DataFrame, features: list[dict[str, object]]) -> pd.DataFrame:
+    all_columns = []
+    for feature in features:
+        all_columns.extend(str(col) for col in feature["columns"])
+    all_columns = list(dict.fromkeys(all_columns))
+    base_corr = df[all_columns].apply(pd.to_numeric, errors="coerce").corr(method="pearson")
+    base_corr = base_corr.replace([np.inf, -np.inf], np.nan).fillna(0.0)
+
+    names = [str(feature["name"]) for feature in features]
+    matrix = np.zeros((len(features), len(features)), dtype=float)
+    for row_idx, row_feature in enumerate(features):
+        row_cols = [str(col) for col in row_feature["columns"]]
+        for col_idx, col_feature in enumerate(features):
+            if row_idx == col_idx:
+                matrix[row_idx, col_idx] = 1.0
+                continue
+            col_cols = [str(col) for col in col_feature["columns"]]
+            sub_corr = base_corr.loc[row_cols, col_cols].to_numpy(dtype=float)
+            matrix[row_idx, col_idx] = float(np.nanmean(sub_corr)) if sub_corr.size else 0.0
+    return pd.DataFrame(matrix, index=names, columns=names)
 
 
 def group_boundaries(columns: list[str], group_by_feature: dict[str, str]) -> list[tuple[str, int, int]]:
@@ -220,11 +255,13 @@ def main() -> None:
     meta_detect_csv = resolve_meta_detect_csv(args.meta_detect_root)
     df = pd.read_csv(meta_detect_csv)
     columns = feature_columns(df)
+    features = collapse_class_probability_vector(columns)
     out_dir = make_output_dir(meta_detect_csv)
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    semantic_columns, semantic_groups = sort_features(columns, semantic_group, SEMANTIC_GROUP_ORDER)
-    semantic_corr = correlation_matrix(df, semantic_columns)
+    semantic_features, semantic_groups = sort_features(features, semantic_group, SEMANTIC_GROUP_ORDER)
+    semantic_columns = [str(feature["name"]) for feature in semantic_features]
+    semantic_corr = correlation_matrix(df, semantic_features)
     semantic_corr.to_csv(out_dir / "semantic_group_correlation.csv")
     write_group_csv(semantic_columns, semantic_groups, out_dir / "semantic_group_features.csv")
     plot_corr(
@@ -235,8 +272,9 @@ def main() -> None:
         out_dir / "semantic_group_correlation_matrix.png",
     )
 
-    source_columns, source_groups = sort_features(columns, source_group, SOURCE_GROUP_ORDER)
-    source_corr = correlation_matrix(df, source_columns)
+    source_features, source_groups = sort_features(features, source_group, SOURCE_GROUP_ORDER)
+    source_columns = [str(feature["name"]) for feature in source_features]
+    source_corr = correlation_matrix(df, source_features)
     source_corr.to_csv(out_dir / "source_group_correlation.csv")
     write_group_csv(source_columns, source_groups, out_dir / "source_group_features.csv")
     plot_corr(
@@ -251,6 +289,13 @@ def main() -> None:
         "meta_detect_csv": str(meta_detect_csv),
         "num_rows": int(len(df)),
         "num_features": int(len(columns)),
+        "num_display_features": int(len(features)),
+        "class_probability_vector_columns": [
+            str(col)
+            for feature in features
+            if feature["name"] == CLASS_PROB_VECTOR_NAME
+            for col in feature["columns"]
+        ],
         "outputs": [
             "semantic_group_correlation_matrix.png",
             "source_group_correlation_matrix.png",
