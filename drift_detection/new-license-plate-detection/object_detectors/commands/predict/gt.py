@@ -129,9 +129,12 @@ def run_tp_csv(config, run_dir):
     split = dataset_cfg.get("split", "val")
     parsed = parse_output_config(config.get("output", {}))
     save_csv = parsed["save_csv_enabled"]
+    save_image = parsed["save_image_enabled"]
+    image_step = max(1, int(parsed["save_image_gt_step"]))
+    image_max_num = max(0, int(parsed["save_image_gt_max_num"]))
     iou_match_threshold = parsed["gt_iou_match_threshold"]
 
-    if not save_csv:
+    if not save_csv and not save_image:
         return
 
     output_csv = run_dir / "tp.csv"
@@ -157,17 +160,20 @@ def run_tp_csv(config, run_dir):
         raise ValueError("Loaded 0 images. Check dataset root/image_dir/split configuration in YAML.")
 
     detector, device = build_detector(config)
+    saved_images = 0
 
-    with open(output_csv, "w", newline="", encoding="utf-8") as output_file:
-        writer = csv.DictWriter(output_file, fieldnames=fieldnames)
+    output_file = open(output_csv, "w", newline="", encoding="utf-8") if save_csv else None
+    writer = csv.DictWriter(output_file, fieldnames=fieldnames) if output_file is not None else None
+    if writer is not None:
         writer.writeheader()
 
-        for images, targets in tqdm(
+    try:
+        for step_idx, (images, targets) in enumerate(tqdm(
             dataloader, desc=f"Object Detector ({mode} - {uncertainty})", total=len(dataloader)
-        ):
+        )):
             image_list = _as_image_list(images)
             detector.zero_grad(set_to_none=True)
-            infer_batch, ratios, pads, _resized_chws = _prepare_infer_batch(detector, image_list, device, auto=False)
+            infer_batch, ratios, pads, resized_chws = _prepare_infer_batch(detector, image_list, device, auto=False)
             with torch.no_grad():
                 model_output = detector.model(infer_batch, augment=False)
                 raw_prediction = model_output[0] if isinstance(model_output, (tuple, list)) else model_output
@@ -211,33 +217,82 @@ def run_tp_csv(config, run_dir):
                     iou_match_threshold=iou_match_threshold,
                 )
 
+                should_save_image = (
+                    save_image
+                    and saved_images < image_max_num
+                    and step_idx % image_step == 0
+                )
+                if should_save_image:
+                    step_dir = run_dir / "images" / f"0_{step_idx}"
+                    step_dir.mkdir(parents=True, exist_ok=True)
+                    vis_image = np.transpose(resized_chws[sample_idx], (1, 2, 0)).copy()
+                    for gt_box, gt_name in zip(gt_boxes, gt_class_names):
+                        x1, y1, x2, y2 = [int(v) for v in gt_box]
+                        cv2.rectangle(vis_image, (x1, y1), (x2, y2), (64, 128, 255), 2)
+                        cv2.putText(
+                            vis_image,
+                            f"GT:{gt_name}",
+                            (x1, max(0, y1 - 6)),
+                            cv2.FONT_HERSHEY_SIMPLEX,
+                            0.5,
+                            (64, 128, 255),
+                            1,
+                            cv2.LINE_AA,
+                        )
+                    for pred_idx, (box, score, pred_class) in enumerate(zip(pred_boxes, pred_scores, pred_class_names)):
+                        x1, y1, x2, y2 = [int(v) for v in box]
+                        is_tp = int(tp_flags[pred_idx]) == 1
+                        color = (0, 220, 0) if is_tp else (255, 64, 64)
+                        tag = "TP" if is_tp else "FP"
+                        cv2.rectangle(vis_image, (x1, y1), (x2, y2), color, 2)
+                        cv2.putText(
+                            vis_image,
+                            f"{tag}:{pred_class}:{float(score):.2f}/IoU{float(best_ious[pred_idx]):.2f}",
+                            (x1, min(vis_image.shape[0] - 1, y2 + 14)),
+                            cv2.FONT_HERSHEY_SIMPLEX,
+                            0.5,
+                            color,
+                            1,
+                            cv2.LINE_AA,
+                        )
+                    out_path = step_dir / f"{image_id}.jpg"
+                    cv2.imwrite(str(out_path), cv2.cvtColor(vis_image, cv2.COLOR_RGB2BGR))
+                    saved_images += 1
+
                 for pred_idx, (box, score, pred_class) in enumerate(
                     zip(pred_boxes, pred_scores, pred_class_names)
                 ):
                     raw_pred_idx = int(raw_keep_b[pred_idx].detach().cpu().item()) if pred_idx < int(raw_keep_b.shape[0]) else pred_idx
-                    writer.writerow(
-                        {
-                            "image_id": image_id,
-                            "image_path": image_path,
-                            "pred_idx": pred_idx,
-                            "raw_pred_idx": raw_pred_idx,
-                            "xmin": float(box[0]),
-                            "ymin": float(box[1]),
-                            "xmax": float(box[2]),
-                            "ymax": float(box[3]),
-                            "score": float(score),
-                            "pred_class": pred_class,
-                            "max_iou": float(best_ious[pred_idx]),
-                            "gt_iou": float(best_ious[pred_idx]),
-                            "tp": int(tp_flags[pred_idx]),
-                        }
-                    )
+                    if writer is not None:
+                        writer.writerow(
+                            {
+                                "image_id": image_id,
+                                "image_path": image_path,
+                                "pred_idx": pred_idx,
+                                "raw_pred_idx": raw_pred_idx,
+                                "xmin": float(box[0]),
+                                "ymin": float(box[1]),
+                                "xmax": float(box[2]),
+                                "ymax": float(box[3]),
+                                "score": float(score),
+                                "pred_class": pred_class,
+                                "max_iou": float(best_ious[pred_idx]),
+                                "gt_iou": float(best_ious[pred_idx]),
+                                "tp": int(tp_flags[pred_idx]),
+                            }
+                        )
             del infer_batch, model_output, raw_prediction, raw_logits, selected_preds, selected_indices
+    finally:
+        if output_file is not None:
+            output_file.close()
 
     del detector
     if device.type == "cuda":
         torch.cuda.empty_cache()
 
-    print(f"Saved results CSV: {output_csv}")
+    if save_csv:
+        print(f"Saved results CSV: {output_csv}")
+    if save_image:
+        print(f"Saved images: {run_dir / 'images'}")
 
 __all__ = ["run_fn_csv", "run_tp_csv"]
