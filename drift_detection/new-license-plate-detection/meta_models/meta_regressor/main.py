@@ -13,6 +13,7 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from commands.run_train import run_train
 from commands.run_test import run_test
+from commands.run_feature_ablation import run_feature_ablation
 from commands.utils.run_utils import create_run_dir, save_used_config
 
 
@@ -86,8 +87,8 @@ def main() -> None:
     config = load_config(config_path)
 
     mode = str(config.get("mode", "train")).strip().lower()
-    if mode not in {"train", "test"}:
-        raise ValueError(f"Unsupported mode: {mode}. Use 'train' or 'test'.")
+    if mode not in {"train", "test", "feature_ablation"}:
+        raise ValueError(f"Unsupported mode: {mode}. Use 'train', 'test', or 'feature_ablation'.")
 
     dataset_cfg = config.get("dataset", {})
     input_root_raw_list = normalize_input_roots(dataset_cfg.get("input_root", ""))
@@ -117,11 +118,16 @@ def main() -> None:
         warnings.warn(msg)
         raise ValueError(msg)
 
-    cue_for_run = input_cue if mode == "train" else f"{input_cue}_meta_regressor_test"
+    if mode == "feature_ablation":
+        cue_for_run = f"{input_cue}_meta_regressor_feature_ablation"
+    else:
+        cue_for_run = input_cue if mode == "train" else f"{input_cue}_meta_regressor_test"
     run_dir = create_run_dir(model_group=input_group, cue=cue_for_run, target_value=input_target).resolve()
     save_used_config(config_path, run_dir)
     if mode == "train":
         run_train(config, run_dir)
+    elif mode == "feature_ablation":
+        run_feature_ablation(config, run_dir)
     else:
         run_test(config, run_dir)
 
