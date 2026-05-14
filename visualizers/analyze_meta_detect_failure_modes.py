@@ -10,7 +10,7 @@ from sklearn.model_selection import StratifiedKFold, cross_val_predict
 from sklearn.pipeline import make_pipeline
 from sklearn.preprocessing import StandardScaler
 
-META_DETECT_ROOT = r"object_detectors/runs/predict/coco/00-00-0000_00;00_meta_detect "
+META_DETECT_ROOT = r"object_detectors/runs/predict/coco/00-00-0000_00;00_meta_detect"
 GT_ROOT = r"object_detectors/runs/predict/coco/00-00-0000_00;00_gt"
 META_CLASSIFIER_RUN_ROOT = (
     r"meta_models/meta_classifier/runs/test/coco/00-00-0000_00;00_meta_detect_test"
@@ -49,11 +49,14 @@ CANDIDATE_FEATURES = [
 ]
 
 FP_ERROR_TYPES = [
-    "background_fp",
     "localization_fp",
     "classification_fp",
-    "duplicate_fp",
 ]
+
+FOCUSED_CANDIDATE_FEATURES = {
+    "candidate_count": "num_candidate_boxes",
+    "candidate_score": "score_max",
+}
 
 
 def resolve_repo_path(raw_path: str) -> Path:
@@ -226,6 +229,10 @@ def merge_analysis_dataframe(
     merged.loc[
         (merged["y_test"] == 1) & (merged["meta_pred_label"] == 0), "failure_mode"
     ] = "tp_predicted_fp"
+    merged["fp_error_type"] = "tp"
+    is_fp = merged["y_test"] == 0
+    merged.loc[is_fp, "fp_error_type"] = "localization_fp"
+    merged.loc[is_fp & (merged["error_type"] == "classification_fp"), "fp_error_type"] = "classification_fp"
     return merged
 
 
@@ -234,7 +241,7 @@ def analyze_failures(df: pd.DataFrame, out_dir: Path) -> None:
     failures.to_csv(out_dir / "failure_samples.csv", index=False)
 
     count_df = (
-        df.groupby(["failure_mode", "error_type"], dropna=False)
+        df.groupby(["failure_mode", "fp_error_type"], dropna=False)
         .size()
         .reset_index(name="count")
         .sort_values(["failure_mode", "count"], ascending=[True, False])
@@ -249,12 +256,12 @@ def analyze_failures(df: pd.DataFrame, out_dir: Path) -> None:
     plot_df = count_df[count_df["failure_mode"] != "correct"]
     if not plot_df.empty:
         pivot = plot_df.pivot_table(
-            index="error_type", columns="failure_mode", values="count", fill_value=0
+            index="fp_error_type", columns="failure_mode", values="count", fill_value=0
         )
         ax = pivot.plot(kind="bar", figsize=(9, 4.8))
         ax.set_title("MetaDetect Meta Classifier Failures by Error Type")
         ax.set_ylabel("Count")
-        ax.set_xlabel("Error type")
+        ax.set_xlabel("FP error type")
         ax.legend(frameon=False)
         plt.tight_layout()
         plt.savefig(out_dir / "failure_by_error_type.png", dpi=220, bbox_inches="tight")
@@ -334,6 +341,145 @@ def analyze_candidate_informativeness(df: pd.DataFrame, out_dir: Path) -> None:
         plt.close(fig)
 
 
+def compute_binned_performance(df: pd.DataFrame, feature: str, scope: str, error_type: str = "all") -> pd.DataFrame:
+    if feature not in df.columns:
+        return pd.DataFrame()
+    if scope == "overall":
+        subset = df.copy()
+    elif scope == "error_type":
+        subset = df[(df["y_test"] == 1) | ((df["y_test"] == 0) & (df["fp_error_type"] == error_type))].copy()
+    else:
+        raise ValueError(f"Unsupported scope: {scope}")
+    if subset.empty:
+        return pd.DataFrame()
+
+    rows = []
+    binned = bin_series(subset[feature], NUM_BINS)
+    for bin_idx, (bin_label, bin_df) in enumerate(subset.groupby(binned, observed=True)):
+        metrics = safe_metrics(bin_df["y_test"], bin_df["y_pred"])
+        rows.append(
+            {
+                "scope": scope,
+                "error_type": error_type,
+                "feature": feature,
+                "bin_index": int(bin_idx),
+                "bin": str(bin_label),
+                "num_samples": int(len(bin_df)),
+                "num_tp": int(bin_df["y_test"].sum()),
+                "num_fp": int((bin_df["y_test"] == 0).sum()),
+                "tp_ratio": float(bin_df["y_test"].mean()) if len(bin_df) else np.nan,
+                "auroc": metrics["auroc"],
+                "ap": metrics["ap"],
+                "mean_meta_score": float(bin_df["y_pred"].mean()) if len(bin_df) else np.nan,
+            }
+        )
+    return pd.DataFrame(rows)
+
+
+def plot_overall_focused_performance(result: pd.DataFrame, feature: str, title: str, out_path: Path) -> None:
+    sub = result[(result["scope"] == "overall") & (result["feature"] == feature)].sort_values("bin_index")
+    if sub.empty:
+        return
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    x = np.arange(len(sub))
+    fig, ax = plt.subplots(figsize=(8.5, 4.8))
+    ax.plot(x, sub["auroc"], marker="o", linewidth=2.0, label="AUROC")
+    ax.plot(x, sub["ap"], marker="s", linewidth=2.0, label="AP")
+    ax.set_ylim(0.0, 1.0)
+    ax.set_title(title)
+    ax.set_ylabel("Performance")
+    ax.set_xlabel("Bin")
+    ax.set_xticks(x)
+    ax.set_xticklabels(sub["bin"], rotation=25, ha="right")
+    ax.grid(axis="y", linestyle="--", linewidth=0.5, alpha=0.4)
+    ax.legend(frameon=False)
+
+    ax2 = ax.twinx()
+    ax2.plot(x, sub["tp_ratio"], color="#888888", linestyle=":", marker="^", linewidth=1.5, label="TP ratio")
+    ax2.set_ylim(0.0, 1.0)
+    ax2.set_ylabel("TP ratio")
+    fig.tight_layout()
+    fig.savefig(out_path, dpi=220, bbox_inches="tight")
+    plt.close(fig)
+
+
+def plot_error_type_focused_performance(result: pd.DataFrame, feature: str, metric: str, title: str, out_path: Path) -> None:
+    sub = result[(result["scope"] == "error_type") & (result["feature"] == feature)].copy()
+    if sub.empty:
+        return
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    fig, axes = plt.subplots(len(FP_ERROR_TYPES), 1, figsize=(8.8, 3.2 * len(FP_ERROR_TYPES)), sharey=True)
+    axes = np.atleast_1d(axes)
+    for ax, error_type in zip(axes, FP_ERROR_TYPES):
+        type_df = sub[sub["error_type"] == error_type].sort_values("bin_index")
+        if type_df.empty:
+            ax.axis("off")
+            continue
+        x = np.arange(len(type_df))
+        ax.plot(x, type_df[metric], marker="o", linewidth=2.0, label=metric.upper())
+        ax.plot(x, type_df["tp_ratio"], color="#888888", linestyle=":", marker="^", linewidth=1.5, label="TP ratio")
+        ax.set_ylim(0.0, 1.0)
+        ax.set_title(f"TP vs {error_type}")
+        ax.set_ylabel(metric.upper())
+        ax.set_xticks(x)
+        ax.set_xticklabels(type_df["bin"], rotation=25, ha="right")
+        ax.grid(axis="y", linestyle="--", linewidth=0.5, alpha=0.4)
+        ax.legend(frameon=False)
+    axes[-1].set_xlabel("Bin")
+    fig.suptitle(title)
+    fig.tight_layout()
+    fig.savefig(out_path, dpi=220, bbox_inches="tight")
+    plt.close(fig)
+
+
+def analyze_focused_candidate_performance(df: pd.DataFrame, out_dir: Path) -> None:
+    frames = []
+    for _name, feature in FOCUSED_CANDIDATE_FEATURES.items():
+        frames.append(compute_binned_performance(df, feature, scope="overall"))
+        for error_type in FP_ERROR_TYPES:
+            frames.append(compute_binned_performance(df, feature, scope="error_type", error_type=error_type))
+    result = pd.concat([frame for frame in frames if not frame.empty], ignore_index=True)
+    result.to_csv(out_dir / "focused_candidate_performance_by_bin.csv", index=False)
+    if result.empty:
+        return
+
+    plot_overall_focused_performance(
+        result,
+        FOCUSED_CANDIDATE_FEATURES["candidate_count"],
+        "MetaDetect Performance by Number of Candidate Boxes",
+        out_dir / "candidate_count_overall_performance.png",
+    )
+    plot_overall_focused_performance(
+        result,
+        FOCUSED_CANDIDATE_FEATURES["candidate_score"],
+        "MetaDetect Performance by Candidate Score",
+        out_dir / "candidate_score_overall_performance.png",
+    )
+    for metric in ["auroc", "ap"]:
+        plot_error_type_focused_performance(
+            result,
+            FOCUSED_CANDIDATE_FEATURES["candidate_count"],
+            metric,
+            f"MetaDetect {metric.upper()} by Candidate Count and FP Type",
+            out_dir / f"candidate_count_by_error_type_{metric}.png",
+        )
+        plot_error_type_focused_performance(
+            result,
+            FOCUSED_CANDIDATE_FEATURES["candidate_score"],
+            metric,
+            f"MetaDetect {metric.upper()} by Candidate Score and FP Type",
+            out_dir / f"candidate_score_by_error_type_{metric}.png",
+        )
+
+
 def analyze_error_type_features(
     df: pd.DataFrame, feature_groups: list[dict[str, object]], out_dir: Path
 ) -> None:
@@ -341,7 +487,7 @@ def analyze_error_type_features(
     for error_type in FP_ERROR_TYPES:
         subset = df[
             (df["y_test"] == 1)
-            | ((df["y_test"] == 0) & (df["error_type"] == error_type))
+            | ((df["y_test"] == 0) & (df["fp_error_type"] == error_type))
         ].copy()
         if subset["y_test"].nunique() < 2:
             continue
@@ -458,6 +604,7 @@ def main() -> None:
 
     analyze_failures(df, out_dir)
     analyze_candidate_informativeness(df, out_dir)
+    analyze_focused_candidate_performance(df, out_dir)
     analyze_error_type_features(df, features, out_dir)
 
     metadata = {
