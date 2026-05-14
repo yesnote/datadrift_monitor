@@ -165,13 +165,10 @@ def load_object(path: Path) -> Any:
 
 
 def parse_root_info(root_path: Path) -> tuple[str, str, str]:
-    # Current format: .../object_detectors/runs/{time}_{cue}_{target?}
-    # Legacy format:  .../runs/{model_group}/{time}_{cue}_{target?}
-    # Legacy format:  .../runs/{model_group}/{cue}/{time}
-    parent = root_path.parent
-    if parent.name == "runs":
-        model_group = "bbox_predictions"
-        run_name = root_path.name
+    # Supported formats:
+    #   .../object_detectors/runs/{time}_{cue}_{target?}
+    #   .../object_detectors/runs/{dataset}/{time}_{cue}_{target?}
+    def _parse_tail(model_group: str, run_name: str) -> tuple[str, str, str]:
         match = re.match(r"^\d{2}-\d{2}-\d{4}_\d{2};\d{2}_(.+)$", run_name)
         tail = match.group(1) if match else run_name
         for cue_name in ("layer_grad", "class_probability", "mc_dropout", "meta_detect", "entropy", "energy", "ensemble", "score", "gt", "tp"):
@@ -182,8 +179,14 @@ def parse_root_info(root_path: Path) -> tuple[str, str, str]:
                 return model_group, cue_name, tail[len(prefix):]
         return model_group, tail, ""
 
+    parent = root_path.parent
+    if parent.name == "runs":
+        return _parse_tail("bbox_predictions", root_path.name)
+    if parent.parent.name == "runs":
+        return _parse_tail(parent.name, root_path.name)
+
     raise ValueError(
-        "dataset root must follow object_detectors/runs/{time}_{cue}_{target?} "
+        "dataset root must follow object_detectors/runs/{dataset?}/{time}_{cue}_{target?} "
     )
 
 
@@ -238,40 +241,34 @@ def load_training_dataframe(dataset_cfg: dict[str, Any]) -> tuple[pd.DataFrame, 
         "energy": "energy.csv",
         "ensemble": "ensemble.csv",
     }
-    if input_group == "bbox_predictions":
-        gt_csv = gt_root / "tp.csv"
-        if not gt_csv.is_file():
-            raise FileNotFoundError(f"tp.csv not found: {gt_csv}")
-        header = pd.read_csv(gt_csv, nrows=0)
-        label_col = "gt_iou" if "gt_iou" in header.columns else "max_iou"
-        gt_df = pd.read_csv(gt_csv)
-        raw_key_set = {"image_id", "image_path", "raw_pred_idx", label_col}
-        pred_key_set = {"image_id", "image_path", "pred_idx", label_col}
-        bbox_key_set = {"image_id", "image_path", "xmin", "ymin", "xmax", "ymax", label_col}
-        has_raw_keys = raw_key_set.issubset(gt_df.columns)
-        has_pred_keys = pred_key_set.issubset(gt_df.columns)
-        has_bbox_keys = bbox_key_set.issubset(gt_df.columns)
-        if has_raw_keys:
-            base_merge_keys = ["image_id", "image_path", "raw_pred_idx"]
-        elif has_pred_keys:
-            base_merge_keys = ["image_id", "image_path", "pred_idx"]
-        elif has_bbox_keys:
-            base_merge_keys = ["image_id", "image_path", "xmin", "ymin", "xmax", "ymax"]
-        else:
-            raise ValueError("tp.csv missing required join keys.")
-        keep_cols = list(base_merge_keys) + [label_col]
-        if has_bbox_keys:
-            keep_cols.extend(["image_id", "image_path", "xmin", "ymin", "xmax", "ymax"])
-        if has_raw_keys:
-            keep_cols.extend(["image_id", "image_path", "raw_pred_idx"])
-        if has_pred_keys:
-            keep_cols.extend(["image_id", "image_path", "pred_idx"])
-        gt_df = gt_df[list(dict.fromkeys(keep_cols))]
+    gt_csv = gt_root / "tp.csv"
+    if not gt_csv.is_file():
+        raise FileNotFoundError(f"tp.csv not found: {gt_csv}")
+    header = pd.read_csv(gt_csv, nrows=0)
+    label_col = "gt_iou" if "gt_iou" in header.columns else "max_iou"
+    gt_df = pd.read_csv(gt_csv)
+    raw_key_set = {"image_id", "image_path", "raw_pred_idx", label_col}
+    pred_key_set = {"image_id", "image_path", "pred_idx", label_col}
+    bbox_key_set = {"image_id", "image_path", "xmin", "ymin", "xmax", "ymax", label_col}
+    has_raw_keys = raw_key_set.issubset(gt_df.columns)
+    has_pred_keys = pred_key_set.issubset(gt_df.columns)
+    has_bbox_keys = bbox_key_set.issubset(gt_df.columns)
+    if has_raw_keys:
+        base_merge_keys = ["image_id", "image_path", "raw_pred_idx"]
+    elif has_pred_keys:
+        base_merge_keys = ["image_id", "image_path", "pred_idx"]
+    elif has_bbox_keys:
+        base_merge_keys = ["image_id", "image_path", "xmin", "ymin", "xmax", "ymax"]
     else:
-        raise ValueError(
-            "Unsupported model group from dataset roots: "
-            f"'{input_group}'. Expected bbox prediction runs."
-        )
+        raise ValueError("tp.csv missing required join keys.")
+    keep_cols = list(base_merge_keys) + [label_col]
+    if has_bbox_keys:
+        keep_cols.extend(["image_id", "image_path", "xmin", "ymin", "xmax", "ymax"])
+    if has_raw_keys:
+        keep_cols.extend(["image_id", "image_path", "raw_pred_idx"])
+    if has_pred_keys:
+        keep_cols.extend(["image_id", "image_path", "pred_idx"])
+    gt_df = gt_df[list(dict.fromkeys(keep_cols))]
 
     merged = gt_df.copy()
     prefixed_feature_columns: list[str] = []
@@ -363,8 +360,7 @@ def load_training_dataframe(dataset_cfg: dict[str, Any]) -> tuple[pd.DataFrame, 
 
         merged_next = merged.merge(feature_df, on=merge_keys, how="inner")
         if (
-            input_group == "bbox_predictions"
-            and merged_next.empty
+            merged_next.empty
             and merge_keys in (
                 ["image_id", "image_path", "raw_pred_idx"],
                 ["image_id", "image_path", "pred_idx"],
