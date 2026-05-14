@@ -1129,3 +1129,96 @@ def assign_tp_to_predictions(
     return tp_flags, best_ious
 
 
+def analyze_prediction_error_types(
+    gt_boxes,
+    gt_class_names,
+    pred_boxes,
+    pred_class_names,
+    pred_scores,
+    iou_match_threshold,
+    background_iou_threshold=0.1,
+):
+    n_pred = len(pred_boxes)
+    tp_flags = [0] * n_pred
+    best_same_class_ious = [0.0] * n_pred
+    best_any_class_ious = [0.0] * n_pred
+    best_same_class_gt_indices = [-1] * n_pred
+    best_any_class_gt_indices = [-1] * n_pred
+    best_same_class_gt_classes = [""] * n_pred
+    best_any_class_gt_classes = [""] * n_pred
+    matched_gt_indices = [-1] * n_pred
+    duplicate_flags = [0] * n_pred
+    error_types = ["background_fp"] * n_pred
+
+    sorted_indices = list(range(n_pred))
+    if pred_scores is not None:
+        sorted_indices.sort(key=lambda i: float(pred_scores[i]), reverse=True)
+
+    claimed_gt_indices = set()
+    for pred_idx in sorted_indices:
+        pred_box = pred_boxes[pred_idx]
+        pred_name = pred_class_names[pred_idx]
+
+        best_same_iou = 0.0
+        best_same_idx = -1
+        best_any_iou = 0.0
+        best_any_idx = -1
+        for gt_idx, (gt_box, gt_name) in enumerate(zip(gt_boxes, gt_class_names)):
+            iou = box_iou_xyxy(gt_box, pred_box)
+            if iou > best_any_iou:
+                best_any_iou = iou
+                best_any_idx = gt_idx
+            if classes_match(gt_name, pred_name) and iou > best_same_iou:
+                best_same_iou = iou
+                best_same_idx = gt_idx
+
+        best_same_class_ious[pred_idx] = float(best_same_iou)
+        best_any_class_ious[pred_idx] = float(best_any_iou)
+        best_same_class_gt_indices[pred_idx] = int(best_same_idx)
+        best_any_class_gt_indices[pred_idx] = int(best_any_idx)
+        if best_same_idx >= 0:
+            best_same_class_gt_classes[pred_idx] = str(gt_class_names[best_same_idx])
+        if best_any_idx >= 0:
+            best_any_class_gt_classes[pred_idx] = str(gt_class_names[best_any_idx])
+
+        if best_same_idx >= 0 and best_same_iou >= iou_match_threshold:
+            matched_gt_indices[pred_idx] = int(best_same_idx)
+            if best_same_idx not in claimed_gt_indices:
+                tp_flags[pred_idx] = 1
+                error_types[pred_idx] = "tp"
+                claimed_gt_indices.add(best_same_idx)
+            else:
+                duplicate_flags[pred_idx] = 1
+                error_types[pred_idx] = "duplicate_fp"
+        elif best_any_idx >= 0 and best_any_iou >= iou_match_threshold:
+            error_types[pred_idx] = "classification_fp"
+        elif best_same_idx >= 0 and best_same_iou >= background_iou_threshold:
+            error_types[pred_idx] = "localization_fp"
+        else:
+            error_types[pred_idx] = "background_fp"
+
+    rows = []
+    for pred_idx in range(n_pred):
+        error_type = error_types[pred_idx]
+        rows.append(
+            {
+                "tp": int(tp_flags[pred_idx]),
+                "max_iou": float(best_same_class_ious[pred_idx]),
+                "gt_iou": float(best_same_class_ious[pred_idx]),
+                "error_type": error_type,
+                "best_same_class_iou": float(best_same_class_ious[pred_idx]),
+                "best_any_class_iou": float(best_any_class_ious[pred_idx]),
+                "best_same_class_gt_idx": int(best_same_class_gt_indices[pred_idx]),
+                "best_any_class_gt_idx": int(best_any_class_gt_indices[pred_idx]),
+                "best_same_class_gt_class": best_same_class_gt_classes[pred_idx],
+                "best_any_class_gt_class": best_any_class_gt_classes[pred_idx],
+                "matched_gt_idx": int(matched_gt_indices[pred_idx]),
+                "is_duplicate": int(duplicate_flags[pred_idx]),
+                "is_background_fp": int(error_type == "background_fp"),
+                "is_localization_fp": int(error_type == "localization_fp"),
+                "is_classification_fp": int(error_type == "classification_fp"),
+            }
+        )
+    return rows
+
+
