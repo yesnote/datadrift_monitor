@@ -17,6 +17,7 @@ from commands.run_train import (
     infer_feature_spec,
     load_object,
     load_training_dataframe,
+    make_eval_dataframe,
     sanitize_feature_matrix,
 )
 
@@ -110,7 +111,7 @@ def run_test(config: dict[str, Any], run_dir: Path) -> Path:
                 "ace": float(ace),
             }
         )
-        pd.DataFrame({"y_test": y, "y_pred": y_pred}).to_csv(
+        make_eval_dataframe(df, y, y_pred).to_csv(
             results_dir / f"eval_data_test_{model_name}.csv",
             index=False,
         )

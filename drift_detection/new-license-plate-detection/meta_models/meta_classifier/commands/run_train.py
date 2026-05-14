@@ -31,6 +31,34 @@ except Exception:  # pragma: no cover
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 _NPZ_FEATURE_CACHE: dict[Path, Any] = {}
 
+EVAL_CONTEXT_COLUMNS = [
+    "image_id",
+    "image_path",
+    "pred_idx",
+    "raw_pred_idx",
+    "xmin",
+    "ymin",
+    "xmax",
+    "ymax",
+    "score",
+    "pred_class",
+    "tp",
+    "max_iou",
+    "gt_iou",
+    "error_type",
+    "best_same_class_iou",
+    "best_any_class_iou",
+    "best_same_class_gt_idx",
+    "best_any_class_gt_idx",
+    "best_same_class_gt_class",
+    "best_any_class_gt_class",
+    "matched_gt_idx",
+    "is_duplicate",
+    "is_background_fp",
+    "is_localization_fp",
+    "is_classification_fp",
+]
+
 
 @dataclass
 class FeatureSpec:
@@ -184,6 +212,15 @@ def load_object(path: Path) -> Any:
         with open(path, "rb") as f:
             return pickle.load(f)
     raise ValueError(f"Unsupported model file suffix: {path.suffix}")
+
+
+def make_eval_dataframe(df_subset: pd.DataFrame, y_true: np.ndarray, y_pred: np.ndarray) -> pd.DataFrame:
+    context_cols = [col for col in EVAL_CONTEXT_COLUMNS if col in df_subset.columns]
+    out = df_subset[context_cols].reset_index(drop=True).copy()
+    out.insert(0, "row_index", df_subset.index.to_numpy())
+    out["y_test"] = y_true
+    out["y_pred"] = y_pred
+    return out
 
 
 def parse_root_info(root_path: Path) -> tuple[str, str, str]:
@@ -534,7 +571,7 @@ def run_train(config: dict[str, Any], run_dir: Path) -> Path:
             ace = compute_ace(y_test, y_pred)
             eval_rows.append({"auroc": float(auroc), "ap": float(ap), "ece": float(ece), "ace": float(ace)})
 
-            pd.DataFrame({"y_test": y_test, "y_pred": y_pred}).to_csv(results_dir / f"eval_data_{i}.csv", index=False)
+            make_eval_dataframe(df.iloc[test_idx], y_test, y_pred).to_csv(results_dir / f"eval_data_{i}.csv", index=False)
             save_eval_plots(y_test, y_pred, out_dir=out_dir, model_name=f"model_{i}", label_col=label_col)
             save_object(estimator, models_dir / f"model_{i}")
     elif process == "repeat":
@@ -567,7 +604,7 @@ def run_train(config: dict[str, Any], run_dir: Path) -> Path:
             ace = compute_ace(y_test, y_pred)
             eval_rows.append({"auroc": float(auroc), "ap": float(ap), "ece": float(ece), "ace": float(ace)})
 
-            pd.DataFrame({"y_test": y_test, "y_pred": y_pred}).to_csv(results_dir / f"eval_data_{i}.csv", index=False)
+            make_eval_dataframe(df.iloc[test_idx], y_test, y_pred).to_csv(results_dir / f"eval_data_{i}.csv", index=False)
             save_eval_plots(y_test, y_pred, out_dir=out_dir, model_name=f"model_{i}", label_col=label_col)
             save_object(estimator, models_dir / f"model_{i}")
     else:

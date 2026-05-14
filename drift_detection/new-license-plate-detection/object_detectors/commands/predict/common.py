@@ -22,6 +22,7 @@ import matplotlib.pyplot as plt  # noqa: E402
 from dataloaders.dataloader_yolo import build_dataset, create_dataloader, yolo_collate_fn
 from commands.utils.predict_utils import (
     assign_tp_to_predictions,
+    analyze_prediction_error_types,
     _box_iou_1vN_tensor,
     build_layer_target_scalar_bbox,
     build_detector,

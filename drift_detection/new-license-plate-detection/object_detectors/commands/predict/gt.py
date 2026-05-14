@@ -152,6 +152,18 @@ def run_tp_csv(config, run_dir):
         "max_iou",
         "gt_iou",
         "tp",
+        "error_type",
+        "best_same_class_iou",
+        "best_any_class_iou",
+        "best_same_class_gt_idx",
+        "best_any_class_gt_idx",
+        "best_same_class_gt_class",
+        "best_any_class_gt_class",
+        "matched_gt_idx",
+        "is_duplicate",
+        "is_background_fp",
+        "is_localization_fp",
+        "is_classification_fp",
     ]
 
     catid_to_name = load_gt_category_maps(config, split)
@@ -208,7 +220,7 @@ def run_tp_csv(config, run_dir):
                 gt_boxes = map_boxes_to_letterbox(gt_boxes_tensor, ratios[sample_idx], pads[sample_idx])
                 gt_class_names = _resolve_gt_class_names(target, catid_to_name)
 
-                tp_flags, best_ious = assign_tp_to_predictions(
+                error_rows = analyze_prediction_error_types(
                     gt_boxes=gt_boxes,
                     gt_class_names=gt_class_names,
                     pred_boxes=pred_boxes,
@@ -216,6 +228,8 @@ def run_tp_csv(config, run_dir):
                     pred_scores=pred_scores,
                     iou_match_threshold=iou_match_threshold,
                 )
+                tp_flags = [row["tp"] for row in error_rows]
+                best_ious = [row["gt_iou"] for row in error_rows]
 
                 should_save_image = (
                     save_image
@@ -276,9 +290,7 @@ def run_tp_csv(config, run_dir):
                                 "ymax": float(box[3]),
                                 "score": float(score),
                                 "pred_class": pred_class,
-                                "max_iou": float(best_ious[pred_idx]),
-                                "gt_iou": float(best_ious[pred_idx]),
-                                "tp": int(tp_flags[pred_idx]),
+                                **error_rows[pred_idx],
                             }
                         )
             del infer_batch, model_output, raw_prediction, raw_logits, selected_preds, selected_indices
