@@ -1,0 +1,108 @@
+mode: predict
+
+model:
+  type: yolov5
+  weights: object_detectors/models/yolo/weights/voc/yolov5x.pt
+  img_size: 640
+  confidence_threshold: 0.25
+  iou_threshold: 0.45
+  device: cuda
+
+dataset:
+  used_dataset:   # coco | voc | openimages
+    - voc
+    # - coco
+  split:  # train | val
+    - train
+    # - val
+  used_ratio:
+    - 0.5
+    # - 1.0
+
+  coco:
+    root: D:/SEONGJIN/datasets/COCO
+    train_split: train2017
+    val_split: val2017
+    image_dir: images
+    annotation_dir: annotations
+    train_annotation_file: instances_train2017.json
+    val_annotation_file: instances_val2017.json
+
+  voc:
+    root: D:/SEONGJIN/datasets/VOC/VOCdevkit/VOC2012
+    train_split: train
+    val_split: val
+
+  openimages:
+    root: D:/SEONGJIN/datasets/OIDv4_ToolKit/OID/Dataset
+    train_split: train
+    val_split: validation
+    test_split: test
+    min_gt_boxes: 1
+
+dataloader:
+  batch_size: 8
+  num_workers: 4
+  pin_memory: false
+  shuffle_train: false
+  shuffle_eval: false
+
+output:
+  uncertainty: layer_grad  # gt | deterministic | score | class_probability | entropy | energy | mc_dropout | ensemble | meta_detect | layer_grad
+
+  gt:
+    iou_match_threshold: 0.45
+    save_csv:
+      enabled: false
+    save_image:
+      enabled: false
+      step: 10
+      max_num: 10
+
+  score:
+    save_csv:
+      enabled: false
+
+  class_probability:
+    save_csv:
+      enabled: false
+
+  entropy:
+    save_csv:
+      enabled: false
+
+  energy:
+    save_csv:
+      enabled: false
+
+  mc_dropout:
+    num_runs: 30
+    dropout_rate: 0.5
+    save_csv:
+      enabled: false
+
+  ensemble:
+    weights:
+      - object_detectors/runs/train/coco/04-14-2026_16;03_yolov5/weights/last.pt
+      - object_detectors/runs/train/coco/04-15-2026_13;09_yolov5/weights/last.pt
+      - object_detectors/runs/train/coco/04-16-2026_13;20_yolov5/weights/last.pt
+      - object_detectors/runs/train/coco/04-27-2026_14;07_yolov5/weights/last.pt
+      - object_detectors/runs/train/coco/04-28-2026_13;32_yolov5/weights/last.pt
+    save_csv:
+      enabled: false
+
+  meta_detect:
+    score_threshold: 0.0
+    iou_threshold: 0.45
+    save_csv:
+      enabled: false
+
+  layer_grad:
+    gradient:
+      scalar: [loss]
+      layer: ["model.24.m.0", "model.24.m.1", "model.24.m.2"]
+      reduction: [l1_norm, l2_norm, min, max, mean, std]  # [] saves raw gradient vectors
+      target: cand_target # cand_target | null_target
+      cand_score_threshold: 0.0
+    save_csv:
+      enabled: true
