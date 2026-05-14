@@ -6,8 +6,9 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-
-META_DETECT_RUN_PATH = r"object_detectors/runs/predict/coco/00-00-0000_00;00_meta_detect"
+META_DETECT_RUN_PATH = (
+    r"object_detectors/runs/predict/coco/00-00-0000_00;00_meta_detect"
+)
 OUTPUT_ROOT = Path(__file__).resolve().parent / "runs"
 FIGSIZE_SCALE = 0.32
 MIN_FIGSIZE = 10.0
@@ -106,9 +107,8 @@ def semantic_group(feature_name: str) -> str:
         return "class_probability"
     if feature_name.startswith("score_"):
         return "score"
-    if (
-        feature_name in {"size", "circum", "size_circum"}
-        or feature_name.startswith(("x_", "y_", "w_", "h_", "size_", "circum_", "size_circum_", "iou_pb_"))
+    if feature_name in {"size", "circum", "size_circum"} or feature_name.startswith(
+        ("x_", "y_", "w_", "h_", "size_", "circum_", "size_circum_", "iou_pb_")
     ):
         return "localization"
     return "other"
@@ -146,9 +146,13 @@ def prob_sort_key(feature_name: str) -> tuple[int, int, str]:
     return (1, 0, feature_name)
 
 
-def sort_features(features: list[dict[str, object]], group_fn, group_order: list[str]) -> tuple[list[dict[str, object]], dict[str, str]]:
+def sort_features(
+    features: list[dict[str, object]], group_fn, group_order: list[str]
+) -> tuple[list[dict[str, object]], dict[str, str]]:
     group_index = {name: idx for idx, name in enumerate(group_order)}
-    group_by_feature = {str(feature["name"]): group_fn(str(feature["name"])) for feature in features}
+    group_by_feature = {
+        str(feature["name"]): group_fn(str(feature["name"])) for feature in features
+    }
 
     def key(feature: dict[str, object]):
         name = str(feature["name"])
@@ -158,12 +162,16 @@ def sort_features(features: list[dict[str, object]], group_fn, group_order: list
     return sorted(features, key=key), group_by_feature
 
 
-def correlation_matrix(df: pd.DataFrame, features: list[dict[str, object]]) -> pd.DataFrame:
+def correlation_matrix(
+    df: pd.DataFrame, features: list[dict[str, object]]
+) -> pd.DataFrame:
     all_columns = []
     for feature in features:
         all_columns.extend(str(col) for col in feature["columns"])
     all_columns = list(dict.fromkeys(all_columns))
-    base_corr = df[all_columns].apply(pd.to_numeric, errors="coerce").corr(method="pearson")
+    base_corr = (
+        df[all_columns].apply(pd.to_numeric, errors="coerce").corr(method="pearson")
+    )
     base_corr = base_corr.replace([np.inf, -np.inf], np.nan).fillna(0.0)
 
     names = [str(feature["name"]) for feature in features]
@@ -176,11 +184,15 @@ def correlation_matrix(df: pd.DataFrame, features: list[dict[str, object]]) -> p
                 continue
             col_cols = [str(col) for col in col_feature["columns"]]
             sub_corr = base_corr.loc[row_cols, col_cols].to_numpy(dtype=float)
-            matrix[row_idx, col_idx] = float(np.nanmean(sub_corr)) if sub_corr.size else 0.0
+            matrix[row_idx, col_idx] = (
+                float(np.nanmean(sub_corr)) if sub_corr.size else 0.0
+            )
     return pd.DataFrame(matrix, index=names, columns=names)
 
 
-def group_boundaries(columns: list[str], group_by_feature: dict[str, str]) -> list[tuple[str, int, int]]:
+def group_boundaries(
+    columns: list[str], group_by_feature: dict[str, str]
+) -> list[tuple[str, int, int]]:
     if not columns:
         return []
     spans = []
@@ -196,7 +208,13 @@ def group_boundaries(columns: list[str], group_by_feature: dict[str, str]) -> li
     return spans
 
 
-def plot_corr(corr: pd.DataFrame, group_by_feature: dict[str, str], group_labels: dict[str, str], title: str, out_path: Path) -> None:
+def plot_corr(
+    corr: pd.DataFrame,
+    group_by_feature: dict[str, str],
+    group_labels: dict[str, str],
+    title: str,
+    out_path: Path,
+) -> None:
     import matplotlib
 
     matplotlib.use("Agg")
@@ -205,7 +223,13 @@ def plot_corr(corr: pd.DataFrame, group_by_feature: dict[str, str], group_labels
     columns = list(corr.columns)
     size = max(MIN_FIGSIZE, len(columns) * FIGSIZE_SCALE)
     fig, ax = plt.subplots(figsize=(size, size))
-    image = ax.imshow(corr.to_numpy(dtype=float), cmap="coolwarm", vmin=-1.0, vmax=1.0, interpolation="nearest")
+    image = ax.imshow(
+        corr.to_numpy(dtype=float),
+        cmap="coolwarm",
+        vmin=-1.0,
+        vmax=1.0,
+        interpolation="nearest",
+    )
     ax.set_title(title)
     ax.set_xticks(range(len(columns)))
     ax.set_yticks(range(len(columns)))
@@ -217,8 +241,19 @@ def plot_corr(corr: pd.DataFrame, group_by_feature: dict[str, str], group_labels
         center = (start + end - 1) / 2.0
         ax.axhline(start - 0.5, color="black", linewidth=0.8)
         ax.axvline(start - 0.5, color="black", linewidth=0.8)
-        ax.text(-1.8, center, label, va="center", ha="right", fontsize=8, fontweight="bold")
-        ax.text(center, -1.8, label, va="bottom", ha="center", rotation=90, fontsize=8, fontweight="bold")
+        ax.text(
+            -1.8, center, label, va="center", ha="right", fontsize=8, fontweight="bold"
+        )
+        ax.text(
+            center,
+            -1.8,
+            label,
+            va="bottom",
+            ha="center",
+            rotation=90,
+            fontsize=8,
+            fontweight="bold",
+        )
     ax.axhline(len(columns) - 0.5, color="black", linewidth=0.8)
     ax.axvline(len(columns) - 0.5, color="black", linewidth=0.8)
 
@@ -232,13 +267,23 @@ def plot_corr(corr: pd.DataFrame, group_by_feature: dict[str, str], group_labels
 
 def make_output_dir(meta_detect_csv: Path) -> Path:
     timestamp = datetime.now().strftime("%m-%d-%Y_%H;%M")
-    run_name = meta_detect_csv.parent.name if meta_detect_csv.name == "meta_detect.csv" else meta_detect_csv.stem
-    safe_run_name = "".join(ch if ch.isalnum() or ch in {"_", "-", ";"} else "_" for ch in run_name).strip("_")
+    run_name = (
+        meta_detect_csv.parent.name
+        if meta_detect_csv.name == "meta_detect.csv"
+        else meta_detect_csv.stem
+    )
+    safe_run_name = "".join(
+        ch if ch.isalnum() or ch in {"_", "-", ";"} else "_" for ch in run_name
+    ).strip("_")
     return OUTPUT_ROOT / f"{timestamp}_meta_detect_feature_correlation_{safe_run_name}"
 
 
-def write_group_csv(columns: list[str], group_by_feature: dict[str, str], out_path: Path) -> None:
-    rows = [{"feature": col, "group": group_by_feature.get(col, "other")} for col in columns]
+def write_group_csv(
+    columns: list[str], group_by_feature: dict[str, str], out_path: Path
+) -> None:
+    rows = [
+        {"feature": col, "group": group_by_feature.get(col, "other")} for col in columns
+    ]
     pd.DataFrame(rows).to_csv(out_path, index=False)
 
 
@@ -259,11 +304,15 @@ def main() -> None:
     out_dir = make_output_dir(meta_detect_csv)
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    semantic_features, semantic_groups = sort_features(features, semantic_group, SEMANTIC_GROUP_ORDER)
+    semantic_features, semantic_groups = sort_features(
+        features, semantic_group, SEMANTIC_GROUP_ORDER
+    )
     semantic_columns = [str(feature["name"]) for feature in semantic_features]
     semantic_corr = correlation_matrix(df, semantic_features)
     semantic_corr.to_csv(out_dir / "semantic_group_correlation.csv")
-    write_group_csv(semantic_columns, semantic_groups, out_dir / "semantic_group_features.csv")
+    write_group_csv(
+        semantic_columns, semantic_groups, out_dir / "semantic_group_features.csv"
+    )
     plot_corr(
         semantic_corr,
         semantic_groups,
@@ -272,11 +321,15 @@ def main() -> None:
         out_dir / "semantic_group_correlation_matrix.png",
     )
 
-    source_features, source_groups = sort_features(features, source_group, SOURCE_GROUP_ORDER)
+    source_features, source_groups = sort_features(
+        features, source_group, SOURCE_GROUP_ORDER
+    )
     source_columns = [str(feature["name"]) for feature in source_features]
     source_corr = correlation_matrix(df, source_features)
     source_corr.to_csv(out_dir / "source_group_correlation.csv")
-    write_group_csv(source_columns, source_groups, out_dir / "source_group_features.csv")
+    write_group_csv(
+        source_columns, source_groups, out_dir / "source_group_features.csv"
+    )
     plot_corr(
         source_corr,
         source_groups,
