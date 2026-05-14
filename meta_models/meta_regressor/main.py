@@ -56,6 +56,7 @@ def parse_root_info(root_path: Path) -> tuple[str, str, str]:
     # Supported formats:
     #   .../object_detectors/runs/{time}_{cue}_{target?}
     #   .../object_detectors/runs/{dataset}/{time}_{cue}_{target?}
+    #   .../object_detectors/runs/{mode}/{dataset}/{time}_{cue}_{target?}
     def _parse_tail(model_group: str, run_name: str) -> tuple[str, str, str]:
         match = re.match(r"^\d{2}-\d{2}-\d{4}_\d{2};\d{2}_(.+)$", run_name)
         tail = match.group(1) if match else run_name
@@ -72,9 +73,11 @@ def parse_root_info(root_path: Path) -> tuple[str, str, str]:
         return _parse_tail("bbox_predictions", root_path.name)
     if parent.parent.name == "runs":
         return _parse_tail(parent.name, root_path.name)
+    if parent.parent.parent.name == "runs":
+        return _parse_tail(parent.name, root_path.name)
 
     raise ValueError(
-        "dataset root must follow object_detectors/runs/{dataset?}/{time}_{cue}_{target?} "
+        "dataset root must follow object_detectors/runs/{mode?}/{dataset?}/{time}_{cue}_{target?} "
     )
 
 
@@ -123,9 +126,16 @@ def main() -> None:
 
     if mode == "feature_ablation":
         cue_for_run = f"{input_cue}_meta_regressor_feature_ablation"
+        mode_subdir = "feature_ablation"
     else:
         cue_for_run = input_cue if mode == "train" else f"{input_cue}_meta_regressor_test"
-    run_dir = create_run_dir(model_group=input_group, cue=cue_for_run, target_value=input_target).resolve()
+        mode_subdir = mode
+    run_dir = create_run_dir(
+        model_group=input_group,
+        cue=cue_for_run,
+        target_value=input_target,
+        mode_subdir=mode_subdir,
+    ).resolve()
     save_used_config(config_path, run_dir)
     if mode == "train":
         run_train(config, run_dir)

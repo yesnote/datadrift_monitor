@@ -57,6 +57,7 @@ def parse_root_info(root_path: Path) -> tuple[str, str, str]:
     # Supported formats:
     #   .../object_detectors/runs/{time}_{cue}_{target?}
     #   .../object_detectors/runs/{dataset}/{time}_{cue}_{target?}
+    #   .../object_detectors/runs/{mode}/{dataset}/{time}_{cue}_{target?}
     def _parse_tail(model_group: str, run_name: str) -> tuple[str, str, str]:
         match = re.match(r"^\d{2}-\d{2}-\d{4}_\d{2};\d{2}_(.+)$", run_name)
         tail = match.group(1) if match else run_name
@@ -73,9 +74,11 @@ def parse_root_info(root_path: Path) -> tuple[str, str, str]:
         return _parse_tail("bbox_predictions", root_path.name)
     if parent.parent.name == "runs":
         return _parse_tail(parent.name, root_path.name)
+    if parent.parent.parent.name == "runs":
+        return _parse_tail(parent.name, root_path.name)
 
     raise ValueError(
-        "dataset root must follow object_detectors/runs/{dataset?}/{time}_{cue}_{target?} "
+        "dataset root must follow object_detectors/runs/{mode?}/{dataset?}/{time}_{cue}_{target?} "
     )
 
 
@@ -105,7 +108,12 @@ def main() -> None:
         name_b = str(compare_cfg.get("name_b", "")).strip() or run_b.name
         safe_a = "".join(ch if ch.isalnum() or ch in {"-", "_"} else "_" for ch in name_a).strip("_").lower() or "a"
         safe_b = "".join(ch if ch.isalnum() or ch in {"-", "_"} else "_" for ch in name_b).strip("_").lower() or "b"
-        run_dir = create_run_dir(model_group="comparisons", cue="meta_classifier_compare", target_value=f"{safe_a}_vs_{safe_b}").resolve()
+        run_dir = create_run_dir(
+            model_group="comparisons",
+            cue="meta_classifier_compare",
+            target_value=f"{safe_a}_vs_{safe_b}",
+            mode_subdir="compare",
+        ).resolve()
         save_used_config(config_path, run_dir)
         run_compare(config, run_dir)
         return
@@ -142,9 +150,16 @@ def main() -> None:
 
     if mode == "feature_ablation":
         cue_for_run = f"{input_cue}_feature_ablation"
+        mode_subdir = "feature_ablation"
     else:
         cue_for_run = input_cue if mode == "train" else f"{input_cue}_test"
-    run_dir = create_run_dir(model_group=input_group, cue=cue_for_run, target_value=input_target).resolve()
+        mode_subdir = mode
+    run_dir = create_run_dir(
+        model_group=input_group,
+        cue=cue_for_run,
+        target_value=input_target,
+        mode_subdir=mode_subdir,
+    ).resolve()
     save_used_config(config_path, run_dir)
     if mode == "train":
         run_train(config, run_dir)
