@@ -7,11 +7,7 @@ import pandas as pd
 
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt  # noqa: E402
-from sklearn.linear_model import LogisticRegression  # noqa: E402
 from sklearn.metrics import roc_auc_score, roc_curve  # noqa: E402
-from sklearn.model_selection import StratifiedKFold, cross_val_predict  # noqa: E402
-from sklearn.pipeline import make_pipeline  # noqa: E402
-from sklearn.preprocessing import StandardScaler  # noqa: E402
 
 
 # Fill this with one or more object_detectors/runs/.../<time>_predict_dump paths.
@@ -53,28 +49,15 @@ def _numeric_score(df, column):
     return pd.to_numeric(df[column], errors="coerce").to_numpy(dtype=float)
 
 
-def _bbox_classifier_score(df):
-    cols = ["bbox_cx", "bbox_cy", "bbox_w", "bbox_h"]
-    missing = [c for c in cols if c not in df.columns]
-    if missing:
-        raise ValueError(f"Missing bbox columns for bbox meta classifier: {missing}")
-    x = df[cols].apply(pd.to_numeric, errors="coerce").to_numpy(dtype=float)
-    y = df["tp"].to_numpy(dtype=int)
-    valid = np.isfinite(x).all(axis=1)
-    scores = np.full((len(df),), np.nan, dtype=float)
-    if valid.sum() < 10 or len(np.unique(y[valid])) < 2:
-        return scores
-    class_counts = np.bincount(y[valid], minlength=2)
-    n_splits = int(min(5, class_counts[class_counts > 0].min()))
-    if n_splits < 2:
-        return scores
-    model = make_pipeline(
-        StandardScaler(),
-        LogisticRegression(max_iter=1000, class_weight="balanced", solver="lbfgs"),
-    )
-    cv = StratifiedKFold(n_splits=n_splits, shuffle=True, random_state=42)
-    scores[valid] = cross_val_predict(model, x[valid], y[valid], cv=cv, method="predict_proba")[:, 1]
-    return scores
+def _bbox_area_score(df):
+    if "bbox_area" in df.columns:
+        return _numeric_score(df, "bbox_area")
+    for column in ("bbox_w", "bbox_h"):
+        if column not in df.columns:
+            raise ValueError(f"Missing required column: {column}")
+    w = pd.to_numeric(df["bbox_w"], errors="coerce").to_numpy(dtype=float)
+    h = pd.to_numeric(df["bbox_h"], errors="coerce").to_numpy(dtype=float)
+    return np.maximum(w, 0.0) * np.maximum(h, 0.0)
 
 
 def _oriented_roc(y, score):
@@ -106,7 +89,7 @@ def _plot_grid(df, out_dir):
         ("Prediction", "score", "Score", lambda d: _numeric_score(d, "score")),
         ("Prediction", "objectness", "Objectness", lambda d: _numeric_score(d, "objectness")),
         ("Prediction", "class_probability", "Class probability", lambda d: _numeric_score(d, "class_probability")),
-        ("Prediction", "bbox_meta_classifier", "BBox meta classifier", _bbox_classifier_score),
+        ("Prediction", "bbox_area", "BBox area", _bbox_area_score),
         ("Cand target loss", "score_cand_diff", "Score diff", lambda d: _numeric_score(d, "score_cand_diff")),
         ("Cand target loss", "obj_cand_bce_loss", "Objectness BCE", lambda d: _numeric_score(d, "obj_cand_bce_loss")),
         ("Cand target loss", "cls_cand_onehot_bce_loss", "Class one-hot BCE", lambda d: _numeric_score(d, "cls_cand_onehot_bce_loss")),
