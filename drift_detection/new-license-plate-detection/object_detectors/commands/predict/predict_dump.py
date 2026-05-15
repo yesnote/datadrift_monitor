@@ -133,18 +133,22 @@ def _prediction_dump_losses(
         reduction="sum",
     )
 
-    score_null_diff = torch.abs(pred_score - torch.zeros_like(pred_score))
-    obj_null_bce_loss = F.binary_cross_entropy(pred_obj, torch.zeros_like(pred_obj), reduction="sum")
+    num_classes = int(pred_prob.numel()) if pred_prob.numel() > 0 else 1
+    null_score = torch.full_like(pred_score, 0.5 * (1.0 / float(num_classes)))
+    score_null_diff = torch.abs(pred_score - null_score)
+    obj_null_bce_loss = F.binary_cross_entropy(pred_obj, torch.full_like(pred_obj, 0.5), reduction="sum")
     if pred_prob.numel() > 0:
         p = pred_prob.clamp(eps, 1.0)
         uniform = torch.full_like(p, 1.0 / float(p.numel()))
         cls_uniform_kl = (p * (torch.log(p) - torch.log(uniform))).sum()
     else:
         cls_uniform_kl = torch.zeros((), dtype=torch.float32, device=pred_img.device)
-    if anchor_xywh is not None and anchor_xywh.numel() >= 4:
-        target_bbox = anchor_xywh.to(dtype=pred_row.dtype, device=pred_row.device).view(1, 4)
-    else:
-        target_bbox = torch.zeros((1, 4), dtype=pred_row.dtype, device=pred_row.device)
+    if anchor_xywh is None or anchor_xywh.numel() < 4:
+        raise RuntimeError(
+            "predict_dump requires YOLO anchor priors for bbox_null_ciou_loss, "
+            "but the model output did not provide an anchor for this prediction."
+        )
+    target_bbox = anchor_xywh.to(dtype=pred_row.dtype, device=pred_row.device).view(1, 4)
     bbox_null_ciou_loss = _bbox_ciou_loss_xywh(pred_row[:4].view(1, 4), target_bbox, reduction="sum")
 
     return {
@@ -192,7 +196,8 @@ def run_predict_dump_csv(config, run_dir):
         "xmin", "ymin", "xmax", "ymax", "score", "pred_class",
         "max_iou", "gt_iou", "tp", "error_type",
         "objectness", "class_probability",
-        "bbox_cx", "bbox_cy", "bbox_w", "bbox_h",
+        "bbox_cx", "bbox_cy", "bbox_w", "bbox_h", "bbox_area",
+        "anchor_cx", "anchor_cy", "anchor_w", "anchor_h", "anchor_area",
         *prob_columns,
         "num_candidate_boxes",
         "score_cand_diff", "obj_cand_bce_loss", "cls_cand_onehot_bce_loss", "bbox_cand_ciou_loss",
@@ -234,7 +239,17 @@ def run_predict_dump_csv(config, run_dir):
                 pred_img = raw_prediction[sample_idx].float()
                 logit_img = nms_logits[sample_idx].float() if nms_logits is not None else None
                 prob_img = _resolve_class_probabilities(logit_img, pred_img)
-                anchor_img = raw_anchor_priors[sample_idx] if raw_anchor_priors is not None else None
+                if raw_anchor_priors is None:
+                    raise RuntimeError(
+                        "predict_dump requires YOLO anchor priors, but detector.model() did not return them. "
+                        "Expected model_output[3] with shape [batch, num_raw_predictions, 4]."
+                    )
+                anchor_img = raw_anchor_priors[sample_idx]
+                if int(anchor_img.shape[0]) != int(pred_img.shape[0]):
+                    raise RuntimeError(
+                        "predict_dump anchor prior count does not match raw prediction count: "
+                        f"{int(anchor_img.shape[0])} vs {int(pred_img.shape[0])}."
+                    )
 
                 pred_boxes = det_b[:, :4].detach().cpu().tolist()
                 pred_scores = det_b[:, 4].detach().cpu().tolist() if det_b.shape[1] > 4 else []
@@ -261,7 +276,12 @@ def run_predict_dump_csv(config, run_dir):
                     raw_row = pred_img[raw_pred_idx].float()
                     pred_prob = prob_img[raw_pred_idx].float() if prob_img.numel() > 0 else torch.zeros((0,), dtype=torch.float32, device=device)
                     cls_prob = pred_prob.max() if pred_prob.numel() > 0 else torch.ones((), dtype=torch.float32, device=device)
-                    anchor_xywh = anchor_img[raw_pred_idx] if anchor_img is not None and raw_pred_idx < int(anchor_img.shape[0]) else None
+                    if raw_pred_idx >= int(anchor_img.shape[0]):
+                        raise RuntimeError(
+                            f"raw_pred_idx {raw_pred_idx} is out of range for anchor priors "
+                            f"with length {int(anchor_img.shape[0])}."
+                        )
+                    anchor_xywh = anchor_img[raw_pred_idx].float()
                     loss_values = _prediction_dump_losses(
                         pred_img=pred_img,
                         prob_img=prob_img,
@@ -297,6 +317,12 @@ def run_predict_dump_csv(config, run_dir):
                             "bbox_cy": _to_float(raw_row[1]),
                             "bbox_w": _to_float(raw_row[2]),
                             "bbox_h": _to_float(raw_row[3]),
+                            "bbox_area": _to_float(raw_row[2].clamp(min=0.0) * raw_row[3].clamp(min=0.0)),
+                            "anchor_cx": _to_float(anchor_xywh[0]),
+                            "anchor_cy": _to_float(anchor_xywh[1]),
+                            "anchor_w": _to_float(anchor_xywh[2]),
+                            "anchor_h": _to_float(anchor_xywh[3]),
+                            "anchor_area": _to_float(anchor_xywh[2].clamp(min=0.0) * anchor_xywh[3].clamp(min=0.0)),
                             **prob_values,
                             **{k: _to_float(v) for k, v in loss_values.items()},
                         }
