@@ -98,7 +98,6 @@ def _prediction_dump_losses(
             "score_cand_signed_diff_mean": zero,
             "score_cand_bce_loss_sum": zero,
             "score_cand_bce_loss_mean": zero,
-            "score_cand_diff": zero,
             "obj_cand_abs_diff_sum": zero,
             "obj_cand_abs_diff_mean": zero,
             "obj_cand_signed_diff_sum": zero,
@@ -124,7 +123,6 @@ def _prediction_dump_losses(
             "score_null_abs_diff": zero,
             "score_null_signed_diff": zero,
             "score_null_bce_loss": zero,
-            "score_null_diff": zero,
             "obj_null_abs_diff": zero,
             "obj_null_signed_diff": zero,
             "obj_null_bce_loss": zero,
@@ -188,7 +186,7 @@ def _prediction_dump_losses(
     if pred_softmax_prob.numel() > 0 and cand_softmax_prob.numel() > 0:
         p = pred_softmax_prob.clamp(eps, 1.0).view(1, -1).expand_as(cand_softmax_prob)
         q = cand_softmax_prob.clamp(eps, 1.0)
-        cls_cand_kl_values = (p * (torch.log(p) - torch.log(q))).sum(dim=1)
+        cls_cand_kl_values = (q * (torch.log(q) - torch.log(p))).sum(dim=1)
         cls_cand_kl_sum, cls_cand_kl_mean = _sum_and_mean(cls_cand_kl_values)
         cls_cand_softmax_bce_values = F.binary_cross_entropy(p, q, reduction="none").sum(dim=1)
         cls_cand_softmax_bce_loss_sum, cls_cand_softmax_bce_loss_mean = _sum_and_mean(cls_cand_softmax_bce_values)
@@ -236,7 +234,7 @@ def _prediction_dump_losses(
     if pred_softmax_prob.numel() > 0:
         p = pred_softmax_prob.clamp(eps, 1.0)
         uniform = torch.full_like(p, 1.0 / float(p.numel()))
-        cls_uniform_kl = (p * (torch.log(p) - torch.log(uniform))).sum()
+        cls_uniform_kl = (uniform * (torch.log(uniform) - torch.log(p))).sum()
         cls_uniform_bce_loss = F.binary_cross_entropy(p, uniform, reduction="sum")
         cls_uniform_ce_loss = -(uniform * torch.log(p)).sum()
     else:
@@ -261,7 +259,6 @@ def _prediction_dump_losses(
         "score_cand_signed_diff_mean": score_cand_signed_diff_mean,
         "score_cand_bce_loss_sum": score_cand_bce_loss_sum,
         "score_cand_bce_loss_mean": score_cand_bce_loss_mean,
-        "score_cand_diff": score_cand_abs_diff_sum,
         "obj_cand_abs_diff_sum": obj_cand_abs_diff_sum,
         "obj_cand_abs_diff_mean": obj_cand_abs_diff_mean,
         "obj_cand_signed_diff_sum": obj_cand_signed_diff_sum,
@@ -287,7 +284,6 @@ def _prediction_dump_losses(
         "score_null_abs_diff": score_null_abs_diff,
         "score_null_signed_diff": score_null_signed_diff,
         "score_null_bce_loss": score_null_bce_loss,
-        "score_null_diff": score_null_abs_diff,
         "obj_null_abs_diff": obj_null_abs_diff,
         "obj_null_signed_diff": obj_null_signed_diff,
         "obj_null_bce_loss": obj_null_bce_loss,
@@ -338,7 +334,7 @@ def run_predict_dump_csv(config, run_dir):
         "num_candidate_boxes",
         "score_cand_abs_diff_sum", "score_cand_abs_diff_mean",
         "score_cand_signed_diff_sum", "score_cand_signed_diff_mean",
-        "score_cand_bce_loss_sum", "score_cand_bce_loss_mean", "score_cand_diff",
+        "score_cand_bce_loss_sum", "score_cand_bce_loss_mean",
         "obj_cand_abs_diff_sum", "obj_cand_abs_diff_mean",
         "obj_cand_signed_diff_sum", "obj_cand_signed_diff_mean",
         "obj_cand_bce_loss", "obj_cand_bce_loss_sum", "obj_cand_bce_loss_mean",
@@ -348,7 +344,7 @@ def run_predict_dump_csv(config, run_dir):
         "bbox_cand_ciou_loss", "bbox_cand_ciou_loss_sum", "bbox_cand_ciou_loss_mean",
         "bbox_cand_l1_sum", "bbox_cand_l1_mean",
         "bbox_cand_center_l2_sum", "bbox_cand_center_l2_mean",
-        "score_null_abs_diff", "score_null_signed_diff", "score_null_bce_loss", "score_null_diff",
+        "score_null_abs_diff", "score_null_signed_diff", "score_null_bce_loss",
         "obj_null_abs_diff", "obj_null_signed_diff", "obj_null_bce_loss",
         "cls_uniform_kl", "cls_uniform_bce_loss", "cls_uniform_ce_loss",
         "bbox_null_ciou_loss", "bbox_null_l1", "bbox_null_center_l2",
