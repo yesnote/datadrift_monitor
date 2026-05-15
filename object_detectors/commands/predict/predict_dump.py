@@ -56,17 +56,24 @@ def _bbox_ciou_loss_xywh(pred_xywh: torch.Tensor, target_xywh: torch.Tensor, red
     return loss.sum()
 
 
-def _resolve_class_probabilities(logit_img: torch.Tensor, pred_img: torch.Tensor) -> torch.Tensor:
-    if logit_img is not None and logit_img.numel() > 0:
-        return torch.softmax(logit_img.float(), dim=-1)
+def _resolve_yolo_class_confidences(pred_img: torch.Tensor) -> torch.Tensor:
     if pred_img.shape[1] <= 5:
         return torch.zeros((pred_img.shape[0], 0), dtype=torch.float32, device=pred_img.device)
     return pred_img[:, 5:].float().clamp(0.0, 1.0)
 
 
+def _resolve_softmax_class_probabilities(logit_img: torch.Tensor, pred_img: torch.Tensor) -> torch.Tensor:
+    if logit_img is not None and logit_img.numel() > 0:
+        return torch.softmax(logit_img.float(), dim=-1)
+    if pred_img.shape[1] <= 5:
+        return torch.zeros((pred_img.shape[0], 0), dtype=torch.float32, device=pred_img.device)
+    return torch.softmax(pred_img[:, 5:].float(), dim=-1)
+
+
 def _prediction_dump_losses(
     pred_img: torch.Tensor,
-    prob_img: torch.Tensor,
+    cls_conf_img: torch.Tensor,
+    softmax_prob_img: torch.Tensor,
     raw_idx: int,
     iou_threshold: float,
     score_threshold: float,
@@ -88,26 +95,27 @@ def _prediction_dump_losses(
         }
 
     pred_row = pred_img[raw_idx].float()
-    pred_prob = prob_img[raw_idx].float() if prob_img.numel() > 0 else torch.zeros((0,), dtype=torch.float32, device=pred_img.device)
+    pred_cls_conf_vec = cls_conf_img[raw_idx].float() if cls_conf_img.numel() > 0 else torch.zeros((0,), dtype=torch.float32, device=pred_img.device)
+    pred_softmax_prob = softmax_prob_img[raw_idx].float() if softmax_prob_img.numel() > 0 else torch.zeros((0,), dtype=torch.float32, device=pred_img.device)
     pred_obj = pred_row[4].clamp(eps, 1.0 - eps)
-    pred_cls = int(torch.argmax(pred_prob).item()) if pred_prob.numel() > 0 else 0
-    pred_cls_prob = pred_prob[pred_cls].clamp(eps, 1.0 - eps) if pred_prob.numel() > 0 else torch.ones((), device=pred_img.device)
-    pred_score = (pred_obj * pred_cls_prob).clamp(eps, 1.0 - eps)
+    pred_cls = int(torch.argmax(pred_cls_conf_vec).item()) if pred_cls_conf_vec.numel() > 0 else 0
+    pred_cls_conf = pred_cls_conf_vec[pred_cls].clamp(eps, 1.0 - eps) if pred_cls_conf_vec.numel() > 0 else torch.ones((), device=pred_img.device)
+    pred_score = (pred_obj * pred_cls_conf).clamp(eps, 1.0 - eps)
 
     raw_xyxy = _xywh_to_xyxy_tensor(pred_img[:, :4].detach())
     pred_xyxy = _xywh_to_xyxy_tensor(pred_row[:4].view(1, 4)).view(4)
     ious = _box_iou_1vN_tensor(pred_xyxy, raw_xyxy)
-    all_cls = torch.argmax(prob_img, dim=1) if prob_img.numel() > 0 else torch.zeros((pred_img.shape[0],), dtype=torch.long, device=pred_img.device)
+    all_cls = torch.argmax(cls_conf_img, dim=1) if cls_conf_img.numel() > 0 else torch.zeros((pred_img.shape[0],), dtype=torch.long, device=pred_img.device)
     all_obj = pred_img[:, 4].float().clamp(eps, 1.0 - eps)
-    all_cls_prob = prob_img.max(dim=1).values.clamp(eps, 1.0 - eps) if prob_img.numel() > 0 else torch.ones_like(all_obj)
-    all_score = all_obj * all_cls_prob
+    all_cls_conf = cls_conf_img.max(dim=1).values.clamp(eps, 1.0 - eps) if cls_conf_img.numel() > 0 else torch.ones_like(all_obj)
+    all_score = all_obj * all_cls_conf
     cand_mask = (ious >= float(iou_threshold)) & (all_cls == pred_cls) & (all_score >= float(score_threshold))
     if not bool(cand_mask.any()):
         cand_mask = torch.zeros_like(all_cls, dtype=torch.bool)
         cand_mask[raw_idx] = True
 
     cand_rows = pred_img[cand_mask].float()
-    cand_prob = prob_img[cand_mask].float() if prob_img.numel() > 0 else torch.zeros((cand_rows.shape[0], 0), dtype=torch.float32, device=pred_img.device)
+    cand_cls_conf = cls_conf_img[cand_mask].float() if cls_conf_img.numel() > 0 else torch.zeros((cand_rows.shape[0], 0), dtype=torch.float32, device=pred_img.device)
     cand_cls = all_cls[cand_mask]
     cand_score = all_score[cand_mask]
 
@@ -117,11 +125,11 @@ def _prediction_dump_losses(
         cand_rows[:, 4].float().clamp(eps, 1.0 - eps),
         reduction="sum",
     )
-    if pred_prob.numel() > 0 and cand_prob.numel() > 0:
-        cls_target = torch.zeros_like(cand_prob)
-        cls_target[torch.arange(cand_prob.shape[0], device=cand_prob.device), cand_cls] = 1.0
+    if pred_cls_conf_vec.numel() > 0 and cand_cls_conf.numel() > 0:
+        cls_target = torch.zeros_like(cand_cls_conf)
+        cls_target[torch.arange(cand_cls_conf.shape[0], device=cand_cls_conf.device), cand_cls] = 1.0
         cls_cand_onehot_bce_loss = F.binary_cross_entropy(
-            pred_prob.clamp(eps, 1.0 - eps).view(1, -1).expand_as(cls_target),
+            pred_cls_conf_vec.clamp(eps, 1.0 - eps).view(1, -1).expand_as(cls_target),
             cls_target,
             reduction="sum",
         )
@@ -133,12 +141,12 @@ def _prediction_dump_losses(
         reduction="sum",
     )
 
-    num_classes = int(pred_prob.numel()) if pred_prob.numel() > 0 else 1
+    num_classes = int(pred_cls_conf_vec.numel()) if pred_cls_conf_vec.numel() > 0 else 1
     null_score = torch.full_like(pred_score, 0.5 * (1.0 / float(num_classes)))
     score_null_diff = torch.abs(pred_score - null_score)
     obj_null_bce_loss = F.binary_cross_entropy(pred_obj, torch.full_like(pred_obj, 0.5), reduction="sum")
-    if pred_prob.numel() > 0:
-        p = pred_prob.clamp(eps, 1.0)
+    if pred_softmax_prob.numel() > 0:
+        p = pred_softmax_prob.clamp(eps, 1.0)
         uniform = torch.full_like(p, 1.0 / float(p.numel()))
         cls_uniform_kl = (p * (torch.log(p) - torch.log(uniform))).sum()
     else:
@@ -195,7 +203,7 @@ def run_predict_dump_csv(config, run_dir):
         "image_id", "image_path", "pred_idx", "raw_pred_idx",
         "xmin", "ymin", "xmax", "ymax", "score", "pred_class",
         "max_iou", "gt_iou", "tp", "error_type",
-        "objectness", "class_probability",
+        "objectness", "cls_conf", "class_probability",
         "bbox_cx", "bbox_cy", "bbox_w", "bbox_h", "bbox_area",
         "anchor_cx", "anchor_cy", "anchor_w", "anchor_h", "anchor_area",
         *prob_columns,
@@ -238,7 +246,8 @@ def run_predict_dump_csv(config, run_dir):
                 raw_keep_b = selected_indices[sample_idx] if selected_indices and sample_idx < len(selected_indices) else torch.zeros((0,), dtype=torch.long, device=device)
                 pred_img = raw_prediction[sample_idx].float()
                 logit_img = nms_logits[sample_idx].float() if nms_logits is not None else None
-                prob_img = _resolve_class_probabilities(logit_img, pred_img)
+                cls_conf_img = _resolve_yolo_class_confidences(pred_img)
+                softmax_prob_img = _resolve_softmax_class_probabilities(logit_img, pred_img)
                 if raw_anchor_priors is None:
                     raise RuntimeError(
                         "predict_dump requires YOLO anchor priors, but detector.model() did not return them. "
@@ -274,8 +283,8 @@ def run_predict_dump_csv(config, run_dir):
                     if raw_pred_idx >= int(pred_img.shape[0]):
                         continue
                     raw_row = pred_img[raw_pred_idx].float()
-                    pred_prob = prob_img[raw_pred_idx].float() if prob_img.numel() > 0 else torch.zeros((0,), dtype=torch.float32, device=device)
-                    cls_prob = pred_prob.max() if pred_prob.numel() > 0 else torch.ones((), dtype=torch.float32, device=device)
+                    pred_cls_conf_vec = cls_conf_img[raw_pred_idx].float() if cls_conf_img.numel() > 0 else torch.zeros((0,), dtype=torch.float32, device=device)
+                    cls_conf = pred_cls_conf_vec.max() if pred_cls_conf_vec.numel() > 0 else torch.ones((), dtype=torch.float32, device=device)
                     if raw_pred_idx >= int(anchor_img.shape[0]):
                         raise RuntimeError(
                             f"raw_pred_idx {raw_pred_idx} is out of range for anchor priors "
@@ -284,14 +293,15 @@ def run_predict_dump_csv(config, run_dir):
                     anchor_xywh = anchor_img[raw_pred_idx].float()
                     loss_values = _prediction_dump_losses(
                         pred_img=pred_img,
-                        prob_img=prob_img,
+                        cls_conf_img=cls_conf_img,
+                        softmax_prob_img=softmax_prob_img,
                         raw_idx=raw_pred_idx,
                         iou_threshold=iou_threshold,
                         score_threshold=score_threshold,
                         anchor_xywh=anchor_xywh,
                     )
                     prob_values = {
-                        f"prob_{i}": (_to_float(pred_prob[i]) if i < int(pred_prob.shape[0]) else 0.0)
+                        f"prob_{i}": (_to_float(pred_cls_conf_vec[i]) if i < int(pred_cls_conf_vec.shape[0]) else 0.0)
                         for i in range(max(0, num_classes))
                     }
                     error_row = error_rows[pred_idx]
@@ -312,7 +322,8 @@ def run_predict_dump_csv(config, run_dir):
                             "tp": int(error_row["tp"]),
                             "error_type": error_row["error_type"],
                             "objectness": _to_float(raw_row[4]),
-                            "class_probability": _to_float(cls_prob),
+                            "cls_conf": _to_float(cls_conf),
+                            "class_probability": _to_float(cls_conf),
                             "bbox_cx": _to_float(raw_row[0]),
                             "bbox_cy": _to_float(raw_row[1]),
                             "bbox_w": _to_float(raw_row[2]),
