@@ -153,17 +153,6 @@ def run_tp_csv(config, run_dir):
         "gt_iou",
         "tp",
         "error_type",
-        "best_same_class_iou",
-        "best_any_class_iou",
-        "best_same_class_gt_idx",
-        "best_any_class_gt_idx",
-        "best_same_class_gt_class",
-        "best_any_class_gt_class",
-        "matched_gt_idx",
-        "is_duplicate",
-        "is_background_fp",
-        "is_localization_fp",
-        "is_classification_fp",
     ]
 
     catid_to_name = load_gt_category_maps(config, split)
@@ -278,6 +267,7 @@ def run_tp_csv(config, run_dir):
                 ):
                     raw_pred_idx = int(raw_keep_b[pred_idx].detach().cpu().item()) if pred_idx < int(raw_keep_b.shape[0]) else pred_idx
                     if writer is not None:
+                        error_row = error_rows[pred_idx]
                         writer.writerow(
                             {
                                 "image_id": image_id,
@@ -290,7 +280,10 @@ def run_tp_csv(config, run_dir):
                                 "ymax": float(box[3]),
                                 "score": float(score),
                                 "pred_class": pred_class,
-                                **error_rows[pred_idx],
+                                "max_iou": float(error_row["max_iou"]),
+                                "gt_iou": float(error_row["gt_iou"]),
+                                "tp": int(error_row["tp"]),
+                                "error_type": error_row["error_type"],
                             }
                         )
             del infer_batch, model_output, raw_prediction, raw_logits, selected_preds, selected_indices
