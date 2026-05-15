@@ -56,6 +56,14 @@ def _bbox_ciou_loss_xywh(pred_xywh: torch.Tensor, target_xywh: torch.Tensor, red
     return loss.sum()
 
 
+def _sum_and_mean(values: torch.Tensor):
+    if values is None or values.numel() == 0:
+        zero = torch.zeros((), dtype=torch.float32, device=values.device if isinstance(values, torch.Tensor) else "cpu")
+        return zero, zero
+    flat = values.float().reshape(-1)
+    return flat.sum(), flat.mean()
+
+
 def _resolve_yolo_class_confidences(pred_img: torch.Tensor) -> torch.Tensor:
     if pred_img.shape[1] <= 5:
         return torch.zeros((pred_img.shape[0], 0), dtype=torch.float32, device=pred_img.device)
@@ -84,14 +92,48 @@ def _prediction_dump_losses(
         zero = torch.zeros((), dtype=torch.float32, device=pred_img.device)
         return {
             "num_candidate_boxes": zero,
+            "score_cand_abs_diff_sum": zero,
+            "score_cand_abs_diff_mean": zero,
+            "score_cand_signed_diff_sum": zero,
+            "score_cand_signed_diff_mean": zero,
+            "score_cand_bce_loss_sum": zero,
+            "score_cand_bce_loss_mean": zero,
             "score_cand_diff": zero,
+            "obj_cand_abs_diff_sum": zero,
+            "obj_cand_abs_diff_mean": zero,
+            "obj_cand_signed_diff_sum": zero,
+            "obj_cand_signed_diff_mean": zero,
             "obj_cand_bce_loss": zero,
+            "obj_cand_bce_loss_sum": zero,
+            "obj_cand_bce_loss_mean": zero,
+            "cls_cand_kl": zero,
+            "cls_cand_kl_sum": zero,
+            "cls_cand_kl_mean": zero,
             "cls_cand_onehot_bce_loss": zero,
+            "cls_cand_onehot_bce_loss_sum": zero,
+            "cls_cand_onehot_bce_loss_mean": zero,
+            "cls_cand_softmax_bce_loss_sum": zero,
+            "cls_cand_softmax_bce_loss_mean": zero,
             "bbox_cand_ciou_loss": zero,
+            "bbox_cand_ciou_loss_sum": zero,
+            "bbox_cand_ciou_loss_mean": zero,
+            "bbox_cand_l1_sum": zero,
+            "bbox_cand_l1_mean": zero,
+            "bbox_cand_center_l2_sum": zero,
+            "bbox_cand_center_l2_mean": zero,
+            "score_null_abs_diff": zero,
+            "score_null_signed_diff": zero,
+            "score_null_bce_loss": zero,
             "score_null_diff": zero,
+            "obj_null_abs_diff": zero,
+            "obj_null_signed_diff": zero,
             "obj_null_bce_loss": zero,
             "cls_uniform_kl": zero,
+            "cls_uniform_bce_loss": zero,
+            "cls_uniform_ce_loss": zero,
             "bbox_null_ciou_loss": zero,
+            "bbox_null_l1": zero,
+            "bbox_null_center_l2": zero,
         }
 
     pred_row = pred_img[raw_idx].float()
@@ -115,42 +157,92 @@ def _prediction_dump_losses(
         cand_mask[raw_idx] = True
 
     cand_rows = pred_img[cand_mask].float()
-    cand_cls_conf = cls_conf_img[cand_mask].float() if cls_conf_img.numel() > 0 else torch.zeros((cand_rows.shape[0], 0), dtype=torch.float32, device=pred_img.device)
-    cand_cls = all_cls[cand_mask]
+    cand_softmax_prob = (
+        softmax_prob_img[cand_mask].float()
+        if softmax_prob_img.numel() > 0
+        else torch.zeros((cand_rows.shape[0], 0), dtype=torch.float32, device=pred_img.device)
+    )
     cand_score = all_score[cand_mask]
 
-    score_cand_diff = torch.abs(pred_score.expand_as(cand_score) - cand_score).sum()
-    obj_cand_bce_loss = F.binary_cross_entropy(
+    score_signed_diff = pred_score.expand_as(cand_score) - cand_score
+    score_abs_diff = torch.abs(score_signed_diff)
+    score_cand_abs_diff_sum, score_cand_abs_diff_mean = _sum_and_mean(score_abs_diff)
+    score_cand_signed_diff_sum, score_cand_signed_diff_mean = _sum_and_mean(score_signed_diff)
+    score_cand_bce_values = F.binary_cross_entropy(
+        pred_score.expand_as(cand_score),
+        cand_score.float().clamp(eps, 1.0 - eps),
+        reduction="none",
+    )
+    score_cand_bce_loss_sum, score_cand_bce_loss_mean = _sum_and_mean(score_cand_bce_values)
+
+    obj_signed_diff = pred_obj.expand_as(cand_rows[:, 4]) - cand_rows[:, 4].float().clamp(eps, 1.0 - eps)
+    obj_abs_diff = torch.abs(obj_signed_diff)
+    obj_cand_abs_diff_sum, obj_cand_abs_diff_mean = _sum_and_mean(obj_abs_diff)
+    obj_cand_signed_diff_sum, obj_cand_signed_diff_mean = _sum_and_mean(obj_signed_diff)
+    obj_cand_bce_values = F.binary_cross_entropy(
         pred_obj.expand_as(cand_rows[:, 4]),
         cand_rows[:, 4].float().clamp(eps, 1.0 - eps),
-        reduction="sum",
+        reduction="none",
     )
-    if pred_cls_conf_vec.numel() > 0 and cand_cls_conf.numel() > 0:
-        cls_target = torch.zeros_like(cand_cls_conf)
-        cls_target[torch.arange(cand_cls_conf.shape[0], device=cand_cls_conf.device), cand_cls] = 1.0
-        cls_cand_onehot_bce_loss = F.binary_cross_entropy(
+    obj_cand_bce_loss_sum, obj_cand_bce_loss_mean = _sum_and_mean(obj_cand_bce_values)
+    if pred_softmax_prob.numel() > 0 and cand_softmax_prob.numel() > 0:
+        p = pred_softmax_prob.clamp(eps, 1.0).view(1, -1).expand_as(cand_softmax_prob)
+        q = cand_softmax_prob.clamp(eps, 1.0)
+        cls_cand_kl_values = (p * (torch.log(p) - torch.log(q))).sum(dim=1)
+        cls_cand_kl_sum, cls_cand_kl_mean = _sum_and_mean(cls_cand_kl_values)
+        cls_cand_softmax_bce_values = F.binary_cross_entropy(p, q, reduction="none").sum(dim=1)
+        cls_cand_softmax_bce_loss_sum, cls_cand_softmax_bce_loss_mean = _sum_and_mean(cls_cand_softmax_bce_values)
+    else:
+        cls_cand_kl_sum = torch.zeros((), dtype=torch.float32, device=pred_img.device)
+        cls_cand_kl_mean = torch.zeros((), dtype=torch.float32, device=pred_img.device)
+        cls_cand_softmax_bce_loss_sum = torch.zeros((), dtype=torch.float32, device=pred_img.device)
+        cls_cand_softmax_bce_loss_mean = torch.zeros((), dtype=torch.float32, device=pred_img.device)
+    if pred_cls_conf_vec.numel() > 0 and cand_rows.shape[0] > 0:
+        cls_target = torch.zeros((cand_rows.shape[0], pred_cls_conf_vec.numel()), dtype=torch.float32, device=pred_img.device)
+        cls_target[torch.arange(cand_rows.shape[0], device=pred_img.device), all_cls[cand_mask]] = 1.0
+        cls_cand_onehot_bce_values = F.binary_cross_entropy(
             pred_cls_conf_vec.clamp(eps, 1.0 - eps).view(1, -1).expand_as(cls_target),
             cls_target,
-            reduction="sum",
-        )
+            reduction="none",
+        ).sum(dim=1)
+        cls_cand_onehot_bce_loss_sum, cls_cand_onehot_bce_loss_mean = _sum_and_mean(cls_cand_onehot_bce_values)
     else:
-        cls_cand_onehot_bce_loss = torch.zeros((), dtype=torch.float32, device=pred_img.device)
-    bbox_cand_ciou_loss = _bbox_ciou_loss_xywh(
+        cls_cand_onehot_bce_loss_sum = torch.zeros((), dtype=torch.float32, device=pred_img.device)
+        cls_cand_onehot_bce_loss_mean = torch.zeros((), dtype=torch.float32, device=pred_img.device)
+    bbox_cand_ciou_values = _bbox_ciou_loss_xywh(
         pred_row[:4].view(1, 4).expand(cand_rows.shape[0], -1),
         cand_rows[:, :4],
-        reduction="sum",
+        reduction="none",
     )
+    bbox_cand_ciou_loss_sum, bbox_cand_ciou_loss_mean = _sum_and_mean(bbox_cand_ciou_values)
+    bbox_cand_l1_values = torch.abs(pred_row[:4].view(1, 4).expand(cand_rows.shape[0], -1) - cand_rows[:, :4]).sum(dim=1)
+    bbox_cand_l1_sum, bbox_cand_l1_mean = _sum_and_mean(bbox_cand_l1_values)
+    bbox_cand_center_l2_values = torch.linalg.vector_norm(
+        pred_row[:2].view(1, 2).expand(cand_rows.shape[0], -1) - cand_rows[:, :2],
+        ord=2,
+        dim=1,
+    )
+    bbox_cand_center_l2_sum, bbox_cand_center_l2_mean = _sum_and_mean(bbox_cand_center_l2_values)
 
     num_classes = int(pred_cls_conf_vec.numel()) if pred_cls_conf_vec.numel() > 0 else 1
     null_score = torch.full_like(pred_score, 0.5 * (1.0 / float(num_classes)))
-    score_null_diff = torch.abs(pred_score - null_score)
+    score_null_signed_diff = pred_score - null_score
+    score_null_abs_diff = torch.abs(score_null_signed_diff)
+    score_null_bce_loss = F.binary_cross_entropy(pred_score, null_score, reduction="sum")
+    obj_null_target = torch.full_like(pred_obj, 0.5)
+    obj_null_signed_diff = pred_obj - obj_null_target
+    obj_null_abs_diff = torch.abs(obj_null_signed_diff)
     obj_null_bce_loss = F.binary_cross_entropy(pred_obj, torch.full_like(pred_obj, 0.5), reduction="sum")
     if pred_softmax_prob.numel() > 0:
         p = pred_softmax_prob.clamp(eps, 1.0)
         uniform = torch.full_like(p, 1.0 / float(p.numel()))
         cls_uniform_kl = (p * (torch.log(p) - torch.log(uniform))).sum()
+        cls_uniform_bce_loss = F.binary_cross_entropy(p, uniform, reduction="sum")
+        cls_uniform_ce_loss = -(uniform * torch.log(p)).sum()
     else:
         cls_uniform_kl = torch.zeros((), dtype=torch.float32, device=pred_img.device)
+        cls_uniform_bce_loss = torch.zeros((), dtype=torch.float32, device=pred_img.device)
+        cls_uniform_ce_loss = torch.zeros((), dtype=torch.float32, device=pred_img.device)
     if anchor_xywh is None or anchor_xywh.numel() < 4:
         raise RuntimeError(
             "predict_dump requires YOLO anchor priors for bbox_null_ciou_loss, "
@@ -158,17 +250,53 @@ def _prediction_dump_losses(
         )
     target_bbox = anchor_xywh.to(dtype=pred_row.dtype, device=pred_row.device).view(1, 4)
     bbox_null_ciou_loss = _bbox_ciou_loss_xywh(pred_row[:4].view(1, 4), target_bbox, reduction="sum")
+    bbox_null_l1 = torch.abs(pred_row[:4].view(1, 4) - target_bbox).sum()
+    bbox_null_center_l2 = torch.linalg.vector_norm(pred_row[:2] - target_bbox.view(4)[:2], ord=2)
 
     return {
         "num_candidate_boxes": torch.tensor(float(cand_rows.shape[0]), dtype=torch.float32, device=pred_img.device),
-        "score_cand_diff": score_cand_diff,
-        "obj_cand_bce_loss": obj_cand_bce_loss,
-        "cls_cand_onehot_bce_loss": cls_cand_onehot_bce_loss,
-        "bbox_cand_ciou_loss": bbox_cand_ciou_loss,
-        "score_null_diff": score_null_diff,
+        "score_cand_abs_diff_sum": score_cand_abs_diff_sum,
+        "score_cand_abs_diff_mean": score_cand_abs_diff_mean,
+        "score_cand_signed_diff_sum": score_cand_signed_diff_sum,
+        "score_cand_signed_diff_mean": score_cand_signed_diff_mean,
+        "score_cand_bce_loss_sum": score_cand_bce_loss_sum,
+        "score_cand_bce_loss_mean": score_cand_bce_loss_mean,
+        "score_cand_diff": score_cand_abs_diff_sum,
+        "obj_cand_abs_diff_sum": obj_cand_abs_diff_sum,
+        "obj_cand_abs_diff_mean": obj_cand_abs_diff_mean,
+        "obj_cand_signed_diff_sum": obj_cand_signed_diff_sum,
+        "obj_cand_signed_diff_mean": obj_cand_signed_diff_mean,
+        "obj_cand_bce_loss": obj_cand_bce_loss_sum,
+        "obj_cand_bce_loss_sum": obj_cand_bce_loss_sum,
+        "obj_cand_bce_loss_mean": obj_cand_bce_loss_mean,
+        "cls_cand_kl": cls_cand_kl_sum,
+        "cls_cand_kl_sum": cls_cand_kl_sum,
+        "cls_cand_kl_mean": cls_cand_kl_mean,
+        "cls_cand_onehot_bce_loss": cls_cand_onehot_bce_loss_sum,
+        "cls_cand_onehot_bce_loss_sum": cls_cand_onehot_bce_loss_sum,
+        "cls_cand_onehot_bce_loss_mean": cls_cand_onehot_bce_loss_mean,
+        "cls_cand_softmax_bce_loss_sum": cls_cand_softmax_bce_loss_sum,
+        "cls_cand_softmax_bce_loss_mean": cls_cand_softmax_bce_loss_mean,
+        "bbox_cand_ciou_loss": bbox_cand_ciou_loss_sum,
+        "bbox_cand_ciou_loss_sum": bbox_cand_ciou_loss_sum,
+        "bbox_cand_ciou_loss_mean": bbox_cand_ciou_loss_mean,
+        "bbox_cand_l1_sum": bbox_cand_l1_sum,
+        "bbox_cand_l1_mean": bbox_cand_l1_mean,
+        "bbox_cand_center_l2_sum": bbox_cand_center_l2_sum,
+        "bbox_cand_center_l2_mean": bbox_cand_center_l2_mean,
+        "score_null_abs_diff": score_null_abs_diff,
+        "score_null_signed_diff": score_null_signed_diff,
+        "score_null_bce_loss": score_null_bce_loss,
+        "score_null_diff": score_null_abs_diff,
+        "obj_null_abs_diff": obj_null_abs_diff,
+        "obj_null_signed_diff": obj_null_signed_diff,
         "obj_null_bce_loss": obj_null_bce_loss,
         "cls_uniform_kl": cls_uniform_kl,
+        "cls_uniform_bce_loss": cls_uniform_bce_loss,
+        "cls_uniform_ce_loss": cls_uniform_ce_loss,
         "bbox_null_ciou_loss": bbox_null_ciou_loss,
+        "bbox_null_l1": bbox_null_l1,
+        "bbox_null_center_l2": bbox_null_center_l2,
     }
 
 
@@ -208,8 +336,22 @@ def run_predict_dump_csv(config, run_dir):
         "anchor_cx", "anchor_cy", "anchor_w", "anchor_h", "anchor_area",
         *prob_columns,
         "num_candidate_boxes",
-        "score_cand_diff", "obj_cand_bce_loss", "cls_cand_onehot_bce_loss", "bbox_cand_ciou_loss",
-        "score_null_diff", "obj_null_bce_loss", "cls_uniform_kl", "bbox_null_ciou_loss",
+        "score_cand_abs_diff_sum", "score_cand_abs_diff_mean",
+        "score_cand_signed_diff_sum", "score_cand_signed_diff_mean",
+        "score_cand_bce_loss_sum", "score_cand_bce_loss_mean", "score_cand_diff",
+        "obj_cand_abs_diff_sum", "obj_cand_abs_diff_mean",
+        "obj_cand_signed_diff_sum", "obj_cand_signed_diff_mean",
+        "obj_cand_bce_loss", "obj_cand_bce_loss_sum", "obj_cand_bce_loss_mean",
+        "cls_cand_kl", "cls_cand_kl_sum", "cls_cand_kl_mean",
+        "cls_cand_onehot_bce_loss", "cls_cand_onehot_bce_loss_sum", "cls_cand_onehot_bce_loss_mean",
+        "cls_cand_softmax_bce_loss_sum", "cls_cand_softmax_bce_loss_mean",
+        "bbox_cand_ciou_loss", "bbox_cand_ciou_loss_sum", "bbox_cand_ciou_loss_mean",
+        "bbox_cand_l1_sum", "bbox_cand_l1_mean",
+        "bbox_cand_center_l2_sum", "bbox_cand_center_l2_mean",
+        "score_null_abs_diff", "score_null_signed_diff", "score_null_bce_loss", "score_null_diff",
+        "obj_null_abs_diff", "obj_null_signed_diff", "obj_null_bce_loss",
+        "cls_uniform_kl", "cls_uniform_bce_loss", "cls_uniform_ce_loss",
+        "bbox_null_ciou_loss", "bbox_null_l1", "bbox_null_center_l2",
     ]
 
     with open(output_csv, "w", newline="", encoding="utf-8") as output_file:
