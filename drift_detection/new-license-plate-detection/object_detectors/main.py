@@ -108,6 +108,19 @@ def _normalize_config_paths(config):
             if isinstance(root, str) and root:
                 active_cfg["root"] = str(_resolve_path_value(root))
 
+    output_cfg = config.get("output", {})
+    ensemble_cfg = output_cfg.get("ensemble")
+    if isinstance(ensemble_cfg, dict):
+        ensemble_weights = ensemble_cfg.get("weights")
+        if isinstance(ensemble_weights, str) and ensemble_weights:
+            ensemble_cfg["weights"] = str(_resolve_path_value(ensemble_weights))
+        elif isinstance(ensemble_weights, (list, tuple)):
+            ensemble_cfg["weights"] = [
+                str(_resolve_path_value(v))
+                for v in ensemble_weights
+                if isinstance(v, str) and v
+            ]
+
     return config
 
 
