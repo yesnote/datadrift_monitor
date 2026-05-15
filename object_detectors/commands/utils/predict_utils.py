@@ -13,6 +13,17 @@ from dataloaders.utils.data_utils import pascal_voc_names
 from models.yolo.models.yolo_v5_object_detector import YOLOV5TorchObjectDetector
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
+REPO_ROOT = PROJECT_ROOT.parent
+
+
+def resolve_project_path(raw_path):
+    path = Path(raw_path)
+    if path.is_absolute():
+        return path.resolve()
+    repo_candidate = (REPO_ROOT / path).resolve()
+    if repo_candidate.exists() or path.parts[:1] == ("object_detectors",):
+        return repo_candidate
+    return (PROJECT_ROOT / path).resolve()
 
 
 def _sync_timing_device(device=None):
@@ -179,7 +190,7 @@ def build_detector(config, model_weight=None):
         weight_source = weight_source[0]
     weight_path = Path(weight_source)
     if not weight_path.is_absolute():
-        weight_path = (PROJECT_ROOT / weight_path).resolve()
+        weight_path = resolve_project_path(weight_path)
 
     detector = YOLOV5TorchObjectDetector(
         model_weight=str(weight_path),
