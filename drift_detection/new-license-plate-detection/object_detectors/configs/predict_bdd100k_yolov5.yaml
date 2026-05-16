@@ -20,10 +20,10 @@ dataset:
     root: D:/DataDrift/datasets/BDD100K
     train_split: train
     val_split: val
-    train_image_dir: images/100k/train
-    val_image_dir: images/100k/val
-    train_annotation_file: labels/det_20/det_train.json
-    val_annotation_file: labels/det_20/det_val.json
+    train_image_dir: bdd100k/bdd100k/images/100k/train
+    val_image_dir: bdd100k/bdd100k/images/100k/val
+    train_annotation_file: bdd100k_labels_release/bdd100k/labels/bdd100k_labels_images_train.json
+    val_annotation_file: bdd100k_labels_release/bdd100k/labels/bdd100k_labels_images_val.json
 
 dataloader:
   batch_size: 8
