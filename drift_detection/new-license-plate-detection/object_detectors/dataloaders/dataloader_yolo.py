@@ -91,13 +91,16 @@ def _build_single_dataset(name, dataset_cfg, root, split_key, img_size):
     if name == "kitti":
         kitti_split = dataset_cfg.get(f"{split_key}_split", split_key)
         split_file = dataset_cfg.get(f"{split_key}_split_file") or dataset_cfg.get("split_file")
+        image_dir = dataset_cfg.get(f"{split_key}_image_dir") or dataset_cfg.get("image_dir")
+        label_dir = dataset_cfg.get(f"{split_key}_label_dir") or dataset_cfg.get("label_dir")
         return KITTIDataset(
             root=root,
             split=kitti_split,
             img_size=img_size,
-            image_dir=_resolve_dataset_path(root, dataset_cfg.get("image_dir")),
-            label_dir=_resolve_dataset_path(root, dataset_cfg.get("label_dir")),
+            image_dir=_resolve_dataset_path(root, image_dir),
+            label_dir=_resolve_dataset_path(root, label_dir),
             split_file=_resolve_dataset_path(root, split_file),
+            trainval_split_ratio=float(dataset_cfg.get("trainval_split_ratio", 0.8)),
         )
 
     if name in {"bdd100k", "bdd"}:

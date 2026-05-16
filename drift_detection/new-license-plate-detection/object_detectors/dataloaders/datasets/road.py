@@ -69,13 +69,34 @@ class KITTIDataset(Dataset):
     - optional <root>/ImageSets/<split>.txt
     """
 
-    def __init__(self, root, split="train", img_size=640, image_dir=None, label_dir=None, split_file=None):
+    def __init__(
+        self,
+        root,
+        split="train",
+        img_size=640,
+        image_dir=None,
+        label_dir=None,
+        split_file=None,
+        trainval_split_ratio=0.8,
+    ):
         self.root = Path(root)
         self.split = split
         self.img_size = img_size
-        self.image_dir = Path(image_dir) if image_dir else self.root / "training" / "image_2"
-        self.label_dir = Path(label_dir) if label_dir else self.root / "training" / "label_2"
+        split_name = str(split).strip().lower()
+        if image_dir:
+            self.image_dir = Path(image_dir)
+        elif split_name in {"test", "testing"}:
+            self.image_dir = self.root / "testing" / "image_2"
+        else:
+            self.image_dir = self.root / "training" / "image_2"
+        if label_dir:
+            self.label_dir = Path(label_dir)
+        elif split_name in {"test", "testing"}:
+            self.label_dir = self.root / "testing" / "label_2"
+        else:
+            self.label_dir = self.root / "training" / "label_2"
         self.split_file = Path(split_file) if split_file else self.root / "ImageSets" / f"{split}.txt"
+        self.trainval_split_ratio = float(trainval_split_ratio)
         self.class_names = list(kitti_names)
         self.class_to_idx = {name: idx for idx, name in enumerate(self.class_names)}
         self.aliases = {
@@ -101,7 +122,16 @@ class KITTIDataset(Dataset):
                         paths.append(str(candidate))
                         break
             return paths
-        return _list_images_recursive(self.image_dir)
+        images = _list_images_recursive(self.image_dir)
+        split_name = str(self.split).strip().lower()
+        if split_name not in {"train", "val"} or not images:
+            return images
+        if not (0.0 < self.trainval_split_ratio < 1.0):
+            return images
+        cut = max(1, min(len(images) - 1, int(round(len(images) * self.trainval_split_ratio))))
+        if split_name == "train":
+            return images[:cut]
+        return images[cut:]
 
     def __len__(self):
         return len(self.images)

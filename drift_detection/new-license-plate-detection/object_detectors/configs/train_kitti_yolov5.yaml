@@ -16,10 +16,15 @@ dataset:
     root: D:/DataDrift/datasets/KITTI
     train_split: train
     val_split: val
-    image_dir: training/image_2
-    label_dir: training/label_2
+    test_split: test
+    train_image_dir: training/image_2
+    val_image_dir: training/image_2
+    test_image_dir: testing/image_2
+    train_label_dir: training/label_2
+    val_label_dir: training/label_2
     train_split_file: ImageSets/train.txt
     val_split_file: ImageSets/val.txt
+    trainval_split_ratio: 0.8
 
 dataloader:
   batch_size: 12
