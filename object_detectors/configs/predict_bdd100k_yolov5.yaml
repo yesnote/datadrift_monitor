@@ -17,7 +17,7 @@ dataset:
     - 1.0
 
   bdd100k:
-    root: D:/DataDrift/datasets/BDD100K
+    root: D:/SEONGJIN/datasets/BDD100K
     train_split: train
     val_split: val
     train_image_dir: bdd100k/bdd100k/images/100k/train

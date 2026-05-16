@@ -13,7 +13,7 @@ dataset:
   used_ratio: 1.0
 
   cityscapes:
-    root: D:/DataDrift/datasets/Cityscapes
+    root: D:/SEONGJIN/datasets/Cityscapes
     train_split: train
     val_split: val
     train_image_dir: leftImg8bit/train

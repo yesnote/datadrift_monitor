@@ -13,7 +13,7 @@ dataset:
   used_ratio: 1.0
 
   kitti:
-    root: D:/DataDrift/datasets/KITTI
+    root: D:/SEONGJIN/datasets/KITTI
     train_split: train
     val_split: val
     test_split: test
