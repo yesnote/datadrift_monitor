@@ -143,7 +143,7 @@ class BDD100KDataset(Dataset):
         self.root = Path(root)
         self.split = split
         self.img_size = img_size
-        self.image_dir = Path(image_dir) if image_dir else self.root / "images" / "100k" / split
+        self.image_dir = Path(image_dir) if image_dir else self._find_image_dir(split)
         self.annotation_file = Path(annotation_file) if annotation_file else self._find_annotation_file(split)
         self.class_names = list(bdd100k_names)
         self.class_to_idx = {name: idx for idx, name in enumerate(self.class_names)}
@@ -154,6 +154,7 @@ class BDD100KDataset(Dataset):
 
     def _find_annotation_file(self, split):
         candidates = [
+            self.root / "bdd100k_labels_release" / "bdd100k" / "labels" / f"bdd100k_labels_images_{split}.json",
             self.root / "labels" / "det_20" / f"det_{split}.json",
             self.root / "labels" / f"det_{split}.json",
             self.root / "labels" / f"bdd100k_labels_images_{split}.json",
@@ -163,6 +164,18 @@ class BDD100KDataset(Dataset):
         ]
         for path in candidates:
             if path.is_file():
+                return path
+        return candidates[0]
+
+    def _find_image_dir(self, split):
+        candidates = [
+            self.root / "bdd100k" / "bdd100k" / "images" / "100k" / split,
+            self.root / "images" / "100k" / split,
+            self.root / "bdd100k" / "bdd100k" / "images" / "10k" / split,
+            self.root / "images" / "10k" / split,
+        ]
+        for path in candidates:
+            if path.is_dir():
                 return path
         return candidates[0]
 
