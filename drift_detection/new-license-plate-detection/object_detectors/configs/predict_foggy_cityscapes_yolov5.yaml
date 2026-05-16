@@ -17,7 +17,7 @@ dataset:
     - 1.0
 
   foggy_cityscapes:
-    root: D:/DataDrift/datasets/Cityscapes
+    root: D:/SEONGJIN/datasets/Cityscapes
     train_split: train
     val_split: val
     train_image_dir: leftImg8bit_foggy/train
