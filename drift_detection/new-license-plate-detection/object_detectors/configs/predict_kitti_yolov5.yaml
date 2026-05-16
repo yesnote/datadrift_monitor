@@ -1,0 +1,95 @@
+mode: predict
+
+model:
+  type: yolov5
+  weights: object_detectors/models/yolo/weights/kitti/yolov5x.pt
+  img_size: 640
+  confidence_threshold: 0.25
+  iou_threshold: 0.45
+  device: cuda
+
+dataset:
+  used_dataset:
+    - kitti
+  split:
+    - val
+  used_ratio:
+    - 1.0
+
+  kitti:
+    root: D:/DataDrift/datasets/KITTI
+    train_split: train
+    val_split: val
+    image_dir: training/image_2
+    label_dir: training/label_2
+    train_split_file: ImageSets/train.txt
+    val_split_file: ImageSets/val.txt
+
+dataloader:
+  batch_size: 8
+  num_workers: 4
+  pin_memory: false
+  shuffle_train: false
+  shuffle_eval: false
+
+output:
+  uncertainty: gt  # gt | predict_dump | deterministic | score | class_probability | entropy | energy | mc_dropout | ensemble | meta_detect | layer_grad
+
+  gt:
+    iou_match_threshold: 0.45
+    save_csv:
+      enabled: true
+    save_image:
+      enabled: false
+      step: 10
+      max_num: 10
+
+  predict_dump:
+    iou_match_threshold: 0.45
+    score_threshold: 0.0
+    iou_threshold: 0.45
+    save_csv:
+      enabled: false
+
+  score:
+    save_csv:
+      enabled: false
+
+  class_probability:
+    save_csv:
+      enabled: false
+
+  entropy:
+    save_csv:
+      enabled: false
+
+  energy:
+    save_csv:
+      enabled: false
+
+  mc_dropout:
+    num_runs: 30
+    dropout_rate: 0.5
+    save_csv:
+      enabled: false
+
+  ensemble:
+    weights: []
+    save_csv:
+      enabled: false
+
+  meta_detect:
+    score_threshold: 0.0
+    iou_threshold: 0.45
+    save_csv:
+      enabled: false
+
+  layer_grad:
+    gradient:
+      scalar: [loss]
+      layer: ["model.24.m.0", "model.24.m.1", "model.24.m.2"]
+      reduction: [l1_norm, l2_norm, min, max, mean, std]
+      target: cand_target
+      cand_score_threshold: 0.0
+    save_csv:
+      enabled: false

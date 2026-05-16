@@ -9,7 +9,7 @@ import torch
 import torch.nn.functional as F
 import torch.nn as nn
 
-from dataloaders.utils.data_utils import pascal_voc_names
+from dataloaders.utils.data_utils import DATASET_CLASS_NAMES
 from models.yolo.models.yolo_v5_object_detector import YOLOV5TorchObjectDetector
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -158,8 +158,8 @@ def _resolve_detector_class_names(config):
         return [str(v) for v in configured_names]
 
     used_dataset, _dataset_cfg = get_dataset_cfg(config)
-    if used_dataset in {"voc", "pascal_voc"}:
-        return list(pascal_voc_names[1:])
+    if used_dataset in DATASET_CLASS_NAMES:
+        return list(DATASET_CLASS_NAMES[used_dataset])
     if used_dataset == "__multi__":
         dataset_root_cfg = config.get("dataset", {})
         used_raw = dataset_root_cfg.get("used_dataset", [])
@@ -167,8 +167,11 @@ def _resolve_detector_class_names(config):
             names = [used_raw.strip().lower()]
         else:
             names = [str(v).strip().lower() for v in used_raw if str(v).strip()]
-        if names and all(name in {"voc", "pascal_voc"} for name in names):
-            return list(pascal_voc_names[1:])
+        if names and all(name in DATASET_CLASS_NAMES for name in names):
+            first = list(DATASET_CLASS_NAMES[names[0]])
+            if all(list(DATASET_CLASS_NAMES[name]) == first for name in names):
+                return first
+            raise ValueError("Mixed datasets with different class spaces are not supported.")
     return None
 
 

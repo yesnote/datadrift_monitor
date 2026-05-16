@@ -30,6 +30,32 @@ pascal_voc_names = [
     "pottedplant", "sheep", "sofa", "train", "tvmonitor",
 ]
 
+kitti_names = [
+    "car", "van", "truck", "pedestrian", "person_sitting", "cyclist", "tram", "misc",
+]
+
+bdd100k_names = [
+    "pedestrian", "rider", "car", "truck", "bus", "train", "motorcycle", "bicycle",
+    "traffic light", "traffic sign",
+]
+
+cityscapes_names = [
+    "person", "rider", "car", "truck", "bus", "train", "motorcycle", "bicycle",
+]
+
+foggy_cityscapes_names = list(cityscapes_names)
+
+DATASET_CLASS_NAMES = {
+    "voc": pascal_voc_names[1:],
+    "pascal_voc": pascal_voc_names[1:],
+    "kitti": kitti_names,
+    "bdd100k": bdd100k_names,
+    "bdd": bdd100k_names,
+    "cityscapes": cityscapes_names,
+    "foggy_cityscapes": foggy_cityscapes_names,
+    "foggy_city": foggy_cityscapes_names,
+}
+
 
 def list_image_files(image_dir: str) -> List[str]:
     if not os.path.isdir(image_dir):
