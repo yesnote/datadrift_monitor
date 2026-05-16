@@ -1,0 +1,40 @@
+mode: train
+
+model:
+  type: yolov5
+  weights: object_detectors/models/yolo/weights/coco/yolov5x.pt
+  img_size: 640
+  confidence_threshold: 0.25
+  iou_threshold: 0.45
+  device: cuda
+
+dataset:
+  used_dataset: kitti
+  used_ratio: 1.0
+
+  kitti:
+    root: D:/DataDrift/datasets/KITTI
+    train_split: train
+    val_split: val
+    image_dir: training/image_2
+    label_dir: training/label_2
+    train_split_file: ImageSets/train.txt
+    val_split_file: ImageSets/val.txt
+
+dataloader:
+  batch_size: 12
+  num_workers: 4
+  pin_memory: true
+  shuffle_train: true
+  shuffle_eval: false
+
+loss:
+  box: 0.05
+  cls: 0.5
+  obj: 1.0
+
+training:
+  epochs: 10
+  lr: 0.0001
+  weight_decay: 0.0001
+  seed: 42

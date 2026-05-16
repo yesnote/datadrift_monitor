@@ -11,7 +11,7 @@ import torch.nn as nn
 from tqdm import tqdm
 
 from dataloaders.dataloader_yolo import create_dataloader
-from dataloaders.utils.data_utils import pascal_voc_names
+from dataloaders.utils.data_utils import DATASET_CLASS_NAMES
 from losses.loss import build_loss
 from models.yolo.models.experimental import attempt_load
 from models.yolo.utils.general import coco80_to_coco91_class
@@ -167,10 +167,13 @@ def _resolve_train_class_names(config):
         return [str(v) for v in configured_names]
 
     names = _active_dataset_names(config)
-    if names and all(name in {"voc", "pascal_voc"} for name in names):
-        return list(pascal_voc_names[1:])
-    if any(name in {"voc", "pascal_voc"} for name in names):
-        raise ValueError("Mixed VOC with non-VOC datasets is not supported because class spaces differ.")
+    if names and all(name in DATASET_CLASS_NAMES for name in names):
+        first = list(DATASET_CLASS_NAMES[names[0]])
+        if all(list(DATASET_CLASS_NAMES[name]) == first for name in names):
+            return first
+        raise ValueError("Mixed datasets with different class spaces are not supported.")
+    if any(name in DATASET_CLASS_NAMES for name in names):
+        raise ValueError("Mixed custom datasets with non-matching class spaces are not supported.")
     return None
 
 

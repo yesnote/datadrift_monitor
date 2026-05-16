@@ -7,9 +7,24 @@ import yaml
 
 from dataloaders.datasets.coco import COCODataset
 from dataloaders.datasets.openimages import OpenImagesDataset
+from dataloaders.datasets.road import (
+    BDD100KDataset,
+    CityscapesDetectionDataset,
+    FoggyCityscapesDetectionDataset,
+    KITTIDataset,
+)
 from dataloaders.datasets.voc import VOCDataset
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
+
+
+def _resolve_dataset_path(root, value):
+    if not value:
+        return None
+    path = Path(value)
+    if path.is_absolute():
+        return str(path)
+    return str(Path(root) / path)
 
 
 def load_config(config_path):
@@ -71,6 +86,54 @@ def _build_single_dataset(name, dataset_cfg, root, split_key, img_size):
             split=oi_split,
             img_size=img_size,
             min_gt_boxes=min_gt_boxes,
+        )
+
+    if name == "kitti":
+        kitti_split = dataset_cfg.get(f"{split_key}_split", split_key)
+        split_file = dataset_cfg.get(f"{split_key}_split_file") or dataset_cfg.get("split_file")
+        return KITTIDataset(
+            root=root,
+            split=kitti_split,
+            img_size=img_size,
+            image_dir=_resolve_dataset_path(root, dataset_cfg.get("image_dir")),
+            label_dir=_resolve_dataset_path(root, dataset_cfg.get("label_dir")),
+            split_file=_resolve_dataset_path(root, split_file),
+        )
+
+    if name in {"bdd100k", "bdd"}:
+        bdd_split = dataset_cfg.get(f"{split_key}_split", split_key)
+        ann_file = dataset_cfg.get(f"{split_key}_annotation_file") or dataset_cfg.get("annotation_file")
+        image_dir = dataset_cfg.get(f"{split_key}_image_dir") or dataset_cfg.get("image_dir")
+        return BDD100KDataset(
+            root=root,
+            split=bdd_split,
+            img_size=img_size,
+            image_dir=_resolve_dataset_path(root, image_dir) if image_dir else None,
+            annotation_file=_resolve_dataset_path(root, ann_file) if ann_file else None,
+        )
+
+    if name == "cityscapes":
+        city_split = dataset_cfg.get(f"{split_key}_split", split_key)
+        image_dir = dataset_cfg.get(f"{split_key}_image_dir") or dataset_cfg.get("image_dir")
+        annotation_dir = dataset_cfg.get(f"{split_key}_annotation_dir") or dataset_cfg.get("annotation_dir")
+        return CityscapesDetectionDataset(
+            root=root,
+            split=city_split,
+            img_size=img_size,
+            image_dir=_resolve_dataset_path(root, image_dir) if image_dir else None,
+            annotation_dir=_resolve_dataset_path(root, annotation_dir) if annotation_dir else None,
+        )
+
+    if name in {"foggy_cityscapes", "foggy_city"}:
+        foggy_split = dataset_cfg.get(f"{split_key}_split", split_key)
+        image_dir = dataset_cfg.get(f"{split_key}_image_dir") or dataset_cfg.get("image_dir")
+        annotation_dir = dataset_cfg.get(f"{split_key}_annotation_dir") or dataset_cfg.get("annotation_dir")
+        return FoggyCityscapesDetectionDataset(
+            root=root,
+            split=foggy_split,
+            img_size=img_size,
+            image_dir=_resolve_dataset_path(root, image_dir) if image_dir else None,
+            annotation_dir=_resolve_dataset_path(root, annotation_dir) if annotation_dir else None,
         )
 
     raise ValueError(f"Unsupported dataset name: {name}")
