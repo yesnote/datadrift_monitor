@@ -115,16 +115,6 @@ class ComputeLoss:
             setattr(self, k, getattr(det, k))
 
     def __call__(self, p, targets):  # predictions, targets, model
-        total_loss, components = self.compute_components(p, targets)
-        return total_loss, torch.cat(
-            (
-                components["bbox_loss"],
-                components["obj_loss"],
-                components["cls_loss"],
-            )
-        ).detach()
-
-    def compute_components(self, p, targets):
         device = targets.device
         lcls, lbox, lobj = torch.zeros(1, device=device), torch.zeros(1, device=device), torch.zeros(1, device=device)
         tcls, tbox, indices, anchors = self.build_targets(p, targets)  # targets
@@ -174,12 +164,7 @@ class ComputeLoss:
         lcls *= self.hyp['cls']
         bs = tobj.shape[0]  # batch size
 
-        return (lbox + lobj + lcls) * bs, {
-            "bbox_loss": lbox,
-            "obj_loss": lobj,
-            "cls_loss": lcls,
-            "loss": (lbox + lobj + lcls) * bs,
-        }
+        return (lbox + lobj + lcls) * bs, torch.cat((lbox, lobj, lcls)).detach()
 
     def build_targets(self, p, targets):
         # Build targets for compute_loss(), input targets(image,class,x,y,w,h)
