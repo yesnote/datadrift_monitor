@@ -8,12 +8,13 @@ from pathlib import Path
 
 import yaml
 
-
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
 # Edit these paths before running.
 OBJECT_DETECTOR_CONFIG = r"object_detectors/configs/predict_coco_yolov5.yaml"
-META_CLASSIFIER_CONFIG = r"meta_models/meta_classifier/configs/train_meta_classifier.yaml"
+META_CLASSIFIER_CONFIG = (
+    r"meta_models/meta_classifier/configs/train_meta_classifier.yaml"
+)
 
 # If empty, dataset.gt_root is read from META_CLASSIFIER_CONFIG.
 GT_ROOT = ""
@@ -64,7 +65,10 @@ def _dataset_name(config: dict) -> str:
         names = []
     if not names:
         return "unknown"
-    return "-".join("".join(ch if ch.isalnum() or ch in {"_", "-"} else "_" for ch in name) for name in names)
+    return "-".join(
+        "".join(ch if ch.isalnum() or ch in {"_", "-"} else "_" for ch in name)
+        for name in names
+    )
 
 
 def _abbr(value: str) -> str:
@@ -153,7 +157,9 @@ def _prepare_layer_grad_config(base_config: dict, combo: dict) -> dict:
     return config
 
 
-def _prepare_meta_config(base_config: dict, layer_grad_run_dir: Path, gt_root: str) -> dict:
+def _prepare_meta_config(
+    base_config: dict, layer_grad_run_dir: Path, gt_root: str
+) -> dict:
     config = deepcopy(base_config)
     config["mode"] = "train"
     dataset_cfg = config.setdefault("dataset", {})
@@ -212,15 +218,33 @@ def main() -> None:
     meta_base_config = _load_yaml(meta_config_path)
     dataset = _dataset_name(od_base_config)
 
-    grid_name = GRID_NAME.strip() or f"{datetime.now().strftime('%m-%d-%Y_%H;%M')}_layer_grad_grid"
-    od_grid_root = REPO_ROOT / "object_detectors" / "runs" / "predict" / dataset / grid_name
-    meta_grid_root = REPO_ROOT / "meta_models" / "meta_classifier" / "runs" / "train" / dataset / grid_name
+    grid_name = (
+        GRID_NAME.strip()
+        or f"{datetime.now().strftime('%m-%d-%Y_%H;%M')}_layer_grad_grid"
+    )
+    od_grid_root = (
+        REPO_ROOT / "object_detectors" / "runs" / "predict" / dataset / grid_name
+    )
+    meta_grid_root = (
+        REPO_ROOT
+        / "meta_models"
+        / "meta_classifier"
+        / "runs"
+        / "train"
+        / dataset
+        / grid_name
+    )
     od_grid_root.mkdir(parents=True, exist_ok=True)
     meta_grid_root.mkdir(parents=True, exist_ok=True)
 
-    gt_root = GT_ROOT.strip() or str(meta_base_config.get("dataset", {}).get("gt_root", "")).strip()
+    gt_root = (
+        GT_ROOT.strip()
+        or str(meta_base_config.get("dataset", {}).get("gt_root", "")).strip()
+    )
     if not gt_root:
-        raise ValueError("GT_ROOT is empty and META_CLASSIFIER_CONFIG has no dataset.gt_root.")
+        raise ValueError(
+            "GT_ROOT is empty and META_CLASSIFIER_CONFIG has no dataset.gt_root."
+        )
 
     rows = []
     combo_list = list(iter_combinations())
@@ -237,7 +261,16 @@ def main() -> None:
             od_config = _prepare_layer_grad_config(od_base_config, combo)
             od_config_path_i = layer_dir / "grid_object_detector_config.yaml"
             _save_yaml(od_config, od_config_path_i)
-            _run([sys.executable, "object_detectors/main.py", "--config", str(od_config_path_i), "--run-dir", str(layer_dir)])
+            _run(
+                [
+                    sys.executable,
+                    "object_detectors/main.py",
+                    "--config",
+                    str(od_config_path_i),
+                    "--run-dir",
+                    str(layer_dir),
+                ]
+            )
 
         if RUN_META_CLASSIFIER and not (REUSE_EXISTING and eval_csv.is_file()):
             meta_config = _prepare_meta_config(meta_base_config, layer_dir, gt_root)
