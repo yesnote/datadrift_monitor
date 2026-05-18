@@ -1165,7 +1165,7 @@ def analyze_prediction_error_types(
     best_any_class_gt_classes = [""] * n_pred
     matched_gt_indices = [-1] * n_pred
     duplicate_flags = [0] * n_pred
-    error_types = ["background_fp"] * n_pred
+    error_types = ["localization_error"] * n_pred
 
     sorted_indices = list(range(n_pred))
     if pred_scores is not None:
@@ -1206,13 +1206,13 @@ def analyze_prediction_error_types(
                 claimed_gt_indices.add(best_same_idx)
             else:
                 duplicate_flags[pred_idx] = 1
-                error_types[pred_idx] = "duplicate_fp"
+                error_types[pred_idx] = "localization_error"
         elif best_any_idx >= 0 and best_any_iou >= iou_match_threshold:
-            error_types[pred_idx] = "classification_fp"
+            error_types[pred_idx] = "classification_error"
         elif best_same_idx >= 0 and best_same_iou >= background_iou_threshold:
-            error_types[pred_idx] = "localization_fp"
+            error_types[pred_idx] = "localization_error"
         else:
-            error_types[pred_idx] = "background_fp"
+            error_types[pred_idx] = "localization_error"
 
     rows = []
     for pred_idx in range(n_pred):
@@ -1231,9 +1231,8 @@ def analyze_prediction_error_types(
                 "best_any_class_gt_class": best_any_class_gt_classes[pred_idx],
                 "matched_gt_idx": int(matched_gt_indices[pred_idx]),
                 "is_duplicate": int(duplicate_flags[pred_idx]),
-                "is_background_fp": int(error_type == "background_fp"),
-                "is_localization_fp": int(error_type == "localization_fp"),
-                "is_classification_fp": int(error_type == "classification_fp"),
+                "is_localization_error": int(error_type == "localization_error"),
+                "is_classification_error": int(error_type == "classification_error"),
             }
         )
     return rows
