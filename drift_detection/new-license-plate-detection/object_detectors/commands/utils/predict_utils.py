@@ -10,6 +10,7 @@ import torch.nn.functional as F
 import torch.nn as nn
 
 from dataloaders.utils.data_utils import DATASET_CLASS_NAMES
+from losses.yolo_loss_core import ComputeLoss
 from models.yolo.models.yolo_v5_object_detector import YOLOV5TorchObjectDetector
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -804,6 +805,64 @@ def build_pseudo_label_losses_for_candidates(
     return losses
 
 
+def _ensure_yolov5_loss_hyp(model):
+    if getattr(model, "hyp", None):
+        return
+    model.hyp = {
+        "box": 0.05,
+        "cls": 0.5,
+        "obj": 1.0,
+        "cls_pw": 1.0,
+        "obj_pw": 1.0,
+        "fl_gamma": 0.0,
+        "label_smoothing": 0.0,
+        "anchor_t": 4.0,
+    }
+
+
+def build_yolov5_training_pseudo_losses(
+    model,
+    pred_layers,
+    pred_img: torch.Tensor,
+    raw_idx: int,
+    input_hw,
+    timing_accumulator=None,
+    timing_device=None,
+):
+    if raw_idx >= pred_img.shape[0]:
+        return None
+    if not isinstance(pred_layers, list):
+        return None
+
+    t_loss = _start_timing(timing_device)
+    _ensure_yolov5_loss_hyp(model)
+    pseudo_row = pred_img[raw_idx].detach().float()
+    if pseudo_row.shape[0] <= 5:
+        return None
+
+    img_h, img_w = int(input_hw[0]), int(input_hw[1])
+    pseudo_cls = int(torch.argmax(pseudo_row[5:]).item())
+    x = (pseudo_row[0] / max(float(img_w), 1.0)).clamp(0.0, 1.0)
+    y = (pseudo_row[1] / max(float(img_h), 1.0)).clamp(0.0, 1.0)
+    w = (pseudo_row[2] / max(float(img_w), 1.0)).clamp(min=1e-12, max=1.0)
+    h = (pseudo_row[3] / max(float(img_h), 1.0)).clamp(min=1e-12, max=1.0)
+    targets = torch.stack(
+        (
+            torch.zeros_like(x),
+            torch.tensor(float(pseudo_cls), dtype=x.dtype, device=x.device),
+            x,
+            y,
+            w,
+            h,
+        )
+    ).view(1, 6)
+
+    compute_loss = ComputeLoss(model)
+    _total_loss, components = compute_loss.compute_components(pred_layers, targets)
+    _add_elapsed_timing(timing_accumulator, "loss_compute_sec", t_loss, timing_device)
+    return components
+
+
 def _bbox_loss_xywh_tensor(pred_xywh: torch.Tensor, target_xywh: torch.Tensor, mode: str = "ciou", reduction: str = "mean"):
     mode = str(mode).strip().lower()
     if mode == "smooth_l1":
@@ -906,6 +965,7 @@ def collect_bbox_layer_grads_per_target(
     model_output = detector.model(input_tensor.detach(), augment=False)
     raw_prediction = model_output[0] if isinstance(model_output, (tuple, list)) else model_output
     raw_logits = model_output[1] if isinstance(model_output, (tuple, list)) and len(model_output) > 1 else None
+    pred_layers = model_output[2] if isinstance(model_output, (tuple, list)) and len(model_output) > 2 and isinstance(model_output[2], list) else None
     raw_anchor_priors = model_output[3] if isinstance(model_output, (tuple, list)) and len(model_output) > 3 else None
     with torch.no_grad():
         nms_prediction = raw_prediction.detach().clone()
@@ -942,12 +1002,12 @@ def collect_bbox_layer_grads_per_target(
 
                 if pseudo_gt != "uniform" and target_value in {"bbox_loss", "obj_loss", "cls_loss", "loss"}:
                     if pseudo_losses is None:
-                        pseudo_losses = build_pseudo_label_losses_for_candidates(
+                        pseudo_losses = build_yolov5_training_pseudo_losses(
+                            model=detector.model,
+                            pred_layers=pred_layers,
                             pred_img=pred_img,
                             raw_idx=raw_idx,
-                            iou_threshold=iou_threshold,
-                            score_threshold=cand_score_threshold,
-                            bbox_loss=bbox_loss,
+                            input_hw=input_tensor.shape[-2:],
                             timing_accumulator=timing_accumulator,
                             timing_device=timing_device,
                         )
