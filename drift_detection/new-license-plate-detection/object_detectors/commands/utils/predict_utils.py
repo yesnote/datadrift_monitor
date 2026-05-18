@@ -10,7 +10,6 @@ import torch.nn.functional as F
 import torch.nn as nn
 
 from dataloaders.utils.data_utils import DATASET_CLASS_NAMES
-from losses.yolo_loss_core import ComputeLoss
 from models.yolo.models.yolo_v5_object_detector import YOLOV5TorchObjectDetector
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -751,19 +750,40 @@ def _box_iou_1vN_tensor(box: torch.Tensor, boxes: torch.Tensor) -> torch.Tensor:
     return inter / union.clamp(min=1e-12)
 
 
+def _flatten_raw_prediction_layers(pred_layers):
+    if not isinstance(pred_layers, list):
+        return None
+    flat = []
+    for layer_pred in pred_layers:
+        if not isinstance(layer_pred, torch.Tensor) or layer_pred.ndim != 5:
+            return None
+        flat.append(layer_pred.reshape(layer_pred.shape[0], -1, layer_pred.shape[-1]))
+    if not flat:
+        return None
+    return torch.cat(flat, dim=1)
+
+
+def _plain_iou_xywh_tensor(box1: torch.Tensor, box2: torch.Tensor, eps: float = 1e-7) -> torch.Tensor:
+    box1_xyxy = _xywh_to_xyxy_tensor(box1.reshape(-1, 4))
+    box2_xyxy = _xywh_to_xyxy_tensor(box2.reshape(-1, 4))
+    if box2_xyxy.shape[0] == 1 and box1_xyxy.shape[0] > 1:
+        box2_xyxy = box2_xyxy.expand(box1_xyxy.shape[0], -1)
+    return _box_iou_1vN_tensor(box2_xyxy[0], box1_xyxy)
+
+
 def build_pseudo_label_losses_for_candidates(
     pred_img: torch.Tensor,
     raw_idx: int,
     iou_threshold: float,
     score_threshold: float = 0.01,
     bbox_loss: str = "ciou",
+    raw_img: torch.Tensor = None,
     timing_accumulator=None,
     timing_device=None,
 ):
     if raw_idx >= pred_img.shape[0]:
         return None
 
-    eps = 1e-6
     t_candidate = _start_timing(timing_device)
     with torch.no_grad():
         pseudo_row = pred_img[raw_idx].detach()
@@ -783,84 +803,33 @@ def build_pseudo_label_losses_for_candidates(
 
     t_loss = _start_timing(timing_device)
     candidate_pred = pred_img[candidate_mask]
+    if raw_img is not None and raw_img.shape[0] == pred_img.shape[0]:
+        raw_obj = raw_img[:, 4]
+        raw_cls = raw_img[:, 5:]
+    else:
+        eps = 1e-6
+        raw_obj = torch.logit(pred_img[:, 4].clamp(eps, 1.0 - eps))
+        raw_cls = torch.logit(pred_img[:, 5:].clamp(eps, 1.0 - eps))
+    candidate_raw_cls = raw_cls[candidate_mask]
+
     pseudo_box_target = pseudo_row[:4].view(1, 4).expand(candidate_pred.shape[0], -1)
     bbox_loss_value = _bbox_loss_xywh_tensor(candidate_pred[:, :4], pseudo_box_target, mode=bbox_loss, reduction="sum")
 
-    obj_prob = candidate_pred[:, 4].clamp(eps, 1.0 - eps)
-    obj_target = torch.ones_like(obj_prob)
-    obj_loss = F.binary_cross_entropy(obj_prob, obj_target, reduction="sum")
+    candidate_raw_obj = raw_obj[candidate_mask]
+    obj_target = ious[candidate_mask].detach().to(dtype=candidate_raw_obj.dtype).clamp(min=0.0, max=1.0)
+    obj_loss = F.binary_cross_entropy_with_logits(candidate_raw_obj, obj_target, reduction="sum")
 
-    cls_prob = candidate_pred[:, 5:].clamp(eps, 1.0 - eps)
-    cls_target = torch.zeros_like(cls_prob)
+    cls_target = torch.zeros_like(candidate_raw_cls)
     cls_target[:, pseudo_cls] = 1.0
-    cls_loss = F.binary_cross_entropy(cls_prob, cls_target, reduction="sum")
+    cls_loss = F.binary_cross_entropy_with_logits(candidate_raw_cls, cls_target, reduction="sum")
 
     losses = {
         "bbox_loss": bbox_loss_value,
         "obj_loss": obj_loss,
         "cls_loss": cls_loss,
-        "loss": bbox_loss_value + obj_loss + cls_loss,
     }
     _add_elapsed_timing(timing_accumulator, "loss_compute_sec", t_loss, timing_device)
     return losses
-
-
-def _ensure_yolov5_loss_hyp(model):
-    if getattr(model, "hyp", None):
-        return
-    model.hyp = {
-        "box": 0.05,
-        "cls": 0.5,
-        "obj": 1.0,
-        "cls_pw": 1.0,
-        "obj_pw": 1.0,
-        "fl_gamma": 0.0,
-        "label_smoothing": 0.0,
-        "anchor_t": 4.0,
-    }
-
-
-def build_yolov5_training_pseudo_losses(
-    model,
-    pred_layers,
-    pred_img: torch.Tensor,
-    raw_idx: int,
-    input_hw,
-    timing_accumulator=None,
-    timing_device=None,
-):
-    if raw_idx >= pred_img.shape[0]:
-        return None
-    if not isinstance(pred_layers, list):
-        return None
-
-    t_loss = _start_timing(timing_device)
-    _ensure_yolov5_loss_hyp(model)
-    pseudo_row = pred_img[raw_idx].detach().float()
-    if pseudo_row.shape[0] <= 5:
-        return None
-
-    img_h, img_w = int(input_hw[0]), int(input_hw[1])
-    pseudo_cls = int(torch.argmax(pseudo_row[5:]).item())
-    x = (pseudo_row[0] / max(float(img_w), 1.0)).clamp(0.0, 1.0)
-    y = (pseudo_row[1] / max(float(img_h), 1.0)).clamp(0.0, 1.0)
-    w = (pseudo_row[2] / max(float(img_w), 1.0)).clamp(min=1e-12, max=1.0)
-    h = (pseudo_row[3] / max(float(img_h), 1.0)).clamp(min=1e-12, max=1.0)
-    targets = torch.stack(
-        (
-            torch.zeros_like(x),
-            torch.tensor(float(pseudo_cls), dtype=x.dtype, device=x.device),
-            x,
-            y,
-            w,
-            h,
-        )
-    ).view(1, 6)
-
-    compute_loss = ComputeLoss(model)
-    _total_loss, components = compute_loss.compute_components(pred_layers, targets)
-    _add_elapsed_timing(timing_accumulator, "loss_compute_sec", t_loss, timing_device)
-    return components
 
 
 def _bbox_loss_xywh_tensor(pred_xywh: torch.Tensor, target_xywh: torch.Tensor, mode: str = "ciou", reduction: str = "mean"):
@@ -890,12 +859,15 @@ def build_layer_target_scalar_bbox(
     target_value,
     pred_img,
     logit_img,
+    raw_img,
     raw_idx,
     iou_threshold,
     pseudo_gt="cand",
     anchor_xywh=None,
     cand_score_threshold=0.01,
     bbox_loss: str = "ciou",
+    timing_accumulator=None,
+    timing_device=None,
 ):
     if target_value == "obj":
         if raw_idx >= pred_img.shape[0]:
@@ -909,26 +881,44 @@ def build_layer_target_scalar_bbox(
     if pseudo_gt == "uniform":
         if raw_idx >= pred_img.shape[0]:
             return None
-        eps = 1e-6
+        t_loss = _start_timing(timing_device)
         pred_row = pred_img[raw_idx]
+        raw_row = raw_img[raw_idx] if raw_img is not None and raw_idx < raw_img.shape[0] else None
         if target_value == "obj_loss":
-            obj_prob = pred_row[4].clamp(eps, 1.0 - eps)
-            obj_target = torch.full_like(obj_prob, 0.5)
-            return F.binary_cross_entropy(obj_prob, obj_target)
+            if anchor_xywh is None:
+                return None
+            if raw_row is not None:
+                raw_obj = raw_row[4]
+            else:
+                raw_obj = torch.logit(pred_row[4].clamp(1e-6, 1.0 - 1e-6))
+            target_iou = _plain_iou_xywh_tensor(pred_row[:4].detach(), anchor_xywh.detach()).to(
+                dtype=raw_obj.dtype,
+                device=raw_obj.device,
+            )
+            obj_target = target_iou.reshape(()).clamp(min=0.0, max=1.0)
+            loss = F.binary_cross_entropy_with_logits(raw_obj, obj_target)
+            _add_elapsed_timing(timing_accumulator, "loss_compute_sec", t_loss, timing_device)
+            return loss
         if target_value == "cls_loss":
-            cls_logits = logit_img[raw_idx] if (logit_img is not None and raw_idx < logit_img.shape[0]) else pred_row[5:]
+            if raw_row is not None:
+                cls_logits = raw_row[5:]
+            else:
+                cls_logits = logit_img[raw_idx] if (logit_img is not None and raw_idx < logit_img.shape[0]) else pred_row[5:]
             if cls_logits.numel() == 0:
                 return None
-            log_probs = F.log_softmax(cls_logits, dim=-1)
-            uniform_target = torch.full_like(log_probs, 1.0 / float(log_probs.numel()))
-            # Soft-target cross-entropy with uniform pseudo GT.
-            return -(uniform_target * log_probs).sum()
+            uniform_target = torch.full_like(cls_logits, 1.0 / float(cls_logits.numel()))
+            loss = F.binary_cross_entropy_with_logits(cls_logits, uniform_target, reduction="sum")
+            _add_elapsed_timing(timing_accumulator, "loss_compute_sec", t_loss, timing_device)
+            return loss
         if target_value == "bbox_loss":
             if anchor_xywh is None:
                 return None
             pred_xywh = pred_row[:4]
             anchor_xywh = anchor_xywh.to(dtype=pred_xywh.dtype, device=pred_xywh.device)
-            return _bbox_loss_xywh_tensor(pred_xywh, anchor_xywh, mode=bbox_loss, reduction="mean")
+            loss = _bbox_loss_xywh_tensor(pred_xywh, anchor_xywh, mode=bbox_loss, reduction="mean")
+            _add_elapsed_timing(timing_accumulator, "loss_compute_sec", t_loss, timing_device)
+            return loss
+        _add_elapsed_timing(timing_accumulator, "loss_compute_sec", t_loss, timing_device)
         return None
 
     losses = build_pseudo_label_losses_for_candidates(
@@ -937,6 +927,9 @@ def build_layer_target_scalar_bbox(
         iou_threshold=iou_threshold,
         score_threshold=cand_score_threshold,
         bbox_loss=bbox_loss,
+        raw_img=raw_img,
+        timing_accumulator=timing_accumulator,
+        timing_device=timing_device,
     )
     if losses is not None and target_value in losses:
         return losses[target_value]
@@ -985,6 +978,8 @@ def collect_bbox_layer_grads_per_target(
     raw_keep_indices = selected_indices[0] if selected_indices else torch.zeros((0,), dtype=torch.long, device=input_tensor.device)
     pred_img = raw_prediction[0]
     logit_img = raw_logits[0] if raw_logits is not None else pred_img[:, 5:]
+    raw_flat = _flatten_raw_prediction_layers(pred_layers)
+    raw_img = raw_flat[0] if raw_flat is not None and raw_flat.ndim == 3 else None
     anchor_img = raw_anchor_priors[0] if raw_anchor_priors is not None else None
 
     rows = []
@@ -994,38 +989,25 @@ def collect_bbox_layer_grads_per_target(
         for bbox_idx in range(num_boxes):
             raw_idx = int(raw_keep_indices[bbox_idx].detach().cpu().item())
             grad_stats = {}
-            pseudo_losses = None
             for target_value in target_values:
                 detector.zero_grad(set_to_none=True)
 
                 anchor_row = anchor_img[raw_idx] if (anchor_img is not None and raw_idx < anchor_img.shape[0]) else None
 
-                if pseudo_gt != "uniform" and target_value in {"bbox_loss", "obj_loss", "cls_loss", "loss"}:
-                    if pseudo_losses is None:
-                        pseudo_losses = build_yolov5_training_pseudo_losses(
-                            model=detector.model,
-                            pred_layers=pred_layers,
-                            pred_img=pred_img,
-                            raw_idx=raw_idx,
-                            input_hw=input_tensor.shape[-2:],
-                            timing_accumulator=timing_accumulator,
-                            timing_device=timing_device,
-                        )
-                    target_scalar = pseudo_losses[target_value] if pseudo_losses is not None and target_value in pseudo_losses else None
-                else:
-                    t_loss = _start_timing(timing_device)
-                    target_scalar = build_layer_target_scalar_bbox(
-                        target_value=target_value,
-                        pred_img=pred_img,
-                        logit_img=logit_img,
-                        raw_idx=raw_idx,
-                        iou_threshold=iou_threshold,
-                        pseudo_gt=pseudo_gt,
-                        anchor_xywh=anchor_row,
-                        cand_score_threshold=cand_score_threshold,
-                        bbox_loss=bbox_loss,
-                    )
-                    _add_elapsed_timing(timing_accumulator, "loss_compute_sec", t_loss, timing_device)
+                target_scalar = build_layer_target_scalar_bbox(
+                    target_value=target_value,
+                    pred_img=pred_img,
+                    logit_img=logit_img,
+                    raw_img=raw_img,
+                    raw_idx=raw_idx,
+                    iou_threshold=iou_threshold,
+                    pseudo_gt=pseudo_gt,
+                    anchor_xywh=anchor_row,
+                    cand_score_threshold=cand_score_threshold,
+                    bbox_loss=bbox_loss,
+                    timing_accumulator=timing_accumulator,
+                    timing_device=timing_device,
+                )
 
                 if target_scalar is None:
                     for layer_name in target_layers:
@@ -1073,7 +1055,7 @@ def collect_bbox_layer_grads_per_target(
         for param, req_grad in zip(layer_params, original_requires_grad):
             param.requires_grad_(req_grad)
         detector.zero_grad(set_to_none=True)
-        del model_output, raw_prediction, raw_logits, raw_anchor_priors, pred_img, logit_img, anchor_img
+        del model_output, raw_prediction, raw_logits, raw_anchor_priors, pred_img, logit_img, raw_flat, raw_img, anchor_img
 
     return rows
 
