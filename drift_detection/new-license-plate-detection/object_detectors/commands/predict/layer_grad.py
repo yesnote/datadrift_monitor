@@ -34,6 +34,12 @@ def run_layer_grad_csv(config, run_dir):
     layer_gradient_reduction = parsed["layer_gradient_reduction"]
     layer_pseudo_gt = parsed.get("layer_pseudo_gt", "cand")
     layer_cand_score_threshold = float(parsed.get("layer_cand_score_threshold", 0.01))
+    layer_bbox_loss = parsed.get("layer_bbox_loss", "ciou")
+    layer_cls_loss = parsed.get("layer_cls_loss", "bcewithlogits")
+    layer_obj_loss = parsed.get("layer_obj_loss", "bcewithlogits")
+    layer_bbox_direction = parsed.get("layer_bbox_direction", "pred_to_target")
+    layer_cls_direction = parsed.get("layer_cls_direction", "pred_to_target")
+    layer_obj_direction = parsed.get("layer_obj_direction", "pred_to_target")
 
     if not save_csv:
         return
@@ -114,7 +120,12 @@ def run_layer_grad_csv(config, run_dir):
                     vector_reduction=layer_gradient_reduction,
                     pseudo_gt=layer_pseudo_gt,
                     cand_score_threshold=layer_cand_score_threshold,
-                    bbox_loss="ciou",
+                    bbox_loss=layer_bbox_loss,
+                    cls_loss=layer_cls_loss,
+                    obj_loss=layer_obj_loss,
+                    bbox_direction=layer_bbox_direction,
+                    cls_direction=layer_cls_direction,
+                    obj_direction=layer_obj_direction,
                     timing_accumulator=stage_seconds,
                     timing_device=device,
                 )
