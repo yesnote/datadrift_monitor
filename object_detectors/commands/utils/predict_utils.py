@@ -316,6 +316,12 @@ def parse_output_config(output_cfg):
     layer_gradient_reduction = []
     layer_pseudo_gt = "cand"
     layer_cand_score_threshold = 0.01
+    layer_bbox_loss = "ciou"
+    layer_cls_loss = "bcewithlogits"
+    layer_obj_loss = "bcewithlogits"
+    layer_bbox_direction = "pred_to_target"
+    layer_cls_direction = "pred_to_target"
+    layer_obj_direction = "pred_to_target"
 
     if uncertainty == "layer_grad":
         g = as_dict(layer_grad_cfg.get("gradient", {}))
@@ -355,6 +361,70 @@ def parse_output_config(output_cfg):
         t_policy = str(t).strip().lower() if t is not None else "null_target"
         layer_pseudo_gt = "uniform" if t_policy in {"null_target", "null"} else "cand"
         layer_cand_score_threshold = as_float(g.get("cand_score_threshold", 0.01), 0.01)
+        loss_aliases = {
+            "bce": "bcewithlogits",
+            "bce_with_logits": "bcewithlogits",
+            "bcewithlogits": "bcewithlogits",
+            "ciou": "ciou",
+            "l1": "l1",
+            "l1_loss": "l1",
+            "l2": "l2",
+            "l2_loss": "l2",
+            "mse": "l2",
+            "kl": "kl",
+            "kl_div": "kl",
+            "kl_divergence": "kl",
+            "ce": "ce",
+            "cross_entropy": "ce",
+            "abs": "abs_diff",
+            "abs_diff": "abs_diff",
+            "absolute_diff": "abs_diff",
+            "signed": "signed_diff",
+            "signed_diff": "signed_diff",
+        }
+        direction_aliases = {
+            "pred_to_target": "pred_to_target",
+            "prediction_to_target": "pred_to_target",
+            "target": "pred_to_target",
+            "target_to_pred": "target_to_pred",
+            "target_to_prediction": "target_to_pred",
+            "reverse": "target_to_pred",
+        }
+
+        def normalize_loss_option(raw, default, supported, key_name):
+            normalized = loss_aliases.get(str(raw if raw is not None else default).strip().lower().replace("-", "_"))
+            if normalized not in supported:
+                raise ValueError(f"Unsupported {key_name}: {raw}. Supported values: {', '.join(sorted(supported))}.")
+            return normalized
+
+        def normalize_direction_option(raw, key_name):
+            normalized = direction_aliases.get(
+                str(raw if raw is not None else "pred_to_target").strip().lower().replace("-", "_")
+            )
+            if normalized is None:
+                raise ValueError(f"Unsupported {key_name}: {raw}. Supported values: pred_to_target, target_to_pred.")
+            return normalized
+
+        layer_bbox_loss = normalize_loss_option(g.get("bbox_loss", "ciou"), "ciou", {"ciou", "l1", "l2"}, "layer_grad.gradient.bbox_loss")
+        layer_cls_loss = normalize_loss_option(
+            g.get("cls_loss", "bcewithlogits"),
+            "bcewithlogits",
+            {"bcewithlogits", "kl", "ce"},
+            "layer_grad.gradient.cls_loss",
+        )
+        layer_obj_loss = normalize_loss_option(
+            g.get("obj_loss", "bcewithlogits"),
+            "bcewithlogits",
+            {"bcewithlogits", "abs_diff", "signed_diff"},
+            "layer_grad.gradient.obj_loss",
+        )
+        layer_bbox_direction = normalize_direction_option(g.get("bbox_direction", "pred_to_target"), "layer_grad.gradient.bbox_direction")
+        layer_cls_direction = normalize_direction_option(g.get("cls_direction", "pred_to_target"), "layer_grad.gradient.cls_direction")
+        layer_obj_direction = normalize_direction_option(g.get("obj_direction", "pred_to_target"), "layer_grad.gradient.obj_direction")
+        if layer_cls_direction == "target_to_pred" and layer_cls_loss in {"bcewithlogits", "ce"}:
+            raise ValueError("layer_grad.gradient.cls_direction=target_to_pred is only supported when cls_loss=kl.")
+        if layer_obj_direction == "target_to_pred" and layer_obj_loss == "bcewithlogits":
+            raise ValueError("layer_grad.gradient.obj_direction=target_to_pred is only supported when obj_loss is abs_diff or signed_diff.")
 
     save_image_enabled = bool(save_image_cfg.get("enabled", bool(save_image_cfg)))
     gt_image_step = as_int(save_image_cfg.get("step", 1), 1)
@@ -379,7 +449,12 @@ def parse_output_config(output_cfg):
         "layer_gradient_reduction": layer_gradient_reduction,
         "layer_pseudo_gt": layer_pseudo_gt,
         "layer_cand_score_threshold": float(layer_cand_score_threshold),
-        "layer_bbox_loss": "ciou",
+        "layer_bbox_loss": layer_bbox_loss,
+        "layer_cls_loss": layer_cls_loss,
+        "layer_obj_loss": layer_obj_loss,
+        "layer_bbox_direction": layer_bbox_direction,
+        "layer_cls_direction": layer_cls_direction,
+        "layer_obj_direction": layer_obj_direction,
         "layer_ref_mode": "none",
         "layer_ref_type": "none",
         "layer_ref_prototype_mode": "none",
@@ -768,12 +843,139 @@ def _plain_iou_xywh_tensor(box1: torch.Tensor, box2: torch.Tensor, eps: float = 
     return _box_iou_1vN_tensor(box2_xyxy[0], box1_xyxy)
 
 
+def _apply_direction(pred_value: torch.Tensor, target_value: torch.Tensor, direction: str):
+    if direction == "target_to_pred":
+        return target_value, pred_value
+    return pred_value, target_value
+
+
+def _bbox_loss_xywh_tensor(
+    pred_xywh: torch.Tensor,
+    target_xywh: torch.Tensor,
+    mode: str = "ciou",
+    reduction: str = "mean",
+    direction: str = "pred_to_target",
+):
+    mode = str(mode).strip().lower()
+    target_xywh = target_xywh.to(dtype=pred_xywh.dtype, device=pred_xywh.device)
+    left, right = _apply_direction(pred_xywh, target_xywh, direction)
+
+    if mode == "ciou":
+        loss = 1.0 - _bbox_ciou_xywh_tensor(left, right)
+    elif mode == "l1":
+        loss = torch.abs(left - right)
+    elif mode == "l2":
+        loss = torch.square(left - right)
+    else:
+        raise ValueError("bbox_loss must be one of: ciou, l1, l2")
+
+    if reduction == "sum":
+        return loss.sum()
+    if reduction == "none":
+        return loss
+    return loss.mean()
+
+
+def _objectness_loss_tensor(
+    raw_obj: torch.Tensor,
+    target_prob: torch.Tensor,
+    mode: str = "bcewithlogits",
+    direction: str = "pred_to_target",
+    reduction: str = "sum",
+):
+    target_prob = target_prob.to(dtype=raw_obj.dtype, device=raw_obj.device)
+    mode = str(mode).strip().lower()
+    if mode == "bcewithlogits":
+        if direction != "pred_to_target":
+            raise ValueError("obj_direction=target_to_pred is not supported when obj_loss=bcewithlogits.")
+        loss = F.binary_cross_entropy_with_logits(raw_obj, target_prob, reduction="none")
+    elif mode in {"abs_diff", "signed_diff"}:
+        pred_prob = torch.sigmoid(raw_obj)
+        left, right = _apply_direction(pred_prob, target_prob, direction)
+        loss = torch.abs(left - right) if mode == "abs_diff" else (left - right)
+    else:
+        raise ValueError("obj_loss must be one of: bcewithlogits, abs_diff, signed_diff")
+
+    if reduction == "sum":
+        return loss.sum()
+    if reduction == "none":
+        return loss
+    return loss.mean()
+
+
+def _smooth_distribution(target_prob: torch.Tensor, eps: float = 1e-6) -> torch.Tensor:
+    target_prob = target_prob.clamp(min=eps)
+    return target_prob / target_prob.sum(dim=-1, keepdim=True).clamp(min=eps)
+
+
+def _class_loss_tensor(
+    raw_cls_logits: torch.Tensor,
+    target_prob: torch.Tensor,
+    class_idx: int = None,
+    mode: str = "bcewithlogits",
+    direction: str = "pred_to_target",
+    reduction: str = "sum",
+):
+    if raw_cls_logits.ndim == 1:
+        raw_cls_logits = raw_cls_logits.view(1, -1)
+    if target_prob.ndim == 1:
+        target_prob = target_prob.view(1, -1)
+    target_prob = target_prob.to(dtype=raw_cls_logits.dtype, device=raw_cls_logits.device)
+    if target_prob.shape[0] == 1 and raw_cls_logits.shape[0] > 1:
+        target_prob = target_prob.expand(raw_cls_logits.shape[0], -1)
+
+    mode = str(mode).strip().lower()
+    if mode == "bcewithlogits":
+        if direction != "pred_to_target":
+            raise ValueError("cls_direction=target_to_pred is not supported when cls_loss=bcewithlogits.")
+        loss = F.binary_cross_entropy_with_logits(raw_cls_logits, target_prob, reduction="none").sum(dim=-1)
+    elif mode == "ce":
+        if direction != "pred_to_target":
+            raise ValueError("cls_direction=target_to_pred is not supported when cls_loss=ce.")
+        if class_idx is None:
+            loss = -(target_prob * F.log_softmax(raw_cls_logits, dim=-1)).sum(dim=-1)
+        else:
+            class_target = torch.full(
+                (raw_cls_logits.shape[0],),
+                int(class_idx),
+                dtype=torch.long,
+                device=raw_cls_logits.device,
+            )
+            loss = F.cross_entropy(raw_cls_logits, class_target, reduction="none")
+    elif mode == "kl":
+        pred_log_prob = F.log_softmax(raw_cls_logits, dim=-1)
+        if direction == "target_to_pred":
+            pred_prob = pred_log_prob.exp()
+            target_log_prob = _smooth_distribution(target_prob).log()
+            loss = (pred_prob * (pred_log_prob - target_log_prob)).sum(dim=-1)
+        else:
+            safe_target = target_prob.clamp(min=1e-12)
+            loss = torch.where(
+                target_prob > 0,
+                target_prob * (safe_target.log() - pred_log_prob),
+                torch.zeros_like(target_prob),
+            ).sum(dim=-1)
+    else:
+        raise ValueError("cls_loss must be one of: bcewithlogits, kl, ce")
+
+    if reduction == "sum":
+        return loss.sum()
+    if reduction == "none":
+        return loss
+    return loss.mean()
+
+
 def build_pseudo_label_losses_for_candidates(
     pred_img: torch.Tensor,
     raw_idx: int,
     iou_threshold: float,
     score_threshold: float = 0.01,
     bbox_loss: str = "ciou",
+    cls_loss: str = "bcewithlogits",
+    obj_loss: str = "bcewithlogits",
+    bbox_direction: str = "pred_to_target",
+    cls_direction: str = "pred_to_target",
+    obj_direction: str = "pred_to_target",
     raw_img: torch.Tensor = None,
     timing_accumulator=None,
     timing_device=None,
@@ -810,46 +1012,42 @@ def build_pseudo_label_losses_for_candidates(
     candidate_raw_cls = raw_cls[candidate_mask]
 
     pseudo_box_target = pseudo_row[:4].view(1, 4).expand(candidate_pred.shape[0], -1)
-    bbox_loss_value = _bbox_loss_xywh_tensor(candidate_pred[:, :4], pseudo_box_target, mode=bbox_loss, reduction="sum")
+    bbox_loss_value = _bbox_loss_xywh_tensor(
+        candidate_pred[:, :4],
+        pseudo_box_target,
+        mode=bbox_loss,
+        reduction="sum",
+        direction=bbox_direction,
+    )
 
     candidate_raw_obj = raw_obj[candidate_mask]
     obj_target = ious[candidate_mask].detach().to(dtype=candidate_raw_obj.dtype).clamp(min=0.0, max=1.0)
-    obj_loss = F.binary_cross_entropy_with_logits(candidate_raw_obj, obj_target, reduction="sum")
+    obj_loss_value = _objectness_loss_tensor(
+        candidate_raw_obj,
+        obj_target,
+        mode=obj_loss,
+        direction=obj_direction,
+        reduction="sum",
+    )
 
     cls_target = torch.zeros_like(candidate_raw_cls)
     cls_target[:, pseudo_cls] = 1.0
-    cls_loss = F.binary_cross_entropy_with_logits(candidate_raw_cls, cls_target, reduction="sum")
+    cls_loss_value = _class_loss_tensor(
+        candidate_raw_cls,
+        cls_target,
+        class_idx=pseudo_cls,
+        mode=cls_loss,
+        direction=cls_direction,
+        reduction="sum",
+    )
 
     losses = {
         "bbox_loss": bbox_loss_value,
-        "obj_loss": obj_loss,
-        "cls_loss": cls_loss,
+        "obj_loss": obj_loss_value,
+        "cls_loss": cls_loss_value,
     }
     _add_elapsed_timing(timing_accumulator, "loss_compute_sec", t_loss, timing_device)
     return losses
-
-
-def _bbox_loss_xywh_tensor(pred_xywh: torch.Tensor, target_xywh: torch.Tensor, mode: str = "ciou", reduction: str = "mean"):
-    mode = str(mode).strip().lower()
-    if mode == "smooth_l1":
-        return F.smooth_l1_loss(pred_xywh, target_xywh.to(dtype=pred_xywh.dtype, device=pred_xywh.device), reduction=reduction)
-
-    target_xywh = target_xywh.to(dtype=pred_xywh.dtype, device=pred_xywh.device)
-    if mode == "ciou":
-        loss = 1.0 - _bbox_ciou_xywh_tensor(pred_xywh, target_xywh)
-    elif mode == "log_area_ratio":
-        eps = 1e-12
-        pred_area = pred_xywh[..., 2].clamp(min=eps) * pred_xywh[..., 3].clamp(min=eps)
-        target_area = target_xywh[..., 2].clamp(min=eps) * target_xywh[..., 3].clamp(min=eps)
-        loss = torch.log(pred_area / target_area.clamp(min=eps))
-    else:
-        raise ValueError("bbox_loss must be one of: smooth_l1, ciou, log_area_ratio")
-
-    if reduction == "sum":
-        return loss.sum()
-    if reduction == "none":
-        return loss
-    return loss.mean()
 
 
 def build_layer_target_scalar_bbox(
@@ -863,6 +1061,11 @@ def build_layer_target_scalar_bbox(
     anchor_xywh=None,
     cand_score_threshold=0.01,
     bbox_loss: str = "ciou",
+    cls_loss: str = "bcewithlogits",
+    obj_loss: str = "bcewithlogits",
+    bbox_direction: str = "pred_to_target",
+    cls_direction: str = "pred_to_target",
+    obj_direction: str = "pred_to_target",
     timing_accumulator=None,
     timing_device=None,
 ):
@@ -893,7 +1096,7 @@ def build_layer_target_scalar_bbox(
                 device=raw_obj.device,
             )
             obj_target = target_iou.reshape(()).clamp(min=0.0, max=1.0)
-            loss = F.binary_cross_entropy_with_logits(raw_obj, obj_target)
+            loss = _objectness_loss_tensor(raw_obj, obj_target, mode=obj_loss, direction=obj_direction, reduction="sum")
             _add_elapsed_timing(timing_accumulator, "loss_compute_sec", t_loss, timing_device)
             return loss
         if target_value == "cls_loss":
@@ -904,7 +1107,14 @@ def build_layer_target_scalar_bbox(
             if cls_logits.numel() == 0:
                 return None
             uniform_target = torch.full_like(cls_logits, 1.0 / float(cls_logits.numel()))
-            loss = F.binary_cross_entropy_with_logits(cls_logits, uniform_target, reduction="sum")
+            loss = _class_loss_tensor(
+                cls_logits,
+                uniform_target,
+                class_idx=None,
+                mode=cls_loss,
+                direction=cls_direction,
+                reduction="sum",
+            )
             _add_elapsed_timing(timing_accumulator, "loss_compute_sec", t_loss, timing_device)
             return loss
         if target_value == "bbox_loss":
@@ -912,7 +1122,13 @@ def build_layer_target_scalar_bbox(
                 return None
             pred_xywh = pred_row[:4]
             anchor_xywh = anchor_xywh.to(dtype=pred_xywh.dtype, device=pred_xywh.device)
-            loss = _bbox_loss_xywh_tensor(pred_xywh, anchor_xywh, mode=bbox_loss, reduction="mean")
+            loss = _bbox_loss_xywh_tensor(
+                pred_xywh,
+                anchor_xywh,
+                mode=bbox_loss,
+                reduction="mean",
+                direction=bbox_direction,
+            )
             _add_elapsed_timing(timing_accumulator, "loss_compute_sec", t_loss, timing_device)
             return loss
         _add_elapsed_timing(timing_accumulator, "loss_compute_sec", t_loss, timing_device)
@@ -924,6 +1140,11 @@ def build_layer_target_scalar_bbox(
         iou_threshold=iou_threshold,
         score_threshold=cand_score_threshold,
         bbox_loss=bbox_loss,
+        cls_loss=cls_loss,
+        obj_loss=obj_loss,
+        bbox_direction=bbox_direction,
+        cls_direction=cls_direction,
+        obj_direction=obj_direction,
         raw_img=raw_img,
         timing_accumulator=timing_accumulator,
         timing_device=timing_device,
@@ -943,6 +1164,11 @@ def collect_bbox_layer_grads_per_target(
     pseudo_gt="cand",
     cand_score_threshold=0.01,
     bbox_loss: str = "ciou",
+    cls_loss: str = "bcewithlogits",
+    obj_loss: str = "bcewithlogits",
+    bbox_direction: str = "pred_to_target",
+    cls_direction: str = "pred_to_target",
+    obj_direction: str = "pred_to_target",
     timing_accumulator=None,
     timing_device=None,
 ):
@@ -1002,6 +1228,11 @@ def collect_bbox_layer_grads_per_target(
                     anchor_xywh=anchor_row,
                     cand_score_threshold=cand_score_threshold,
                     bbox_loss=bbox_loss,
+                    cls_loss=cls_loss,
+                    obj_loss=obj_loss,
+                    bbox_direction=bbox_direction,
+                    cls_direction=cls_direction,
+                    obj_direction=obj_direction,
                     timing_accumulator=timing_accumulator,
                     timing_device=timing_device,
                 )
