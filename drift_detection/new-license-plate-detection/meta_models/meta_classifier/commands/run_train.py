@@ -54,9 +54,8 @@ EVAL_CONTEXT_COLUMNS = [
     "best_any_class_gt_class",
     "matched_gt_idx",
     "is_duplicate",
-    "is_background_fp",
-    "is_localization_fp",
-    "is_classification_fp",
+    "is_localization_error",
+    "is_classification_error",
 ]
 
 
