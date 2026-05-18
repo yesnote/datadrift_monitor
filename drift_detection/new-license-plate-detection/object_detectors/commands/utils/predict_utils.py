@@ -284,7 +284,6 @@ def parse_output_config(output_cfg):
         "ensemble",
         "meta_detect",
         "layer_grad",
-        "predict_dump",
     }
     if uncertainty not in supported:
         raise ValueError(f"Unsupported uncertainty: {uncertainty}")
@@ -299,8 +298,6 @@ def parse_output_config(output_cfg):
     pre_nms_ratio = 1.0
 
     gt_cfg = active if uncertainty == "gt" else {}
-    if uncertainty == "predict_dump":
-        gt_cfg = active
     meta_detect_cfg = active if uncertainty == "meta_detect" else {}
     mc_dropout_cfg = active if uncertainty == "mc_dropout" else {}
     layer_grad_cfg = active if uncertainty == "layer_grad" else {}

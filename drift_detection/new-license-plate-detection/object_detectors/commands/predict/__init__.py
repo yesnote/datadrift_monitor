@@ -6,7 +6,6 @@ from .gt import run_tp_csv
 from .layer_grad import run_layer_grad_csv
 from .mc_dropout import run_mc_dropout_csv
 from .meta_detect import run_meta_detect_csv
-from .predict_dump import run_predict_dump_csv
 from .score import run_score_csv
 
 __all__ = [
@@ -19,5 +18,4 @@ __all__ = [
     "run_energy_csv",
     "run_entropy_csv",
     "run_layer_grad_csv",
-    "run_predict_dump_csv",
 ]

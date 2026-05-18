@@ -44,13 +44,6 @@ output:
       step: 10
       max_num: 10
 
-  predict_dump:
-    iou_match_threshold: 0.45
-    score_threshold: 0.0
-    iou_threshold: 0.45
-    save_csv:
-      enabled: false
-
   score:
     save_csv:
       enabled: false
