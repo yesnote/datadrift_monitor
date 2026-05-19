@@ -24,7 +24,7 @@ GRID_NAME = ""
 
 RUN_LAYER_GRAD = True
 RUN_META_CLASSIFIER = True
-REUSE_EXISTING = True
+REUSE_EXISTING = False
 
 # Use None for all valid combinations, or set a small int for a smoke test.
 MAX_COMBINATIONS = None
@@ -137,7 +137,9 @@ def iter_combinations():
                             "obj_direction": obj_direction,
                         }
                         count += 1
-                        if MAX_COMBINATIONS is not None and count >= int(MAX_COMBINATIONS):
+                        if MAX_COMBINATIONS is not None and count >= int(
+                            MAX_COMBINATIONS
+                        ):
                             return
 
 
