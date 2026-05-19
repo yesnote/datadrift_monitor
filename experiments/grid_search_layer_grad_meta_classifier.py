@@ -93,6 +93,13 @@ def _combo_slug(combo: dict) -> str:
     )
 
 
+def _timestamped_combo_dir(root: Path, slug: str) -> Path:
+    existing = sorted(root.glob(f"??-??-????_??;??_{slug}"))
+    if existing and REUSE_EXISTING:
+        return existing[-1]
+    return root / f"{datetime.now().strftime('%m-%d-%Y_%H;%M')}_{slug}"
+
+
 def _valid_cls_directions(cls_loss: str) -> list[str]:
     if cls_loss == "kl":
         return ["pred_to_target", "target_to_pred"]
@@ -256,8 +263,8 @@ def main() -> None:
         slug = _combo_slug(combo)
         print(f"[{idx}/{len(combo_list)}] {slug}", flush=True)
 
-        layer_dir = od_grid_root / slug
-        meta_dir = meta_grid_root / slug
+        layer_dir = _timestamped_combo_dir(od_grid_root, slug)
+        meta_dir = _timestamped_combo_dir(meta_grid_root, slug)
         layer_csv = layer_dir / "layer_grad.csv"
         eval_csv = meta_dir / "results" / "evaluation_results.csv"
 
