@@ -111,8 +111,7 @@ def _valid_obj_directions(obj_loss: str) -> list[str]:
 
 def iter_combinations():
     count = 0
-    for target, bbox_loss, cls_loss, obj_loss in itertools.product(
-        TARGETS,
+    for bbox_loss, cls_loss, obj_loss in itertools.product(
         BBOX_LOSSES,
         CLS_LOSSES,
         OBJ_LOSSES,
@@ -120,18 +119,19 @@ def iter_combinations():
         for bbox_direction in _valid_bbox_directions(bbox_loss):
             for cls_direction in _valid_cls_directions(cls_loss):
                 for obj_direction in _valid_obj_directions(obj_loss):
-                    yield {
-                        "target": target,
-                        "bbox_loss": bbox_loss,
-                        "bbox_direction": bbox_direction,
-                        "cls_loss": cls_loss,
-                        "cls_direction": cls_direction,
-                        "obj_loss": obj_loss,
-                        "obj_direction": obj_direction,
-                    }
-                    count += 1
-                    if MAX_COMBINATIONS is not None and count >= int(MAX_COMBINATIONS):
-                        return
+                    for target in TARGETS:
+                        yield {
+                            "target": target,
+                            "bbox_loss": bbox_loss,
+                            "bbox_direction": bbox_direction,
+                            "cls_loss": cls_loss,
+                            "cls_direction": cls_direction,
+                            "obj_loss": obj_loss,
+                            "obj_direction": obj_direction,
+                        }
+                        count += 1
+                        if MAX_COMBINATIONS is not None and count >= int(MAX_COMBINATIONS):
+                            return
 
 
 def _run(cmd: list[str]) -> None:
