@@ -100,7 +100,7 @@ def _valid_cls_directions(cls_loss: str) -> list[str]:
 
 
 def _valid_obj_directions(obj_loss: str) -> list[str]:
-    if obj_loss == "bcewithlogits":
+    if obj_loss in {"bcewithlogits", "abs_diff"}:
         return ["pred_to_target"]
     return ["pred_to_target", "target_to_pred"]
 
