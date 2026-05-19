@@ -99,6 +99,10 @@ def _valid_cls_directions(cls_loss: str) -> list[str]:
     return ["pred_to_target"]
 
 
+def _valid_bbox_directions(_bbox_loss: str) -> list[str]:
+    return ["pred_to_target"]
+
+
 def _valid_obj_directions(obj_loss: str) -> list[str]:
     if obj_loss in {"bcewithlogits", "abs_diff"}:
         return ["pred_to_target"]
@@ -107,27 +111,27 @@ def _valid_obj_directions(obj_loss: str) -> list[str]:
 
 def iter_combinations():
     count = 0
-    for target, bbox_loss, bbox_direction, cls_loss, obj_loss in itertools.product(
+    for target, bbox_loss, cls_loss, obj_loss in itertools.product(
         TARGETS,
         BBOX_LOSSES,
-        BBOX_DIRECTIONS,
         CLS_LOSSES,
         OBJ_LOSSES,
     ):
-        for cls_direction in _valid_cls_directions(cls_loss):
-            for obj_direction in _valid_obj_directions(obj_loss):
-                yield {
-                    "target": target,
-                    "bbox_loss": bbox_loss,
-                    "bbox_direction": bbox_direction,
-                    "cls_loss": cls_loss,
-                    "cls_direction": cls_direction,
-                    "obj_loss": obj_loss,
-                    "obj_direction": obj_direction,
-                }
-                count += 1
-                if MAX_COMBINATIONS is not None and count >= int(MAX_COMBINATIONS):
-                    return
+        for bbox_direction in _valid_bbox_directions(bbox_loss):
+            for cls_direction in _valid_cls_directions(cls_loss):
+                for obj_direction in _valid_obj_directions(obj_loss):
+                    yield {
+                        "target": target,
+                        "bbox_loss": bbox_loss,
+                        "bbox_direction": bbox_direction,
+                        "cls_loss": cls_loss,
+                        "cls_direction": cls_direction,
+                        "obj_loss": obj_loss,
+                        "obj_direction": obj_direction,
+                    }
+                    count += 1
+                    if MAX_COMBINATIONS is not None and count >= int(MAX_COMBINATIONS):
+                        return
 
 
 def _run(cmd: list[str]) -> None:
