@@ -369,11 +369,13 @@ def parse_output_config(output_cfg):
             raise ValueError(f"Unsupported {key_name}: {raw}. Supported values: pred_to_target, target_to_pred.")
         return normalized
 
-    def validate_loss_directions(cls_loss, obj_loss, cls_direction, obj_direction):
+    def validate_loss_directions(bbox_direction, cls_loss, obj_loss, cls_direction, obj_direction):
+        if bbox_direction != "pred_to_target":
+            raise ValueError("bbox_direction=target_to_pred is not supported because ciou, l1, and l2 bbox losses are symmetric.")
         if cls_direction == "target_to_pred" and cls_loss in {"bcewithlogits", "ce"}:
             raise ValueError("cls_direction=target_to_pred is only supported when cls_loss=kl.")
-        if obj_direction == "target_to_pred" and obj_loss == "bcewithlogits":
-            raise ValueError("obj_direction=target_to_pred is only supported when obj_loss is abs_diff or signed_diff.")
+        if obj_direction == "target_to_pred" and obj_loss != "signed_diff":
+            raise ValueError("obj_direction=target_to_pred is only supported when obj_loss=signed_diff.")
 
     if uncertainty == "layer_grad":
         g = as_dict(layer_grad_cfg.get("gradient", {}))
@@ -430,7 +432,7 @@ def parse_output_config(output_cfg):
         layer_bbox_direction = normalize_direction_option(g.get("bbox_direction", "pred_to_target"), "layer_grad.gradient.bbox_direction")
         layer_cls_direction = normalize_direction_option(g.get("cls_direction", "pred_to_target"), "layer_grad.gradient.cls_direction")
         layer_obj_direction = normalize_direction_option(g.get("obj_direction", "pred_to_target"), "layer_grad.gradient.obj_direction")
-        validate_loss_directions(layer_cls_loss, layer_obj_loss, layer_cls_direction, layer_obj_direction)
+        validate_loss_directions(layer_bbox_direction, layer_cls_loss, layer_obj_loss, layer_cls_direction, layer_obj_direction)
 
     null_bbox_loss = normalize_loss_option(null_detect_cfg.get("bbox_loss", "ciou"), "ciou", {"ciou", "l1", "l2"}, "null_detect.bbox_loss")
     null_cls_loss = normalize_loss_option(
@@ -448,7 +450,7 @@ def parse_output_config(output_cfg):
     null_bbox_direction = normalize_direction_option(null_detect_cfg.get("bbox_direction", "pred_to_target"), "null_detect.bbox_direction")
     null_cls_direction = normalize_direction_option(null_detect_cfg.get("cls_direction", "pred_to_target"), "null_detect.cls_direction")
     null_obj_direction = normalize_direction_option(null_detect_cfg.get("obj_direction", "pred_to_target"), "null_detect.obj_direction")
-    validate_loss_directions(null_cls_loss, null_obj_loss, null_cls_direction, null_obj_direction)
+    validate_loss_directions(null_bbox_direction, null_cls_loss, null_obj_loss, null_cls_direction, null_obj_direction)
 
     save_image_enabled = bool(save_image_cfg.get("enabled", bool(save_image_cfg)))
     gt_image_step = as_int(save_image_cfg.get("step", 1), 1)
@@ -886,9 +888,11 @@ def _bbox_loss_xywh_tensor(
     reduction: str = "mean",
     direction: str = "pred_to_target",
 ):
+    if direction != "pred_to_target":
+        raise ValueError("bbox_direction=target_to_pred is not supported because ciou, l1, and l2 bbox losses are symmetric.")
     mode = str(mode).strip().lower()
     target_xywh = target_xywh.to(dtype=pred_xywh.dtype, device=pred_xywh.device)
-    left, right = _apply_direction(pred_xywh, target_xywh, direction)
+    left, right = pred_xywh, target_xywh
 
     if mode == "ciou":
         loss = 1.0 - _bbox_ciou_xywh_tensor(left, right)
@@ -920,6 +924,8 @@ def _objectness_loss_tensor(
             raise ValueError("obj_direction=target_to_pred is not supported when obj_loss=bcewithlogits.")
         loss = F.binary_cross_entropy_with_logits(raw_obj, target_prob, reduction="none")
     elif mode in {"abs_diff", "signed_diff"}:
+        if direction == "target_to_pred" and mode != "signed_diff":
+            raise ValueError("obj_direction=target_to_pred is only supported when obj_loss=signed_diff.")
         pred_prob = torch.sigmoid(raw_obj)
         left, right = _apply_direction(pred_prob, target_prob, direction)
         loss = torch.abs(left - right) if mode == "abs_diff" else (left - right)

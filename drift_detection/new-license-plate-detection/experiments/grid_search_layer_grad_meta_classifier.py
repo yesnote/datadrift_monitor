@@ -32,7 +32,7 @@ MAX_COMBINATIONS = None
 
 TARGETS = ["cand_target", "null_target"]
 BBOX_LOSSES = ["ciou", "l1", "l2"]
-BBOX_DIRECTIONS = ["pred_to_target", "target_to_pred"]
+BBOX_DIRECTIONS = ["pred_to_target"]
 CLS_LOSSES = ["bcewithlogits", "kl", "ce"]
 OBJ_LOSSES = ["bcewithlogits", "abs_diff", "signed_diff"]
 
