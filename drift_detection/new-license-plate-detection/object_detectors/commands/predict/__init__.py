@@ -6,12 +6,14 @@ from .gt import run_tp_csv
 from .layer_grad import run_layer_grad_csv
 from .mc_dropout import run_mc_dropout_csv
 from .meta_detect import run_meta_detect_csv
+from .null_detect import run_null_detect_csv
 from .score import run_score_csv
 
 __all__ = [
     "run_tp_csv",
     "run_score_csv",
     "run_meta_detect_csv",
+    "run_null_detect_csv",
     "run_mc_dropout_csv",
     "run_ensemble_csv",
     "run_class_probability_csv",

@@ -172,7 +172,7 @@ def parse_root_info(root_path: Path) -> tuple[str, str, str]:
     def _parse_tail(model_group: str, run_name: str) -> tuple[str, str, str]:
         match = re.match(r"^\d{2}-\d{2}-\d{4}_\d{2};\d{2}_(.+)$", run_name)
         tail = match.group(1) if match else run_name
-        for cue_name in ("layer_grad", "class_probability", "mc_dropout", "meta_detect", "entropy", "energy", "ensemble", "score", "gt", "tp"):
+        for cue_name in ("layer_grad", "class_probability", "mc_dropout", "meta_detect", "null_detect", "entropy", "energy", "ensemble", "score", "gt", "tp"):
             if tail == cue_name:
                 return model_group, cue_name, ""
             prefix = f"{cue_name}_"
@@ -239,6 +239,7 @@ def load_training_dataframe(dataset_cfg: dict[str, Any]) -> tuple[pd.DataFrame, 
         "score": "score.csv",
         "mc_dropout": "mc_dropout.csv",
         "meta_detect": "meta_detect.csv",
+        "null_detect": "null_detect.csv",
         "class_probability": "class_probability.csv",
         "entropy": "entropy.csv",
         "energy": "energy.csv",
@@ -283,7 +284,7 @@ def load_training_dataframe(dataset_cfg: dict[str, Any]) -> tuple[pd.DataFrame, 
         if input_csv_name is None:
             raise ValueError(
                 f"Unsupported input uncertainty '{input_cue}'. "
-                "Supported uncertainties: layer_grad, class_probability, score, mc_dropout, meta_detect, entropy, energy, ensemble."
+                "Supported uncertainties: layer_grad, class_probability, score, mc_dropout, meta_detect, null_detect, entropy, energy, ensemble."
             )
         input_csv = input_root / input_csv_name
         if not input_csv.is_file():

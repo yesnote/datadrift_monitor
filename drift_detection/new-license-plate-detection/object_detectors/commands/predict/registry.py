@@ -6,6 +6,7 @@ from commands.predict import (
     run_layer_grad_csv,
     run_mc_dropout_csv,
     run_meta_detect_csv,
+    run_null_detect_csv,
     run_score_csv,
     run_tp_csv,
 )
@@ -20,6 +21,7 @@ def resolve_predict_runner(uncertainty: str):
     table = {
         "score": run_score_csv,
         "meta_detect": run_meta_detect_csv,
+        "null_detect": run_null_detect_csv,
         "mc_dropout": run_mc_dropout_csv,
         "ensemble": run_ensemble_csv,
         "class_probability": run_class_probability_csv,

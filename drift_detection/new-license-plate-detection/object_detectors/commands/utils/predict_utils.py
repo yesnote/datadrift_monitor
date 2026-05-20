@@ -283,6 +283,7 @@ def parse_output_config(output_cfg):
         "mc_dropout",
         "ensemble",
         "meta_detect",
+        "null_detect",
         "layer_grad",
     }
     if uncertainty not in supported:
@@ -299,6 +300,7 @@ def parse_output_config(output_cfg):
 
     gt_cfg = active if uncertainty == "gt" else {}
     meta_detect_cfg = active if uncertainty == "meta_detect" else {}
+    null_detect_cfg = active if uncertainty == "null_detect" else {}
     mc_dropout_cfg = active if uncertainty == "mc_dropout" else {}
     layer_grad_cfg = active if uncertainty == "layer_grad" else {}
 
@@ -322,6 +324,56 @@ def parse_output_config(output_cfg):
     layer_bbox_direction = "pred_to_target"
     layer_cls_direction = "pred_to_target"
     layer_obj_direction = "pred_to_target"
+
+    loss_aliases = {
+        "bce": "bcewithlogits",
+        "bce_with_logits": "bcewithlogits",
+        "bcewithlogits": "bcewithlogits",
+        "ciou": "ciou",
+        "l1": "l1",
+        "l1_loss": "l1",
+        "l2": "l2",
+        "l2_loss": "l2",
+        "mse": "l2",
+        "kl": "kl",
+        "kl_div": "kl",
+        "kl_divergence": "kl",
+        "ce": "ce",
+        "cross_entropy": "ce",
+        "abs": "abs_diff",
+        "abs_diff": "abs_diff",
+        "absolute_diff": "abs_diff",
+        "signed": "signed_diff",
+        "signed_diff": "signed_diff",
+    }
+    direction_aliases = {
+        "pred_to_target": "pred_to_target",
+        "prediction_to_target": "pred_to_target",
+        "target": "pred_to_target",
+        "target_to_pred": "target_to_pred",
+        "target_to_prediction": "target_to_pred",
+        "reverse": "target_to_pred",
+    }
+
+    def normalize_loss_option(raw, default, supported, key_name):
+        normalized = loss_aliases.get(str(raw if raw is not None else default).strip().lower().replace("-", "_"))
+        if normalized not in supported:
+            raise ValueError(f"Unsupported {key_name}: {raw}. Supported values: {', '.join(sorted(supported))}.")
+        return normalized
+
+    def normalize_direction_option(raw, key_name):
+        normalized = direction_aliases.get(
+            str(raw if raw is not None else "pred_to_target").strip().lower().replace("-", "_")
+        )
+        if normalized is None:
+            raise ValueError(f"Unsupported {key_name}: {raw}. Supported values: pred_to_target, target_to_pred.")
+        return normalized
+
+    def validate_loss_directions(cls_loss, obj_loss, cls_direction, obj_direction):
+        if cls_direction == "target_to_pred" and cls_loss in {"bcewithlogits", "ce"}:
+            raise ValueError("cls_direction=target_to_pred is only supported when cls_loss=kl.")
+        if obj_direction == "target_to_pred" and obj_loss == "bcewithlogits":
+            raise ValueError("obj_direction=target_to_pred is only supported when obj_loss is abs_diff or signed_diff.")
 
     if uncertainty == "layer_grad":
         g = as_dict(layer_grad_cfg.get("gradient", {}))
@@ -361,49 +413,6 @@ def parse_output_config(output_cfg):
         t_policy = str(t).strip().lower() if t is not None else "null_target"
         layer_pseudo_gt = "uniform" if t_policy in {"null_target", "null"} else "cand"
         layer_cand_score_threshold = as_float(g.get("cand_score_threshold", 0.01), 0.01)
-        loss_aliases = {
-            "bce": "bcewithlogits",
-            "bce_with_logits": "bcewithlogits",
-            "bcewithlogits": "bcewithlogits",
-            "ciou": "ciou",
-            "l1": "l1",
-            "l1_loss": "l1",
-            "l2": "l2",
-            "l2_loss": "l2",
-            "mse": "l2",
-            "kl": "kl",
-            "kl_div": "kl",
-            "kl_divergence": "kl",
-            "ce": "ce",
-            "cross_entropy": "ce",
-            "abs": "abs_diff",
-            "abs_diff": "abs_diff",
-            "absolute_diff": "abs_diff",
-            "signed": "signed_diff",
-            "signed_diff": "signed_diff",
-        }
-        direction_aliases = {
-            "pred_to_target": "pred_to_target",
-            "prediction_to_target": "pred_to_target",
-            "target": "pred_to_target",
-            "target_to_pred": "target_to_pred",
-            "target_to_prediction": "target_to_pred",
-            "reverse": "target_to_pred",
-        }
-
-        def normalize_loss_option(raw, default, supported, key_name):
-            normalized = loss_aliases.get(str(raw if raw is not None else default).strip().lower().replace("-", "_"))
-            if normalized not in supported:
-                raise ValueError(f"Unsupported {key_name}: {raw}. Supported values: {', '.join(sorted(supported))}.")
-            return normalized
-
-        def normalize_direction_option(raw, key_name):
-            normalized = direction_aliases.get(
-                str(raw if raw is not None else "pred_to_target").strip().lower().replace("-", "_")
-            )
-            if normalized is None:
-                raise ValueError(f"Unsupported {key_name}: {raw}. Supported values: pred_to_target, target_to_pred.")
-            return normalized
 
         layer_bbox_loss = normalize_loss_option(g.get("bbox_loss", "ciou"), "ciou", {"ciou", "l1", "l2"}, "layer_grad.gradient.bbox_loss")
         layer_cls_loss = normalize_loss_option(
@@ -421,10 +430,25 @@ def parse_output_config(output_cfg):
         layer_bbox_direction = normalize_direction_option(g.get("bbox_direction", "pred_to_target"), "layer_grad.gradient.bbox_direction")
         layer_cls_direction = normalize_direction_option(g.get("cls_direction", "pred_to_target"), "layer_grad.gradient.cls_direction")
         layer_obj_direction = normalize_direction_option(g.get("obj_direction", "pred_to_target"), "layer_grad.gradient.obj_direction")
-        if layer_cls_direction == "target_to_pred" and layer_cls_loss in {"bcewithlogits", "ce"}:
-            raise ValueError("layer_grad.gradient.cls_direction=target_to_pred is only supported when cls_loss=kl.")
-        if layer_obj_direction == "target_to_pred" and layer_obj_loss == "bcewithlogits":
-            raise ValueError("layer_grad.gradient.obj_direction=target_to_pred is only supported when obj_loss is abs_diff or signed_diff.")
+        validate_loss_directions(layer_cls_loss, layer_obj_loss, layer_cls_direction, layer_obj_direction)
+
+    null_bbox_loss = normalize_loss_option(null_detect_cfg.get("bbox_loss", "ciou"), "ciou", {"ciou", "l1", "l2"}, "null_detect.bbox_loss")
+    null_cls_loss = normalize_loss_option(
+        null_detect_cfg.get("cls_loss", "bcewithlogits"),
+        "bcewithlogits",
+        {"bcewithlogits", "kl", "ce"},
+        "null_detect.cls_loss",
+    )
+    null_obj_loss = normalize_loss_option(
+        null_detect_cfg.get("obj_loss", "bcewithlogits"),
+        "bcewithlogits",
+        {"bcewithlogits", "abs_diff", "signed_diff"},
+        "null_detect.obj_loss",
+    )
+    null_bbox_direction = normalize_direction_option(null_detect_cfg.get("bbox_direction", "pred_to_target"), "null_detect.bbox_direction")
+    null_cls_direction = normalize_direction_option(null_detect_cfg.get("cls_direction", "pred_to_target"), "null_detect.cls_direction")
+    null_obj_direction = normalize_direction_option(null_detect_cfg.get("obj_direction", "pred_to_target"), "null_detect.obj_direction")
+    validate_loss_directions(null_cls_loss, null_obj_loss, null_cls_direction, null_obj_direction)
 
     save_image_enabled = bool(save_image_cfg.get("enabled", bool(save_image_cfg)))
     gt_image_step = as_int(save_image_cfg.get("step", 1), 1)
@@ -455,6 +479,12 @@ def parse_output_config(output_cfg):
         "layer_bbox_direction": layer_bbox_direction,
         "layer_cls_direction": layer_cls_direction,
         "layer_obj_direction": layer_obj_direction,
+        "null_detect_bbox_loss": null_bbox_loss,
+        "null_detect_cls_loss": null_cls_loss,
+        "null_detect_obj_loss": null_obj_loss,
+        "null_detect_bbox_direction": null_bbox_direction,
+        "null_detect_cls_direction": null_cls_direction,
+        "null_detect_obj_direction": null_obj_direction,
         "layer_ref_mode": "none",
         "layer_ref_type": "none",
         "layer_ref_prototype_mode": "none",
