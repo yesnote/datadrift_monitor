@@ -77,6 +77,16 @@ output:
     save_csv:
       enabled: false
 
+  null_detect:
+    bbox_loss: ciou  # ciou | l1 | l2
+    cls_loss: bcewithlogits  # bcewithlogits | kl | ce
+    obj_loss: bcewithlogits  # bcewithlogits | abs_diff | signed_diff
+    bbox_direction: pred_to_target  # pred_to_target | target_to_pred
+    cls_direction: pred_to_target  # pred_to_target | target_to_pred, only for cls_loss: kl
+    obj_direction: pred_to_target  # pred_to_target | target_to_pred, only for abs_diff/signed_diff
+    save_csv:
+      enabled: false
+
   layer_grad:
     gradient:
       scalar: [loss]
