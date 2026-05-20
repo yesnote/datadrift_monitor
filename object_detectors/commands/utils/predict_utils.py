@@ -451,6 +451,9 @@ def parse_output_config(output_cfg):
     null_cls_direction = normalize_direction_option(null_detect_cfg.get("cls_direction", "pred_to_target"), "null_detect.cls_direction")
     null_obj_direction = normalize_direction_option(null_detect_cfg.get("obj_direction", "pred_to_target"), "null_detect.obj_direction")
     validate_loss_directions(null_bbox_direction, null_cls_loss, null_obj_loss, null_cls_direction, null_obj_direction)
+    null_feature_set = str(null_detect_cfg.get("feature_set", "full")).strip().lower().replace("-", "_")
+    if null_feature_set not in {"full", "losses_only"}:
+        raise ValueError("Unsupported null_detect.feature_set. Supported values: full, losses_only.")
 
     save_image_enabled = bool(save_image_cfg.get("enabled", bool(save_image_cfg)))
     gt_image_step = as_int(save_image_cfg.get("step", 1), 1)
@@ -487,6 +490,7 @@ def parse_output_config(output_cfg):
         "null_detect_bbox_direction": null_bbox_direction,
         "null_detect_cls_direction": null_cls_direction,
         "null_detect_obj_direction": null_obj_direction,
+        "null_detect_feature_set": null_feature_set,
         "layer_ref_mode": "none",
         "layer_ref_type": "none",
         "layer_ref_prototype_mode": "none",

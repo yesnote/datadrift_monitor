@@ -24,6 +24,7 @@ def run_null_detect_csv(config, run_dir):
     bbox_direction = parsed["null_detect_bbox_direction"]
     cls_direction = parsed["null_detect_cls_direction"]
     obj_direction = parsed["null_detect_obj_direction"]
+    feature_set = parsed["null_detect_feature_set"]
 
     if not save_csv:
         return
@@ -53,8 +54,8 @@ def run_null_detect_csv(config, run_dir):
 
     detector, device = build_detector(config)
     num_classes = len(detector.names) if detector.names is not None else int(config.get("model", {}).get("num_classes", 0))
-    output_feature_names = ["prob_sum"] + [f"prob_{i}" for i in range(max(0, num_classes))]
-    null_feature_names = ["size", "circum", "size_circum", "bbox_loss", "obj_loss", "cls_loss"]
+    output_feature_names = [] if feature_set == "losses_only" else ["prob_sum"] + [f"prob_{i}" for i in range(max(0, num_classes))]
+    null_feature_names = ["bbox_loss", "obj_loss", "cls_loss"] if feature_set == "losses_only" else ["size", "circum", "size_circum", "bbox_loss", "obj_loss", "cls_loss"]
     fieldnames = [
         "image_id", "image_path", "pred_idx", "raw_pred_idx", "xmin", "ymin", "xmax", "ymax", "score", "pred_class",
         *output_feature_names,
@@ -123,23 +124,30 @@ def run_null_detect_csv(config, run_dir):
                     pred_row = pred_img[raw_pred_idx]
                     raw_row = raw_img[raw_pred_idx]
                     anchor_xywh = anchor_img[raw_pred_idx].to(dtype=pred_row.dtype, device=pred_row.device)
-                    pred_probs = pred_row[5:].detach().float() if pred_row.shape[0] > 5 else torch.zeros((0,), dtype=torch.float32, device=device)
-
-                    prob_values = {"prob_sum": pred_probs.sum() if pred_probs.numel() else torch.zeros((), dtype=torch.float32, device=device)}
-                    for prob_idx in range(max(0, num_classes)):
-                        prob_values[f"prob_{prob_idx}"] = (
-                            pred_probs[prob_idx]
-                            if prob_idx < int(pred_probs.shape[0])
-                            else torch.zeros((), dtype=torch.float32, device=device)
-                        )
+                    prob_values = {}
+                    if feature_set != "losses_only":
+                        pred_probs = pred_row[5:].detach().float() if pred_row.shape[0] > 5 else torch.zeros((0,), dtype=torch.float32, device=device)
+                        prob_values = {"prob_sum": pred_probs.sum() if pred_probs.numel() else torch.zeros((), dtype=torch.float32, device=device)}
+                        for prob_idx in range(max(0, num_classes)):
+                            prob_values[f"prob_{prob_idx}"] = (
+                                pred_probs[prob_idx]
+                                if prob_idx < int(pred_probs.shape[0])
+                                else torch.zeros((), dtype=torch.float32, device=device)
+                            )
 
                     fbox_orig = _boxes_to_original_xyxy(box[:4].view(1, 4), ratios[sample_idx], pads[sample_idx], image_list[sample_idx]).view(4)
                     fx1_t, fy1_t, fx2_t, fy2_t = fbox_orig.unbind()
-                    width = torch.abs(fx2_t - fx1_t)
-                    height = torch.abs(fy2_t - fy1_t)
-                    size = width * height
-                    circum = width + height
-                    size_circum = size / circum.clamp(min=1e-12)
+                    shape_values = {}
+                    if feature_set != "losses_only":
+                        width = torch.abs(fx2_t - fx1_t)
+                        height = torch.abs(fy2_t - fy1_t)
+                        size = width * height
+                        circum = width + height
+                        shape_values = {
+                            "size": size,
+                            "circum": circum,
+                            "size_circum": size / circum.clamp(min=1e-12),
+                        }
 
                     bbox_loss_value = _bbox_loss_xywh_tensor(
                         pred_row[:4],
@@ -195,9 +203,7 @@ def run_null_detect_csv(config, run_dir):
                             "score": float(box[4].detach().cpu().item()),
                             "pred_class": pred_class,
                             **{key: _to_float(value) for key, value in prob_values.items()},
-                            "size": _to_float(size),
-                            "circum": _to_float(circum),
-                            "size_circum": _to_float(size_circum),
+                            **{key: _to_float(value) for key, value in shape_values.items()},
                             "bbox_loss": _to_float(bbox_loss_value),
                             "obj_loss": _to_float(obj_loss_value),
                             "cls_loss": _to_float(cls_loss_value),
