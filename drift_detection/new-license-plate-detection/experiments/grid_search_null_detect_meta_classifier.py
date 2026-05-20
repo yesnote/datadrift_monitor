@@ -12,7 +12,9 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 
 # Edit these paths before running.
 OBJECT_DETECTOR_CONFIG = r"object_detectors/configs/predict_coco_yolov5.yaml"
-META_CLASSIFIER_CONFIG = r"meta_models/meta_classifier/configs/train_meta_classifier.yaml"
+META_CLASSIFIER_CONFIG = (
+    r"meta_models/meta_classifier/configs/train_meta_classifier.yaml"
+)
 
 # If empty, dataset.gt_root is read from META_CLASSIFIER_CONFIG.
 GT_ROOT = ""
@@ -107,7 +109,9 @@ def _valid_obj_directions(obj_loss: str) -> list[str]:
 
 def iter_combinations():
     count = 0
-    for bbox_loss, cls_loss, obj_loss in itertools.product(BBOX_LOSSES, CLS_LOSSES, OBJ_LOSSES):
+    for bbox_loss, cls_loss, obj_loss in itertools.product(
+        BBOX_LOSSES, CLS_LOSSES, OBJ_LOSSES
+    ):
         for cls_direction in _valid_cls_directions(cls_loss):
             for obj_direction in _valid_obj_directions(obj_loss):
                 yield {
@@ -149,7 +153,9 @@ def _prepare_null_detect_config(base_config: dict, combo: dict) -> dict:
     return config
 
 
-def _prepare_meta_config(base_config: dict, null_detect_run_dir: Path, gt_root: str) -> dict:
+def _prepare_meta_config(
+    base_config: dict, null_detect_run_dir: Path, gt_root: str
+) -> dict:
     config = deepcopy(base_config)
     config["mode"] = "train"
     dataset_cfg = config.setdefault("dataset", {})
@@ -212,7 +218,9 @@ def _write_results(out_dir: Path, rows: list[dict]) -> None:
         except Exception:
             return float("nan")
 
-    ranked = sorted(rows, key=lambda row: (_metric(row, "auroc"), _metric(row, "ap")), reverse=True)
+    ranked = sorted(
+        rows, key=lambda row: (_metric(row, "auroc"), _metric(row, "ap")), reverse=True
+    )
     _write_csv(out_dir / "grid_results_ranked.csv", ranked, fields)
 
 
@@ -223,15 +231,33 @@ def main() -> None:
     meta_base_config = _load_yaml(meta_config_path)
     dataset = _dataset_name(od_base_config)
 
-    grid_name = GRID_NAME.strip() or f"{datetime.now().strftime('%m-%d-%Y_%H;%M')}_null_detect_loss_grid"
-    od_grid_root = REPO_ROOT / "object_detectors" / "runs" / "predict" / dataset / grid_name
-    meta_grid_root = REPO_ROOT / "meta_models" / "meta_classifier" / "runs" / "train" / dataset / grid_name
+    grid_name = (
+        GRID_NAME.strip()
+        or f"{datetime.now().strftime('%m-%d-%Y_%H;%M')}_null_detect_loss_grid"
+    )
+    od_grid_root = (
+        REPO_ROOT / "object_detectors" / "runs" / "predict" / dataset / grid_name
+    )
+    meta_grid_root = (
+        REPO_ROOT
+        / "meta_models"
+        / "meta_classifier"
+        / "runs"
+        / "train"
+        / dataset
+        / grid_name
+    )
     od_grid_root.mkdir(parents=True, exist_ok=True)
     meta_grid_root.mkdir(parents=True, exist_ok=True)
 
-    gt_root = GT_ROOT.strip() or str(meta_base_config.get("dataset", {}).get("gt_root", "")).strip()
+    gt_root = (
+        GT_ROOT.strip()
+        or str(meta_base_config.get("dataset", {}).get("gt_root", "")).strip()
+    )
     if not gt_root:
-        raise ValueError("GT_ROOT is empty and META_CLASSIFIER_CONFIG has no dataset.gt_root.")
+        raise ValueError(
+            "GT_ROOT is empty and META_CLASSIFIER_CONFIG has no dataset.gt_root."
+        )
 
     rows = []
     combo_list = list(iter_combinations())
