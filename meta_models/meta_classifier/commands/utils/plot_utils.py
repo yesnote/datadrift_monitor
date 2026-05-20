@@ -5,7 +5,7 @@ from pathlib import Path
 import matplotlib
 import numpy as np
 import seaborn as sns
-from sklearn.metrics import average_precision_score, precision_recall_curve, roc_curve
+from sklearn.metrics import average_precision_score, precision_recall_curve, roc_auc_score, roc_curve
 
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt  # noqa: E402
@@ -60,50 +60,72 @@ def _save_score_distribution(
     pos_name: str,
     neg_name: str,
 ) -> None:
-    with sns.axes_style("whitegrid"):
-        fig, ax = plt.subplots(figsize=(6, 5))
-        pos_scores = y_score[y_true == 1]
-        neg_scores = y_score[y_true == 0]
+    fig, ax = plt.subplots(figsize=(6.4, 4.8))
+    labels = np.asarray(y_true).reshape(-1)
+    scores = np.asarray(y_score, dtype=np.float64).reshape(-1)
+    finite = np.isfinite(labels) & np.isfinite(scores)
+    labels = labels[finite].astype(np.int64)
+    scores = scores[finite]
+    pos_scores = scores[labels == 1]
+    neg_scores = scores[labels == 0]
 
-        bins = 40
-        color_neg = "#4C78A8"
-        color_pos = "#E45756"
-        if neg_scores.size > 0:
-            sns.histplot(
-                neg_scores,
-                bins=bins,
-                stat="density",
-                alpha=0.45,
-                element="step",
-                fill=True,
-                color=color_neg,
-                ax=ax,
-                label=f"{neg_name} (n={neg_scores.size})",
-            )
-        if pos_scores.size > 0:
-            sns.histplot(
-                pos_scores,
-                bins=bins,
-                stat="density",
-                alpha=0.45,
-                element="step",
-                fill=True,
-                color=color_pos,
-                ax=ax,
-                label=f"{pos_name} (n={pos_scores.size})",
-            )
-        if pos_scores.size == 0 and neg_scores.size == 0:
-            ax.text(0.5, 0.5, "No scores to plot", ha="center", va="center")
+    if scores.size == 0 or (pos_scores.size == 0 and neg_scores.size == 0):
+        ax.text(0.5, 0.5, "No scores to plot", ha="center", va="center")
+        lo, hi = 0.0, 1.0
+    else:
+        lo = float(np.nanmin(scores))
+        hi = float(np.nanmax(scores))
+        if hi <= lo:
+            hi = lo + 1.0
+        bins = np.linspace(lo, hi, 36)
+        ax.hist(
+            pos_scores,
+            bins=bins,
+            color="#4C78A8",
+            alpha=0.45,
+            edgecolor="none",
+            label=f"{pos_name} (n={pos_scores.size})",
+        )
+        ax.hist(
+            neg_scores,
+            bins=bins,
+            color="#E45756",
+            alpha=0.45,
+            edgecolor="none",
+            label=f"{neg_name} (n={neg_scores.size})",
+        )
 
-        ax.set_facecolor("#f7f7f7")
-        ax.grid(True, which="major", axis="both", color="#d9d9d9", linewidth=0.8, alpha=0.8)
-        ax.set_title(f"{pos_name} vs {neg_name} Score Distribution")
-        ax.set_xlabel(f"Predicted {pos_name} score")
-        ax.set_ylabel("Density")
-        ax.legend(loc="upper center")
-        fig.tight_layout()
-        fig.savefig(out_path, dpi=150)
-        plt.close(fig)
+    metric_text = ""
+    if np.unique(labels).size == 2:
+        try:
+            auroc = roc_auc_score(labels, scores)
+            ap = average_precision_score(labels, scores)
+            metric_text = f"AUROC={auroc:.3f}, AP={ap:.3f}"
+        except Exception:
+            metric_text = ""
+
+    ax.set_title(f"{pos_name} vs {neg_name} Score Distribution", fontsize=12, pad=18)
+    if metric_text:
+        ax.text(
+            0.5,
+            1.015,
+            metric_text,
+            transform=ax.transAxes,
+            ha="center",
+            va="bottom",
+            fontsize=10,
+            color="#555555",
+        )
+    ax.set_xlabel(f"Predicted {pos_name} score")
+    ax.set_ylabel("count")
+    ax.set_xlim(lo, hi)
+    ax.grid(False)
+    ax.spines["top"].set_visible(False)
+    ax.spines["right"].set_visible(False)
+    ax.legend(loc="upper right", frameon=False)
+    fig.tight_layout()
+    fig.savefig(out_path, dpi=150)
+    plt.close(fig)
 
 
 def _save_precision_at_k(y_true: np.ndarray, y_score: np.ndarray, out_path: Path) -> None:
