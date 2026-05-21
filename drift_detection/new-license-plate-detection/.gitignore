@@ -1,4 +1,5 @@
 *.pt
+*.pth
 code_references/
 codex_plans/
 object_detectors/runs/
