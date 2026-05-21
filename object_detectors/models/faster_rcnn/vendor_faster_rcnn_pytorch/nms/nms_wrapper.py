@@ -1,22 +1,20 @@
-﻿# --------------------------------------------------------
-# Fast R-CNN
-# Copyright (c) 2015 Microsoft
-# Licensed under The MIT License [see LICENSE for details]
-# Written by Ross Girshick
-# --------------------------------------------------------
 import torch
-from models.faster_rcnn.vendor_faster_rcnn_pytorch.utils.config import cfg
-if torch.cuda.is_available():
-    from models.faster_rcnn.vendor_faster_rcnn_pytorch.nms.nms_gpu import nms_gpu
-from models.faster_rcnn.vendor_faster_rcnn_pytorch.nms.nms_cpu import nms_cpu
+from torchvision.ops import nms as torchvision_nms
+
 
 def nms(dets, thresh, force_cpu=False):
-    """Dispatch to either CPU or GPU NMS implementations."""
+    """NMS compatible with the original faster-rcnn.pytorch API.
+
+    The vendored reference implementation used custom C/CUDA extensions through
+    torch.utils.ffi, which is not available in modern PyTorch. Keep the same
+    call shape, but delegate to torchvision's maintained operator.
+    """
     if dets.shape[0] == 0:
-        return []
-    # ---numpy version---
-    # original: return gpu_nms(dets, thresh, device_id=cfg.GPU_ID)
-    # ---pytorch version---
+        return dets.new_empty((0,), dtype=torch.long)
 
-    return nms_gpu(dets, thresh) if force_cpu == False else nms_cpu(dets, thresh)
-
+    boxes = dets[:, :4]
+    scores = dets[:, 4]
+    if force_cpu:
+        keep = torchvision_nms(boxes.cpu(), scores.cpu(), thresh)
+        return keep.to(dets.device)
+    return torchvision_nms(boxes, scores, thresh)
