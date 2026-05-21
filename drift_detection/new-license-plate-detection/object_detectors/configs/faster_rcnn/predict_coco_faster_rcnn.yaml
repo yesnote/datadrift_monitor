@@ -8,7 +8,6 @@ model:
   img_size: 640
   transform_min_size: 640
   transform_max_size: 640
-  inference_batch_size: 1
   confidence_threshold: 0.25
   iou_threshold: 0.45
   max_det: 300

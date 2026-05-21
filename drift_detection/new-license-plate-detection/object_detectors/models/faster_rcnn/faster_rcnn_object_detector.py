@@ -113,7 +113,6 @@ class FasterRCNNTorchObjectDetector(nn.Module):
         iou_thresh=0.45,
         max_det=300,
         pretrained=True,
-        inference_batch_size=1,
         transform_min_size=None,
         transform_max_size=None,
     ):
@@ -122,7 +121,6 @@ class FasterRCNNTorchObjectDetector(nn.Module):
         self.img_size = img_size if isinstance(img_size, tuple) else (int(img_size), int(img_size))
         self.transform_min_size = int(transform_min_size) if transform_min_size is not None else int(min(self.img_size))
         self.transform_max_size = int(transform_max_size) if transform_max_size is not None else int(max(self.img_size))
-        self.inference_batch_size = max(1, int(inference_batch_size or 1))
         self.mode = str(mode)
         self.confidence = float(confidence)
         self.conf_thresh = float(confidence)
@@ -226,17 +224,14 @@ class FasterRCNNTorchObjectDetector(nn.Module):
         was_training = self.detector_model.training
         self.detector_model.eval()
         with torch.inference_mode():
-            detections = []
-            for start in range(0, len(image_list), self.inference_batch_size):
-                chunk = [
-                    img.to(self.device, non_blocking=True) if img.device != self.device else img
-                    for img in image_list[start:start + self.inference_batch_size]
-                ]
-                if need_logits:
-                    detections.extend(self._custom_inference(chunk))
-                else:
-                    detections.extend(self.detector_model(chunk))
-                del chunk
+            image_list = [
+                img.to(self.device, non_blocking=True) if img.device != self.device else img
+                for img in image_list
+            ]
+            if need_logits:
+                detections = self._custom_inference(image_list)
+            else:
+                detections = self.detector_model(image_list)
         if was_training:
             self.detector_model.train()
         return self._detections_to_contract(detections, self.device)
