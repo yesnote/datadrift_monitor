@@ -68,6 +68,11 @@ def _dataset_name(config: dict) -> str:
     )
 
 
+def _model_name(config: dict) -> str:
+    raw = str(config.get("model", {}).get("type", "yolov5")).strip().lower()
+    return "".join(ch if ch.isalnum() or ch in {"_", "-"} else "_" for ch in raw).strip("_") or "yolov5"
+
+
 def _abbr(value: str) -> str:
     aliases = {
         "pred_to_target": "pred",
@@ -230,19 +235,21 @@ def main() -> None:
     od_base_config = _load_yaml(od_config_path)
     meta_base_config = _load_yaml(meta_config_path)
     dataset = _dataset_name(od_base_config)
+    model = _model_name(od_base_config)
 
     grid_name = (
         GRID_NAME.strip()
         or f"{datetime.now().strftime('%m-%d-%Y_%H;%M')}_null_detect_loss_grid"
     )
     od_grid_root = (
-        REPO_ROOT / "object_detectors" / "runs" / "predict" / dataset / grid_name
+        REPO_ROOT / "object_detectors" / "runs" / model / "predict" / dataset / grid_name
     )
     meta_grid_root = (
         REPO_ROOT
         / "meta_models"
         / "meta_classifier"
         / "runs"
+        / model
         / "train"
         / dataset
         / grid_name

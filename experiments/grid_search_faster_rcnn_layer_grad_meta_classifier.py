@@ -338,8 +338,8 @@ def main() -> None:
         / "meta_models"
         / "meta_classifier"
         / "runs"
-        / "train"
         / model
+        / "train"
         / dataset
         / grid_name
     )
