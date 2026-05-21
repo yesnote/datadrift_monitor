@@ -43,8 +43,8 @@ output:
     save_csv:
       enabled: true
     save_image:
-      enabled: false
-      step: 10
+      enabled: true
+      step: 100
       max_num: 10
   
   score:
