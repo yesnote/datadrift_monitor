@@ -234,13 +234,16 @@ class FasterRCNNTorchObjectDetector(nn.Module):
             predictor.dropout = float(dropout_rate)
 
     def _forward_impl(self, images_tensor: torch.Tensor):
-        images_list = [img.to(self.device) for img in images_tensor]
+        if isinstance(images_tensor, (list, tuple)):
+            images_list = [img.to(self.device) for img in images_tensor]
+        else:
+            images_list = [img.to(self.device) for img in images_tensor]
         was_training = self.detector_model.training
         self.detector_model.eval()
         detections = self.detector_model(images_list)
         if was_training:
             self.detector_model.train()
-        return self._detections_to_yolo_contract(detections, device=images_tensor.device)
+        return self._detections_to_yolo_contract(detections, device=images_list[0].device)
 
     def _detections_to_yolo_contract(self, detections, device):
         c = self.num_classes_no_bg

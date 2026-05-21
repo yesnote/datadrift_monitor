@@ -173,7 +173,18 @@ def run_tp_csv(config, run_dir):
         )):
             image_list = _as_image_list(images)
             detector.zero_grad(set_to_none=True)
-            infer_batch, ratios, pads, resized_chws = _prepare_infer_batch(detector, image_list, device, auto=False)
+            if bool(getattr(detector, "is_faster_rcnn", False)):
+                infer_batch = [img.to(device) for img in image_list]
+                ratios = [(1.0, 1.0) for _ in image_list]
+                pads = [(0.0, 0.0) for _ in image_list]
+                resized_chws = [
+                    np.ascontiguousarray(
+                        np.clip(img.detach().cpu().numpy() * 255.0, 0, 255).astype(np.uint8)
+                    )
+                    for img in image_list
+                ]
+            else:
+                infer_batch, ratios, pads, resized_chws = _prepare_infer_batch(detector, image_list, device, auto=False)
             with torch.no_grad():
                 model_output = detector.model(infer_batch, augment=False)
                 raw_prediction = model_output[0] if isinstance(model_output, (tuple, list)) else model_output
