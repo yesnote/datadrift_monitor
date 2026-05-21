@@ -1392,12 +1392,18 @@ def build_faster_rcnn_roi_candidate_losses(
     with torch.no_grad():
         pseudo_row = pred_img[raw_idx].detach()
         pseudo_cls = int(pseudo_row[5].detach().long().item())
-        pred_boxes_xyxy = _xywh_to_xyxy_tensor(pred_img[:, :4].detach())
         pseudo_box_xyxy = _xywh_to_xyxy_tensor(pseudo_row[:4].view(1, 4))
-        ious = _box_iou_1vN_tensor(pseudo_box_xyxy, pred_boxes_xyxy)
         pred_cls = pred_img[:, 5].detach().long()
         score = pred_img[:, 4].detach()
-        candidate_mask = (score >= float(score_threshold)) & (pred_cls == pseudo_cls) & (ious > float(iou_threshold))
+        pre_mask = (score >= float(score_threshold)) & (pred_cls == pseudo_cls)
+        candidate_mask = torch.zeros_like(pred_cls, dtype=torch.bool)
+        if bool(pre_mask.any()):
+            pre_indices = torch.where(pre_mask)[0]
+            pred_boxes_xyxy = _xywh_to_xyxy_tensor(pred_img[pre_indices, :4].detach())
+            ious = _box_iou_1vN_tensor(pseudo_box_xyxy, pred_boxes_xyxy)
+            keep_indices = pre_indices[ious > float(iou_threshold)]
+            if keep_indices.numel() > 0:
+                candidate_mask[keep_indices] = True
         if not bool(candidate_mask.any()):
             candidate_mask = torch.zeros_like(pred_cls, dtype=torch.bool)
             candidate_mask[raw_idx] = True
@@ -1487,10 +1493,17 @@ def build_faster_rcnn_rpn_candidate_losses(
     with torch.no_grad():
         final_box = final_box_xyxy.detach().view(1, 4)
         scores = torch.sigmoid(rpn_objectness_logits.detach().reshape(-1))
-        candidate_boxes = rpn_search_boxes_xyxy.detach()
-        ious = _box_iou_1vN_tensor(final_box, candidate_boxes)
-        candidate_mask = (scores >= float(obj_threshold)) & (ious > float(iou_threshold))
+        score_mask = scores >= float(obj_threshold)
+        candidate_mask = torch.zeros_like(scores, dtype=torch.bool)
+        search_boxes = rpn_search_boxes_xyxy.detach()
+        if bool(score_mask.any()):
+            score_indices = torch.where(score_mask)[0]
+            ious = _box_iou_1vN_tensor(final_box, search_boxes[score_indices])
+            keep_indices = score_indices[ious > float(iou_threshold)]
+            if keep_indices.numel() > 0:
+                candidate_mask[keep_indices] = True
         if not bool(candidate_mask.any()):
+            ious = _box_iou_1vN_tensor(final_box, search_boxes)
             best_idx = torch.argmax(ious)
             candidate_mask = torch.zeros_like(scores, dtype=torch.bool)
             candidate_mask[best_idx] = True
@@ -1912,6 +1925,8 @@ def collect_faster_rcnn_candidate_layer_grads_per_target(
         for bbox_idx in range(num_boxes):
             raw_idx = int(raw_keep_indices[bbox_idx].detach().cpu().item())
             grad_stats = {}
+            roi_target_scalar = None
+            rpn_target_scalar = None
             for target_value in target_values:
                 if target_value not in {"roi_bbox_loss", "roi_cls_loss", "rpn_bbox_loss", "rpn_obj_loss"}:
                     continue
@@ -1923,74 +1938,77 @@ def collect_faster_rcnn_candidate_layer_grads_per_target(
                     continue
                 layers_for_target = list(target_layer_map.get(target_value, []))
                 params_for_target = [layer_params_by_name[layer_name] for layer_name in layers_for_target]
-                detector.zero_grad(set_to_none=True)
                 if target_value.startswith("roi_"):
-                    if target_mode == "cand":
-                        target_scalar = build_faster_rcnn_roi_candidate_losses(
-                            pred_img=pred_img,
-                            logit_img=logit_img,
-                            raw_idx=raw_idx,
-                            iou_threshold=iou_threshold,
-                            score_threshold=roi_cand_score_threshold,
-                            bbox_loss=roi_bbox_loss,
-                            cls_loss=roi_cls_loss,
-                            bbox_direction=roi_bbox_direction,
-                            cls_direction=roi_cls_direction,
-                            timing_accumulator=timing_accumulator,
-                            timing_device=timing_device,
-                        )
-                    else:
-                        target_scalar = build_faster_rcnn_roi_null_losses(
-                            pred_img=pred_img,
-                            logit_img=logit_img,
-                            raw_idx=raw_idx,
-                            proposal_indices_img=proposal_indices_img,
-                            proposals_xyxy=proposals_img,
-                            bbox_loss=roi_null_bbox_loss,
-                            cls_loss=roi_null_cls_loss,
-                            bbox_direction=roi_null_bbox_direction,
-                            cls_direction=roi_null_cls_direction,
-                            timing_accumulator=timing_accumulator,
-                            timing_device=timing_device,
-                        )
+                    if roi_target_scalar is None:
+                        if target_mode == "cand":
+                            roi_target_scalar = build_faster_rcnn_roi_candidate_losses(
+                                pred_img=pred_img,
+                                logit_img=logit_img,
+                                raw_idx=raw_idx,
+                                iou_threshold=iou_threshold,
+                                score_threshold=roi_cand_score_threshold,
+                                bbox_loss=roi_bbox_loss,
+                                cls_loss=roi_cls_loss,
+                                bbox_direction=roi_bbox_direction,
+                                cls_direction=roi_cls_direction,
+                                timing_accumulator=timing_accumulator,
+                                timing_device=timing_device,
+                            )
+                        else:
+                            roi_target_scalar = build_faster_rcnn_roi_null_losses(
+                                pred_img=pred_img,
+                                logit_img=logit_img,
+                                raw_idx=raw_idx,
+                                proposal_indices_img=proposal_indices_img,
+                                proposals_xyxy=proposals_img,
+                                bbox_loss=roi_null_bbox_loss,
+                                cls_loss=roi_null_cls_loss,
+                                bbox_direction=roi_null_bbox_direction,
+                                cls_direction=roi_null_cls_direction,
+                                timing_accumulator=timing_accumulator,
+                                timing_device=timing_device,
+                            )
+                    target_scalar = roi_target_scalar
                 else:
-                    if target_mode == "cand":
-                        target_scalar = build_faster_rcnn_rpn_candidate_losses(
-                            rpn_box_coder=model.rpn.box_coder,
-                            rpn_bbox_deltas=rpn_bbox_deltas_img,
-                            rpn_anchors=rpn_anchors_img,
-                            rpn_search_boxes_xyxy=rpn_search_boxes_img,
-                            rpn_objectness_logits=rpn_objectness_img,
-                            final_box_xyxy=det[bbox_idx, :4],
-                            from_size=transformed_images.image_sizes[0],
-                            to_size=original_image_sizes[0],
-                            iou_threshold=iou_threshold,
-                            obj_threshold=rpn_cand_obj_threshold,
-                            bbox_loss=rpn_bbox_loss,
-                            obj_loss=rpn_obj_loss,
-                            bbox_direction=rpn_bbox_direction,
-                            obj_direction=rpn_obj_direction,
-                            timing_accumulator=timing_accumulator,
-                            timing_device=timing_device,
-                        )
-                    else:
-                        target_scalar = build_faster_rcnn_rpn_null_losses(
-                            rpn_box_coder=model.rpn.box_coder,
-                            rpn_bbox_deltas=rpn_bbox_deltas_img,
-                            rpn_anchors=rpn_anchors_img,
-                            rpn_search_boxes_xyxy=rpn_search_boxes_img,
-                            rpn_objectness_logits=rpn_objectness_img,
-                            final_box_xyxy=det[bbox_idx, :4],
-                            from_size=transformed_images.image_sizes[0],
-                            to_size=original_image_sizes[0],
-                            bbox_loss=rpn_null_bbox_loss,
-                            obj_loss=rpn_null_obj_loss,
-                            bbox_direction=rpn_null_bbox_direction,
-                            obj_direction=rpn_null_obj_direction,
-                            obj_target_value=rpn_null_obj_target,
-                            timing_accumulator=timing_accumulator,
-                            timing_device=timing_device,
-                        )
+                    if rpn_target_scalar is None:
+                        if target_mode == "cand":
+                            rpn_target_scalar = build_faster_rcnn_rpn_candidate_losses(
+                                rpn_box_coder=model.rpn.box_coder,
+                                rpn_bbox_deltas=rpn_bbox_deltas_img,
+                                rpn_anchors=rpn_anchors_img,
+                                rpn_search_boxes_xyxy=rpn_search_boxes_img,
+                                rpn_objectness_logits=rpn_objectness_img,
+                                final_box_xyxy=det[bbox_idx, :4],
+                                from_size=transformed_images.image_sizes[0],
+                                to_size=original_image_sizes[0],
+                                iou_threshold=iou_threshold,
+                                obj_threshold=rpn_cand_obj_threshold,
+                                bbox_loss=rpn_bbox_loss,
+                                obj_loss=rpn_obj_loss,
+                                bbox_direction=rpn_bbox_direction,
+                                obj_direction=rpn_obj_direction,
+                                timing_accumulator=timing_accumulator,
+                                timing_device=timing_device,
+                            )
+                        else:
+                            rpn_target_scalar = build_faster_rcnn_rpn_null_losses(
+                                rpn_box_coder=model.rpn.box_coder,
+                                rpn_bbox_deltas=rpn_bbox_deltas_img,
+                                rpn_anchors=rpn_anchors_img,
+                                rpn_search_boxes_xyxy=rpn_search_boxes_img,
+                                rpn_objectness_logits=rpn_objectness_img,
+                                final_box_xyxy=det[bbox_idx, :4],
+                                from_size=transformed_images.image_sizes[0],
+                                to_size=original_image_sizes[0],
+                                bbox_loss=rpn_null_bbox_loss,
+                                obj_loss=rpn_null_obj_loss,
+                                bbox_direction=rpn_null_bbox_direction,
+                                obj_direction=rpn_null_obj_direction,
+                                obj_target_value=rpn_null_obj_target,
+                                timing_accumulator=timing_accumulator,
+                                timing_device=timing_device,
+                            )
+                    target_scalar = rpn_target_scalar
                 if target_scalar is None or target_value not in target_scalar:
                     for layer_name in layers_for_target:
                         grad_stats[f"{target_value}_{layer_name}"] = (
