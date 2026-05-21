@@ -113,10 +113,16 @@ class FasterRCNNTorchObjectDetector(nn.Module):
         iou_thresh=0.45,
         max_det=300,
         pretrained=True,
+        inference_batch_size=1,
+        transform_min_size=None,
+        transform_max_size=None,
     ):
         super().__init__()
         self.device = torch.device(device)
         self.img_size = img_size if isinstance(img_size, tuple) else (int(img_size), int(img_size))
+        self.transform_min_size = int(transform_min_size) if transform_min_size is not None else int(min(self.img_size))
+        self.transform_max_size = int(transform_max_size) if transform_max_size is not None else int(max(self.img_size))
+        self.inference_batch_size = max(1, int(inference_batch_size or 1))
         self.mode = str(mode)
         self.confidence = float(confidence)
         self.conf_thresh = float(confidence)
@@ -164,6 +170,8 @@ class FasterRCNNTorchObjectDetector(nn.Module):
             weights=weights,
             weights_backbone=None,
             num_classes=None if weights is not None else self.num_classes_with_bg,
+            min_size=self.transform_min_size,
+            max_size=self.transform_max_size,
             box_score_thresh=0.0,
             box_nms_thresh=self.iou_thresh,
             box_detections_per_img=self.max_det,
@@ -211,20 +219,27 @@ class FasterRCNNTorchObjectDetector(nn.Module):
 
     def _forward_impl(self, images, need_logits=True):
         if isinstance(images, torch.Tensor):
-            image_list = [img.to(self.device) for img in images]
+            image_list = [img for img in images]
         else:
-            image_list = [img.to(self.device) for img in images]
+            image_list = list(images)
 
         was_training = self.detector_model.training
         self.detector_model.eval()
         with torch.inference_mode():
-            if need_logits:
-                detections = self._custom_inference(image_list)
-            else:
-                detections = self.detector_model(image_list)
+            detections = []
+            for start in range(0, len(image_list), self.inference_batch_size):
+                chunk = [
+                    img.to(self.device, non_blocking=True) if img.device != self.device else img
+                    for img in image_list[start:start + self.inference_batch_size]
+                ]
+                if need_logits:
+                    detections.extend(self._custom_inference(chunk))
+                else:
+                    detections.extend(self.detector_model(chunk))
+                del chunk
         if was_training:
             self.detector_model.train()
-        return self._detections_to_contract(detections, image_list[0].device)
+        return self._detections_to_contract(detections, self.device)
 
     def _custom_inference(self, image_list):
         """Run Faster R-CNN explicitly so uncertainty code can use ROI logits.
