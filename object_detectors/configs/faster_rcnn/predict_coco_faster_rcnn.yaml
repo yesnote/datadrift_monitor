@@ -49,34 +49,34 @@ output:
   
   score:
     save_csv:
-      enabled: false
+      enabled: true
   
   class_probability:
     save_csv:
-      enabled: false
+      enabled: true
  
   entropy:
     save_csv:
-      enabled: false
+      enabled: true
   
   energy:
     save_csv:
-      enabled: false
+      enabled: true
   
   mc_dropout:
     num_runs: 30
     dropout_rate: 0.5
     save_csv:
-      enabled: false
+      enabled: true
   
   ensemble:
     weights: []
     save_csv:
-      enabled: false
+      enabled: true
   
   meta_detect:
     score_threshold: 0.0
     iou_threshold: 0.45
     save_csv:
-      enabled: false
+      enabled: true
 
