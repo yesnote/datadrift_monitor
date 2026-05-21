@@ -613,10 +613,6 @@ def parse_output_config(output_cfg):
             active_rpn_cfg.get("obj_direction", "pred_to_target"),
             "layer_grad.gradient.rpn.obj_direction",
         )
-        if layer_pseudo_gt != "uniform" and layer_rpn_obj_loss != "bcewithlogits":
-            raise ValueError("layer_grad.gradient.rpn.obj_loss supports only bcewithlogits when target=cand_target.")
-        if layer_pseudo_gt != "uniform" and layer_rpn_obj_direction != "pred_to_target":
-            raise ValueError("layer_grad.gradient.rpn.obj_direction supports only pred_to_target when target=cand_target.")
 
         layer_roi_null_bbox_loss = normalize_loss_option(
             active_roi_cfg.get("bbox_loss", "l1"),
@@ -1484,10 +1480,8 @@ def build_faster_rcnn_rpn_candidate_losses(
         return None
     if rpn_objectness_logits is None or rpn_objectness_logits.numel() == 0:
         return None
-    if obj_loss != "bcewithlogits":
-        raise ValueError("Faster R-CNN RPN candidate obj_loss currently supports only bcewithlogits.")
-    if obj_direction != "pred_to_target":
-        raise ValueError("Faster R-CNN RPN candidate obj_direction supports only pred_to_target.")
+    if obj_direction == "target_to_pred" and obj_loss != "signed_diff":
+        raise ValueError("Faster R-CNN RPN candidate obj_direction=target_to_pred is only supported when obj_loss=signed_diff.")
 
     t_candidate = _start_timing(timing_device)
     with torch.no_grad():
@@ -1799,8 +1793,6 @@ def collect_faster_rcnn_candidate_layer_grads_per_target(
         or rpn_null_bbox_loss not in {"l1", "l2"}
     ):
         raise ValueError("Faster R-CNN layer_grad bbox_loss supports only l1 or l2.")
-    if target_mode == "cand" and rpn_obj_loss != "bcewithlogits":
-        raise ValueError("Faster R-CNN layer_grad RPN obj_loss supports only bcewithlogits.")
 
     if not isinstance(input_tensor, list):
         input_images = [img for img in input_tensor] if isinstance(input_tensor, torch.Tensor) else list(input_tensor)
