@@ -75,6 +75,11 @@ def _load_matching_state_dict(model: nn.Module, state_dict: dict) -> None:
     model.load_state_dict(filtered, strict=False)
 
 
+def _real_coco_categories():
+    categories = list(FasterRCNN_ResNet50_FPN_Weights.DEFAULT.meta.get("categories", []))
+    return [name for name in categories if name not in {"__background__", "N/A"}]
+
+
 class _DropoutFastRCNNPredictor(nn.Module):
     def __init__(self, in_channels: int, num_classes: int, dropout_rate: float = 0.0):
         super().__init__()
@@ -131,7 +136,14 @@ class FasterRCNNTorchObjectDetector(nn.Module):
         self.is_faster_rcnn = True
         self.names = list(names or self._default_coco_names())
         self.num_classes_no_bg = int(len(self.names))
-        self.num_classes_with_bg = self.num_classes_no_bg + 1
+        self._torchvision_categories = list(FasterRCNN_ResNet50_FPN_Weights.DEFAULT.meta.get("categories", []))
+        self._uses_torchvision_coco_space = self.names == _real_coco_categories()
+        self._output_class_ids = self._build_output_class_ids()
+        self.num_classes_with_bg = (
+            len(self._torchvision_categories)
+            if self._uses_torchvision_coco_space
+            else self.num_classes_no_bg + 1
+        )
         self.detector_model = self._build_model(model_weight, bool(pretrained))
         self.model = _FasterRCNNForwardProxy(self)
         self.detector_model.to(self.device)
@@ -140,9 +152,20 @@ class FasterRCNNTorchObjectDetector(nn.Module):
 
     @staticmethod
     def _default_coco_names():
-        weights = FasterRCNN_ResNet50_FPN_Weights.DEFAULT
-        categories = list(weights.meta.get("categories", []))
-        return categories[1:] if categories and categories[0] == "__background__" else categories
+        return _real_coco_categories()
+
+    def _build_output_class_ids(self):
+        if not self._uses_torchvision_coco_space:
+            return list(range(1, self.num_classes_no_bg + 1))
+        name_to_idx = {
+            str(name): idx
+            for idx, name in enumerate(self._torchvision_categories)
+            if name not in {"__background__", "N/A"}
+        }
+        missing = [name for name in self.names if name not in name_to_idx]
+        if missing:
+            raise ValueError(f"COCO class names missing from torchvision categories: {missing}")
+        return [int(name_to_idx[name]) for name in self.names]
 
     @staticmethod
     def yolo_resize(img, new_shape=(640, 640), color=(114, 114, 114), auto=True, scaleFill=False, scaleup=True):
@@ -241,13 +264,14 @@ class FasterRCNNTorchObjectDetector(nn.Module):
         batch_rows = []
         batch_logits = []
         c = self.num_classes_no_bg
+        class_ids = torch.as_tensor(self._output_class_ids, dtype=torch.long, device=class_logits.device)
         for boxes, scores, logits, image_shape, original_size in zip(
             pred_boxes_list, pred_scores_list, pred_logits_list, image_shapes, original_image_sizes
         ):
             boxes = clip_boxes_to_image(boxes, image_shape)
-            boxes = boxes[:, 1:]
-            scores_no_bg = scores[:, 1:]
-            logits_no_bg = logits[:, 1:]
+            boxes = boxes[:, class_ids]
+            scores_no_bg = scores[:, class_ids]
+            logits_no_bg = logits[:, class_ids]
             labels = torch.arange(c, device=scores.device).view(1, -1).expand_as(scores_no_bg)
 
             boxes = boxes.reshape(-1, 4)
@@ -263,11 +287,10 @@ class FasterRCNNTorchObjectDetector(nn.Module):
             keep = keep[: self.max_det]
             boxes, scores_flat, labels, proposal_idx = boxes[keep], scores_flat[keep], labels[keep], proposal_idx[keep]
 
-            result = [{"boxes": boxes, "scores": scores_flat, "labels": labels + 1}]
+            result = [{"boxes": boxes, "scores": scores_flat, "labels": labels}]
             result = self.detector_model.transform.postprocess(result, [image_shape], [original_size])[0]
             boxes = result["boxes"]
             scores_flat = result["scores"]
-            labels_zero = result["labels"].to(torch.long) - 1
 
             probs = torch.zeros((boxes.shape[0], c), dtype=scores_flat.dtype, device=scores_flat.device)
             logits_sel = torch.zeros((boxes.shape[0], c), dtype=logits.dtype, device=logits.device)
