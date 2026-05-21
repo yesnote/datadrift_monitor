@@ -444,6 +444,8 @@ def parse_output_config(output_cfg):
         null_target_cfg = as_dict(g.get("null_target", layer_grad_cfg.get("null_target", {})))
         roi_null_cfg = as_dict(null_target_cfg.get("roi", null_target_cfg.get("roi_null", {})))
         rpn_null_cfg = as_dict(null_target_cfg.get("rpn", null_target_cfg.get("rpn_null", {})))
+        unified_roi_cfg = as_dict(g.get("roi", {}))
+        unified_rpn_cfg = as_dict(g.get("rpn", {}))
         t = g.get("target", "cand_target")
         t_policy = str(t).strip().lower() if t is not None else "null_target"
         layer_pseudo_gt = "uniform" if t_policy in {"null_target", "null"} else "cand"
@@ -455,8 +457,8 @@ def parse_output_config(output_cfg):
             layer_target_values = list(dict.fromkeys(exp))
 
         nested_layer_cfg = {}
-        active_rpn_cfg = rpn_null_cfg if layer_pseudo_gt == "uniform" else rpn_cand_cfg
-        active_roi_cfg = roi_null_cfg if layer_pseudo_gt == "uniform" else roi_cand_cfg
+        active_rpn_cfg = unified_rpn_cfg or (rpn_null_cfg if layer_pseudo_gt == "uniform" else rpn_cand_cfg)
+        active_roi_cfg = unified_roi_cfg or (roi_null_cfg if layer_pseudo_gt == "uniform" else roi_cand_cfg)
         for target_prefix, cand_cfg, allowed_targets in (
             ("rpn", active_rpn_cfg, {"obj_loss", "bbox_loss"}),
             ("roi", active_roi_cfg, {"cls_loss", "bbox_loss"}),
@@ -509,9 +511,13 @@ def parse_output_config(output_cfg):
                 layer_gradient_reduction.append(normalized)
         layer_cand_score_threshold = as_float(g.get("cand_score_threshold", 0.01), 0.01)
 
-        if cand_target_cfg:
+        if cand_target_cfg or unified_roi_cfg or unified_rpn_cfg:
             layer_roi_cand_enabled = bool(roi_cand_cfg.get("enabled", True))
             layer_rpn_cand_enabled = bool(rpn_cand_cfg.get("enabled", False))
+            if unified_roi_cfg:
+                layer_roi_cand_enabled = bool(unified_roi_cfg.get("enabled", layer_roi_cand_enabled))
+            if unified_rpn_cfg:
+                layer_rpn_cand_enabled = bool(unified_rpn_cfg.get("enabled", True))
         layer_roi_cand_scalar = [
             f"roi_{v}" if v in {"bbox_loss", "cls_loss"} else v
             for v in [str(v).strip().lower() for v in normalize_to_list(roi_cand_cfg.get("scalar", []))]
@@ -521,16 +527,20 @@ def parse_output_config(output_cfg):
             for v in [str(v).strip().lower() for v in normalize_to_list(rpn_cand_cfg.get("scalar", []))]
         ]
         layer_roi_cand_score_threshold = as_float(
-            roi_cand_cfg.get("cand_score_threshold", g.get("cand_score_threshold", layer_cand_score_threshold)),
+            active_roi_cfg.get("cand_score_threshold", g.get("cand_score_threshold", layer_cand_score_threshold)),
             layer_cand_score_threshold,
         )
         layer_rpn_cand_obj_threshold = as_float(
-            rpn_cand_cfg.get("cand_obj_threshold", rpn_cand_cfg.get("cand_score_threshold", 0.0)),
+            active_rpn_cfg.get("cand_obj_threshold", active_rpn_cfg.get("cand_score_threshold", 0.0)),
             0.0,
         )
-        if null_target_cfg:
+        if null_target_cfg or unified_roi_cfg or unified_rpn_cfg:
             layer_roi_null_enabled = bool(roi_null_cfg.get("enabled", True))
             layer_rpn_null_enabled = bool(rpn_null_cfg.get("enabled", True))
+            if unified_roi_cfg:
+                layer_roi_null_enabled = bool(unified_roi_cfg.get("enabled", layer_roi_null_enabled))
+            if unified_rpn_cfg:
+                layer_rpn_null_enabled = bool(unified_rpn_cfg.get("enabled", layer_rpn_null_enabled))
         layer_roi_null_scalar = [
             f"roi_{v}" if v in {"bbox_loss", "cls_loss"} else v
             for v in [str(v).strip().lower() for v in normalize_to_list(roi_null_cfg.get("scalar", []))]
@@ -539,7 +549,7 @@ def parse_output_config(output_cfg):
             f"rpn_{v}" if v in {"bbox_loss", "obj_loss"} else v
             for v in [str(v).strip().lower() for v in normalize_to_list(rpn_null_cfg.get("scalar", []))]
         ]
-        layer_rpn_null_obj_target = as_float(rpn_null_cfg.get("obj_target", 0.5), 0.5)
+        layer_rpn_null_obj_target = as_float(active_rpn_cfg.get("obj_target", 0.5), 0.5)
 
         layer_bbox_loss = normalize_loss_option(g.get("bbox_loss", "ciou"), "ciou", {"ciou", "l1", "l2"}, "layer_grad.gradient.bbox_loss")
         layer_cls_loss = normalize_loss_option(
@@ -560,24 +570,24 @@ def parse_output_config(output_cfg):
         validate_loss_directions(layer_bbox_direction, layer_cls_loss, layer_obj_loss, layer_cls_direction, layer_obj_direction)
 
         layer_roi_bbox_loss = normalize_loss_option(
-            roi_cand_cfg.get("bbox_loss", g.get("bbox_loss", "l1")),
+            active_roi_cfg.get("bbox_loss", g.get("bbox_loss", "l1")),
             "l1",
             {"l1", "l2"},
-            "layer_grad.cand_target.roi_cand.bbox_loss",
+            "layer_grad.gradient.roi.bbox_loss",
         )
         layer_roi_cls_loss = normalize_loss_option(
-            roi_cand_cfg.get("cls_loss", g.get("cls_loss", "bcewithlogits")),
+            active_roi_cfg.get("cls_loss", g.get("cls_loss", "bcewithlogits")),
             "bcewithlogits",
             {"bcewithlogits", "kl", "ce"},
-            "layer_grad.cand_target.roi_cand.cls_loss",
+            "layer_grad.gradient.roi.cls_loss",
         )
         layer_roi_bbox_direction = normalize_direction_option(
-            roi_cand_cfg.get("bbox_direction", g.get("bbox_direction", "pred_to_target")),
-            "layer_grad.cand_target.roi_cand.bbox_direction",
+            active_roi_cfg.get("bbox_direction", g.get("bbox_direction", "pred_to_target")),
+            "layer_grad.gradient.roi.bbox_direction",
         )
         layer_roi_cls_direction = normalize_direction_option(
-            roi_cand_cfg.get("cls_direction", g.get("cls_direction", "pred_to_target")),
-            "layer_grad.cand_target.roi_cand.cls_direction",
+            active_roi_cfg.get("cls_direction", g.get("cls_direction", "pred_to_target")),
+            "layer_grad.gradient.roi.cls_direction",
         )
         validate_loss_directions(
             layer_roi_bbox_direction,
@@ -588,47 +598,49 @@ def parse_output_config(output_cfg):
         )
 
         layer_rpn_bbox_loss = normalize_loss_option(
-            rpn_cand_cfg.get("bbox_loss", "l1"),
+            active_rpn_cfg.get("bbox_loss", "l1"),
             "l1",
             {"l1", "l2"},
-            "layer_grad.cand_target.rpn_cand.bbox_loss",
+            "layer_grad.gradient.rpn.bbox_loss",
         )
         layer_rpn_obj_loss = normalize_loss_option(
-            rpn_cand_cfg.get("obj_loss", "bcewithlogits"),
+            active_rpn_cfg.get("obj_loss", "bcewithlogits"),
             "bcewithlogits",
-            {"bcewithlogits"},
-            "layer_grad.cand_target.rpn_cand.obj_loss",
+            {"bcewithlogits", "abs_diff", "signed_diff"},
+            "layer_grad.gradient.rpn.obj_loss",
         )
         layer_rpn_bbox_direction = normalize_direction_option(
-            rpn_cand_cfg.get("bbox_direction", "pred_to_target"),
-            "layer_grad.cand_target.rpn_cand.bbox_direction",
+            active_rpn_cfg.get("bbox_direction", "pred_to_target"),
+            "layer_grad.gradient.rpn.bbox_direction",
         )
         layer_rpn_obj_direction = normalize_direction_option(
-            rpn_cand_cfg.get("obj_direction", "pred_to_target"),
-            "layer_grad.cand_target.rpn_cand.obj_direction",
+            active_rpn_cfg.get("obj_direction", "pred_to_target"),
+            "layer_grad.gradient.rpn.obj_direction",
         )
-        if layer_rpn_obj_direction != "pred_to_target":
-            raise ValueError("layer_grad.cand_target.rpn_cand.obj_direction supports only pred_to_target.")
+        if layer_pseudo_gt != "uniform" and layer_rpn_obj_loss != "bcewithlogits":
+            raise ValueError("layer_grad.gradient.rpn.obj_loss supports only bcewithlogits when target=cand_target.")
+        if layer_pseudo_gt != "uniform" and layer_rpn_obj_direction != "pred_to_target":
+            raise ValueError("layer_grad.gradient.rpn.obj_direction supports only pred_to_target when target=cand_target.")
 
         layer_roi_null_bbox_loss = normalize_loss_option(
-            roi_null_cfg.get("bbox_loss", "l1"),
+            active_roi_cfg.get("bbox_loss", "l1"),
             "l1",
             {"l1", "l2"},
-            "layer_grad.gradient.null_target.roi.bbox_loss",
+            "layer_grad.gradient.roi.bbox_loss",
         )
         layer_roi_null_cls_loss = normalize_loss_option(
-            roi_null_cfg.get("cls_loss", "bcewithlogits"),
+            active_roi_cfg.get("cls_loss", "bcewithlogits"),
             "bcewithlogits",
             {"bcewithlogits", "kl", "ce"},
-            "layer_grad.gradient.null_target.roi.cls_loss",
+            "layer_grad.gradient.roi.cls_loss",
         )
         layer_roi_null_bbox_direction = normalize_direction_option(
-            roi_null_cfg.get("bbox_direction", "pred_to_target"),
-            "layer_grad.gradient.null_target.roi.bbox_direction",
+            active_roi_cfg.get("bbox_direction", "pred_to_target"),
+            "layer_grad.gradient.roi.bbox_direction",
         )
         layer_roi_null_cls_direction = normalize_direction_option(
-            roi_null_cfg.get("cls_direction", "pred_to_target"),
-            "layer_grad.gradient.null_target.roi.cls_direction",
+            active_roi_cfg.get("cls_direction", "pred_to_target"),
+            "layer_grad.gradient.roi.cls_direction",
         )
         validate_loss_directions(
             layer_roi_null_bbox_direction,
@@ -639,24 +651,24 @@ def parse_output_config(output_cfg):
         )
 
         layer_rpn_null_bbox_loss = normalize_loss_option(
-            rpn_null_cfg.get("bbox_loss", "l1"),
+            active_rpn_cfg.get("bbox_loss", "l1"),
             "l1",
             {"l1", "l2"},
-            "layer_grad.gradient.null_target.rpn.bbox_loss",
+            "layer_grad.gradient.rpn.bbox_loss",
         )
         layer_rpn_null_obj_loss = normalize_loss_option(
-            rpn_null_cfg.get("obj_loss", "bcewithlogits"),
+            active_rpn_cfg.get("obj_loss", "bcewithlogits"),
             "bcewithlogits",
             {"bcewithlogits", "abs_diff", "signed_diff"},
-            "layer_grad.gradient.null_target.rpn.obj_loss",
+            "layer_grad.gradient.rpn.obj_loss",
         )
         layer_rpn_null_bbox_direction = normalize_direction_option(
-            rpn_null_cfg.get("bbox_direction", "pred_to_target"),
-            "layer_grad.gradient.null_target.rpn.bbox_direction",
+            active_rpn_cfg.get("bbox_direction", "pred_to_target"),
+            "layer_grad.gradient.rpn.bbox_direction",
         )
         layer_rpn_null_obj_direction = normalize_direction_option(
-            rpn_null_cfg.get("obj_direction", "pred_to_target"),
-            "layer_grad.gradient.null_target.rpn.obj_direction",
+            active_rpn_cfg.get("obj_direction", "pred_to_target"),
+            "layer_grad.gradient.rpn.obj_direction",
         )
         if layer_rpn_null_obj_direction == "target_to_pred" and layer_rpn_null_obj_loss != "signed_diff":
             raise ValueError("layer_grad.gradient.null_target.rpn.obj_direction=target_to_pred is only supported when obj_loss=diff.")
@@ -1778,6 +1790,9 @@ def collect_faster_rcnn_candidate_layer_grads_per_target(
     timing_accumulator=None,
     timing_device=None,
 ):
+    target_mode = str(target_mode).strip().lower()
+    if target_mode not in {"cand", "null"}:
+        raise ValueError("Faster R-CNN layer_grad target_mode must be cand or null.")
     roi_bbox_loss = str(roi_bbox_loss).strip().lower()
     rpn_bbox_loss = str(rpn_bbox_loss).strip().lower()
     roi_null_bbox_loss = str(roi_null_bbox_loss).strip().lower()
@@ -1789,11 +1804,8 @@ def collect_faster_rcnn_candidate_layer_grads_per_target(
         or rpn_null_bbox_loss not in {"l1", "l2"}
     ):
         raise ValueError("Faster R-CNN layer_grad bbox_loss supports only l1 or l2.")
-    if rpn_obj_loss != "bcewithlogits":
+    if target_mode == "cand" and rpn_obj_loss != "bcewithlogits":
         raise ValueError("Faster R-CNN layer_grad RPN obj_loss supports only bcewithlogits.")
-    target_mode = str(target_mode).strip().lower()
-    if target_mode not in {"cand", "null"}:
-        raise ValueError("Faster R-CNN layer_grad target_mode must be cand or null.")
 
     if not isinstance(input_tensor, list):
         input_images = [img for img in input_tensor] if isinstance(input_tensor, torch.Tensor) else list(input_tensor)
