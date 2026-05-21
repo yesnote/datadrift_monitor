@@ -235,24 +235,83 @@ class FasterRCNNTorchObjectDetector(nn.Module):
 
     def _forward_impl(self, images_tensor: torch.Tensor):
         images_list = [img.to(self.device) for img in images_tensor]
-        original_image_sizes = [tuple(img.shape[-2:]) for img in images_list]
-        images, _ = self.detector_model.transform(images_list, None)
-        features = self.detector_model.backbone(images.tensors)
-        if isinstance(features, torch.Tensor):
-            features = OrderedDict([("0", features)])
-        proposals, _proposal_losses = self.detector_model.rpn(images, features, None)
-        box_features = self.detector_model.roi_heads.box_roi_pool(features, proposals, images.image_sizes)
-        box_features = self.detector_model.roi_heads.box_head(box_features)
-        class_logits, box_regression = self.detector_model.roi_heads.box_predictor(box_features)
-        raw_prediction, raw_logits = self._postprocess_to_yolo_contract(
-            class_logits=class_logits,
-            box_regression=box_regression,
-            proposals=proposals,
-            image_shapes=images.image_sizes,
-            original_image_sizes=original_image_sizes,
-            device=images_tensor.device,
-        )
-        return raw_prediction, raw_logits
+        was_training = self.detector_model.training
+        self.detector_model.eval()
+        detections = self.detector_model(images_list)
+        if was_training:
+            self.detector_model.train()
+        return self._detections_to_yolo_contract(detections, device=images_tensor.device)
+
+    def _detections_to_yolo_contract(self, detections, device):
+        c = self.num_classes_no_bg
+        batch_rows = []
+        batch_logits = []
+        if self._uses_torchvision_coco_space:
+            internal_to_output = torch.full(
+                (len(self._torchvision_categories),),
+                -1,
+                dtype=torch.long,
+                device=device,
+            )
+            for out_idx, internal_idx in enumerate(self._output_class_ids):
+                internal_to_output[int(internal_idx)] = int(out_idx)
+        else:
+            internal_to_output = None
+
+        for det in detections:
+            boxes = det.get("boxes", torch.zeros((0, 4), dtype=torch.float32, device=device)).to(device)
+            scores = det.get("scores", torch.zeros((0,), dtype=torch.float32, device=device)).to(device)
+            labels_internal = det.get("labels", torch.zeros((0,), dtype=torch.long, device=device)).to(device).long()
+
+            valid = scores > 0.0
+            if self._uses_torchvision_coco_space:
+                valid &= labels_internal >= 0
+                valid &= labels_internal < internal_to_output.numel()
+                labels = internal_to_output[labels_internal.clamp(min=0, max=internal_to_output.numel() - 1)]
+                valid &= labels >= 0
+            else:
+                labels = labels_internal - 1
+                valid &= (labels >= 0) & (labels < c)
+
+            boxes = boxes[valid]
+            scores = scores[valid]
+            labels = labels[valid]
+            if boxes.shape[0] > self.max_det:
+                boxes = boxes[: self.max_det]
+                scores = scores[: self.max_det]
+                labels = labels[: self.max_det]
+
+            probs = torch.zeros((boxes.shape[0], c), dtype=scores.dtype, device=device)
+            logits_sel = torch.zeros((boxes.shape[0], c), dtype=scores.dtype, device=device)
+            if boxes.shape[0] > 0:
+                row_idx = torch.arange(boxes.shape[0], device=device)
+                probs[row_idx, labels] = scores
+                logits_sel[row_idx, labels] = torch.logit(scores.clamp(min=1e-6, max=1.0 - 1e-6))
+
+            xywh = boxes.clone()
+            if xywh.numel():
+                xywh[:, 0] = (boxes[:, 0] + boxes[:, 2]) * 0.5
+                xywh[:, 1] = (boxes[:, 1] + boxes[:, 3]) * 0.5
+                xywh[:, 2] = (boxes[:, 2] - boxes[:, 0]).clamp(min=0.0)
+                xywh[:, 3] = (boxes[:, 3] - boxes[:, 1]).clamp(min=0.0)
+            label_col = labels.to(dtype=scores.dtype).unsqueeze(1)
+            rows = torch.cat([xywh, scores.unsqueeze(1), label_col, probs], dim=1)
+            if rows.shape[0] < self.max_det:
+                pad_n = self.max_det - rows.shape[0]
+                rows = torch.cat([rows, torch.zeros((pad_n, 6 + c), dtype=rows.dtype, device=device)], dim=0)
+                logits_sel = torch.cat([logits_sel, torch.zeros((pad_n, c), dtype=logits_sel.dtype, device=device)], dim=0)
+            else:
+                rows = rows[: self.max_det]
+                logits_sel = logits_sel[: self.max_det]
+            batch_rows.append(rows)
+            batch_logits.append(logits_sel)
+
+        if not batch_rows:
+            return (
+                torch.zeros((0, self.max_det, 6 + c), dtype=torch.float32, device=device),
+                torch.zeros((0, self.max_det, c), dtype=torch.float32, device=device),
+            )
+        return torch.stack(batch_rows, dim=0), torch.stack(batch_logits, dim=0)
 
     def _postprocess_to_yolo_contract(self, class_logits, box_regression, proposals, image_shapes, original_image_sizes, device):
         boxes_per_image = [boxes_in_image.shape[0] for boxes_in_image in proposals]
