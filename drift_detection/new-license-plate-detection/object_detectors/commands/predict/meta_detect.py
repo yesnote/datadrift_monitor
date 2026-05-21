@@ -131,18 +131,33 @@ def run_meta_detect_csv(config, run_dir):
                     t_candidate = timing.start()
                     with torch.no_grad():
                         pseudo_row = pred_img[raw_pred_idx].detach()
-                        pseudo_cls = int(torch.argmax(pseudo_row[5:]).item())
+                        is_faster_rcnn = bool(getattr(detector, "is_faster_rcnn", False))
                         raw_xyxy = _xywh_to_xyxy_tensor(pred_img[:, :4].detach())
                         pseudo_box_xyxy = _xywh_to_xyxy_tensor(pseudo_row[:4].view(1, 4))
-                        ious = _box_iou_1vN_tensor(pseudo_box_xyxy, raw_xyxy)
-                        pred_cls = torch.argmax(pred_img[:, 5:].detach(), dim=1)
-                        obj = pred_img[:, 4].detach()
-                        cls_max = pred_img[:, 5:].detach().max(dim=1).values if pred_img.shape[1] > 5 else torch.ones_like(obj)
-                        score = obj if bool(getattr(detector, "is_faster_rcnn", False)) else obj * cls_max
-                        cand_mask = (ious >= float(iou_threshold)) & (pred_cls == pseudo_cls) & (score >= float(score_threshold))
+
+                        score = pred_img[:, 4].detach()
+                        if is_faster_rcnn:
+                            pseudo_cls = int(pseudo_row[5].detach().long().item())
+                            pred_cls = pred_img[:, 5].detach().long()
+                        else:
+                            cls_probs = pred_img[:, 5:].detach()
+                            pseudo_cls = int(torch.argmax(pseudo_row[5:]).item())
+                            pred_cls = torch.argmax(cls_probs, dim=1)
+                            cls_max = cls_probs.max(dim=1).values if cls_probs.numel() else torch.ones_like(score)
+                            score = score * cls_max
+
+                        score_class_mask = (score >= float(score_threshold)) & (pred_cls == pseudo_cls)
+                        ious = torch.zeros((pred_img.shape[0],), dtype=pred_img.dtype, device=pred_img.device)
+                        cand_mask = torch.zeros_like(score_class_mask, dtype=torch.bool)
+                        if bool(score_class_mask.any()):
+                            candidate_indices = torch.nonzero(score_class_mask, as_tuple=False).flatten()
+                            candidate_ious = _box_iou_1vN_tensor(pseudo_box_xyxy, raw_xyxy[candidate_indices])
+                            ious[candidate_indices] = candidate_ious
+                            cand_mask[candidate_indices] = candidate_ious > float(iou_threshold)
                         if not bool(cand_mask.any()):
                             cand_mask = torch.zeros_like(pred_cls, dtype=torch.bool)
                             cand_mask[raw_pred_idx] = True
+                            ious[raw_pred_idx] = 1.0
                     candidate_search_sec += timing.elapsed(t_candidate)
 
                     t_feature = timing.start()
@@ -153,7 +168,8 @@ def run_meta_detect_csv(config, run_dir):
                     cand_boxes = raw_xyxy_orig[cand_mask]
                     cand_scores = score[cand_mask]
                     cand_ious = ious[cand_mask]
-                    raw_cls = pred_img[:, 5:] if pred_img.shape[1] > 5 else torch.zeros((pred_img.shape[0], 0), device=device)
+                    raw_cls_start = 6 if bool(getattr(detector, "is_faster_rcnn", False)) else 5
+                    raw_cls = pred_img[:, raw_cls_start:] if pred_img.shape[1] > raw_cls_start else torch.zeros((pred_img.shape[0], 0), device=device)
                     if 0 <= raw_pred_idx < int(raw_cls.shape[0]) and raw_cls.numel() > 0:
                         pred_probs = raw_cls[raw_pred_idx].detach().float()
                     else:
