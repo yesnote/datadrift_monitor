@@ -1,7 +1,9 @@
 import hashlib
 import math
+from bisect import bisect_right
 from pathlib import Path
 
+from PIL import Image
 from torch.utils.data import ConcatDataset, DataLoader, Subset
 import yaml
 
@@ -196,7 +198,7 @@ def build_dataset(config, split="train"):
         )
 
     datasets = []
-    img_size = config["model"]["img_size"]
+    img_size = config.get("model", {}).get("img_size", 640)
     for name, split_key, used_ratio in zip(names, split_keys, ratio_values):
         if name not in root_dataset_cfg:
             raise ValueError(f"dataset.used_dataset includes '{name}' but dataset.{name} is not defined.")
@@ -220,6 +222,41 @@ def yolo_collate_fn(batch):
     return list(images), list(targets)
 
 
+def _dataset_image_path(dataset, index):
+    if isinstance(dataset, Subset):
+        return _dataset_image_path(dataset.dataset, int(dataset.indices[index]))
+    if isinstance(dataset, ConcatDataset):
+        dataset_idx = bisect_right(dataset.cumulative_sizes, index)
+        sample_idx = index if dataset_idx == 0 else index - dataset.cumulative_sizes[dataset_idx - 1]
+        return _dataset_image_path(dataset.datasets[dataset_idx], sample_idx)
+    if hasattr(dataset, "images") and index < len(getattr(dataset, "images")):
+        return str(dataset.images[index])
+    if hasattr(dataset, "samples") and index < len(getattr(dataset, "samples")):
+        sample = dataset.samples[index]
+        if isinstance(sample, dict):
+            return str(sample.get("image_path", ""))
+    return ""
+
+
+def _image_aspect_ratio(path):
+    try:
+        with Image.open(path) as image:
+            width, height = image.size
+        if height <= 0:
+            return 1.0
+        return float(width) / float(height)
+    except Exception:
+        return 1.0
+
+
+def _sort_dataset_by_aspect_ratio(dataset):
+    ranked = []
+    for idx in range(len(dataset)):
+        path = _dataset_image_path(dataset, idx)
+        ranked.append((_image_aspect_ratio(path), idx))
+    return Subset(dataset, [idx for _ratio, idx in sorted(ranked)])
+
+
 def create_dataloader(config, split="train"):
     _ = get_mode(config)
     dataset = build_dataset(config, split=split)
@@ -230,6 +267,12 @@ def create_dataloader(config, split="train"):
     else:
         is_train_split = str(split).strip().lower() == "train"
     shuffle = dl_cfg["shuffle_train"] if is_train_split else dl_cfg["shuffle_eval"]
+    model_type = str(config.get("model", {}).get("type", "yolov5")).strip().lower()
+    aspect_grouping = dl_cfg.get("aspect_ratio_grouping", None)
+    if aspect_grouping is None:
+        aspect_grouping = model_type in {"faster_rcnn", "faster-rcnn", "frcnn"} and not bool(shuffle)
+    if bool(aspect_grouping) and not bool(shuffle):
+        dataset = _sort_dataset_by_aspect_ratio(dataset)
     return DataLoader(
         dataset,
         batch_size=dl_cfg["batch_size"],

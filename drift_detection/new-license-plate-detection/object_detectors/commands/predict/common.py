@@ -111,6 +111,8 @@ def _resolve_nms_logits(raw_prediction, raw_logits, num_classes_hint=80):
         return raw_logits
     if raw_prediction is None:
         return None
+    if isinstance(raw_prediction, list):
+        return None
     if raw_prediction.ndim == 3 and raw_prediction.shape[2] > 5:
         return raw_prediction[:, :, 5:]
     b = int(raw_prediction.shape[0]) if raw_prediction.ndim >= 1 else 0
