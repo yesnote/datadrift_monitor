@@ -1,5 +1,5 @@
-﻿from torch.nn.modules.module import Module
-from ..functions.roi_pool import RoIPoolFunction
+from torch.nn.modules.module import Module
+from torchvision.ops import roi_pool
 
 
 class _RoIPooling(Module):
@@ -11,5 +11,9 @@ class _RoIPooling(Module):
         self.spatial_scale = float(spatial_scale)
 
     def forward(self, features, rois):
-        return RoIPoolFunction(self.pooled_height, self.pooled_width, self.spatial_scale)(features, rois)
-
+        return roi_pool(
+            features,
+            rois,
+            output_size=(self.pooled_height, self.pooled_width),
+            spatial_scale=self.spatial_scale,
+        )

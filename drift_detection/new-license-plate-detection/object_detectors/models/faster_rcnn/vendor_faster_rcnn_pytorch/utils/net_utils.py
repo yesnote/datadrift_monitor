@@ -5,7 +5,6 @@ from torch.autograd import Variable
 import numpy as np
 import torchvision.models as models
 from models.faster_rcnn.vendor_faster_rcnn_pytorch.utils.config import cfg
-from models.faster_rcnn.vendor_faster_rcnn_pytorch.roi_crop.functions.roi_crop import RoICropFunction
 import cv2
 import pdb
 import random
@@ -195,6 +194,8 @@ def _affine_theta(rois, input_size):
     return theta
 
 def compare_grid_sample():
+    from models.faster_rcnn.vendor_faster_rcnn_pytorch.roi_crop.functions.roi_crop import RoICropFunction
+
     # do gradcheck
     N = random.randint(1, 8)
     C = 2 # random.randint(1, 8)

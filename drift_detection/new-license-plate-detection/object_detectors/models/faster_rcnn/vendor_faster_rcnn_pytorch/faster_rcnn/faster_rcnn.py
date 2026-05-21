@@ -9,12 +9,11 @@ import numpy as np
 from models.faster_rcnn.vendor_faster_rcnn_pytorch.utils.config import cfg
 from models.faster_rcnn.vendor_faster_rcnn_pytorch.rpn.rpn import _RPN
 from models.faster_rcnn.vendor_faster_rcnn_pytorch.roi_pooling.modules.roi_pool import _RoIPooling
-from models.faster_rcnn.vendor_faster_rcnn_pytorch.roi_crop.modules.roi_crop import _RoICrop
 from models.faster_rcnn.vendor_faster_rcnn_pytorch.roi_align.modules.roi_align import RoIAlignAvg
 from models.faster_rcnn.vendor_faster_rcnn_pytorch.rpn.proposal_target_layer_cascade import _ProposalTargetLayer
 import time
 import pdb
-from models.faster_rcnn.vendor_faster_rcnn_pytorch.utils.net_utils import _smooth_l1_loss, _crop_pool_layer, _affine_grid_gen, _affine_theta
+from models.faster_rcnn.vendor_faster_rcnn_pytorch.utils.net_utils import _smooth_l1_loss
 
 class _fasterRCNN(nn.Module):
     """ faster RCNN """
@@ -34,7 +33,7 @@ class _fasterRCNN(nn.Module):
         self.RCNN_roi_align = RoIAlignAvg(cfg.POOLING_SIZE, cfg.POOLING_SIZE, 1.0/16.0)
 
         self.grid_size = cfg.POOLING_SIZE * 2 if cfg.CROP_RESIZE_WITH_MAX_POOL else cfg.POOLING_SIZE
-        self.RCNN_roi_crop = _RoICrop()
+        self.RCNN_roi_crop = None
 
     def forward(self, im_data, im_info, gt_boxes, num_boxes):
         batch_size = im_data.size(0)
@@ -70,13 +69,7 @@ class _fasterRCNN(nn.Module):
         # do roi pooling based on predicted rois
 
         if cfg.POOLING_MODE == 'crop':
-            # pdb.set_trace()
-            # pooled_feat_anchor = _crop_pool_layer(base_feat, rois.view(-1, 5))
-            grid_xy = _affine_grid_gen(rois.view(-1, 5), base_feat.size()[2:], self.grid_size)
-            grid_yx = torch.stack([grid_xy.data[:,:,:,1], grid_xy.data[:,:,:,0]], 3).contiguous()
-            pooled_feat = self.RCNN_roi_crop(base_feat, Variable(grid_yx).detach())
-            if cfg.CROP_RESIZE_WITH_MAX_POOL:
-                pooled_feat = F.max_pool2d(pooled_feat, 2, 2)
+            pooled_feat = self.RCNN_roi_align(base_feat, rois.view(-1, 5))
         elif cfg.POOLING_MODE == 'align':
             pooled_feat = self.RCNN_roi_align(base_feat, rois.view(-1, 5))
         elif cfg.POOLING_MODE == 'pool':
