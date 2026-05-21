@@ -94,6 +94,17 @@ class _DropoutFastRCNNPredictor(nn.Module):
         return scores, bbox_deltas
 
 
+class _FasterRCNNForwardProxy:
+    def __init__(self, owner):
+        object.__setattr__(self, "_owner", owner)
+
+    def __call__(self, img, augment=False, **_kwargs):
+        return self._owner._forward_impl(img)
+
+    def __getattr__(self, name):
+        return getattr(self._owner.detector_model, name)
+
+
 class FasterRCNNTorchObjectDetector(nn.Module):
     def __init__(
         self,
@@ -121,9 +132,10 @@ class FasterRCNNTorchObjectDetector(nn.Module):
         self.names = list(names or self._default_coco_names())
         self.num_classes_no_bg = int(len(self.names))
         self.num_classes_with_bg = self.num_classes_no_bg + 1
-        self.model = self._build_model(model_weight, bool(pretrained))
-        self.model.to(self.device)
-        self.model.train() if self.mode == "train" else self.model.eval()
+        self.detector_model = self._build_model(model_weight, bool(pretrained))
+        self.model = _FasterRCNNForwardProxy(self)
+        self.detector_model.to(self.device)
+        self.detector_model.train() if self.mode == "train" else self.detector_model.eval()
         print("[INFO] Faster R-CNN model is loaded")
 
     @staticmethod
@@ -193,21 +205,21 @@ class FasterRCNNTorchObjectDetector(nn.Module):
         return model
 
     def set_dropout_rate(self, dropout_rate: float):
-        predictor = self.model.roi_heads.box_predictor
+        predictor = self.detector_model.roi_heads.box_predictor
         if hasattr(predictor, "dropout"):
             predictor.dropout = float(dropout_rate)
 
     def _forward_impl(self, images_tensor: torch.Tensor):
         images_list = [img.to(self.device) for img in images_tensor]
         original_image_sizes = [tuple(img.shape[-2:]) for img in images_list]
-        images, _ = self.model.transform(images_list, None)
-        features = self.model.backbone(images.tensors)
+        images, _ = self.detector_model.transform(images_list, None)
+        features = self.detector_model.backbone(images.tensors)
         if isinstance(features, torch.Tensor):
             features = OrderedDict([("0", features)])
-        proposals, _proposal_losses = self.model.rpn(images, features, None)
-        box_features = self.model.roi_heads.box_roi_pool(features, proposals, images.image_sizes)
-        box_features = self.model.roi_heads.box_head(box_features)
-        class_logits, box_regression = self.model.roi_heads.box_predictor(box_features)
+        proposals, _proposal_losses = self.detector_model.rpn(images, features, None)
+        box_features = self.detector_model.roi_heads.box_roi_pool(features, proposals, images.image_sizes)
+        box_features = self.detector_model.roi_heads.box_head(box_features)
+        class_logits, box_regression = self.detector_model.roi_heads.box_predictor(box_features)
         raw_prediction, raw_logits = self._postprocess_to_yolo_contract(
             class_logits=class_logits,
             box_regression=box_regression,
@@ -220,7 +232,7 @@ class FasterRCNNTorchObjectDetector(nn.Module):
 
     def _postprocess_to_yolo_contract(self, class_logits, box_regression, proposals, image_shapes, original_image_sizes, device):
         boxes_per_image = [boxes_in_image.shape[0] for boxes_in_image in proposals]
-        pred_boxes = self.model.roi_heads.box_coder.decode(box_regression, proposals)
+        pred_boxes = self.detector_model.roi_heads.box_coder.decode(box_regression, proposals)
         pred_scores = F.softmax(class_logits, dim=-1)
         pred_boxes_list = pred_boxes.split(boxes_per_image, 0)
         pred_scores_list = pred_scores.split(boxes_per_image, 0)
@@ -252,7 +264,7 @@ class FasterRCNNTorchObjectDetector(nn.Module):
             boxes, scores_flat, labels, proposal_idx = boxes[keep], scores_flat[keep], labels[keep], proposal_idx[keep]
 
             result = [{"boxes": boxes, "scores": scores_flat, "labels": labels + 1}]
-            result = self.model.transform.postprocess(result, [image_shape], [original_size])[0]
+            result = self.detector_model.transform.postprocess(result, [image_shape], [original_size])[0]
             boxes = result["boxes"]
             scores_flat = result["scores"]
             labels_zero = result["labels"].to(torch.long) - 1
