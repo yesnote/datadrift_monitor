@@ -24,6 +24,7 @@ dataloader:
   pin_memory: true
   shuffle_train: true
   shuffle_eval: false
+  aspect_ratio_grouping: true
 
 training:
   epochs: 10
