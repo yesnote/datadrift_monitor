@@ -61,6 +61,18 @@ def _dataset_run_subdir(config):
     return "-".join(safe_names)
 
 
+def _model_run_subdir(config):
+    raw = str(config.get("model", {}).get("type", "yolov5")).strip().lower()
+    aliases = {
+        "yolo": "yolov5",
+        "yolo_v5": "yolov5",
+        "faster-rcnn": "faster_rcnn",
+        "frcnn": "faster_rcnn",
+    }
+    name = aliases.get(raw, raw or "unknown_model")
+    return "".join(ch if ch.isalnum() or ch in {"_", "-"} else "_" for ch in name)
+
+
 def _normalize_training_seeds(config):
     raw_seed = config.get("training", {}).get("seed")
     if raw_seed is None:
@@ -140,7 +152,7 @@ def main():
         parsed_output = parse_output_config(config.get("output", {}))
         uncertainty = str(parsed_output.get("uncertainty", ""))
         target_tag = ""
-        run_base_subdir = str(Path("predict") / _dataset_run_subdir(config))
+        run_base_subdir = str(Path(_model_run_subdir(config)) / "predict" / _dataset_run_subdir(config))
         if uncertainty == "layer_grad":
             layer_grad_cfg = config.get("output", {}).get("layer_grad", {})
             grad_cfg = layer_grad_cfg.get("gradient", {})
@@ -204,10 +216,11 @@ def main():
                 base_run_dir = _resolve_run_dir(args.run_dir)
                 run_dir = base_run_dir if len(seeds) == 1 else (base_run_dir / _seed_tag(seed)).resolve()
             else:
-                dir_name = f"{timestamp}_yolov5"
+                model_name = _model_run_subdir(seed_config)
+                dir_name = f"{timestamp}_{model_name}"
                 if len(seeds) > 1:
                     dir_name = f"{dir_name}_{_seed_tag(seed)}"
-                run_dir = (PROJECT_ROOT / "runs" / "train" / _dataset_run_subdir(seed_config) / dir_name).resolve()
+                run_dir = (PROJECT_ROOT / "runs" / model_name / "train" / _dataset_run_subdir(seed_config) / dir_name).resolve()
             run_dir.mkdir(parents=True, exist_ok=True)
             _save_effective_config(seed_config, run_dir)
             print(f"[train] run_dir={run_dir}")

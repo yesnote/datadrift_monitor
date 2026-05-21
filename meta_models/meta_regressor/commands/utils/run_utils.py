@@ -18,7 +18,10 @@ def create_run_dir(model_group: str, cue: str, target_value: str = "", mode_subd
     if safe_mode:
         base_dir = base_dir / safe_mode
     if safe_group and safe_group != "bbox_predictions":
-        base_dir = base_dir / safe_group
+        for part in str(model_group).replace("\\", "/").split("/"):
+            safe_part = "".join(ch if ch.isalnum() or ch in {"_", "-"} else "_" for ch in part.strip().lower()).strip("_")
+            if safe_part and safe_part != "bbox_predictions":
+                base_dir = base_dir / safe_part
     run_dir = base_dir / dir_name
     run_dir.mkdir(parents=True, exist_ok=True)
     return run_dir

@@ -169,6 +169,7 @@ def parse_root_info(root_path: Path) -> tuple[str, str, str]:
     #   .../object_detectors/runs/{time}_{cue}_{target?}
     #   .../object_detectors/runs/{dataset}/{time}_{cue}_{target?}
     #   .../object_detectors/runs/{mode}/{dataset}/{time}_{cue}_{target?}
+    #   .../object_detectors/runs/{model}/{mode}/{dataset}/{time}_{cue}_{target?}
     def _parse_tail(model_group: str, run_name: str) -> tuple[str, str, str]:
         match = re.match(r"^\d{2}-\d{2}-\d{4}_\d{2};\d{2}_(.+)$", run_name)
         tail = match.group(1) if match else run_name
@@ -181,6 +182,10 @@ def parse_root_info(root_path: Path) -> tuple[str, str, str]:
         return model_group, tail, ""
 
     parent = root_path.parent
+    if parent.parent.parent.parent.name == "runs":
+        return _parse_tail(f"{parent.parent.parent.name}/{parent.name}", root_path.name)
+    if parent.parent.parent.parent.parent.name == "runs":
+        return _parse_tail(f"{parent.parent.parent.parent.name}/{parent.parent.name}", root_path.name)
     if parent.name == "runs":
         return _parse_tail("bbox_predictions", root_path.name)
     if parent.parent.name == "runs":

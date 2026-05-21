@@ -54,11 +54,14 @@ def run_mc_dropout_csv(config, run_dir):
         fieldnames.append(f"prob_{class_idx}_std")
 
     # Probe once to notify if forced-dropout hooks are unavailable on this model.
-    probe_handles = enable_forced_mc_dropout_on_yolov5_head(detector.model, dropout_rate)
-    if len(probe_handles) == 0:
-        print("[WARN] YOLOv5 detect head not found for forced MC-dropout hooks.")
-    for h in probe_handles:
-        h.remove()
+    if hasattr(detector, "set_dropout_rate"):
+        probe_handles = []
+    else:
+        probe_handles = enable_forced_mc_dropout_on_yolov5_head(detector.model, dropout_rate)
+        if len(probe_handles) == 0:
+            print("[WARN] YOLOv5 detect head not found for forced MC-dropout hooks.")
+        for h in probe_handles:
+            h.remove()
 
     write_queue: queue.Queue = queue.Queue()
     writer_thread = threading.Thread(
@@ -115,7 +118,11 @@ def run_mc_dropout_csv(config, run_dir):
             feature_runs = []
             n_candidates = None
             n_classes = None
-            mc_handles = enable_forced_mc_dropout_on_yolov5_head(detector.model, dropout_rate)
+            if hasattr(detector, "set_dropout_rate"):
+                detector.set_dropout_rate(dropout_rate)
+                mc_handles = []
+            else:
+                mc_handles = enable_forced_mc_dropout_on_yolov5_head(detector.model, dropout_rate)
 
             try:
                 with torch.no_grad():
@@ -152,6 +159,8 @@ def run_mc_dropout_csv(config, run_dir):
             finally:
                 for h in mc_handles:
                     h.remove()
+                if hasattr(detector, "set_dropout_rate"):
+                    detector.set_dropout_rate(0.0)
 
             if n_candidates is None:
                 del infer_batch
