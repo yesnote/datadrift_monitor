@@ -9,7 +9,7 @@ import torch.nn.functional as F
 import torchvision
 from torchvision.models.detection import FasterRCNN_ResNet50_FPN_Weights, fasterrcnn_resnet50_fpn
 from torchvision.models.detection.faster_rcnn import FastRCNNPredictor
-from torchvision.ops import batched_nms, clip_boxes_to_image, remove_small_boxes
+from torchvision.ops import clip_boxes_to_image
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_FASTER_RCNN_COCO_WEIGHT = (
@@ -256,9 +256,7 @@ class FasterRCNNTorchObjectDetector(nn.Module):
 
     def _postprocess_to_yolo_contract(self, class_logits, box_regression, proposals, image_shapes, original_image_sizes, device):
         boxes_per_image = [boxes_in_image.shape[0] for boxes_in_image in proposals]
-        pred_boxes = self.detector_model.roi_heads.box_coder.decode(box_regression, proposals)
         pred_scores = F.softmax(class_logits, dim=-1)
-        pred_boxes_list = pred_boxes.split(boxes_per_image, 0)
         pred_scores_list = pred_scores.split(boxes_per_image, 0)
         pred_logits_list = class_logits.split(boxes_per_image, 0)
 
@@ -266,47 +264,62 @@ class FasterRCNNTorchObjectDetector(nn.Module):
         batch_logits = []
         c = self.num_classes_no_bg
         class_ids = torch.as_tensor(self._output_class_ids, dtype=torch.long, device=class_logits.device)
-        for boxes, scores, logits, image_shape, original_size in zip(
-            pred_boxes_list, pred_scores_list, pred_logits_list, image_shapes, original_image_sizes
+        post_boxes, post_scores, post_labels = self.detector_model.roi_heads.postprocess_detections(
+            class_logits,
+            box_regression,
+            proposals,
+            image_shapes,
+        )
+
+        for boxes, scores_flat, labels_internal, scores, logits, image_shape, original_size in zip(
+            post_boxes, post_scores, post_labels, pred_scores_list, pred_logits_list, image_shapes, original_image_sizes
         ):
-            boxes = clip_boxes_to_image(boxes, image_shape)
-            boxes = boxes[:, class_ids]
-            scores_no_bg = scores[:, class_ids]
-            logits_no_bg = logits[:, class_ids]
-            labels = torch.arange(c, device=scores.device).view(1, -1).expand_as(scores_no_bg)
+            labels_internal = labels_internal.to(torch.long)
+            valid_internal = labels_internal > 0
+            if self._uses_torchvision_coco_space:
+                internal_to_output = torch.full(
+                    (len(self._torchvision_categories),),
+                    -1,
+                    dtype=torch.long,
+                    device=labels_internal.device,
+                )
+                for out_idx, internal_idx in enumerate(self._output_class_ids):
+                    internal_to_output[int(internal_idx)] = int(out_idx)
+                valid_internal &= labels_internal < internal_to_output.numel()
+                labels = internal_to_output[labels_internal.clamp(min=0, max=internal_to_output.numel() - 1)]
+                valid_internal &= labels >= 0
+            else:
+                labels = labels_internal - 1
+                valid_internal &= (labels >= 0) & (labels < c)
 
-            boxes = boxes.reshape(-1, 4)
-            scores_flat = scores_no_bg.reshape(-1)
-            labels = labels.reshape(-1)
-            proposal_idx = torch.arange(scores_no_bg.shape[0], device=scores.device).view(-1, 1).expand_as(scores_no_bg).reshape(-1)
-
-            keep = scores_flat > 0.0
-            boxes, scores_flat, labels, proposal_idx = boxes[keep], scores_flat[keep], labels[keep], proposal_idx[keep]
-            keep = remove_small_boxes(boxes, min_size=1e-2)
-            boxes, scores_flat, labels, proposal_idx = boxes[keep], scores_flat[keep], labels[keep], proposal_idx[keep]
-            keep = batched_nms(boxes, scores_flat, labels, self.iou_thresh)
-            keep = keep[: self.max_det]
-            boxes, scores_flat, labels, proposal_idx = boxes[keep], scores_flat[keep], labels[keep], proposal_idx[keep]
+            boxes = boxes[valid_internal]
+            scores_flat = scores_flat[valid_internal]
+            labels = labels[valid_internal]
+            if boxes.shape[0] > self.max_det:
+                boxes = boxes[: self.max_det]
+                scores_flat = scores_flat[: self.max_det]
+                labels = labels[: self.max_det]
 
             result = [{"boxes": boxes, "scores": scores_flat, "labels": labels}]
             result = self.detector_model.transform.postprocess(result, [image_shape], [original_size])[0]
             boxes = result["boxes"]
             scores_flat = result["scores"]
+            labels = result["labels"].to(torch.long)
 
             probs = torch.zeros((boxes.shape[0], c), dtype=scores_flat.dtype, device=scores_flat.device)
             logits_sel = torch.zeros((boxes.shape[0], c), dtype=logits.dtype, device=logits.device)
             if boxes.shape[0] > 0:
-                probs_all = scores_no_bg[proposal_idx]
-                logits_all = logits_no_bg[proposal_idx]
-                probs = probs_all[: boxes.shape[0]]
-                logits_sel = logits_all[: boxes.shape[0]]
+                probs[torch.arange(boxes.shape[0], device=boxes.device), labels] = scores_flat
+                logits_sel[torch.arange(boxes.shape[0], device=boxes.device), labels] = torch.logit(
+                    scores_flat.clamp(min=1e-6, max=1.0 - 1e-6)
+                )
 
             xywh = boxes.clone()
             xywh[:, 0] = (boxes[:, 0] + boxes[:, 2]) * 0.5
             xywh[:, 1] = (boxes[:, 1] + boxes[:, 3]) * 0.5
             xywh[:, 2] = (boxes[:, 2] - boxes[:, 0]).clamp(min=0.0)
             xywh[:, 3] = (boxes[:, 3] - boxes[:, 1]).clamp(min=0.0)
-            label_col = result["labels"].to(dtype=scores_flat.dtype).unsqueeze(1)
+            label_col = labels.to(dtype=scores_flat.dtype).unsqueeze(1)
             rows = torch.cat([xywh, scores_flat.unsqueeze(1), label_col, probs], dim=1)
             if rows.shape[0] < self.max_det:
                 pad_n = self.max_det - rows.shape[0]
