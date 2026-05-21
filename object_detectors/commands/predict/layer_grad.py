@@ -20,25 +20,39 @@ def _scalar_to_float(value):
 
 def _faster_rcnn_target_layer_map(target_values, target_layers):
     defaults = {
-        "cls_loss": ["roi_heads.box_head.fc7", "roi_heads.box_predictor.cls_score"],
-        "bbox_loss": ["roi_heads.box_head.fc7", "roi_heads.box_predictor.bbox_pred"],
+        "roi_cls_loss": ["roi_heads.box_head.fc7", "roi_heads.box_predictor.cls_score"],
+        "roi_bbox_loss": ["roi_heads.box_head.fc7", "roi_heads.box_predictor.bbox_pred"],
+        "rpn_obj_loss": ["rpn.head.conv", "rpn.head.cls_logits"],
+        "rpn_bbox_loss": ["rpn.head.conv", "rpn.head.bbox_pred"],
     }
     target_layer_map = {}
     for target_value in target_values:
         if target_value not in defaults:
             target_layer_map[target_value] = []
             continue
-        if target_value == "cls_loss":
+        if target_value == "roi_cls_loss":
             selected = [
                 layer
                 for layer in target_layers
                 if layer.endswith("box_head.fc7") or layer.endswith("box_predictor.cls_score")
             ]
-        else:
+        elif target_value == "roi_bbox_loss":
             selected = [
                 layer
                 for layer in target_layers
                 if layer.endswith("box_head.fc7") or layer.endswith("box_predictor.bbox_pred")
+            ]
+        elif target_value == "rpn_obj_loss":
+            selected = [
+                layer
+                for layer in target_layers
+                if layer.endswith("rpn.head.conv") or layer.endswith("rpn.head.cls_logits")
+            ]
+        else:
+            selected = [
+                layer
+                for layer in target_layers
+                if layer.endswith("rpn.head.conv") or layer.endswith("rpn.head.bbox_pred")
             ]
         target_layer_map[target_value] = selected or defaults[target_value]
     return target_layer_map
@@ -67,6 +81,18 @@ def run_layer_grad_csv(config, run_dir):
     layer_bbox_direction = parsed.get("layer_bbox_direction", "pred_to_target")
     layer_cls_direction = parsed.get("layer_cls_direction", "pred_to_target")
     layer_obj_direction = parsed.get("layer_obj_direction", "pred_to_target")
+    layer_roi_cand_enabled = bool(parsed.get("layer_roi_cand_enabled", True))
+    layer_roi_cand_score_threshold = float(parsed.get("layer_roi_cand_score_threshold", layer_cand_score_threshold))
+    layer_roi_bbox_loss = parsed.get("layer_roi_bbox_loss", layer_bbox_loss)
+    layer_roi_cls_loss = parsed.get("layer_roi_cls_loss", layer_cls_loss)
+    layer_roi_bbox_direction = parsed.get("layer_roi_bbox_direction", layer_bbox_direction)
+    layer_roi_cls_direction = parsed.get("layer_roi_cls_direction", layer_cls_direction)
+    layer_rpn_cand_enabled = bool(parsed.get("layer_rpn_cand_enabled", False))
+    layer_rpn_cand_obj_threshold = float(parsed.get("layer_rpn_cand_obj_threshold", 0.0))
+    layer_rpn_bbox_loss = parsed.get("layer_rpn_bbox_loss", "l1")
+    layer_rpn_obj_loss = parsed.get("layer_rpn_obj_loss", "bcewithlogits")
+    layer_rpn_bbox_direction = parsed.get("layer_rpn_bbox_direction", "pred_to_target")
+    layer_rpn_obj_direction = parsed.get("layer_rpn_obj_direction", "pred_to_target")
 
     if not save_csv:
         return
@@ -86,11 +112,22 @@ def run_layer_grad_csv(config, run_dir):
     if is_faster_rcnn:
         if layer_pseudo_gt != "cand":
             raise NotImplementedError("Faster R-CNN layer_grad currently supports only target: cand_target.")
-        if layer_bbox_loss not in {"l1", "l2"}:
-            raise ValueError("Faster R-CNN layer_grad.gradient.bbox_loss supports only l1 or l2.")
-        target_values = [v for v in target_values if v in {"bbox_loss", "cls_loss"}]
+        alias = {
+            "bbox_loss": "roi_bbox_loss",
+            "cls_loss": "roi_cls_loss",
+            "obj_loss": "rpn_obj_loss",
+        }
+        target_values = list(dict.fromkeys(alias.get(v, v) for v in target_values))
+        allowed = {"roi_bbox_loss", "roi_cls_loss", "rpn_bbox_loss", "rpn_obj_loss"}
+        target_values = [v for v in target_values if v in allowed]
         if not target_values:
-            target_values = ["bbox_loss", "cls_loss"]
+            target_values = ["roi_bbox_loss", "roi_cls_loss"]
+        if not layer_roi_cand_enabled:
+            target_values = [v for v in target_values if not v.startswith("roi_")]
+        if not layer_rpn_cand_enabled:
+            target_values = [v for v in target_values if not v.startswith("rpn_")]
+        if not target_values:
+            raise ValueError("Faster R-CNN layer_grad has no enabled cand_target scalar values.")
     timing = StageTimingProfiler(
         run_dir=run_dir,
         uncertainty=uncertainty,
@@ -166,11 +203,18 @@ def run_layer_grad_csv(config, run_dir):
                         target_layer_map=target_layer_map,
                         map_reduction=layer_map_reduction,
                         vector_reduction=layer_gradient_reduction,
-                        cand_score_threshold=layer_cand_score_threshold,
-                        bbox_loss=layer_bbox_loss,
-                        cls_loss=layer_cls_loss,
-                        bbox_direction=layer_bbox_direction,
-                        cls_direction=layer_cls_direction,
+                        roi_cand_enabled=layer_roi_cand_enabled,
+                        roi_cand_score_threshold=layer_roi_cand_score_threshold,
+                        roi_bbox_loss=layer_roi_bbox_loss,
+                        roi_cls_loss=layer_roi_cls_loss,
+                        roi_bbox_direction=layer_roi_bbox_direction,
+                        roi_cls_direction=layer_roi_cls_direction,
+                        rpn_cand_enabled=layer_rpn_cand_enabled,
+                        rpn_cand_obj_threshold=layer_rpn_cand_obj_threshold,
+                        rpn_bbox_loss=layer_rpn_bbox_loss,
+                        rpn_obj_loss=layer_rpn_obj_loss,
+                        rpn_bbox_direction=layer_rpn_bbox_direction,
+                        rpn_obj_direction=layer_rpn_obj_direction,
                         timing_accumulator=stage_seconds,
                         timing_device=device,
                     )
