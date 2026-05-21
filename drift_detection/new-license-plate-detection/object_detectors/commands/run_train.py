@@ -20,6 +20,9 @@ from models.yolo.utils.general import coco80_to_coco91_class
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
+DEFAULT_FASTER_RCNN_COCO_WEIGHT = (
+    PROJECT_ROOT / "models" / "faster_rcnn" / "weights" / "coco" / "fasterrcnn_resnet50_fpn_coco.pth"
+)
 
 
 def _torch_load(path, map_location):
@@ -27,6 +30,25 @@ def _torch_load(path, map_location):
         return torch.load(path, map_location=map_location, weights_only=False)
     except TypeError:
         return torch.load(path, map_location=map_location)
+
+
+def _ensure_default_faster_rcnn_coco_weight(path: Path = DEFAULT_FASTER_RCNN_COCO_WEIGHT) -> Path:
+    path = Path(path)
+    if path.is_file():
+        return path
+    path.parent.mkdir(parents=True, exist_ok=True)
+    torch.hub.download_url_to_file(FasterRCNN_ResNet50_FPN_Weights.DEFAULT.url, str(path), progress=True)
+    return path
+
+
+def _load_matching_state_dict(model, state_dict):
+    current = model.state_dict()
+    filtered = {
+        key: value
+        for key, value in state_dict.items()
+        if key in current and tuple(current[key].shape) == tuple(value.shape)
+    }
+    model.load_state_dict(filtered, strict=False)
 
 
 def _set_seed(seed):
@@ -361,7 +383,7 @@ def _target_to_faster_rcnn(target, device):
 def _build_faster_rcnn_for_train(config, device):
     model_cfg = config.get("model", {})
     pretrained = bool(model_cfg.get("pretrained", True))
-    weights = FasterRCNN_ResNet50_FPN_Weights.DEFAULT if pretrained else None
+    weights = None
     img_size = int(model_cfg.get("img_size", 640))
     model = fasterrcnn_resnet50_fpn(
         weights=weights,
@@ -388,8 +410,14 @@ def _build_faster_rcnn_for_train(config, device):
         state_dict = payload.get("model_state_dict") if isinstance(payload, dict) else None
         if state_dict is None and isinstance(payload, dict):
             state_dict = payload.get("state_dict", payload)
-        model.load_state_dict(state_dict, strict=False)
+        _load_matching_state_dict(model, state_dict)
         use_finetune = True
+    elif weights_path and pretrained and Path(weights_path).name == DEFAULT_FASTER_RCNN_COCO_WEIGHT.name:
+        state_dict = _torch_load(_ensure_default_faster_rcnn_coco_weight(Path(weights_path)), map_location=device)
+        _load_matching_state_dict(model, state_dict)
+    elif pretrained:
+        state_dict = _torch_load(_ensure_default_faster_rcnn_coco_weight(), map_location=device)
+        _load_matching_state_dict(model, state_dict)
     model.to(device)
     model.train()
     return model, use_finetune, class_names

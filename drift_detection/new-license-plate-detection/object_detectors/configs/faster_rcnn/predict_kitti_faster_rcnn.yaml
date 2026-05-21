@@ -1,9 +1,9 @@
-mode: predict
+﻿mode: predict
 
 model:
   type: faster_rcnn
   backbone: resnet50_fpn
-  weights: ""
+  weights: object_detectors/models/faster_rcnn/weights/coco/fasterrcnn_resnet50_fpn_coco.pth
   pretrained: true
   img_size: 640
   confidence_threshold: 0.25
@@ -60,3 +60,4 @@ output:
     score_threshold: 0.0
     iou_threshold: 0.45
     save_csv: {enabled: false}
+
