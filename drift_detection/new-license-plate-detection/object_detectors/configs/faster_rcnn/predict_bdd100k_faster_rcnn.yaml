@@ -32,6 +32,7 @@ dataloader:
   pin_memory: false
   shuffle_train: false
   shuffle_eval: false
+  aspect_ratio_grouping: true
 
 output:
   uncertainty: gt  # gt | deterministic | score | class_probability | entropy | energy | mc_dropout | ensemble | meta_detect
