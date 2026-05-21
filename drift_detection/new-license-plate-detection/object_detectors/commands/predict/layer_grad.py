@@ -75,6 +75,8 @@ def run_layer_grad_csv(config, run_dir):
     layer_gradient_reduction = parsed["layer_gradient_reduction"]
     layer_pseudo_gt = parsed.get("layer_pseudo_gt", "cand")
     layer_cand_score_threshold = float(parsed.get("layer_cand_score_threshold", 0.01))
+    layer_roi_cand_scalar = [str(v) for v in parsed.get("layer_roi_cand_scalar", [])]
+    layer_rpn_cand_scalar = [str(v) for v in parsed.get("layer_rpn_cand_scalar", [])]
     layer_bbox_loss = parsed.get("layer_bbox_loss", "ciou")
     layer_cls_loss = parsed.get("layer_cls_loss", "bcewithlogits")
     layer_obj_loss = parsed.get("layer_obj_loss", "bcewithlogits")
@@ -117,7 +119,15 @@ def run_layer_grad_csv(config, run_dir):
             "cls_loss": "roi_cls_loss",
             "obj_loss": "rpn_obj_loss",
         }
-        target_values = list(dict.fromkeys(alias.get(v, v) for v in target_values))
+        nested_target_values = []
+        if layer_rpn_cand_enabled:
+            nested_target_values.extend(layer_rpn_cand_scalar)
+        if layer_roi_cand_enabled:
+            nested_target_values.extend(layer_roi_cand_scalar)
+        if nested_target_values:
+            target_values = list(dict.fromkeys(nested_target_values))
+        else:
+            target_values = list(dict.fromkeys(alias.get(v, v) for v in target_values))
         allowed = {"roi_bbox_loss", "roi_cls_loss", "rpn_bbox_loss", "rpn_obj_loss"}
         target_values = [v for v in target_values if v in allowed]
         if not target_values:

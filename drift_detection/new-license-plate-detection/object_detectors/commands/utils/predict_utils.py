@@ -358,12 +358,14 @@ def parse_output_config(output_cfg):
     layer_cls_direction = "pred_to_target"
     layer_obj_direction = "pred_to_target"
     layer_roi_cand_enabled = True
+    layer_roi_cand_scalar = []
     layer_roi_cand_score_threshold = 0.01
     layer_roi_bbox_loss = "l1"
     layer_roi_cls_loss = "bcewithlogits"
     layer_roi_bbox_direction = "pred_to_target"
     layer_roi_cls_direction = "pred_to_target"
     layer_rpn_cand_enabled = False
+    layer_rpn_cand_scalar = []
     layer_rpn_cand_obj_threshold = 0.0
     layer_rpn_bbox_loss = "l1"
     layer_rpn_obj_loss = "bcewithlogits"
@@ -477,6 +479,14 @@ def parse_output_config(output_cfg):
         if cand_target_cfg:
             layer_roi_cand_enabled = bool(roi_cand_cfg.get("enabled", True))
             layer_rpn_cand_enabled = bool(rpn_cand_cfg.get("enabled", False))
+        layer_roi_cand_scalar = [
+            f"roi_{v}" if v in {"bbox_loss", "cls_loss"} else v
+            for v in [str(v).strip().lower() for v in normalize_to_list(roi_cand_cfg.get("scalar", []))]
+        ]
+        layer_rpn_cand_scalar = [
+            f"rpn_{v}" if v in {"bbox_loss", "obj_loss"} else v
+            for v in [str(v).strip().lower() for v in normalize_to_list(rpn_cand_cfg.get("scalar", []))]
+        ]
         layer_roi_cand_score_threshold = as_float(
             roi_cand_cfg.get("cand_score_threshold", g.get("cand_score_threshold", layer_cand_score_threshold)),
             layer_cand_score_threshold,
@@ -607,12 +617,14 @@ def parse_output_config(output_cfg):
         "layer_cls_direction": layer_cls_direction,
         "layer_obj_direction": layer_obj_direction,
         "layer_roi_cand_enabled": layer_roi_cand_enabled,
+        "layer_roi_cand_scalar": layer_roi_cand_scalar,
         "layer_roi_cand_score_threshold": float(layer_roi_cand_score_threshold),
         "layer_roi_bbox_loss": layer_roi_bbox_loss,
         "layer_roi_cls_loss": layer_roi_cls_loss,
         "layer_roi_bbox_direction": layer_roi_bbox_direction,
         "layer_roi_cls_direction": layer_roi_cls_direction,
         "layer_rpn_cand_enabled": layer_rpn_cand_enabled,
+        "layer_rpn_cand_scalar": layer_rpn_cand_scalar,
         "layer_rpn_cand_obj_threshold": float(layer_rpn_cand_obj_threshold),
         "layer_rpn_bbox_loss": layer_rpn_bbox_loss,
         "layer_rpn_obj_loss": layer_rpn_obj_loss,
