@@ -70,19 +70,16 @@ output:
       target: cand_target
       reduction: [l1_norm, l2_norm, min, max, mean, std]
       rpn:
-        enabled: true
         cand_obj_threshold: 0.0
-        obj_loss: bcewithlogits  # bcewithlogits | abs_diff | diff
+        obj_loss: bcewithlogits  # bcewithlogits | abs_diff | signed_diff
         bbox_loss: l1  # l1 | l2
-        obj_target: 0.5
-        obj_direction: pred_to_target
-        bbox_direction: pred_to_target
+        obj_direction: pred_to_target  # pred_to_target | target_to_pred, only for obj_loss: signed_diff
+        bbox_direction: pred_to_target  # fixed; reverse is redundant for l1/l2
       roi:
-        enabled: true
         cand_score_threshold: 0.0
         cls_loss: bcewithlogits  # bcewithlogits | kl | ce
         bbox_loss: l1  # l1 | l2
-        cls_direction: pred_to_target
-        bbox_direction: pred_to_target
+        cls_direction: pred_to_target  # pred_to_target | target_to_pred, only for cls_loss: kl
+        bbox_direction: pred_to_target  # fixed; reverse is redundant for l1/l2
     save_csv: {enabled: false}
 
