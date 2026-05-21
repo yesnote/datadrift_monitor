@@ -11,8 +11,12 @@ import yaml
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
 # Edit these paths before running.
-OBJECT_DETECTOR_CONFIG = r"object_detectors/configs/faster_rcnn/predict_coco_faster_rcnn.yaml"
-META_CLASSIFIER_CONFIG = r"meta_models/meta_classifier/configs/train_meta_classifier.yaml"
+OBJECT_DETECTOR_CONFIG = (
+    r"object_detectors/configs/faster_rcnn/predict_coco_faster_rcnn.yaml"
+)
+META_CLASSIFIER_CONFIG = (
+    r"meta_models/meta_classifier/configs/train_meta_classifier.yaml"
+)
 
 # If empty, dataset.gt_root is read from META_CLASSIFIER_CONFIG.
 GT_ROOT = ""
@@ -75,7 +79,10 @@ def _dataset_name(config: dict) -> str:
 
 def _model_name(config: dict) -> str:
     raw = str(config.get("model", {}).get("type", "faster_rcnn")).strip().lower()
-    return "".join(ch if ch.isalnum() or ch in {"_", "-"} else "_" for ch in raw) or "faster_rcnn"
+    return (
+        "".join(ch if ch.isalnum() or ch in {"_", "-"} else "_" for ch in raw)
+        or "faster_rcnn"
+    )
 
 
 def _abbr(value: str) -> str:
@@ -92,7 +99,9 @@ def _abbr(value: str) -> str:
 
 
 def _valid_cls_directions(cls_loss: str) -> list[str]:
-    return ["pred_to_target", "target_to_pred"] if cls_loss == "kl" else ["pred_to_target"]
+    return (
+        ["pred_to_target", "target_to_pred"] if cls_loss == "kl" else ["pred_to_target"]
+    )
 
 
 def _valid_obj_directions(obj_loss: str) -> list[str]:
@@ -158,7 +167,9 @@ def iter_combinations():
                             "roi_cls_direction": roi_cls_direction,
                         }
                         count += 1
-                        if MAX_COMBINATIONS is not None and count >= int(MAX_COMBINATIONS):
+                        if MAX_COMBINATIONS is not None and count >= int(
+                            MAX_COMBINATIONS
+                        ):
                             return
 
 
@@ -183,7 +194,10 @@ def _prepare_layer_grad_config(base_config: dict, combo: dict, target: str) -> d
         "rpn_obj_loss": ["rpn.head.conv", "rpn.head.cls_logits"],
         "rpn_bbox_loss": ["rpn.head.conv", "rpn.head.bbox_pred"],
         "roi_cls_loss": ["roi_heads.box_head.fc7", "roi_heads.box_predictor.cls_score"],
-        "roi_bbox_loss": ["roi_heads.box_head.fc7", "roi_heads.box_predictor.bbox_pred"],
+        "roi_bbox_loss": [
+            "roi_heads.box_head.fc7",
+            "roi_heads.box_predictor.bbox_pred",
+        ],
     }
     grad_cfg["rpn"] = {
         "cand_obj_threshold": 0.0,
@@ -202,7 +216,9 @@ def _prepare_layer_grad_config(base_config: dict, combo: dict, target: str) -> d
     return config
 
 
-def _prepare_meta_config(base_config: dict, layer_grad_run_dir: Path, gt_root: str) -> dict:
+def _prepare_meta_config(
+    base_config: dict, layer_grad_run_dir: Path, gt_root: str
+) -> dict:
     config = deepcopy(base_config)
     config["mode"] = "train"
     dataset_cfg = config.setdefault("dataset", {})
@@ -304,15 +320,40 @@ def main() -> None:
     dataset = _dataset_name(od_base_config)
     model = _model_name(od_base_config)
 
-    grid_name = GRID_NAME.strip() or f"{datetime.now().strftime('%m-%d-%Y_%H;%M')}_faster_rcnn_layer_grad_grid"
-    od_grid_root = REPO_ROOT / "object_detectors" / "runs" / model / "predict" / dataset / grid_name
-    meta_grid_root = REPO_ROOT / "meta_models" / "meta_classifier" / "runs" / "train" / model / dataset / grid_name
+    grid_name = (
+        GRID_NAME.strip()
+        or f"{datetime.now().strftime('%m-%d-%Y_%H;%M')}_faster_rcnn_layer_grad_grid"
+    )
+    od_grid_root = (
+        REPO_ROOT
+        / "object_detectors"
+        / "runs"
+        / model
+        / "predict"
+        / dataset
+        / grid_name
+    )
+    meta_grid_root = (
+        REPO_ROOT
+        / "meta_models"
+        / "meta_classifier"
+        / "runs"
+        / "train"
+        / model
+        / dataset
+        / grid_name
+    )
     od_grid_root.mkdir(parents=True, exist_ok=True)
     meta_grid_root.mkdir(parents=True, exist_ok=True)
 
-    gt_root = GT_ROOT.strip() or str(meta_base_config.get("dataset", {}).get("gt_root", "")).strip()
+    gt_root = (
+        GT_ROOT.strip()
+        or str(meta_base_config.get("dataset", {}).get("gt_root", "")).strip()
+    )
     if not gt_root:
-        raise ValueError("GT_ROOT is empty and META_CLASSIFIER_CONFIG has no dataset.gt_root.")
+        raise ValueError(
+            "GT_ROOT is empty and META_CLASSIFIER_CONFIG has no dataset.gt_root."
+        )
 
     rows = []
     pair_rows = []
@@ -320,15 +361,22 @@ def main() -> None:
     result_seen = set()
     combo_list = list(iter_combinations())
     for idx, combo in enumerate(combo_list, start=1):
-        print(f"[{idx}/{len(combo_list)}] {_combo_slug(combo, 'cand_target')} vs {_combo_slug(combo, 'null_target')}", flush=True)
+        print(
+            f"[{idx}/{len(combo_list)}] {_combo_slug(combo, 'cand_target')} vs {_combo_slug(combo, 'null_target')}",
+            flush=True,
+        )
 
         metrics_by_target = {}
         dirs_by_target = {}
         for target in TARGETS:
             cache_key = (target, _combo_slug(combo, target))
             if cache_key not in run_cache:
-                layer_dir = _run_layer_grad_if_needed(od_base_config, od_grid_root, combo, target)
-                meta_dir = _run_meta_if_needed(meta_base_config, meta_grid_root, combo, target, layer_dir, gt_root)
+                layer_dir = _run_layer_grad_if_needed(
+                    od_base_config, od_grid_root, combo, target
+                )
+                meta_dir = _run_meta_if_needed(
+                    meta_base_config, meta_grid_root, combo, target, layer_dir, gt_root
+                )
                 run_cache[cache_key] = (layer_dir, meta_dir)
             layer_dir, meta_dir = run_cache[cache_key]
             eval_csv = meta_dir / "results" / "evaluation_results.csv"
@@ -341,10 +389,10 @@ def main() -> None:
                 rows.append(
                     {
                         "target": target,
-                    "rpn_bbox_loss": combo["rpn_bbox_loss"],
-                    "rpn_bbox_direction": combo["rpn_bbox_direction"],
-                    "rpn_obj_loss": combo["rpn_obj_loss"],
-                    "rpn_obj_direction": combo["rpn_obj_direction"],
+                        "rpn_bbox_loss": combo["rpn_bbox_loss"],
+                        "rpn_bbox_direction": combo["rpn_bbox_direction"],
+                        "rpn_obj_loss": combo["rpn_obj_loss"],
+                        "rpn_obj_direction": combo["rpn_obj_direction"],
                         "roi_bbox_loss": combo["roi_bbox_loss"],
                         "roi_bbox_direction": combo["roi_bbox_direction"],
                         "roi_cls_loss": combo["roi_cls_loss"],
@@ -418,7 +466,9 @@ def _write_results(out_dir: Path, rows: list[dict], pair_rows: list[dict]) -> No
     ]
     _write_csv(out_dir / "grid_results.csv", rows, result_fields)
 
-    pair_rows = sorted(pair_rows, key=lambda r: (r["delta_auroc"], r["delta_ap"]), reverse=True)
+    pair_rows = sorted(
+        pair_rows, key=lambda r: (r["delta_auroc"], r["delta_ap"]), reverse=True
+    )
     pair_fields = [
         "rpn_bbox_loss",
         "rpn_bbox_direction",
