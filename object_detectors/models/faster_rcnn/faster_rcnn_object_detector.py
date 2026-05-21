@@ -110,7 +110,6 @@ class FasterRCNNTorchObjectDetector(nn.Module):
         mode="eval",
         confidence=0.25,
         iou_thresh=0.45,
-        max_det=300,
         pretrained=True,
     ):
         super().__init__()
@@ -119,7 +118,7 @@ class FasterRCNNTorchObjectDetector(nn.Module):
         self.confidence = float(confidence)
         self.conf_thresh = float(confidence)
         self.iou_thresh = float(iou_thresh)
-        self.max_det = int(max_det)
+        self.max_det = None
         self.agnostic = False
         self.agnostic_nms = False
         self.is_faster_rcnn = True
@@ -180,7 +179,6 @@ class FasterRCNNTorchObjectDetector(nn.Module):
             num_classes=None if weights is not None else self.num_classes_with_bg,
             box_score_thresh=0.0,
             box_nms_thresh=self.iou_thresh,
-            box_detections_per_img=self.max_det,
         )
 
         if not use_official_coco:
@@ -332,9 +330,9 @@ class FasterRCNNTorchObjectDetector(nn.Module):
             labels, valid = self._map_labels_to_output(labels_internal)
 
             valid &= scores > 0.0
-            boxes = boxes[valid][: self.max_det]
-            scores = scores[valid][: self.max_det]
-            labels = labels[valid][: self.max_det]
+            boxes = boxes[valid]
+            scores = scores[valid]
+            labels = labels[valid]
 
             xywh = boxes.clone()
             if xywh.numel():
@@ -355,8 +353,8 @@ class FasterRCNNTorchObjectDetector(nn.Module):
                 logits = torch.zeros((boxes.shape[0], c), dtype=scores.dtype, device=device)
                 probs = torch.zeros((boxes.shape[0], c), dtype=scores.dtype, device=device)
                 if int(valid.sum().item()) > 0:
-                    logits = logits_full[valid][: self.max_det]
-                    probs = probs_full[valid][: self.max_det]
+                    logits = logits_full[valid]
+                    probs = probs_full[valid]
             else:
                 probs = torch.zeros((boxes.shape[0], c), dtype=scores.dtype, device=device)
                 logits = torch.zeros((boxes.shape[0], c), dtype=scores.dtype, device=device)
@@ -367,10 +365,6 @@ class FasterRCNNTorchObjectDetector(nn.Module):
                     logits[idx, labels] = torch.logit(scores.clamp(min=1e-6, max=1.0 - 1e-6))
 
             rows = torch.cat([xywh, scores[:, None], labels.to(scores.dtype)[:, None], probs], dim=1)
-            if rows.shape[0] < self.max_det:
-                pad = self.max_det - rows.shape[0]
-                rows = torch.cat([rows, torch.zeros((pad, 6 + c), dtype=rows.dtype, device=device)], dim=0)
-                logits = torch.cat([logits, torch.zeros((pad, c), dtype=logits.dtype, device=device)], dim=0)
             rows_by_image.append(rows)
             logits_by_image.append(logits)
 
@@ -379,10 +373,10 @@ class FasterRCNNTorchObjectDetector(nn.Module):
 
         if not rows_by_image:
             return (
-                torch.zeros((0, self.max_det, 6 + c), dtype=torch.float32, device=device),
-                torch.zeros((0, self.max_det, c), dtype=torch.float32, device=device),
+                [],
+                None,
             )
-        return torch.stack(rows_by_image, dim=0), torch.stack(logits_by_image, dim=0)
+        return rows_by_image, logits_by_image
 
     def forward(self, images, augment=False):
         return self._forward_impl(images)
@@ -419,7 +413,9 @@ class FasterRCNNTorchObjectDetector(nn.Module):
             if classes is not None:
                 class_tensor = torch.as_tensor(classes, device=pred.device, dtype=torch.long)
                 keep &= (labels[:, None] == class_tensor[None]).any(dim=1)
-            keep_idx = torch.nonzero(keep, as_tuple=False).flatten()[: int(max_det)]
+            keep_idx = torch.nonzero(keep, as_tuple=False).flatten()
+            if max_det is not None:
+                keep_idx = keep_idx[: int(max_det)]
 
             xywh = pred[keep_idx, :4]
             xyxy = xywh.clone()

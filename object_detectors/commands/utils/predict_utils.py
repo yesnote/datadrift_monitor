@@ -232,7 +232,6 @@ def build_detector(config, model_weight=None):
             mode="eval",
             confidence=confidence,
             iou_thresh=iou_thresh,
-            max_det=int(model_cfg.get("max_det", 300)),
             pretrained=bool(model_cfg.get("pretrained", True)),
         )
     else:
