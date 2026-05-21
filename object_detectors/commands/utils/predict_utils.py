@@ -424,13 +424,30 @@ def parse_output_config(output_cfg):
 
     if uncertainty == "layer_grad":
         g = as_dict(layer_grad_cfg.get("gradient", {}))
+        cand_target_cfg = as_dict(g.get("cand_target", layer_grad_cfg.get("cand_target", {})))
+        roi_cand_cfg = as_dict(cand_target_cfg.get("roi_cand", {}))
+        rpn_cand_cfg = as_dict(cand_target_cfg.get("rpn_cand", {}))
         layer_target_values = [v.lower() for v in normalize_to_list(g.get("scalar", ["loss"]))]
         if "loss" in layer_target_values:
             exp = []
             for v in layer_target_values:
                 exp.extend(["obj_loss", "cls_loss", "bbox_loss"] if v == "loss" else [v])
             layer_target_values = list(dict.fromkeys(exp))
-        raw_layer_cfg = g.get("layer", [])
+
+        nested_layer_cfg = {}
+        for target_prefix, cand_cfg, allowed_targets in (
+            ("rpn", rpn_cand_cfg, {"obj_loss", "bbox_loss"}),
+            ("roi", roi_cand_cfg, {"cls_loss", "bbox_loss"}),
+        ):
+            raw_nested_layers = cand_cfg.get("layer", {})
+            if not isinstance(raw_nested_layers, dict):
+                continue
+            for target_name, layer_names in raw_nested_layers.items():
+                target_key = str(target_name).strip().lower()
+                prefixed_key = f"{target_prefix}_{target_key}" if target_key in allowed_targets else target_key
+                nested_layer_cfg[prefixed_key] = layer_names
+
+        raw_layer_cfg = nested_layer_cfg if nested_layer_cfg else g.get("layer", [])
         if isinstance(raw_layer_cfg, dict):
             layer_target_layer_map = {}
             layer_target_layers = []
@@ -473,9 +490,6 @@ def parse_output_config(output_cfg):
         layer_pseudo_gt = "uniform" if t_policy in {"null_target", "null"} else "cand"
         layer_cand_score_threshold = as_float(g.get("cand_score_threshold", 0.01), 0.01)
 
-        cand_target_cfg = as_dict(layer_grad_cfg.get("cand_target", {}))
-        roi_cand_cfg = as_dict(cand_target_cfg.get("roi_cand", {}))
-        rpn_cand_cfg = as_dict(cand_target_cfg.get("rpn_cand", {}))
         if cand_target_cfg:
             layer_roi_cand_enabled = bool(roi_cand_cfg.get("enabled", True))
             layer_rpn_cand_enabled = bool(rpn_cand_cfg.get("enabled", False))
