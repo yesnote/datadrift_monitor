@@ -346,6 +346,7 @@ def parse_output_config(output_cfg):
     target_layers = []
     layer_target_values = []
     layer_target_layers = []
+    layer_target_layer_map = {}
     layer_map_reduction = "none"
     layer_gradient_reduction = []
     layer_pseudo_gt = "cand"
@@ -415,7 +416,19 @@ def parse_output_config(output_cfg):
             for v in layer_target_values:
                 exp.extend(["obj_loss", "cls_loss", "bbox_loss"] if v == "loss" else [v])
             layer_target_values = list(dict.fromkeys(exp))
-        layer_target_layers = normalize_to_list(g.get("layer", []))
+        raw_layer_cfg = g.get("layer", [])
+        if isinstance(raw_layer_cfg, dict):
+            layer_target_layer_map = {}
+            layer_target_layers = []
+            for target_name, layer_names in raw_layer_cfg.items():
+                target_key = str(target_name).strip().lower()
+                layers = normalize_to_list(layer_names)
+                layer_target_layer_map[target_key] = layers
+                for layer_name in layers:
+                    if layer_name not in layer_target_layers:
+                        layer_target_layers.append(layer_name)
+        else:
+            layer_target_layers = normalize_to_list(raw_layer_cfg)
         reduction_aliases = {
             "1-norm": "l1_norm",
             "1_norm": "l1_norm",
@@ -504,6 +517,7 @@ def parse_output_config(output_cfg):
         "target_layers": target_layers,
         "layer_target_values": layer_target_values,
         "layer_target_layers": layer_target_layers,
+        "layer_target_layer_map": layer_target_layer_map,
         "layer_map_reduction": layer_map_reduction,
         "layer_gradient_reduction": layer_gradient_reduction,
         "layer_pseudo_gt": layer_pseudo_gt,
@@ -1315,6 +1329,7 @@ def collect_faster_rcnn_roi_layer_grads_per_target(
     input_tensor,
     target_values,
     target_layers,
+    target_layer_map=None,
     map_reduction="none",
     vector_reduction=None,
     cand_score_threshold=0.01,
@@ -1336,7 +1351,17 @@ def collect_faster_rcnn_roi_layer_grads_per_target(
     if len(input_images) != 1:
         raise ValueError("Faster R-CNN layer_grad currently expects one image per gradient call.")
 
-    layer_params = [resolve_layer_parameter(detector.model, layer_name) for layer_name in target_layers]
+    target_layer_map = target_layer_map or {target_value: list(target_layers) for target_value in target_values}
+    ordered_layer_names = []
+    for target_value in target_values:
+        for layer_name in target_layer_map.get(target_value, []):
+            if layer_name not in ordered_layer_names:
+                ordered_layer_names.append(layer_name)
+    layer_params_by_name = {
+        layer_name: resolve_layer_parameter(detector.model, layer_name)
+        for layer_name in ordered_layer_names
+    }
+    layer_params = list(layer_params_by_name.values())
     original_requires_grad = [bool(p.requires_grad) for p in layer_params]
     for param in layer_params:
         param.requires_grad_(True)
@@ -1402,6 +1427,8 @@ def collect_faster_rcnn_roi_layer_grads_per_target(
             for target_value in target_values:
                 if target_value not in {"bbox_loss", "cls_loss"}:
                     continue
+                layers_for_target = list(target_layer_map.get(target_value, []))
+                params_for_target = [layer_params_by_name[layer_name] for layer_name in layers_for_target]
                 detector.zero_grad(set_to_none=True)
                 target_scalar = build_faster_rcnn_roi_candidate_losses(
                     pred_img=pred_img,
@@ -1417,7 +1444,7 @@ def collect_faster_rcnn_roi_layer_grads_per_target(
                     timing_device=timing_device,
                 )
                 if target_scalar is None or target_value not in target_scalar:
-                    for layer_name in target_layers:
+                    for layer_name in layers_for_target:
                         grad_stats[f"{target_value}_{layer_name}"] = (
                             {metric: 0.0 for metric in vector_reduction} if vector_reduction else []
                         )
@@ -1427,14 +1454,14 @@ def collect_faster_rcnn_roi_layer_grads_per_target(
                 t_backprop = _start_timing(timing_device)
                 grads = torch.autograd.grad(
                     scalar,
-                    layer_params,
+                    params_for_target,
                     retain_graph=True,
                     allow_unused=True,
                 )
                 _add_elapsed_timing(timing_accumulator, "backpropagation_sec", t_backprop, timing_device)
 
                 t_feature = _start_timing(timing_device)
-                for layer_idx, layer_name in enumerate(target_layers):
+                for layer_idx, layer_name in enumerate(layers_for_target):
                     key = f"{target_value}_{layer_name}"
                     grad_stats[key] = format_gradient_output(
                         grads[layer_idx],

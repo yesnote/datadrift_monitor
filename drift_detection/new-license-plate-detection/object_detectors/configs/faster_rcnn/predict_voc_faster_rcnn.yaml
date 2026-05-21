@@ -57,7 +57,9 @@ output:
   layer_grad:
     gradient:
       scalar: [bbox_loss, cls_loss]
-      layer: ["roi_heads.box_head.fc7", "roi_heads.box_predictor.cls_score", "roi_heads.box_predictor.bbox_pred"]
+      layer:
+        cls_loss: ["roi_heads.box_head.fc7", "roi_heads.box_predictor.cls_score"]
+        bbox_loss: ["roi_heads.box_head.fc7", "roi_heads.box_predictor.bbox_pred"]
       target: cand_target
       reduction: [l1_norm, l2_norm, min, max, mean, std]
       cand_score_threshold: 0.0

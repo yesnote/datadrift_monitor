@@ -18,6 +18,32 @@ def _scalar_to_float(value):
     return float(value)
 
 
+def _faster_rcnn_target_layer_map(target_values, target_layers):
+    defaults = {
+        "cls_loss": ["roi_heads.box_head.fc7", "roi_heads.box_predictor.cls_score"],
+        "bbox_loss": ["roi_heads.box_head.fc7", "roi_heads.box_predictor.bbox_pred"],
+    }
+    target_layer_map = {}
+    for target_value in target_values:
+        if target_value not in defaults:
+            target_layer_map[target_value] = []
+            continue
+        if target_value == "cls_loss":
+            selected = [
+                layer
+                for layer in target_layers
+                if layer.endswith("box_head.fc7") or layer.endswith("box_predictor.cls_score")
+            ]
+        else:
+            selected = [
+                layer
+                for layer in target_layers
+                if layer.endswith("box_head.fc7") or layer.endswith("box_predictor.bbox_pred")
+            ]
+        target_layer_map[target_value] = selected or defaults[target_value]
+    return target_layer_map
+
+
 def run_layer_grad_csv(config, run_dir):
     run_dir = Path(run_dir)
     mode = str(config.get("mode", "predict"))
@@ -30,6 +56,7 @@ def run_layer_grad_csv(config, run_dir):
     unit = parsed["unit"]
     target_values = [str(v) for v in parsed["layer_target_values"]]
     target_layers = parsed["layer_target_layers"]
+    configured_target_layer_map = parsed.get("layer_target_layer_map", {})
     layer_map_reduction = parsed["layer_map_reduction"]
     layer_gradient_reduction = parsed["layer_gradient_reduction"]
     layer_pseudo_gt = parsed.get("layer_pseudo_gt", "cand")
@@ -78,13 +105,23 @@ def run_layer_grad_csv(config, run_dir):
         device=device,
     )
     target_layers = expand_layer_names(detector.model, target_layers)
+    target_layer_map = None
+    if is_faster_rcnn:
+        if configured_target_layer_map:
+            target_layer_map = {
+                target_value: expand_layer_names(detector.model, configured_target_layer_map.get(target_value, []))
+                for target_value in target_values
+            }
+        else:
+            target_layer_map = _faster_rcnn_target_layer_map(target_values, target_layers)
 
     fieldnames = [
         "image_id", "image_path", "pred_idx", "raw_pred_idx",
         "xmin", "ymin", "xmax", "ymax", "score", "pred_class",
     ]
     for target_value in target_values:
-        for layer_name in target_layers:
+        layers_for_target = target_layer_map.get(target_value, []) if target_layer_map is not None else target_layers
+        for layer_name in layers_for_target:
             grad_key = f"{target_value}_{layer_name}"
             if save_raw_gradients:
                 fieldnames.append(grad_key)
@@ -126,6 +163,7 @@ def run_layer_grad_csv(config, run_dir):
                         input_tensor=infer_batch[sample_idx: sample_idx + 1],
                         target_values=target_values,
                         target_layers=target_layers,
+                        target_layer_map=target_layer_map,
                         map_reduction=layer_map_reduction,
                         vector_reduction=layer_gradient_reduction,
                         cand_score_threshold=layer_cand_score_threshold,
