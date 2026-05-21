@@ -235,7 +235,6 @@ def build_detector(config, model_weight=None):
             iou_thresh=iou_thresh,
             max_det=int(model_cfg.get("max_det", 300)),
             pretrained=bool(model_cfg.get("pretrained", True)),
-            inference_batch_size=int(model_cfg.get("inference_batch_size", 1)),
             transform_min_size=model_cfg.get("transform_min_size", model_cfg.get("min_size", None)),
             transform_max_size=model_cfg.get("transform_max_size", model_cfg.get("max_size", None)),
         )
