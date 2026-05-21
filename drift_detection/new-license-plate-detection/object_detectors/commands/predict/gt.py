@@ -161,7 +161,6 @@ def run_tp_csv(config, run_dir):
         raise ValueError("Loaded 0 images. Check dataset root/image_dir/split configuration in YAML.")
 
     detector, device = build_detector(config)
-    saved_images = 0
 
     output_file = open(output_csv, "w", newline="", encoding="utf-8") if save_csv else None
     writer = csv.DictWriter(output_file, fieldnames=fieldnames) if output_file is not None else None
@@ -222,8 +221,8 @@ def run_tp_csv(config, run_dir):
 
                 should_save_image = (
                     save_image
-                    and saved_images < image_max_num
                     and step_idx % image_step == 0
+                    and sample_idx < image_max_num
                 )
                 if should_save_image:
                     step_dir = run_dir / "images" / f"0_{step_idx}"
@@ -260,7 +259,6 @@ def run_tp_csv(config, run_dir):
                         )
                     out_path = step_dir / f"{image_id}.jpg"
                     cv2.imwrite(str(out_path), cv2.cvtColor(vis_image, cv2.COLOR_RGB2BGR))
-                    saved_images += 1
 
                 for pred_idx, (box, score, pred_class) in enumerate(
                     zip(pred_boxes, pred_scores, pred_class_names)
