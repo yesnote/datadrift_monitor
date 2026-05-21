@@ -138,7 +138,7 @@ def _normalize_config_paths(config):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--config", type=str, default="object_detectors/configs/predict_yolov5.yaml")
+    parser.add_argument("--config", type=str, default="object_detectors/configs/yolov5/predict_coco_yolov5.yaml")
     parser.add_argument("--run-dir", type=str, default="")
     args = parser.parse_args()
 

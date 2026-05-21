@@ -1,9 +1,9 @@
-mode: predict
+﻿mode: predict
 
 model:
   type: faster_rcnn
   backbone: resnet50_fpn
-  weights: ""
+  weights: object_detectors/models/faster_rcnn/weights/coco/fasterrcnn_resnet50_fpn_coco.pth
   pretrained: true
   img_size: 640
   confidence_threshold: 0.25
@@ -13,19 +13,19 @@ model:
 
 dataset:
   used_dataset:
-    - bdd100k
+    - foggy_cityscapes
   split:
     - val
   used_ratio:
     - 1.0
-  bdd100k:
-    root: D:/SEONGJIN/datasets/BDD100K
+  foggy_cityscapes:
+    root: D:/SEONGJIN/datasets/Cityscapes
     train_split: train
     val_split: val
-    train_image_dir: bdd100k/bdd100k/images/100k/train
-    val_image_dir: bdd100k/bdd100k/images/100k/val
-    train_annotation_file: bdd100k_labels_release/bdd100k/labels/bdd100k_labels_images_train.json
-    val_annotation_file: bdd100k_labels_release/bdd100k/labels/bdd100k_labels_images_val.json
+    train_image_dir: leftImg8bit_foggy/train
+    val_image_dir: leftImg8bit_foggy/val
+    train_annotation_dir: gtFine/train
+    val_annotation_dir: gtFine/val
 
 dataloader:
   batch_size: 4
@@ -55,3 +55,4 @@ output:
     score_threshold: 0.0
     iou_threshold: 0.45
     save_csv: {enabled: false}
+

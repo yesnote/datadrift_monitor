@@ -13,12 +13,37 @@ from torchvision.ops import batched_nms, clip_boxes_to_image, remove_small_boxes
 
 from dataloaders.utils.yolo_datasets import letterbox
 
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+DEFAULT_FASTER_RCNN_COCO_WEIGHT = (
+    PROJECT_ROOT / "models" / "faster_rcnn" / "weights" / "coco" / "fasterrcnn_resnet50_fpn_coco.pth"
+)
+
 
 def _torch_load(path, map_location):
     try:
         return torch.load(path, map_location=map_location, weights_only=False)
     except TypeError:
         return torch.load(path, map_location=map_location)
+
+
+def _ensure_default_coco_weight(path: Path = DEFAULT_FASTER_RCNN_COCO_WEIGHT) -> Path:
+    path = Path(path)
+    if path.is_file():
+        return path
+    path.parent.mkdir(parents=True, exist_ok=True)
+    weights = FasterRCNN_ResNet50_FPN_Weights.DEFAULT
+    torch.hub.download_url_to_file(weights.url, str(path), progress=True)
+    return path
+
+
+def _load_matching_state_dict(model: nn.Module, state_dict: dict) -> None:
+    current = model.state_dict()
+    filtered = {
+        key: value
+        for key, value in state_dict.items()
+        if key in current and tuple(current[key].shape) == tuple(value.shape)
+    }
+    model.load_state_dict(filtered, strict=False)
 
 
 class _DropoutFastRCNNPredictor(nn.Module):
@@ -97,7 +122,7 @@ class FasterRCNNTorchObjectDetector(nn.Module):
         return model
 
     def _build_model(self, model_weight, pretrained):
-        weights = FasterRCNN_ResNet50_FPN_Weights.DEFAULT if pretrained else None
+        weights = None
         model = fasterrcnn_resnet50_fpn(
             weights=weights,
             weights_backbone=None if weights is None else None,
@@ -126,7 +151,16 @@ class FasterRCNNTorchObjectDetector(nn.Module):
                     state_dict = payload
                 else:
                     raise ValueError(f"Unsupported Faster R-CNN checkpoint payload: {path}")
-                model.load_state_dict(state_dict, strict=False)
+                _load_matching_state_dict(model, state_dict)
+            elif pretrained and path.name == DEFAULT_FASTER_RCNN_COCO_WEIGHT.name:
+                state_dict = _torch_load(_ensure_default_coco_weight(path), map_location=self.device)
+                _load_matching_state_dict(model, state_dict)
+            else:
+                raise FileNotFoundError(f"Faster R-CNN weights not found: {path}")
+        elif pretrained:
+            path = _ensure_default_coco_weight()
+            state_dict = _torch_load(path, map_location=self.device)
+            _load_matching_state_dict(model, state_dict)
         return model
 
     def set_dropout_rate(self, dropout_rate: float):

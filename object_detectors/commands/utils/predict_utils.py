@@ -187,16 +187,17 @@ def build_detector(config, model_weight=None):
     confidence = model_cfg.get("confidence_threshold", 0.4)
     iou_thresh = model_cfg.get("iou_threshold", 0.45)
 
-    weight_source = model_weight if model_weight is not None else model_cfg["weights"]
+    model_type = str(model_cfg.get("type", "yolov5")).strip().lower()
+    weight_source = model_weight if model_weight is not None else model_cfg.get("weights", "")
     if isinstance(weight_source, (list, tuple)):
         if len(weight_source) == 0:
             raise ValueError("model.weights is empty.")
         weight_source = weight_source[0]
-    weight_path = Path(weight_source)
-    if not weight_path.is_absolute():
-        weight_path = resolve_project_path(weight_path)
-
-    model_type = str(model_cfg.get("type", "yolov5")).strip().lower()
+    weight_path = None
+    if str(weight_source).strip():
+        weight_path = Path(weight_source)
+        if not weight_path.is_absolute():
+            weight_path = resolve_project_path(weight_path)
     img_size = model_cfg.get("img_size", 640)
     img_size_tuple = (int(img_size), int(img_size)) if isinstance(img_size, int) else tuple(img_size)
     if model_type in {"yolov5", "yolo", "yolo_v5"}:
@@ -211,7 +212,7 @@ def build_detector(config, model_weight=None):
         )
     elif model_type in {"faster_rcnn", "faster-rcnn", "frcnn"}:
         detector = FasterRCNNTorchObjectDetector(
-            model_weight=str(weight_path) if str(weight_path) else None,
+            model_weight=str(weight_path) if weight_path is not None else None,
             device=device,
             img_size=img_size_tuple,
             names=_resolve_detector_class_names(config),
