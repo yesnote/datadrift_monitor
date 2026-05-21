@@ -7,6 +7,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torchvision.models.detection import FasterRCNN_ResNet50_FPN_Weights, fasterrcnn_resnet50_fpn
 from torchvision.models.detection.faster_rcnn import FastRCNNPredictor
+from torchvision.ops import batched_nms, boxes as box_ops
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -125,6 +126,7 @@ class FasterRCNNTorchObjectDetector(nn.Module):
         self.agnostic_nms = False
         self.is_faster_rcnn = True
         self.has_faster_rcnn_label_column = True
+        self.uses_custom_faster_rcnn_forward = True
 
         self.names = list(names or _real_coco_categories())
         self.num_classes_no_bg = len(self.names)
@@ -215,10 +217,94 @@ class FasterRCNNTorchObjectDetector(nn.Module):
 
         was_training = self.detector_model.training
         self.detector_model.eval()
-        detections = self.detector_model(image_list)
+        detections = self._custom_inference(image_list)
         if was_training:
             self.detector_model.train()
         return self._detections_to_contract(detections, image_list[0].device)
+
+    def _custom_inference(self, image_list):
+        """Run Faster R-CNN explicitly so uncertainty code can use ROI logits.
+
+        torchvision's public eval forward only returns postprocessed boxes,
+        labels, and scores.  For UQ we also need the per-detection class
+        logits/probability vector, so we call the same internal stages and keep
+        the selected ROI logits after class-wise NMS.
+        """
+        original_image_sizes = [(int(img.shape[-2]), int(img.shape[-1])) for img in image_list]
+        images, _targets = self.detector_model.transform(image_list, None)
+
+        features = self.detector_model.backbone(images.tensors)
+        if isinstance(features, torch.Tensor):
+            features = {"0": features}
+
+        proposals, _proposal_losses = self.detector_model.rpn(images, features, None)
+        roi_heads = self.detector_model.roi_heads
+        box_features = roi_heads.box_roi_pool(features, proposals, images.image_sizes)
+        box_features = roi_heads.box_head(box_features)
+        class_logits, box_regression = roi_heads.box_predictor(box_features)
+
+        detections = self._postprocess_detections_with_logits(
+            class_logits=class_logits,
+            box_regression=box_regression,
+            proposals=proposals,
+            image_shapes=images.image_sizes,
+        )
+        detections = self.detector_model.transform.postprocess(detections, images.image_sizes, original_image_sizes)
+        return detections
+
+    def _postprocess_detections_with_logits(self, class_logits, box_regression, proposals, image_shapes):
+        device = class_logits.device
+        num_classes = int(class_logits.shape[-1])
+        boxes_per_image = [boxes_in_image.shape[0] for boxes_in_image in proposals]
+        pred_boxes = self.detector_model.roi_heads.box_coder.decode(box_regression, proposals)
+        pred_scores = F.softmax(class_logits, -1)
+        pred_logits = class_logits.split(boxes_per_image, 0)
+        pred_boxes_list = pred_boxes.split(boxes_per_image, 0)
+        pred_scores_list = pred_scores.split(boxes_per_image, 0)
+
+        all_detections = []
+        for boxes, scores, logits, image_shape in zip(pred_boxes_list, pred_scores_list, pred_logits, image_shapes):
+            boxes = box_ops.clip_boxes_to_image(boxes, image_shape)
+
+            labels = torch.arange(num_classes, device=device)
+            labels = labels.view(1, -1).expand_as(scores)
+            logits = logits[:, None, :].expand(-1, num_classes, -1)
+
+            # Remove background class, then flatten proposal x class candidates.
+            boxes = boxes[:, 1:]
+            scores = scores[:, 1:]
+            labels = labels[:, 1:]
+            logits = logits[:, 1:, :]
+
+            boxes = boxes.reshape(-1, 4)
+            scores = scores.reshape(-1)
+            labels = labels.reshape(-1)
+            logits = logits.reshape(-1, num_classes)
+
+            inds = torch.where(scores > float(self.detector_model.roi_heads.score_thresh))[0]
+            boxes, scores, labels, logits = boxes[inds], scores[inds], labels[inds], logits[inds]
+
+            keep = box_ops.remove_small_boxes(boxes, min_size=1e-2)
+            boxes, scores, labels, logits = boxes[keep], scores[keep], labels[keep], logits[keep]
+
+            keep = batched_nms(boxes, scores, labels, float(self.detector_model.roi_heads.nms_thresh))
+            keep = keep[: int(self.detector_model.roi_heads.detections_per_img)]
+            boxes, scores, labels, logits = boxes[keep], scores[keep], labels[keep], logits[keep]
+
+            all_detections.append({
+                "boxes": boxes,
+                "labels": labels,
+                "scores": scores,
+                "class_logits": logits,
+            })
+        return all_detections
+
+    def _select_output_class_columns(self, values):
+        if self._uses_torchvision_coco_space and values.shape[-1] == len(self._torchvision_categories):
+            return values[..., self._output_class_ids]
+        if values.shape[-1] == self.num_classes_no_bg + 1:
+            return values[..., 1:]
+        return values[..., : self.num_classes_no_bg]
 
     def _detections_to_contract(self, detections, device):
         rows_by_image = []
@@ -236,12 +322,24 @@ class FasterRCNNTorchObjectDetector(nn.Module):
             scores = scores[valid][: self.max_det]
             labels = labels[valid][: self.max_det]
 
-            probs = torch.zeros((boxes.shape[0], c), dtype=scores.dtype, device=device)
-            logits = torch.zeros((boxes.shape[0], c), dtype=scores.dtype, device=device)
+            raw_logits = det.get("class_logits")
+            if raw_logits is not None:
+                raw_logits = raw_logits.to(device)
+                logits_full = self._select_output_class_columns(raw_logits)
+                probs_full = F.softmax(logits_full, dim=-1)
+                logits = torch.zeros((boxes.shape[0], c), dtype=scores.dtype, device=device)
+                probs = torch.zeros((boxes.shape[0], c), dtype=scores.dtype, device=device)
+                if int(valid.sum().item()) > 0:
+                    logits = logits_full[valid][: self.max_det]
+                    probs = probs_full[valid][: self.max_det]
+            else:
+                probs = torch.zeros((boxes.shape[0], c), dtype=scores.dtype, device=device)
+                logits = torch.zeros((boxes.shape[0], c), dtype=scores.dtype, device=device)
             if boxes.shape[0] > 0:
-                idx = torch.arange(boxes.shape[0], device=device)
-                probs[idx, labels] = scores
-                logits[idx, labels] = torch.logit(scores.clamp(min=1e-6, max=1.0 - 1e-6))
+                if raw_logits is None:
+                    idx = torch.arange(boxes.shape[0], device=device)
+                    probs[idx, labels] = scores
+                    logits[idx, labels] = torch.logit(scores.clamp(min=1e-6, max=1.0 - 1e-6))
 
             xywh = boxes.clone()
             if xywh.numel():
