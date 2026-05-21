@@ -10,6 +10,7 @@ import torch.nn.functional as F
 import torch.nn as nn
 
 from dataloaders.utils.data_utils import DATASET_CLASS_NAMES
+from models.faster_rcnn import FasterRCNNTorchObjectDetector
 from models.yolo.models.yolo_v5_object_detector import YOLOV5TorchObjectDetector
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -195,15 +196,33 @@ def build_detector(config, model_weight=None):
     if not weight_path.is_absolute():
         weight_path = resolve_project_path(weight_path)
 
-    detector = YOLOV5TorchObjectDetector(
-        model_weight=str(weight_path),
-        device=device,
-        img_size=(model_cfg["img_size"], model_cfg["img_size"]),
-        names=_resolve_detector_class_names(config),
-        mode="eval",
-        confidence=confidence,
-        iou_thresh=iou_thresh,
-    )
+    model_type = str(model_cfg.get("type", "yolov5")).strip().lower()
+    img_size = model_cfg.get("img_size", 640)
+    img_size_tuple = (int(img_size), int(img_size)) if isinstance(img_size, int) else tuple(img_size)
+    if model_type in {"yolov5", "yolo", "yolo_v5"}:
+        detector = YOLOV5TorchObjectDetector(
+            model_weight=str(weight_path),
+            device=device,
+            img_size=img_size_tuple,
+            names=_resolve_detector_class_names(config),
+            mode="eval",
+            confidence=confidence,
+            iou_thresh=iou_thresh,
+        )
+    elif model_type in {"faster_rcnn", "faster-rcnn", "frcnn"}:
+        detector = FasterRCNNTorchObjectDetector(
+            model_weight=str(weight_path) if str(weight_path) else None,
+            device=device,
+            img_size=img_size_tuple,
+            names=_resolve_detector_class_names(config),
+            mode="eval",
+            confidence=confidence,
+            iou_thresh=iou_thresh,
+            max_det=int(model_cfg.get("max_det", 300)),
+            pretrained=bool(model_cfg.get("pretrained", True)),
+        )
+    else:
+        raise ValueError(f"Unsupported model.type: {model_type}")
     detector.eval().to(device)
     return detector, device
 

@@ -8,6 +8,8 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 import torch.nn as nn
+from torchvision.models.detection import FasterRCNN_ResNet50_FPN_Weights, fasterrcnn_resnet50_fpn
+from torchvision.models.detection.faster_rcnn import FastRCNNPredictor
 from tqdm import tqdm
 
 from dataloaders.dataloader_yolo import create_dataloader
@@ -18,6 +20,13 @@ from models.yolo.utils.general import coco80_to_coco91_class
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
+
+
+def _torch_load(path, map_location):
+    try:
+        return torch.load(path, map_location=map_location, weights_only=False)
+    except TypeError:
+        return torch.load(path, map_location=map_location)
 
 
 def _set_seed(seed):
@@ -177,6 +186,21 @@ def _resolve_train_class_names(config):
     return None
 
 
+def _default_faster_rcnn_coco_names():
+    categories = list(FasterRCNN_ResNet50_FPN_Weights.DEFAULT.meta.get("categories", []))
+    return categories[1:] if categories and categories[0] == "__background__" else categories
+
+
+def _resolve_faster_rcnn_class_names(config):
+    names = _resolve_train_class_names(config)
+    if names is not None:
+        return list(names)
+    active = _active_dataset_names(config)
+    if active == ["coco"]:
+        return _default_faster_rcnn_coco_names()
+    return None
+
+
 def _rebuild_detect_head_for_class_count(model, class_names, device):
     if not class_names:
         return model
@@ -321,6 +345,139 @@ def _save_ckpt(path, epoch, model, optimizer, train_loss, val_loss):
     torch.save(ckpt, path)
 
 
+def _target_to_faster_rcnn(target, device):
+    boxes = target.get("boxes", torch.zeros((0, 4), dtype=torch.float32)).to(device=device, dtype=torch.float32)
+    labels = target.get("labels", torch.zeros((0,), dtype=torch.int64)).to(device=device, dtype=torch.int64)
+    dataset_name = str(target.get("dataset_name", "")).lower()
+    if dataset_name == "coco":
+        # Torchvision COCO Faster R-CNN uses COCO category ids directly, including category id gaps.
+        labels = labels.clamp(min=1)
+    else:
+        labels = labels + 1
+    valid = (boxes[:, 2] > boxes[:, 0]) & (boxes[:, 3] > boxes[:, 1]) if boxes.numel() else torch.zeros((0,), dtype=torch.bool, device=device)
+    return {"boxes": boxes[valid], "labels": labels[valid]}
+
+
+def _build_faster_rcnn_for_train(config, device):
+    model_cfg = config.get("model", {})
+    pretrained = bool(model_cfg.get("pretrained", True))
+    weights = FasterRCNN_ResNet50_FPN_Weights.DEFAULT if pretrained else None
+    img_size = int(model_cfg.get("img_size", 640))
+    model = fasterrcnn_resnet50_fpn(
+        weights=weights,
+        weights_backbone=None if weights is None else None,
+        min_size=img_size,
+        max_size=img_size,
+        box_score_thresh=float(model_cfg.get("confidence_threshold", 0.25)),
+        box_nms_thresh=float(model_cfg.get("iou_threshold", 0.45)),
+        box_detections_per_img=int(model_cfg.get("max_det", 300)),
+    )
+    class_names = _resolve_faster_rcnn_class_names(config)
+    if not class_names:
+        raise ValueError("Could not resolve Faster R-CNN class names for training.")
+    num_classes = len(class_names) + 1
+    current_classes = int(model.roi_heads.box_predictor.cls_score.out_features)
+    if current_classes != num_classes:
+        in_features = model.roi_heads.box_predictor.cls_score.in_features
+        model.roi_heads.box_predictor = FastRCNNPredictor(in_features, num_classes)
+
+    weights_path = str(model_cfg.get("weights", "") or "").strip()
+    use_finetune = False
+    if weights_path and Path(weights_path).is_file():
+        payload = _torch_load(weights_path, map_location=device)
+        state_dict = payload.get("model_state_dict") if isinstance(payload, dict) else None
+        if state_dict is None and isinstance(payload, dict):
+            state_dict = payload.get("state_dict", payload)
+        model.load_state_dict(state_dict, strict=False)
+        use_finetune = True
+    model.to(device)
+    model.train()
+    return model, use_finetune, class_names
+
+
+def _run_faster_rcnn_one_epoch(model, dataloader, optimizer, device, train_mode=True):
+    model.train()
+    total_loss = 0.0
+    total_steps = 0
+    pbar = tqdm(dataloader, total=len(dataloader), desc="train" if train_mode else "val")
+    for images, targets in pbar:
+        image_list = [img.to(device=device, dtype=torch.float32) for img in images]
+        target_list = [_target_to_faster_rcnn(t, device) for t in targets]
+        if train_mode:
+            optimizer.zero_grad(set_to_none=True)
+            loss_dict = model(image_list, target_list)
+            loss = sum(v for v in loss_dict.values())
+            loss.backward()
+            optimizer.step()
+        else:
+            with torch.no_grad():
+                loss_dict = model(image_list, target_list)
+                loss = sum(v for v in loss_dict.values())
+        loss_value = float(loss.detach().cpu().item())
+        total_loss += loss_value
+        total_steps += 1
+        pbar.set_postfix(loss=f"{loss_value:.4f}")
+        del image_list, target_list, loss_dict, loss
+    return (total_loss / total_steps) if total_steps else 0.0
+
+
+def _save_faster_rcnn_ckpt(path, epoch, model, optimizer, train_loss, val_loss, class_names):
+    torch.save(
+        {
+            "epoch": int(epoch),
+            "model_state_dict": model.state_dict(),
+            "optimizer_state_dict": optimizer.state_dict(),
+            "train_loss": float(train_loss),
+            "val_loss": None if val_loss is None else float(val_loss),
+            "class_names": list(class_names),
+            "num_classes": int(len(class_names) + 1),
+            "date": datetime.now().isoformat(),
+        },
+        path,
+    )
+
+
+def _run_faster_rcnn_train(config, run_dir, device, epochs, lr, weight_decay):
+    train_loader = create_dataloader(config, split="train")
+    val_loader = None
+    try:
+        val_loader = create_dataloader(config, split="val")
+    except Exception:
+        val_loader = None
+    model, use_finetune, class_names = _build_faster_rcnn_for_train(config, device)
+    optimizer = torch.optim.AdamW(
+        [p for p in model.parameters() if p.requires_grad],
+        lr=lr,
+        weight_decay=weight_decay,
+    )
+    weights_dir = Path(run_dir) / "weights"
+    best_metric = float("inf")
+    history = []
+    for epoch in range(1, epochs + 1):
+        train_loss = _run_faster_rcnn_one_epoch(model, train_loader, optimizer, device, train_mode=True)
+        val_loss = None
+        if val_loader is not None:
+            val_loss = _run_faster_rcnn_one_epoch(model, val_loader, optimizer, device, train_mode=False)
+        metric = val_loss if val_loss is not None else train_loss
+        _save_faster_rcnn_ckpt(weights_dir / "last.pt", epoch, model, optimizer, train_loss, val_loss, class_names)
+        if metric <= best_metric:
+            best_metric = metric
+            _save_faster_rcnn_ckpt(weights_dir / "best.pt", epoch, model, optimizer, train_loss, val_loss, class_names)
+        history.append(
+            {
+                "epoch": int(epoch),
+                "train_loss": float(train_loss),
+                "val_loss": None if val_loss is None else float(val_loss),
+                "best_metric": float(best_metric),
+            }
+        )
+        print(
+            f"[train] epoch={epoch}/{epochs} train_loss={train_loss:.6f} "
+            f"val_loss={'none' if val_loss is None else f'{val_loss:.6f}'}"
+        )
+    return model, use_finetune, class_names, history, best_metric
+
+
 def run_train(config, run_dir):
     run_dir = Path(run_dir)
     run_dir.mkdir(parents=True, exist_ok=True)
@@ -345,6 +502,37 @@ def run_train(config, run_dir):
     print(f"[train] device={device}")
     if str(device) == "cpu":
         print("[train][warn] CUDA unavailable -> training on CPU (very slow).")
+
+    model_type = str(config.get("model", {}).get("type", "yolov5")).strip().lower()
+    if model_type in {"faster_rcnn", "faster-rcnn", "frcnn"}:
+        model, use_finetune, class_names, history, best_metric = _run_faster_rcnn_train(
+            config=config,
+            run_dir=run_dir,
+            device=device,
+            epochs=epochs,
+            lr=lr,
+            weight_decay=weight_decay,
+        )
+        summary = {
+            "mode": "train",
+            "model_type": "faster_rcnn",
+            "epochs": int(epochs),
+            "seed": None if seed is None else int(seed),
+            "device": str(device),
+            "finetune": bool(use_finetune),
+            "num_classes": int(len(class_names)),
+            "num_classes_with_background": int(len(class_names) + 1),
+            "class_names": list(class_names),
+            "history": history,
+            "best_metric": float(best_metric),
+            "weights": {
+                "last": str((weights_dir / "last.pt").resolve()),
+                "best": str((weights_dir / "best.pt").resolve()),
+            },
+        }
+        with open(run_dir / "train_summary.json", "w", encoding="utf-8") as f:
+            json.dump(summary, f, ensure_ascii=False, indent=2)
+        return
 
     train_loader = create_dataloader(config, split="train")
     val_loader = None

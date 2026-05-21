@@ -8,6 +8,9 @@ from commands.utils.predict_utils import parse_output_config
 def run_predict(config, run_dir):
     parsed = parse_output_config(config.get("output", {}))
     uncertainty = parsed["uncertainty"]
+    model_type = str(config.get("model", {}).get("type", "yolov5")).strip().lower()
+    if model_type in {"faster_rcnn", "faster-rcnn", "frcnn"} and uncertainty in {"layer_grad", "null_detect"}:
+        raise NotImplementedError(f"Faster R-CNN does not support uncertainty='{uncertainty}' yet.")
     device = str(config.get("model", {}).get("device", "cuda")).lower()
     if device == "cuda" and not torch.cuda.is_available():
         device = "cpu"

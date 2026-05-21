@@ -138,7 +138,7 @@ def run_meta_detect_csv(config, run_dir):
                         pred_cls = torch.argmax(pred_img[:, 5:].detach(), dim=1)
                         obj = pred_img[:, 4].detach()
                         cls_max = pred_img[:, 5:].detach().max(dim=1).values if pred_img.shape[1] > 5 else torch.ones_like(obj)
-                        score = obj * cls_max
+                        score = obj if bool(getattr(detector, "is_faster_rcnn", False)) else obj * cls_max
                         cand_mask = (ious >= float(iou_threshold)) & (pred_cls == pseudo_cls) & (score >= float(score_threshold))
                         if not bool(cand_mask.any()):
                             cand_mask = torch.zeros_like(pred_cls, dtype=torch.bool)
