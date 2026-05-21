@@ -94,8 +94,8 @@ class _ForwardProxy:
     def __init__(self, owner):
         self._owner = owner
 
-    def __call__(self, images, augment=False, **_kwargs):
-        return self._owner._forward_impl(images)
+    def __call__(self, images, augment=False, need_logits=True, **_kwargs):
+        return self._owner._forward_impl(images, need_logits=need_logits)
 
     def __getattr__(self, name):
         return getattr(self._owner.detector_model, name)
@@ -209,7 +209,7 @@ class FasterRCNNTorchObjectDetector(nn.Module):
         valid = (labels >= 0) & (labels < self.num_classes_no_bg)
         return labels, valid
 
-    def _forward_impl(self, images):
+    def _forward_impl(self, images, need_logits=True):
         if isinstance(images, torch.Tensor):
             image_list = [img.to(self.device) for img in images]
         else:
@@ -217,7 +217,11 @@ class FasterRCNNTorchObjectDetector(nn.Module):
 
         was_training = self.detector_model.training
         self.detector_model.eval()
-        detections = self._custom_inference(image_list)
+        with torch.inference_mode():
+            if need_logits:
+                detections = self._custom_inference(image_list)
+            else:
+                detections = self.detector_model(image_list)
         if was_training:
             self.detector_model.train()
         return self._detections_to_contract(detections, image_list[0].device)
@@ -266,30 +270,34 @@ class FasterRCNNTorchObjectDetector(nn.Module):
         for boxes, scores, logits, image_shape in zip(pred_boxes_list, pred_scores_list, pred_logits, image_shapes):
             boxes = box_ops.clip_boxes_to_image(boxes, image_shape)
 
+            num_proposals = int(scores.shape[0])
             labels = torch.arange(num_classes, device=device)
             labels = labels.view(1, -1).expand_as(scores)
-            logits = logits[:, None, :].expand(-1, num_classes, -1)
+            proposal_indices = torch.arange(num_proposals, device=device).view(-1, 1).expand_as(scores)
 
             # Remove background class, then flatten proposal x class candidates.
             boxes = boxes[:, 1:]
             scores = scores[:, 1:]
             labels = labels[:, 1:]
-            logits = logits[:, 1:, :]
+            proposal_indices = proposal_indices[:, 1:]
 
             boxes = boxes.reshape(-1, 4)
             scores = scores.reshape(-1)
             labels = labels.reshape(-1)
-            logits = logits.reshape(-1, num_classes)
+            proposal_indices = proposal_indices.reshape(-1)
 
             inds = torch.where(scores > float(self.detector_model.roi_heads.score_thresh))[0]
-            boxes, scores, labels, logits = boxes[inds], scores[inds], labels[inds], logits[inds]
+            boxes, scores, labels = boxes[inds], scores[inds], labels[inds]
+            proposal_indices = proposal_indices[inds]
 
             keep = box_ops.remove_small_boxes(boxes, min_size=1e-2)
-            boxes, scores, labels, logits = boxes[keep], scores[keep], labels[keep], logits[keep]
+            boxes, scores, labels = boxes[keep], scores[keep], labels[keep]
+            proposal_indices = proposal_indices[keep]
 
             keep = batched_nms(boxes, scores, labels, float(self.detector_model.roi_heads.nms_thresh))
             keep = keep[: int(self.detector_model.roi_heads.detections_per_img)]
-            boxes, scores, labels, logits = boxes[keep], scores[keep], labels[keep], logits[keep]
+            boxes, scores, labels = boxes[keep], scores[keep], labels[keep]
+            logits = logits[proposal_indices[keep]]
 
             all_detections.append({
                 "boxes": boxes,

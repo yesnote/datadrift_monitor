@@ -70,6 +70,16 @@ def _as_image_list(images):
 
 def _prepare_infer_batch(detector, images, device, auto=False):
     image_list = _as_image_list(images)
+    if bool(getattr(detector, "is_faster_rcnn", False)):
+        infer_batch = [img.to(device, non_blocking=True) for img in image_list]
+        ratios = [(1.0, 1.0) for _ in image_list]
+        pads = [(0.0, 0.0) for _ in image_list]
+        resized_chws = [
+            np.ascontiguousarray(np.clip(img.detach().cpu().numpy() * 255.0, 0, 255).astype(np.uint8))
+            for img in image_list
+        ]
+        return infer_batch, ratios, pads, resized_chws
+
     infer_tensors = []
     ratios = []
     pads = []
