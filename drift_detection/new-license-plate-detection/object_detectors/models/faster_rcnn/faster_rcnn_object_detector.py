@@ -269,6 +269,65 @@ class FasterRCNNTorchObjectDetector(nn.Module):
         detections = self.detector_model.transform.postprocess(detections, images.image_sizes, original_image_sizes)
         return detections
 
+    def prepare_roi_cache(self, images):
+        """Cache deterministic Faster R-CNN stages before ROI prediction.
+
+        MC dropout for this wrapper is applied only in ``roi_heads.box_predictor``.
+        Reusing transformed images, backbone features, RPN proposals, and box-head
+        features avoids repeating the expensive detector trunk for every MC run.
+        """
+        if isinstance(images, torch.Tensor):
+            image_list = [img for img in images]
+        else:
+            image_list = list(images)
+
+        was_training = self.detector_model.training
+        self.detector_model.eval()
+        with torch.inference_mode():
+            image_list = [
+                img.to(self.device, non_blocking=True) if img.device != self.device else img
+                for img in image_list
+            ]
+            original_image_sizes = [(int(img.shape[-2]), int(img.shape[-1])) for img in image_list]
+            transformed_images, _targets = self.detector_model.transform(image_list, None)
+            features = self.detector_model.backbone(transformed_images.tensors)
+            if isinstance(features, torch.Tensor):
+                features = {"0": features}
+            proposals, _proposal_losses = self.detector_model.rpn(transformed_images, features, None)
+            roi_heads = self.detector_model.roi_heads
+            box_features = roi_heads.box_roi_pool(features, proposals, transformed_images.image_sizes)
+            box_features = roi_heads.box_head(box_features)
+        if was_training:
+            self.detector_model.train()
+
+        return {
+            "original_image_sizes": original_image_sizes,
+            "image_sizes": transformed_images.image_sizes,
+            "proposals": proposals,
+            "box_features": box_features,
+        }
+
+    def forward_from_roi_cache(self, cache):
+        was_training = self.detector_model.training
+        self.detector_model.eval()
+        with torch.inference_mode():
+            roi_heads = self.detector_model.roi_heads
+            class_logits, box_regression = roi_heads.box_predictor(cache["box_features"])
+            detections = self._pre_nms_detections_with_logits(
+                class_logits=class_logits,
+                box_regression=box_regression,
+                proposals=cache["proposals"],
+                image_shapes=cache["image_sizes"],
+            )
+            detections = self.detector_model.transform.postprocess(
+                detections,
+                cache["image_sizes"],
+                cache["original_image_sizes"],
+            )
+        if was_training:
+            self.detector_model.train()
+        return self._detections_to_contract(detections, self.device, include_class_features=True)
+
     def _pre_nms_detections_with_logits(self, class_logits, box_regression, proposals, image_shapes):
         device = class_logits.device
         num_classes = int(class_logits.shape[-1])
