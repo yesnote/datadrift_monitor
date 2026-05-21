@@ -57,13 +57,13 @@ def run_score_csv(config, run_dir):
             selected_preds = None
             selected_indices = None
             t_detector = timing.start()
-            inference_context = torch.inference_mode if bool(getattr(detector, "is_faster_rcnn", False)) else torch.no_grad
+            is_faster_rcnn = bool(getattr(detector, "is_faster_rcnn", False))
+            inference_context = torch.inference_mode if is_faster_rcnn else torch.no_grad
             with inference_context():
-                model_output = detector.model(
-                    infer_batch,
-                    augment=False,
-                    need_logits=not bool(getattr(detector, "is_faster_rcnn", False)),
-                )
+                if is_faster_rcnn:
+                    model_output = detector.model(infer_batch, augment=False, need_logits=False)
+                else:
+                    model_output = detector.model(infer_batch, augment=False)
                 raw_prediction = model_output[0] if isinstance(model_output, (tuple, list)) else model_output
                 raw_logits = (
                     model_output[1]
