@@ -106,21 +106,15 @@ class FasterRCNNTorchObjectDetector(nn.Module):
         self,
         model_weight=None,
         device="cuda",
-        img_size=(640, 640),
         names=None,
         mode="eval",
         confidence=0.25,
         iou_thresh=0.45,
         max_det=300,
         pretrained=True,
-        transform_min_size=None,
-        transform_max_size=None,
     ):
         super().__init__()
         self.device = torch.device(device)
-        self.img_size = img_size if isinstance(img_size, tuple) else (int(img_size), int(img_size))
-        self.transform_min_size = int(transform_min_size) if transform_min_size is not None else int(min(self.img_size))
-        self.transform_max_size = int(transform_max_size) if transform_max_size is not None else int(max(self.img_size))
         self.mode = str(mode)
         self.confidence = float(confidence)
         self.conf_thresh = float(confidence)
@@ -168,8 +162,6 @@ class FasterRCNNTorchObjectDetector(nn.Module):
             weights=weights,
             weights_backbone=None,
             num_classes=None if weights is not None else self.num_classes_with_bg,
-            min_size=self.transform_min_size,
-            max_size=self.transform_max_size,
             box_score_thresh=0.0,
             box_nms_thresh=self.iou_thresh,
             box_detections_per_img=self.max_det,

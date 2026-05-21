@@ -228,15 +228,12 @@ def build_detector(config, model_weight=None):
         detector = FasterRCNNTorchObjectDetector(
             model_weight=str(weight_path) if weight_path is not None else None,
             device=device,
-            img_size=img_size_tuple,
             names=_resolve_detector_class_names(config),
             mode="eval",
             confidence=confidence,
             iou_thresh=iou_thresh,
             max_det=int(model_cfg.get("max_det", 300)),
             pretrained=bool(model_cfg.get("pretrained", True)),
-            transform_min_size=model_cfg.get("transform_min_size", model_cfg.get("min_size", None)),
-            transform_max_size=model_cfg.get("transform_max_size", model_cfg.get("max_size", None)),
         )
     else:
         raise ValueError(f"Unsupported model.type: {model_type}")

@@ -5,7 +5,6 @@ model:
   backbone: resnet50_fpn
   weights: object_detectors/models/faster_rcnn/weights/coco/fasterrcnn_resnet50_fpn_coco.pth
   pretrained: true
-  img_size: 640
   confidence_threshold: 0.25
   iou_threshold: 0.45
   max_det: 300
