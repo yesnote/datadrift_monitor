@@ -89,11 +89,12 @@ def run_ensemble_csv(config, run_dir):
                 infer_batch, _ratios, _pads, _resized_chws = _prepare_infer_batch(
                     base_detector, images, device, auto=False
                 )
-                batch_size = infer_batch.shape[0]
+                batch_size = len(infer_batch) if isinstance(infer_batch, list) else int(infer_batch.shape[0])
                 image_ids = [int(targets[i]["image_id"][0].item()) for i in range(batch_size)]
                 image_paths = [targets[i]["path"] for i in range(batch_size)]
 
                 feature_runs = []
+                variable_candidate_runs = False
                 det_boxes = None
                 raw_keep_indices = None
                 detector_inference_total_sec = 0.0
@@ -120,14 +121,29 @@ def run_ensemble_csv(config, run_dir):
                     detector_inference_total_sec += timing.elapsed(t_detector)
 
                     t_feature = timing.start()
-                    pred_batch = det_raw_pred.detach().float()
-                    bbox_xyxy = _xywh_to_xyxy_tensor(pred_batch[..., :4])
-                    score_vec = pred_batch[..., 4].unsqueeze(-1)
-                    prob_mat = get_prediction_class_probs(detector, pred_batch).detach().float()
-                    if prob_mat.numel() == 0 and det_raw_logits is not None:
-                        prob_mat = torch.sigmoid(det_raw_logits.detach().float())
-                    run_features = torch.cat([bbox_xyxy, score_vec, prob_mat], dim=2).detach()
-                    class_count = int(run_features.shape[2] - 5)
+                    if isinstance(det_raw_pred, list):
+                        variable_candidate_runs = True
+                        run_features = []
+                        class_count = None
+                        for pred_img in det_raw_pred:
+                            pred_img = pred_img.detach().float()
+                            bbox_xyxy = _xywh_to_xyxy_tensor(pred_img[:, :4])
+                            score_vec = pred_img[:, 4:5]
+                            prob_mat = get_prediction_class_probs(detector, pred_img).detach().float()
+                            run_features.append(torch.cat([bbox_xyxy, score_vec, prob_mat], dim=1).detach())
+                            if class_count is None:
+                                class_count = int(prob_mat.shape[-1])
+                        if class_count is None:
+                            class_count = 0
+                    else:
+                        pred_batch = det_raw_pred.detach().float()
+                        bbox_xyxy = _xywh_to_xyxy_tensor(pred_batch[..., :4])
+                        score_vec = pred_batch[..., 4].unsqueeze(-1)
+                        prob_mat = get_prediction_class_probs(detector, pred_batch).detach().float()
+                        if prob_mat.numel() == 0 and det_raw_logits is not None:
+                            prob_mat = torch.sigmoid(det_raw_logits.detach().float())
+                        run_features = torch.cat([bbox_xyxy, score_vec, prob_mat], dim=2).detach()
+                        class_count = int(run_features.shape[2] - 5)
                     if n_classes_actual is None:
                         n_classes_actual = class_count
                     elif n_classes_actual != class_count:
@@ -153,22 +169,27 @@ def run_ensemble_csv(config, run_dir):
                         prediction_matching_sec += timing.elapsed(t_matching)
 
                 t_feature = timing.start()
-                runs_tensor = torch.stack(feature_runs, dim=0)  # [M, B, N, F]
-                mean = runs_tensor.mean(dim=0)
-                std = runs_tensor.std(dim=0, unbiased=False)
+                mean = None
+                std = None
+                if not variable_candidate_runs:
+                    runs_tensor = torch.stack(feature_runs, dim=0)  # [M, B, N, F]
+                    mean = runs_tensor.mean(dim=0)
+                    std = runs_tensor.std(dim=0, unbiased=False)
+                    del runs_tensor
                 feature_compute_sec += timing.elapsed(t_feature)
-                del runs_tensor, feature_runs, infer_batch
+                del infer_batch
 
                 batch_items = 0
                 t_matching = timing.start()
-                mean_cpu = mean.detach().float().cpu()
-                std_cpu = std.detach().float().cpu()
+                mean_cpu = mean.detach().float().cpu() if mean is not None else None
+                std_cpu = std.detach().float().cpu() if std is not None else None
                 for b in range(len(image_ids)):
                     image_id = int(image_ids[b])
                     image_path = str(image_paths[b])
-                    mean_b = mean_cpu[b]
-                    std_b = std_cpu[b]
-                    n_candidates = int(mean_b.shape[0])
+                    if not variable_candidate_runs:
+                        mean_b = mean_cpu[b]
+                        std_b = std_cpu[b]
+                        n_candidates = int(mean_b.shape[0])
 
                     det_b = det_boxes[b]
                     raw_keep_b = [int(v) for v in raw_keep_indices[b]]
@@ -177,8 +198,21 @@ def run_ensemble_csv(config, run_dir):
                         if pred_idx >= len(raw_keep_b):
                             continue
                         raw_idx = int(raw_keep_b[pred_idx])
-                        if raw_idx < 0 or raw_idx >= n_candidates:
-                            continue
+                        if variable_candidate_runs:
+                            per_model_values = []
+                            for run_features in feature_runs:
+                                if b < len(run_features) and 0 <= raw_idx < int(run_features[b].shape[0]):
+                                    per_model_values.append(run_features[b][raw_idx])
+                            if not per_model_values:
+                                continue
+                            values = torch.stack(per_model_values, dim=0)
+                            mean_vec = values.mean(dim=0).detach().float().cpu()
+                            std_vec = values.std(dim=0, unbiased=False).detach().float().cpu()
+                        else:
+                            if raw_idx < 0 or raw_idx >= n_candidates:
+                                continue
+                            mean_vec = mean_b[raw_idx]
+                            std_vec = std_b[raw_idx]
                         cls_idx = int(det_b[pred_idx, 5].item()) if det_b.shape[1] > 5 else -1
                         row = {
                             "image_id": image_id,
@@ -195,21 +229,21 @@ def run_ensemble_csv(config, run_dir):
                                 if (class_names_hint is not None and cls_idx >= 0 and cls_idx < len(class_names_hint))
                                 else int(cls_idx)
                             ),
-                            "xmin_mean": float(mean_b[raw_idx, 0].item()),
-                            "ymin_mean": float(mean_b[raw_idx, 1].item()),
-                            "xmax_mean": float(mean_b[raw_idx, 2].item()),
-                            "ymax_mean": float(mean_b[raw_idx, 3].item()),
-                            "score_mean": float(mean_b[raw_idx, 4].item()),
-                            "xmin_std": float(std_b[raw_idx, 0].item()),
-                            "ymin_std": float(std_b[raw_idx, 1].item()),
-                            "xmax_std": float(std_b[raw_idx, 2].item()),
-                            "ymax_std": float(std_b[raw_idx, 3].item()),
-                            "score_std": float(std_b[raw_idx, 4].item()),
+                            "xmin_mean": float(mean_vec[0].item()),
+                            "ymin_mean": float(mean_vec[1].item()),
+                            "xmax_mean": float(mean_vec[2].item()),
+                            "ymax_mean": float(mean_vec[3].item()),
+                            "score_mean": float(mean_vec[4].item()),
+                            "xmin_std": float(std_vec[0].item()),
+                            "ymin_std": float(std_vec[1].item()),
+                            "xmax_std": float(std_vec[2].item()),
+                            "ymax_std": float(std_vec[3].item()),
+                            "score_std": float(std_vec[4].item()),
                         }
                         for class_idx in range(n_classes_hint):
                             if class_idx < n_classes_actual:
-                                row[f"prob_{class_idx}_mean"] = float(mean_b[raw_idx, 5 + class_idx].item())
-                                row[f"prob_{class_idx}_std"] = float(std_b[raw_idx, 5 + class_idx].item())
+                                row[f"prob_{class_idx}_mean"] = float(mean_vec[5 + class_idx].item())
+                                row[f"prob_{class_idx}_std"] = float(std_vec[5 + class_idx].item())
                             else:
                                 row[f"prob_{class_idx}_mean"] = 0.0
                                 row[f"prob_{class_idx}_std"] = 0.0
@@ -225,7 +259,9 @@ def run_ensemble_csv(config, run_dir):
                         "feature_compute_sec": feature_compute_sec,
                     },
                 )
-                del mean, std, mean_cpu, std_cpu
+                del feature_runs
+                if mean is not None:
+                    del mean, std, mean_cpu, std_cpu
     except Exception:
         raise
     finally:
