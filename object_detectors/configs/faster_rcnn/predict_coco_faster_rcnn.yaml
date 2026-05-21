@@ -15,9 +15,9 @@ dataset:
   used_dataset:
     - coco
   split:
-    - val
+    - train
   used_ratio:
-    - 1.0
+    - 0.05
 
   coco:
     root: D:/SEONGJIN/datasets/COCO
@@ -29,7 +29,7 @@ dataset:
     val_annotation_file: instances_val2017.json
 
 dataloader:
-  batch_size: 4
+  batch_size: 8
   num_workers: 4
   pin_memory: false
   shuffle_train: false
@@ -45,27 +45,34 @@ output:
       enabled: false
       step: 10
       max_num: 10
+  
   score:
     save_csv:
       enabled: false
+  
   class_probability:
     save_csv:
       enabled: false
+ 
   entropy:
     save_csv:
       enabled: false
+  
   energy:
     save_csv:
       enabled: false
+  
   mc_dropout:
     num_runs: 30
     dropout_rate: 0.5
     save_csv:
       enabled: false
+  
   ensemble:
     weights: []
     save_csv:
       enabled: false
+  
   meta_detect:
     score_threshold: 0.0
     iou_threshold: 0.45
