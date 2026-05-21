@@ -38,6 +38,20 @@ def _sync_timing_device(device=None):
         torch.cuda.synchronize(dev)
 
 
+def get_prediction_class_probs(detector, prediction):
+    start = 6 if bool(getattr(detector, "has_faster_rcnn_label_column", False)) else 5
+    return prediction[..., start:]
+
+
+def get_selected_prediction_class_probs(detector, prediction, indices):
+    if int(indices.shape[0]) == 0:
+        start = 6 if bool(getattr(detector, "has_faster_rcnn_label_column", False)) else 5
+        num_classes = max(0, int(prediction.shape[-1]) - start)
+        return torch.zeros((0, num_classes), dtype=prediction.dtype, device=prediction.device)
+    start = 6 if bool(getattr(detector, "has_faster_rcnn_label_column", False)) else 5
+    return prediction[indices, start:]
+
+
 def _start_timing(device=None):
     _sync_timing_device(device)
     return time.perf_counter()

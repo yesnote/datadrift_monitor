@@ -123,7 +123,7 @@ def run_ensemble_csv(config, run_dir):
                     pred_batch = det_raw_pred.detach().float()
                     bbox_xyxy = _xywh_to_xyxy_tensor(pred_batch[..., :4])
                     score_vec = pred_batch[..., 4].unsqueeze(-1)
-                    prob_mat = pred_batch[..., 5:].detach().float()
+                    prob_mat = get_prediction_class_probs(detector, pred_batch).detach().float()
                     if prob_mat.numel() == 0 and det_raw_logits is not None:
                         prob_mat = torch.sigmoid(det_raw_logits.detach().float())
                     run_features = torch.cat([bbox_xyxy, score_vec, prob_mat], dim=2).detach()

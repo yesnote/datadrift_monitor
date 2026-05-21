@@ -83,7 +83,7 @@ def run_energy_csv(config, run_dir):
                 if raw_logits is not None:
                     selected_logits = raw_logits[sample_idx][raw_keep_b] if int(raw_keep_b.shape[0]) > 0 else torch.zeros((0, num_classes), dtype=torch.float32, device=device)
                 else:
-                    selected_logits = raw_prediction[sample_idx][raw_keep_b, 5:] if int(raw_keep_b.shape[0]) > 0 and raw_prediction[sample_idx].shape[1] > 5 else torch.zeros((0, num_classes), dtype=torch.float32, device=device)
+                    selected_logits = get_selected_prediction_class_probs(detector, raw_prediction[sample_idx], raw_keep_b) if int(raw_keep_b.shape[0]) > 0 and raw_prediction[sample_idx].shape[1] > 5 else torch.zeros((0, num_classes), dtype=torch.float32, device=device)
                 selected_probs = torch.softmax(selected_logits, dim=-1) if selected_logits.numel() else selected_logits
                 if selected_probs.numel():
                     probs_clipped = selected_probs.clamp(min=1e-8, max=1.0 - 1e-8)

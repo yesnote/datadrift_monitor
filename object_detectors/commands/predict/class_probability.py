@@ -95,7 +95,7 @@ def run_class_probability_csv(config, run_dir):
                     )
                 else:
                     selected_logits = (
-                        raw_prediction[sample_idx][raw_keep_b, 5:]
+                        get_selected_prediction_class_probs(detector, raw_prediction[sample_idx], raw_keep_b)
                         if int(raw_keep_b.shape[0]) > 0 and raw_prediction[sample_idx].shape[1] > 5
                         else torch.zeros((0, num_classes), dtype=torch.float32, device=device)
                     )

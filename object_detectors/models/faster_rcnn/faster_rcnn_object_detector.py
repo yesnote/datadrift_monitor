@@ -134,6 +134,7 @@ class FasterRCNNTorchObjectDetector(nn.Module):
         self.agnostic_nms = False
         self.max_det = int(max_det)
         self.is_faster_rcnn = True
+        self.has_faster_rcnn_label_column = True
         self.names = list(names or self._default_coco_names())
         self.num_classes_no_bg = int(len(self.names))
         self._torchvision_categories = list(FasterRCNN_ResNet50_FPN_Weights.DEFAULT.meta.get("categories", []))
@@ -305,10 +306,11 @@ class FasterRCNNTorchObjectDetector(nn.Module):
             xywh[:, 1] = (boxes[:, 1] + boxes[:, 3]) * 0.5
             xywh[:, 2] = (boxes[:, 2] - boxes[:, 0]).clamp(min=0.0)
             xywh[:, 3] = (boxes[:, 3] - boxes[:, 1]).clamp(min=0.0)
-            rows = torch.cat([xywh, scores_flat.unsqueeze(1), probs], dim=1)
+            label_col = result["labels"].to(dtype=scores_flat.dtype).unsqueeze(1)
+            rows = torch.cat([xywh, scores_flat.unsqueeze(1), label_col, probs], dim=1)
             if rows.shape[0] < self.max_det:
                 pad_n = self.max_det - rows.shape[0]
-                rows = torch.cat([rows, torch.zeros((pad_n, 5 + c), dtype=rows.dtype, device=rows.device)], dim=0)
+                rows = torch.cat([rows, torch.zeros((pad_n, 6 + c), dtype=rows.dtype, device=rows.device)], dim=0)
                 logits_sel = torch.cat([logits_sel, torch.zeros((pad_n, c), dtype=logits_sel.dtype, device=logits_sel.device)], dim=0)
             else:
                 rows = rows[: self.max_det]
@@ -318,7 +320,7 @@ class FasterRCNNTorchObjectDetector(nn.Module):
 
         if not batch_rows:
             return (
-                torch.zeros((0, self.max_det, 5 + c), dtype=torch.float32, device=device),
+                torch.zeros((0, self.max_det, 6 + c), dtype=torch.float32, device=device),
                 torch.zeros((0, self.max_det, c), dtype=torch.float32, device=device),
             )
         return torch.stack(batch_rows, dim=0), torch.stack(batch_logits, dim=0)
@@ -351,8 +353,12 @@ class FasterRCNNTorchObjectDetector(nn.Module):
                 index_outputs.append(torch.zeros((0,), dtype=torch.long, device=device))
                 continue
             score = x[:, 4]
-            cls_prob = x[:, 5:]
-            cls_score, cls_idx = cls_prob.max(dim=1) if cls_prob.numel() else (score, torch.zeros_like(score, dtype=torch.long))
+            if logits is not None and x.shape[1] == logits.shape[-1] + 6:
+                cls_idx = x[:, 5].to(torch.long)
+                cls_prob = x[:, 6:]
+            else:
+                cls_prob = x[:, 5:]
+                cls_idx = cls_prob.argmax(dim=1) if cls_prob.numel() else torch.zeros_like(score, dtype=torch.long)
             keep = score > float(conf_thres)
             if classes is not None:
                 class_tensor = torch.tensor(classes, device=x.device, dtype=torch.long)
