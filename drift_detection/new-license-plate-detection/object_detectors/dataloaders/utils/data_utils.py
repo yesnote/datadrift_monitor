@@ -46,6 +46,7 @@ cityscapes_names = [
 foggy_cityscapes_names = list(cityscapes_names)
 
 DATASET_CLASS_NAMES = {
+    "coco": [name for name in coco_names[1:] if name != "N/A"],
     "voc": pascal_voc_names[1:],
     "pascal_voc": pascal_voc_names[1:],
     "kitti": kitti_names,
