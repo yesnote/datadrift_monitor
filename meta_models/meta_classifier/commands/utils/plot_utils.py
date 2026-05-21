@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import matplotlib
@@ -9,6 +10,24 @@ from sklearn.metrics import average_precision_score, precision_recall_curve, roc
 
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt  # noqa: E402
+
+
+def _matplotlib_path(path: Path) -> str:
+    path = Path(path)
+    if os.name != "nt":
+        return str(path)
+    resolved = str(path.resolve())
+    if resolved.startswith("\\\\?\\"):
+        return resolved
+    if resolved.startswith("\\\\"):
+        return "\\\\?\\UNC\\" + resolved[2:]
+    return "\\\\?\\" + resolved
+
+
+def _savefig(fig, out_path: Path, dpi: int = 150) -> None:
+    out_path = Path(out_path)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(_matplotlib_path(out_path), dpi=dpi)
 
 
 def _save_curve_roc(y_true: np.ndarray, y_score: np.ndarray, out_path: Path) -> None:
@@ -28,7 +47,7 @@ def _save_curve_roc(y_true: np.ndarray, y_score: np.ndarray, out_path: Path) -> 
     ax.set_xlabel("False Positive Rate")
     ax.set_ylabel("True Positive Rate")
     fig.tight_layout()
-    fig.savefig(out_path, dpi=150)
+    _savefig(fig, out_path, dpi=150)
     plt.close(fig)
 
 
@@ -49,7 +68,7 @@ def _save_curve_pr(y_true: np.ndarray, y_score: np.ndarray, out_path: Path) -> N
     ax.set_xlabel("Recall")
     ax.set_ylabel("Precision")
     fig.tight_layout()
-    fig.savefig(out_path, dpi=150)
+    _savefig(fig, out_path, dpi=150)
     plt.close(fig)
 
 
@@ -124,7 +143,7 @@ def _save_score_distribution(
     ax.spines["right"].set_visible(False)
     ax.legend(loc="upper right", frameon=False)
     fig.tight_layout()
-    fig.savefig(out_path, dpi=150)
+    _savefig(fig, out_path, dpi=150)
     plt.close(fig)
 
 
@@ -157,7 +176,7 @@ def _save_precision_at_k(y_true: np.ndarray, y_score: np.ndarray, out_path: Path
     ax.set_xlabel("K (top-K by predicted FN score)")
     ax.set_ylabel("Precision")
     fig.tight_layout()
-    fig.savefig(out_path, dpi=150)
+    _savefig(fig, out_path, dpi=150)
     plt.close(fig)
 
 
@@ -192,7 +211,7 @@ def _save_confidence_vs_conditional_precision(y_true: np.ndarray, y_score: np.nd
     ax.set_ylabel("Conditional Precision")
     ax.legend(loc="upper left")
     fig.tight_layout()
-    fig.savefig(out_path, dpi=150)
+    _savefig(fig, out_path, dpi=150)
     plt.close(fig)
 
 
