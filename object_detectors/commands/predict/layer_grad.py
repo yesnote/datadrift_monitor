@@ -55,6 +55,15 @@ def run_layer_grad_csv(config, run_dir):
         raise ValueError("Loaded 0 images. Check dataset root/image_dir/split configuration in YAML.")
 
     detector, device = build_detector(config)
+    is_faster_rcnn = bool(getattr(detector, "is_faster_rcnn", False))
+    if is_faster_rcnn:
+        if layer_pseudo_gt != "cand":
+            raise NotImplementedError("Faster R-CNN layer_grad currently supports only target: cand_target.")
+        if layer_bbox_loss not in {"l1", "l2"}:
+            raise ValueError("Faster R-CNN layer_grad.gradient.bbox_loss supports only l1 or l2.")
+        target_values = [v for v in target_values if v in {"bbox_loss", "cls_loss"}]
+        if not target_values:
+            target_values = ["bbox_loss", "cls_loss"]
     timing = StageTimingProfiler(
         run_dir=run_dir,
         uncertainty=uncertainty,
@@ -111,24 +120,41 @@ def run_layer_grad_csv(config, run_dir):
                 image_id = int(target["image_id"][0].item())
                 image_path = target["path"]
 
-                bbox_rows = collect_bbox_layer_grads_per_target(
-                    detector=detector,
-                    input_tensor=infer_batch[sample_idx: sample_idx + 1],
-                    target_values=target_values,
-                    target_layers=target_layers,
-                    map_reduction=layer_map_reduction,
-                    vector_reduction=layer_gradient_reduction,
-                    pseudo_gt=layer_pseudo_gt,
-                    cand_score_threshold=layer_cand_score_threshold,
-                    bbox_loss=layer_bbox_loss,
-                    cls_loss=layer_cls_loss,
-                    obj_loss=layer_obj_loss,
-                    bbox_direction=layer_bbox_direction,
-                    cls_direction=layer_cls_direction,
-                    obj_direction=layer_obj_direction,
-                    timing_accumulator=stage_seconds,
-                    timing_device=device,
-                )
+                if is_faster_rcnn:
+                    bbox_rows = collect_faster_rcnn_roi_layer_grads_per_target(
+                        detector=detector,
+                        input_tensor=infer_batch[sample_idx: sample_idx + 1],
+                        target_values=target_values,
+                        target_layers=target_layers,
+                        map_reduction=layer_map_reduction,
+                        vector_reduction=layer_gradient_reduction,
+                        cand_score_threshold=layer_cand_score_threshold,
+                        bbox_loss=layer_bbox_loss,
+                        cls_loss=layer_cls_loss,
+                        bbox_direction=layer_bbox_direction,
+                        cls_direction=layer_cls_direction,
+                        timing_accumulator=stage_seconds,
+                        timing_device=device,
+                    )
+                else:
+                    bbox_rows = collect_bbox_layer_grads_per_target(
+                        detector=detector,
+                        input_tensor=infer_batch[sample_idx: sample_idx + 1],
+                        target_values=target_values,
+                        target_layers=target_layers,
+                        map_reduction=layer_map_reduction,
+                        vector_reduction=layer_gradient_reduction,
+                        pseudo_gt=layer_pseudo_gt,
+                        cand_score_threshold=layer_cand_score_threshold,
+                        bbox_loss=layer_bbox_loss,
+                        cls_loss=layer_cls_loss,
+                        obj_loss=layer_obj_loss,
+                        bbox_direction=layer_bbox_direction,
+                        cls_direction=layer_cls_direction,
+                        obj_direction=layer_obj_direction,
+                        timing_accumulator=stage_seconds,
+                        timing_device=device,
+                    )
                 for bbox_row in bbox_rows:
                     row = {
                         "image_id": image_id,
