@@ -402,8 +402,6 @@ def parse_output_config(output_cfg):
         return normalized
 
     def validate_loss_directions(bbox_direction, cls_loss, obj_loss, cls_direction, obj_direction):
-        if bbox_direction != "pred_to_target":
-            raise ValueError("bbox_direction=target_to_pred is not supported because ciou, l1, and l2 bbox losses are symmetric.")
         if cls_direction == "target_to_pred" and cls_loss in {"bcewithlogits", "ce"}:
             raise ValueError("cls_direction=target_to_pred is only supported when cls_loss=kl.")
         if obj_direction == "target_to_pred" and obj_loss != "signed_diff":
@@ -924,11 +922,9 @@ def _bbox_loss_xywh_tensor(
     reduction: str = "mean",
     direction: str = "pred_to_target",
 ):
-    if direction != "pred_to_target":
-        raise ValueError("bbox_direction=target_to_pred is not supported because ciou, l1, and l2 bbox losses are symmetric.")
     mode = str(mode).strip().lower()
     target_xywh = target_xywh.to(dtype=pred_xywh.dtype, device=pred_xywh.device)
-    left, right = pred_xywh, target_xywh
+    left, right = _apply_direction(pred_xywh, target_xywh, direction)
 
     if mode == "ciou":
         loss = 1.0 - _bbox_ciou_xywh_tensor(left, right)
@@ -938,6 +934,30 @@ def _bbox_loss_xywh_tensor(
         loss = torch.square(left - right)
     else:
         raise ValueError("bbox_loss must be one of: ciou, l1, l2")
+
+    if reduction == "sum":
+        return loss.sum()
+    if reduction == "none":
+        return loss
+    return loss.mean()
+
+
+def _bbox_loss_xyxy_tensor(
+    pred_xyxy: torch.Tensor,
+    target_xyxy: torch.Tensor,
+    mode: str = "l1",
+    reduction: str = "sum",
+    direction: str = "pred_to_target",
+):
+    mode = str(mode).strip().lower()
+    target_xyxy = target_xyxy.to(dtype=pred_xyxy.dtype, device=pred_xyxy.device)
+    left, right = _apply_direction(pred_xyxy, target_xyxy, direction)
+    if mode == "l1":
+        loss = torch.abs(left - right)
+    elif mode == "l2":
+        loss = torch.square(left - right)
+    else:
+        raise ValueError("Faster R-CNN ROI bbox_loss must be one of: l1, l2")
 
     if reduction == "sum":
         return loss.sum()
@@ -1122,6 +1142,70 @@ def build_pseudo_label_losses_for_candidates(
     return losses
 
 
+def build_faster_rcnn_roi_candidate_losses(
+    pred_img: torch.Tensor,
+    logit_img: torch.Tensor,
+    raw_idx: int,
+    iou_threshold: float,
+    score_threshold: float = 0.01,
+    bbox_loss: str = "l1",
+    cls_loss: str = "bcewithlogits",
+    bbox_direction: str = "pred_to_target",
+    cls_direction: str = "pred_to_target",
+    timing_accumulator=None,
+    timing_device=None,
+):
+    if raw_idx >= pred_img.shape[0]:
+        return None
+    if logit_img is None or logit_img.numel() == 0:
+        return None
+
+    t_candidate = _start_timing(timing_device)
+    with torch.no_grad():
+        pseudo_row = pred_img[raw_idx].detach()
+        pseudo_cls = int(pseudo_row[5].detach().long().item())
+        pred_boxes_xyxy = _xywh_to_xyxy_tensor(pred_img[:, :4].detach())
+        pseudo_box_xyxy = _xywh_to_xyxy_tensor(pseudo_row[:4].view(1, 4))
+        ious = _box_iou_1vN_tensor(pseudo_box_xyxy, pred_boxes_xyxy)
+        pred_cls = pred_img[:, 5].detach().long()
+        score = pred_img[:, 4].detach()
+        candidate_mask = (score >= float(score_threshold)) & (pred_cls == pseudo_cls) & (ious > float(iou_threshold))
+        if not bool(candidate_mask.any()):
+            candidate_mask = torch.zeros_like(pred_cls, dtype=torch.bool)
+            candidate_mask[raw_idx] = True
+    _add_elapsed_timing(timing_accumulator, "candidate_search_sec", t_candidate, timing_device)
+
+    t_loss = _start_timing(timing_device)
+    candidate_boxes_xyxy = _xywh_to_xyxy_tensor(pred_img[candidate_mask, :4])
+    pseudo_box_target = _xywh_to_xyxy_tensor(pred_img[raw_idx, :4].view(1, 4)).detach()
+    pseudo_box_target = pseudo_box_target.expand(candidate_boxes_xyxy.shape[0], -1)
+    bbox_loss_value = _bbox_loss_xyxy_tensor(
+        candidate_boxes_xyxy,
+        pseudo_box_target,
+        mode=bbox_loss,
+        reduction="sum",
+        direction=bbox_direction,
+    )
+
+    candidate_logits = logit_img[candidate_mask]
+    cls_target = torch.zeros_like(candidate_logits)
+    if 0 <= pseudo_cls < cls_target.shape[1]:
+        cls_target[:, pseudo_cls] = 1.0
+    cls_loss_value = _class_loss_tensor(
+        candidate_logits,
+        cls_target,
+        class_idx=pseudo_cls,
+        mode=cls_loss,
+        direction=cls_direction,
+        reduction="sum",
+    )
+    _add_elapsed_timing(timing_accumulator, "loss_compute_sec", t_loss, timing_device)
+    return {
+        "bbox_loss": bbox_loss_value,
+        "cls_loss": cls_loss_value,
+    }
+
+
 def build_layer_target_scalar_bbox(
     target_value,
     pred_img,
@@ -1224,6 +1308,165 @@ def build_layer_target_scalar_bbox(
     if losses is not None and target_value in losses:
         return losses[target_value]
     return None
+
+
+def collect_faster_rcnn_roi_layer_grads_per_target(
+    detector,
+    input_tensor,
+    target_values,
+    target_layers,
+    map_reduction="none",
+    vector_reduction=None,
+    cand_score_threshold=0.01,
+    bbox_loss: str = "l1",
+    cls_loss: str = "bcewithlogits",
+    bbox_direction: str = "pred_to_target",
+    cls_direction: str = "pred_to_target",
+    timing_accumulator=None,
+    timing_device=None,
+):
+    bbox_loss = str(bbox_loss).strip().lower()
+    if bbox_loss not in {"l1", "l2"}:
+        raise ValueError("Faster R-CNN layer_grad.gradient.bbox_loss supports only l1 or l2.")
+
+    if not isinstance(input_tensor, list):
+        input_images = [img for img in input_tensor] if isinstance(input_tensor, torch.Tensor) else list(input_tensor)
+    else:
+        input_images = input_tensor
+    if len(input_images) != 1:
+        raise ValueError("Faster R-CNN layer_grad currently expects one image per gradient call.")
+
+    layer_params = [resolve_layer_parameter(detector.model, layer_name) for layer_name in target_layers]
+    original_requires_grad = [bool(p.requires_grad) for p in layer_params]
+    for param in layer_params:
+        param.requires_grad_(True)
+
+    model = detector.detector_model
+    was_training = model.training
+    model.eval()
+
+    t_detector = _start_timing(timing_device)
+    image_list = [
+        img.to(detector.device, non_blocking=True) if img.device != detector.device else img
+        for img in input_images
+    ]
+    original_image_sizes = [(int(img.shape[-2]), int(img.shape[-1])) for img in image_list]
+    transformed_images, _targets = model.transform(image_list, None)
+    features = model.backbone(transformed_images.tensors)
+    if isinstance(features, torch.Tensor):
+        features = {"0": features}
+    proposals, _proposal_losses = model.rpn(transformed_images, features, None)
+    roi_heads = model.roi_heads
+    box_features = roi_heads.box_roi_pool(features, proposals, transformed_images.image_sizes)
+    box_features = roi_heads.box_head(box_features)
+    class_logits, box_regression = roi_heads.box_predictor(box_features)
+    detections = detector._pre_nms_detections_with_logits(
+        class_logits=class_logits,
+        box_regression=box_regression,
+        proposals=proposals,
+        image_shapes=transformed_images.image_sizes,
+    )
+    detections = model.transform.postprocess(detections, transformed_images.image_sizes, original_image_sizes)
+    raw_prediction, raw_logits = detector._detections_to_contract(
+        detections,
+        detector.device,
+        include_class_features=True,
+    )
+    with torch.no_grad():
+        detached_prediction = [p.detach().clone() for p in raw_prediction]
+        detached_logits = [l.detach().clone() for l in raw_logits] if raw_logits is not None else None
+        selected_preds, _selected_logits, _selected_objectness, selected_indices = detector.non_max_suppression(
+            detached_prediction,
+            detached_logits,
+            detector.confidence,
+            detector.iou_thresh,
+            classes=None,
+            agnostic=detector.agnostic,
+            max_det=getattr(detector, "max_det", None),
+            return_indices=True,
+        )
+    _add_elapsed_timing(timing_accumulator, "detector_inference_sec", t_detector, timing_device)
+
+    det = selected_preds[0] if selected_preds else torch.zeros((0, 6), device=detector.device)
+    raw_keep_indices = selected_indices[0] if selected_indices else torch.zeros((0,), dtype=torch.long, device=detector.device)
+    pred_img = raw_prediction[0]
+    logit_img = raw_logits[0] if raw_logits is not None else None
+
+    rows = []
+    num_boxes = int(det.shape[0])
+    iou_threshold = float(getattr(detector, "iou_thresh", 0.45))
+    try:
+        for bbox_idx in range(num_boxes):
+            raw_idx = int(raw_keep_indices[bbox_idx].detach().cpu().item())
+            grad_stats = {}
+            for target_value in target_values:
+                if target_value not in {"bbox_loss", "cls_loss"}:
+                    continue
+                detector.zero_grad(set_to_none=True)
+                target_scalar = build_faster_rcnn_roi_candidate_losses(
+                    pred_img=pred_img,
+                    logit_img=logit_img,
+                    raw_idx=raw_idx,
+                    iou_threshold=iou_threshold,
+                    score_threshold=cand_score_threshold,
+                    bbox_loss=bbox_loss,
+                    cls_loss=cls_loss,
+                    bbox_direction=bbox_direction,
+                    cls_direction=cls_direction,
+                    timing_accumulator=timing_accumulator,
+                    timing_device=timing_device,
+                )
+                if target_scalar is None or target_value not in target_scalar:
+                    for layer_name in target_layers:
+                        grad_stats[f"{target_value}_{layer_name}"] = (
+                            {metric: 0.0 for metric in vector_reduction} if vector_reduction else []
+                        )
+                    continue
+
+                scalar = target_scalar[target_value]
+                t_backprop = _start_timing(timing_device)
+                grads = torch.autograd.grad(
+                    scalar,
+                    layer_params,
+                    retain_graph=True,
+                    allow_unused=True,
+                )
+                _add_elapsed_timing(timing_accumulator, "backpropagation_sec", t_backprop, timing_device)
+
+                t_feature = _start_timing(timing_device)
+                for layer_idx, layer_name in enumerate(target_layers):
+                    key = f"{target_value}_{layer_name}"
+                    grad_stats[key] = format_gradient_output(
+                        grads[layer_idx],
+                        vector_reduction=vector_reduction,
+                        map_reduction=map_reduction,
+                    )
+                _add_elapsed_timing(timing_accumulator, "feature_compute_sec", t_feature, timing_device)
+                del scalar, grads
+
+            cls_idx = int(det[bbox_idx, 5].detach().cpu().item())
+            rows.append(
+                {
+                    "pred_idx": bbox_idx,
+                    "raw_pred_idx": raw_idx,
+                    "xmin": float(det[bbox_idx, 0].detach().cpu().item()),
+                    "ymin": float(det[bbox_idx, 1].detach().cpu().item()),
+                    "xmax": float(det[bbox_idx, 2].detach().cpu().item()),
+                    "ymax": float(det[bbox_idx, 3].detach().cpu().item()),
+                    "score": float(det[bbox_idx, 4].detach().cpu().item()),
+                    "pred_class": detector.names[cls_idx] if detector.names is not None else cls_idx,
+                    "grad_stats": grad_stats,
+                }
+            )
+    finally:
+        for param, req_grad in zip(layer_params, original_requires_grad):
+            param.requires_grad_(req_grad)
+        detector.zero_grad(set_to_none=True)
+        if was_training:
+            model.train()
+        del raw_prediction, raw_logits, pred_img, logit_img
+
+    return rows
 
 
 def collect_bbox_layer_grads_per_target(

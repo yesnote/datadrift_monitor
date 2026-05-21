@@ -30,7 +30,7 @@ dataloader:
   aspect_ratio_grouping: true
 
 output:
-  uncertainty: gt  # gt | deterministic | score | class_probability | entropy | energy | mc_dropout | ensemble | meta_detect
+  uncertainty: gt  # gt | deterministic | score | class_probability | entropy | energy | mc_dropout | ensemble | meta_detect | layer_grad
   gt:
     iou_match_threshold: 0.45
     save_csv:
@@ -53,5 +53,17 @@ output:
   meta_detect:
     score_threshold: 0.0
     iou_threshold: 0.45
+    save_csv: {enabled: false}
+  layer_grad:
+    gradient:
+      scalar: [bbox_loss, cls_loss]
+      layer: ["roi_heads.box_head.fc7", "roi_heads.box_predictor.cls_score", "roi_heads.box_predictor.bbox_pred"]
+      target: cand_target
+      reduction: [l1_norm, l2_norm, min, max, mean, std]
+      cand_score_threshold: 0.0
+      bbox_loss: l1  # l1 | l2
+      cls_loss: bcewithlogits  # bcewithlogits | kl | ce
+      bbox_direction: pred_to_target
+      cls_direction: pred_to_target
     save_csv: {enabled: false}
 

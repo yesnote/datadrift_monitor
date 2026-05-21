@@ -28,6 +28,7 @@ from commands.utils.predict_utils import (
     build_detector,
     enable_forced_mc_dropout_on_yolov5_head,
     collect_bbox_layer_grads_per_target,
+    collect_faster_rcnn_roi_layer_grads_per_target,
     draw_predictions,
     get_fn_gt_indices,
     get_prediction_class_probs,
