@@ -177,12 +177,7 @@ def run_tp_csv(config, run_dir):
                 infer_batch = image_list
                 ratios = [(1.0, 1.0) for _ in image_list]
                 pads = [(0.0, 0.0) for _ in image_list]
-                resized_chws = [
-                    np.ascontiguousarray(
-                        np.clip(img.detach().cpu().numpy() * 255.0, 0, 255).astype(np.uint8)
-                    )
-                    for img in image_list
-                ]
+                resized_chws = None
             else:
                 infer_batch, ratios, pads, resized_chws = _prepare_infer_batch(detector, image_list, device, auto=False)
             is_faster_rcnn = bool(getattr(detector, "is_faster_rcnn", False))
@@ -243,7 +238,13 @@ def run_tp_csv(config, run_dir):
                 if should_save_image:
                     step_dir = run_dir / "images" / f"0_{step_idx}"
                     step_dir.mkdir(parents=True, exist_ok=True)
-                    vis_image = np.transpose(resized_chws[sample_idx], (1, 2, 0)).copy()
+                    if resized_chws is None:
+                        image_chw = np.ascontiguousarray(
+                            np.clip(image_list[sample_idx].detach().cpu().numpy() * 255.0, 0, 255).astype(np.uint8)
+                        )
+                    else:
+                        image_chw = resized_chws[sample_idx]
+                    vis_image = np.transpose(image_chw, (1, 2, 0)).copy()
                     for gt_box, gt_name in zip(gt_boxes, gt_class_names):
                         x1, y1, x2, y2 = [int(v) for v in gt_box]
                         cv2.rectangle(vis_image, (x1, y1), (x2, y2), (64, 128, 255), 2)
