@@ -97,7 +97,12 @@ def run_mc_dropout_csv(config, run_dir):
             # Count this as detector inference because it is a model forward plus NMS.
             t_detector = timing.start()
             with torch.no_grad():
-                det_output = detector.model(infer_batch, augment=False)
+                roi_cache = None
+                if bool(getattr(detector, "is_faster_rcnn", False)) and hasattr(detector, "prepare_roi_cache"):
+                    roi_cache = detector.prepare_roi_cache(infer_batch)
+                    det_output = detector.forward_from_roi_cache(roi_cache)
+                else:
+                    det_output = detector.model(infer_batch, augment=False)
                 det_raw_pred = det_output[0] if isinstance(det_output, (tuple, list)) else det_output
                 det_raw_logits = det_output[1] if isinstance(det_output, (tuple, list)) and len(det_output) > 1 else None
                 selected_preds, _selected_logits, _selected_objectness, selected_indices = detector.non_max_suppression(
@@ -126,7 +131,10 @@ def run_mc_dropout_csv(config, run_dir):
                     for _ in range(num_runs):
                         detector.zero_grad(set_to_none=True)
                         t_detector = timing.start()
-                        model_output = detector.model(infer_batch, augment=False)
+                        if roi_cache is not None:
+                            model_output = detector.forward_from_roi_cache(roi_cache)
+                        else:
+                            model_output = detector.model(infer_batch, augment=False)
                         raw_prediction = model_output[0] if isinstance(model_output, (tuple, list)) else model_output
                         raw_logits = (
                             model_output[1]
@@ -270,6 +278,8 @@ def run_mc_dropout_csv(config, run_dir):
             del feature_runs
             if feat_mean is not None:
                 del feat_mean, feat_std
+            if "roi_cache" in locals() and roi_cache is not None:
+                del roi_cache
             del infer_batch
     except Exception:
         had_error = True
