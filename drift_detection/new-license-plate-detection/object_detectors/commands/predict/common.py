@@ -30,6 +30,8 @@ from commands.utils.predict_utils import (
     collect_bbox_layer_grads_per_target,
     draw_predictions,
     get_fn_gt_indices,
+    get_prediction_class_probs,
+    get_selected_prediction_class_probs,
     get_pre_nms_keep_indices,
     has_fn_for_image,
     load_gt_category_maps,

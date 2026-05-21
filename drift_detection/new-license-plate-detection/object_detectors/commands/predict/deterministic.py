@@ -13,7 +13,7 @@ def _empty_class_tensor(num_classes, device):
     return torch.zeros((0, num_classes), dtype=torch.float32, device=device)
 
 
-def _selected_class_scores(raw_prediction, raw_logits, sample_idx, raw_keep_b, num_classes, device):
+def _selected_class_scores(detector, raw_prediction, raw_logits, sample_idx, raw_keep_b, num_classes, device):
     if raw_logits is not None:
         return (
             raw_logits[sample_idx][raw_keep_b]
@@ -21,7 +21,7 @@ def _selected_class_scores(raw_prediction, raw_logits, sample_idx, raw_keep_b, n
             else _empty_class_tensor(num_classes, device)
         )
     return (
-        raw_prediction[sample_idx][raw_keep_b, 5:]
+        get_selected_prediction_class_probs(detector, raw_prediction[sample_idx], raw_keep_b)
         if int(raw_keep_b.shape[0]) > 0 and raw_prediction[sample_idx].shape[1] > 5
         else _empty_class_tensor(num_classes, device)
     )
@@ -193,7 +193,7 @@ def run_deterministic_uncertainties_csv(config, run_dir, uncertainties):
                 batch_items += int(det.shape[0])
 
                 selected_scores = _selected_class_scores(
-                    raw_prediction, raw_logits, sample_idx, raw_keep_b, num_classes, device
+                    detector, raw_prediction, raw_logits, sample_idx, raw_keep_b, num_classes, device
                 )
                 selected_probs = torch.softmax(selected_scores, dim=-1) if selected_scores.numel() else selected_scores
 
