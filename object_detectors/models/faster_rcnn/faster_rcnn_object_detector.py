@@ -378,6 +378,7 @@ class FasterRCNNTorchObjectDetector(nn.Module):
                 "scores": scores,
                 "class_logits": logits,
                 "class_probs": probs,
+                "proposal_indices": proposal_indices,
             })
         return all_detections
 

@@ -106,5 +106,27 @@ output:
           bbox_loss: l1  # l1 | l2
           cls_direction: pred_to_target
           bbox_direction: pred_to_target
+      null_target:
+        rpn:
+          enabled: true
+          scalar: [obj_loss, bbox_loss]
+          layer:
+            obj_loss: ["rpn.head.conv", "rpn.head.cls_logits"]
+            bbox_loss: ["rpn.head.conv", "rpn.head.bbox_pred"]
+          obj_loss: bcewithlogits  # bcewithlogits | abs_diff | diff
+          bbox_loss: l1  # l1 | l2
+          obj_target: 0.5
+          obj_direction: pred_to_target
+          bbox_direction: pred_to_target
+        roi:
+          enabled: true
+          scalar: [cls_loss, bbox_loss]
+          layer:
+            cls_loss: ["roi_heads.box_head.fc7", "roi_heads.box_predictor.cls_score"]
+            bbox_loss: ["roi_heads.box_head.fc7", "roi_heads.box_predictor.bbox_pred"]
+          cls_loss: bcewithlogits  # bcewithlogits | kl | ce
+          bbox_loss: l1  # l1 | l2
+          cls_direction: pred_to_target
+          bbox_direction: pred_to_target
     save_csv:
       enabled: true

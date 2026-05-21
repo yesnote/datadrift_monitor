@@ -77,6 +77,8 @@ def run_layer_grad_csv(config, run_dir):
     layer_cand_score_threshold = float(parsed.get("layer_cand_score_threshold", 0.01))
     layer_roi_cand_scalar = [str(v) for v in parsed.get("layer_roi_cand_scalar", [])]
     layer_rpn_cand_scalar = [str(v) for v in parsed.get("layer_rpn_cand_scalar", [])]
+    layer_roi_null_scalar = [str(v) for v in parsed.get("layer_roi_null_scalar", [])]
+    layer_rpn_null_scalar = [str(v) for v in parsed.get("layer_rpn_null_scalar", [])]
     layer_bbox_loss = parsed.get("layer_bbox_loss", "ciou")
     layer_cls_loss = parsed.get("layer_cls_loss", "bcewithlogits")
     layer_obj_loss = parsed.get("layer_obj_loss", "bcewithlogits")
@@ -95,6 +97,17 @@ def run_layer_grad_csv(config, run_dir):
     layer_rpn_obj_loss = parsed.get("layer_rpn_obj_loss", "bcewithlogits")
     layer_rpn_bbox_direction = parsed.get("layer_rpn_bbox_direction", "pred_to_target")
     layer_rpn_obj_direction = parsed.get("layer_rpn_obj_direction", "pred_to_target")
+    layer_roi_null_enabled = bool(parsed.get("layer_roi_null_enabled", True))
+    layer_roi_null_bbox_loss = parsed.get("layer_roi_null_bbox_loss", "l1")
+    layer_roi_null_cls_loss = parsed.get("layer_roi_null_cls_loss", "bcewithlogits")
+    layer_roi_null_bbox_direction = parsed.get("layer_roi_null_bbox_direction", "pred_to_target")
+    layer_roi_null_cls_direction = parsed.get("layer_roi_null_cls_direction", "pred_to_target")
+    layer_rpn_null_enabled = bool(parsed.get("layer_rpn_null_enabled", True))
+    layer_rpn_null_bbox_loss = parsed.get("layer_rpn_null_bbox_loss", "l1")
+    layer_rpn_null_obj_loss = parsed.get("layer_rpn_null_obj_loss", "bcewithlogits")
+    layer_rpn_null_bbox_direction = parsed.get("layer_rpn_null_bbox_direction", "pred_to_target")
+    layer_rpn_null_obj_direction = parsed.get("layer_rpn_null_obj_direction", "pred_to_target")
+    layer_rpn_null_obj_target = float(parsed.get("layer_rpn_null_obj_target", 0.5))
 
     if not save_csv:
         return
@@ -112,18 +125,21 @@ def run_layer_grad_csv(config, run_dir):
     detector, device = build_detector(config)
     is_faster_rcnn = bool(getattr(detector, "is_faster_rcnn", False))
     if is_faster_rcnn:
-        if layer_pseudo_gt != "cand":
-            raise NotImplementedError("Faster R-CNN layer_grad currently supports only target: cand_target.")
+        target_mode = "null" if layer_pseudo_gt == "uniform" else "cand"
         alias = {
             "bbox_loss": "roi_bbox_loss",
             "cls_loss": "roi_cls_loss",
             "obj_loss": "rpn_obj_loss",
         }
         nested_target_values = []
-        if layer_rpn_cand_enabled:
+        if target_mode == "cand" and layer_rpn_cand_enabled:
             nested_target_values.extend(layer_rpn_cand_scalar)
-        if layer_roi_cand_enabled:
+        if target_mode == "cand" and layer_roi_cand_enabled:
             nested_target_values.extend(layer_roi_cand_scalar)
+        if target_mode == "null" and layer_rpn_null_enabled:
+            nested_target_values.extend(layer_rpn_null_scalar)
+        if target_mode == "null" and layer_roi_null_enabled:
+            nested_target_values.extend(layer_roi_null_scalar)
         if nested_target_values:
             target_values = list(dict.fromkeys(nested_target_values))
         else:
@@ -131,13 +147,15 @@ def run_layer_grad_csv(config, run_dir):
         allowed = {"roi_bbox_loss", "roi_cls_loss", "rpn_bbox_loss", "rpn_obj_loss"}
         target_values = [v for v in target_values if v in allowed]
         if not target_values:
-            target_values = ["roi_bbox_loss", "roi_cls_loss"]
-        if not layer_roi_cand_enabled:
+            target_values = ["roi_bbox_loss", "roi_cls_loss"] if target_mode == "cand" else ["rpn_bbox_loss", "rpn_obj_loss", "roi_bbox_loss", "roi_cls_loss"]
+        roi_enabled = layer_roi_cand_enabled if target_mode == "cand" else layer_roi_null_enabled
+        rpn_enabled = layer_rpn_cand_enabled if target_mode == "cand" else layer_rpn_null_enabled
+        if not roi_enabled:
             target_values = [v for v in target_values if not v.startswith("roi_")]
-        if not layer_rpn_cand_enabled:
+        if not rpn_enabled:
             target_values = [v for v in target_values if not v.startswith("rpn_")]
         if not target_values:
-            raise ValueError("Faster R-CNN layer_grad has no enabled cand_target scalar values.")
+            raise ValueError("Faster R-CNN layer_grad has no enabled target scalar values.")
     timing = StageTimingProfiler(
         run_dir=run_dir,
         uncertainty=uncertainty,
@@ -213,6 +231,7 @@ def run_layer_grad_csv(config, run_dir):
                         target_layer_map=target_layer_map,
                         map_reduction=layer_map_reduction,
                         vector_reduction=layer_gradient_reduction,
+                        target_mode=target_mode,
                         roi_cand_enabled=layer_roi_cand_enabled,
                         roi_cand_score_threshold=layer_roi_cand_score_threshold,
                         roi_bbox_loss=layer_roi_bbox_loss,
@@ -225,6 +244,17 @@ def run_layer_grad_csv(config, run_dir):
                         rpn_obj_loss=layer_rpn_obj_loss,
                         rpn_bbox_direction=layer_rpn_bbox_direction,
                         rpn_obj_direction=layer_rpn_obj_direction,
+                        roi_null_enabled=layer_roi_null_enabled,
+                        roi_null_bbox_loss=layer_roi_null_bbox_loss,
+                        roi_null_cls_loss=layer_roi_null_cls_loss,
+                        roi_null_bbox_direction=layer_roi_null_bbox_direction,
+                        roi_null_cls_direction=layer_roi_null_cls_direction,
+                        rpn_null_enabled=layer_rpn_null_enabled,
+                        rpn_null_bbox_loss=layer_rpn_null_bbox_loss,
+                        rpn_null_obj_loss=layer_rpn_null_obj_loss,
+                        rpn_null_bbox_direction=layer_rpn_null_bbox_direction,
+                        rpn_null_obj_direction=layer_rpn_null_obj_direction,
+                        rpn_null_obj_target=layer_rpn_null_obj_target,
                         timing_accumulator=stage_seconds,
                         timing_device=device,
                     )
