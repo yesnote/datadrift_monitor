@@ -97,12 +97,13 @@ def _prepare_infer_batch(detector, images, device, auto=False):
 
 
 def _resolve_detector_nms_kwargs(detector):
+    max_det = getattr(detector, "max_det", 300)
     return {
         "conf_thres": float(getattr(detector, "conf_thresh", getattr(detector, "confidence", 0.25))),
         "iou_thres": float(getattr(detector, "iou_thresh", 0.45)),
         "classes": getattr(detector, "filter_classes", None),
         "agnostic": bool(getattr(detector, "agnostic_nms", getattr(detector, "agnostic", False))),
-        "max_det": int(getattr(detector, "max_det", 300)),
+        "max_det": int(max_det) if max_det is not None else None,
     }
 
 
