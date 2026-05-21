@@ -198,8 +198,16 @@ class FasterRCNNTorchObjectDetector(nn.Module):
     def set_dropout_rate(self, dropout_rate):
         predictor = self.detector_model.roi_heads.box_predictor
         if not isinstance(predictor, _DropoutFastRCNNPredictor):
+            try:
+                param = next(predictor.parameters())
+                predictor_device = param.device
+                predictor_dtype = param.dtype
+            except StopIteration:
+                predictor_device = self.device
+                predictor_dtype = torch.float32
             self.detector_model.roi_heads.box_predictor = _DropoutFastRCNNPredictor(predictor, dropout_rate=0.0)
             predictor = self.detector_model.roi_heads.box_predictor
+            predictor.to(device=predictor_device, dtype=predictor_dtype)
         predictor.dropout = float(dropout_rate)
 
     def _map_labels_to_output(self, labels_internal):
