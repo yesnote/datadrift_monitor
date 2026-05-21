@@ -107,7 +107,6 @@ def run_layer_grad_csv(config, run_dir):
     layer_rpn_null_obj_loss = parsed.get("layer_rpn_null_obj_loss", "bcewithlogits")
     layer_rpn_null_bbox_direction = parsed.get("layer_rpn_null_bbox_direction", "pred_to_target")
     layer_rpn_null_obj_direction = parsed.get("layer_rpn_null_obj_direction", "pred_to_target")
-    layer_rpn_null_obj_target = float(parsed.get("layer_rpn_null_obj_target", 0.5))
 
     if not save_csv:
         return
@@ -148,14 +147,8 @@ def run_layer_grad_csv(config, run_dir):
         target_values = [v for v in target_values if v in allowed]
         if not target_values:
             target_values = ["roi_bbox_loss", "roi_cls_loss"] if target_mode == "cand" else ["rpn_bbox_loss", "rpn_obj_loss", "roi_bbox_loss", "roi_cls_loss"]
-        roi_enabled = layer_roi_cand_enabled if target_mode == "cand" else layer_roi_null_enabled
-        rpn_enabled = layer_rpn_cand_enabled if target_mode == "cand" else layer_rpn_null_enabled
-        if not roi_enabled:
-            target_values = [v for v in target_values if not v.startswith("roi_")]
-        if not rpn_enabled:
-            target_values = [v for v in target_values if not v.startswith("rpn_")]
-        if not target_values:
-            raise ValueError("Faster R-CNN layer_grad has no enabled target scalar values.")
+        layer_roi_cand_enabled = layer_roi_null_enabled = any(v.startswith("roi_") for v in target_values)
+        layer_rpn_cand_enabled = layer_rpn_null_enabled = any(v.startswith("rpn_") for v in target_values)
     timing = StageTimingProfiler(
         run_dir=run_dir,
         uncertainty=uncertainty,
@@ -254,7 +247,6 @@ def run_layer_grad_csv(config, run_dir):
                         rpn_null_obj_loss=layer_rpn_null_obj_loss,
                         rpn_null_bbox_direction=layer_rpn_null_bbox_direction,
                         rpn_null_obj_direction=layer_rpn_null_obj_direction,
-                        rpn_null_obj_target=layer_rpn_null_obj_target,
                         timing_accumulator=stage_seconds,
                         timing_device=device,
                     )

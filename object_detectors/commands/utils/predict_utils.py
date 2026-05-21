@@ -383,7 +383,6 @@ def parse_output_config(output_cfg):
     layer_rpn_null_obj_loss = "bcewithlogits"
     layer_rpn_null_bbox_direction = "pred_to_target"
     layer_rpn_null_obj_direction = "pred_to_target"
-    layer_rpn_null_obj_target = 0.5
 
     loss_aliases = {
         "bce": "bcewithlogits",
@@ -403,7 +402,6 @@ def parse_output_config(output_cfg):
         "abs": "abs_diff",
         "abs_diff": "abs_diff",
         "absolute_diff": "abs_diff",
-        "diff": "signed_diff",
         "signed": "signed_diff",
         "signed_diff": "signed_diff",
     }
@@ -511,13 +509,13 @@ def parse_output_config(output_cfg):
                 layer_gradient_reduction.append(normalized)
         layer_cand_score_threshold = as_float(g.get("cand_score_threshold", 0.01), 0.01)
 
-        if cand_target_cfg or unified_roi_cfg or unified_rpn_cfg:
+        if cand_target_cfg:
             layer_roi_cand_enabled = bool(roi_cand_cfg.get("enabled", True))
             layer_rpn_cand_enabled = bool(rpn_cand_cfg.get("enabled", False))
-            if unified_roi_cfg:
-                layer_roi_cand_enabled = bool(unified_roi_cfg.get("enabled", layer_roi_cand_enabled))
-            if unified_rpn_cfg:
-                layer_rpn_cand_enabled = bool(unified_rpn_cfg.get("enabled", True))
+        if unified_roi_cfg:
+            layer_roi_cand_enabled = True
+        if unified_rpn_cfg:
+            layer_rpn_cand_enabled = True
         layer_roi_cand_scalar = [
             f"roi_{v}" if v in {"bbox_loss", "cls_loss"} else v
             for v in [str(v).strip().lower() for v in normalize_to_list(roi_cand_cfg.get("scalar", []))]
@@ -534,13 +532,13 @@ def parse_output_config(output_cfg):
             active_rpn_cfg.get("cand_obj_threshold", active_rpn_cfg.get("cand_score_threshold", 0.0)),
             0.0,
         )
-        if null_target_cfg or unified_roi_cfg or unified_rpn_cfg:
+        if null_target_cfg:
             layer_roi_null_enabled = bool(roi_null_cfg.get("enabled", True))
             layer_rpn_null_enabled = bool(rpn_null_cfg.get("enabled", True))
-            if unified_roi_cfg:
-                layer_roi_null_enabled = bool(unified_roi_cfg.get("enabled", layer_roi_null_enabled))
-            if unified_rpn_cfg:
-                layer_rpn_null_enabled = bool(unified_rpn_cfg.get("enabled", layer_rpn_null_enabled))
+        if unified_roi_cfg:
+            layer_roi_null_enabled = True
+        if unified_rpn_cfg:
+            layer_rpn_null_enabled = True
         layer_roi_null_scalar = [
             f"roi_{v}" if v in {"bbox_loss", "cls_loss"} else v
             for v in [str(v).strip().lower() for v in normalize_to_list(roi_null_cfg.get("scalar", []))]
@@ -549,8 +547,6 @@ def parse_output_config(output_cfg):
             f"rpn_{v}" if v in {"bbox_loss", "obj_loss"} else v
             for v in [str(v).strip().lower() for v in normalize_to_list(rpn_null_cfg.get("scalar", []))]
         ]
-        layer_rpn_null_obj_target = as_float(active_rpn_cfg.get("obj_target", 0.5), 0.5)
-
         layer_bbox_loss = normalize_loss_option(g.get("bbox_loss", "ciou"), "ciou", {"ciou", "l1", "l2"}, "layer_grad.gradient.bbox_loss")
         layer_cls_loss = normalize_loss_option(
             g.get("cls_loss", "bcewithlogits"),
@@ -671,7 +667,7 @@ def parse_output_config(output_cfg):
             "layer_grad.gradient.rpn.obj_direction",
         )
         if layer_rpn_null_obj_direction == "target_to_pred" and layer_rpn_null_obj_loss != "signed_diff":
-            raise ValueError("layer_grad.gradient.null_target.rpn.obj_direction=target_to_pred is only supported when obj_loss=diff.")
+            raise ValueError("layer_grad.gradient.rpn.obj_direction=target_to_pred is only supported when obj_loss=signed_diff.")
 
     null_bbox_loss = normalize_loss_option(null_detect_cfg.get("bbox_loss", "ciou"), "ciou", {"ciou", "l1", "l2"}, "null_detect.bbox_loss")
     null_cls_loss = normalize_loss_option(
@@ -750,7 +746,6 @@ def parse_output_config(output_cfg):
         "layer_rpn_null_obj_loss": layer_rpn_null_obj_loss,
         "layer_rpn_null_bbox_direction": layer_rpn_null_bbox_direction,
         "layer_rpn_null_obj_direction": layer_rpn_null_obj_direction,
-        "layer_rpn_null_obj_target": float(layer_rpn_null_obj_target),
         "null_detect_bbox_loss": null_bbox_loss,
         "null_detect_cls_loss": null_cls_loss,
         "null_detect_obj_loss": null_obj_loss,
