@@ -180,9 +180,7 @@ def run_tp_csv(config, run_dir):
                 resized_chws = None
             else:
                 infer_batch, ratios, pads, resized_chws = _prepare_infer_batch(detector, image_list, device, auto=False)
-            is_faster_rcnn = bool(getattr(detector, "is_faster_rcnn", False))
-            inference_context = torch.inference_mode if is_faster_rcnn else torch.no_grad
-            with inference_context():
+            with torch.no_grad():
                 model_output = detector.model(infer_batch, augment=False)
                 raw_prediction = model_output[0] if isinstance(model_output, (tuple, list)) else model_output
                 raw_logits = model_output[1] if isinstance(model_output, (tuple, list)) and len(model_output) > 1 else None
