@@ -31,7 +31,10 @@ REUSE_EXISTING = False
 # Use None for all valid combinations, or set a small int for a smoke test.
 MAX_COMBINATIONS = None
 
-SCALARS = ["rpn_obj_loss", "rpn_bbox_loss", "roi_cls_loss", "roi_bbox_loss"]
+SCALARS = {
+    "cand_target": ["rpn_obj_loss", "rpn_bbox_loss", "roi_cls_loss", "roi_bbox_loss"],
+    "null_target": ["bbox_loss", "obj_loss", "cls_loss"],
+}
 TARGETS = ["cand_target", "null_target"]
 
 RPN_BBOX_LOSSES = ["l1", "l2"]
@@ -189,29 +192,49 @@ def _prepare_layer_grad_config(base_config: dict, combo: dict, target: str) -> d
     grad_cfg = layer_grad_cfg.setdefault("gradient", {})
 
     grad_cfg["target"] = target
-    grad_cfg["scalar"] = list(SCALARS)
-    grad_cfg["layer"] = {
-        "rpn_obj_loss": ["rpn.head.conv", "rpn.head.cls_logits"],
-        "rpn_bbox_loss": ["rpn.head.conv", "rpn.head.bbox_pred"],
-        "roi_cls_loss": ["roi_heads.box_head.fc7", "roi_heads.box_predictor.cls_score"],
-        "roi_bbox_loss": [
-            "roi_heads.box_head.fc7",
-            "roi_heads.box_predictor.bbox_pred",
-        ],
+    grad_cfg.pop("scalar", None)
+    grad_cfg.pop("layer", None)
+    grad_cfg.pop("rpn", None)
+    grad_cfg.pop("roi", None)
+    grad_cfg["cand_target"] = {
+        "scalar": list(SCALARS["cand_target"]),
+        "layer": {
+            "rpn_obj_loss": ["rpn.head.conv", "rpn.head.cls_logits"],
+            "rpn_bbox_loss": ["rpn.head.conv", "rpn.head.bbox_pred"],
+            "roi_cls_loss": ["roi_heads.box_head.fc7", "roi_heads.box_predictor.cls_score"],
+            "roi_bbox_loss": [
+                "roi_heads.box_head.fc7",
+                "roi_heads.box_predictor.bbox_pred",
+            ],
+        },
+        "rpn": {
+            "cand_obj_threshold": 0.0,
+            "obj_loss": combo["rpn_obj_loss"],
+            "bbox_loss": combo["rpn_bbox_loss"],
+            "obj_direction": combo["rpn_obj_direction"],
+            "bbox_direction": combo["rpn_bbox_direction"],
+        },
+        "roi": {
+            "cand_score_threshold": 0.0,
+            "cls_loss": combo["roi_cls_loss"],
+            "bbox_loss": combo["roi_bbox_loss"],
+            "cls_direction": combo["roi_cls_direction"],
+            "bbox_direction": combo["roi_bbox_direction"],
+        },
     }
-    grad_cfg["rpn"] = {
-        "cand_obj_threshold": 0.0,
-        "obj_loss": combo["rpn_obj_loss"],
+    grad_cfg["null_target"] = {
+        "scalar": list(SCALARS["null_target"]),
+        "layer": {
+            "bbox_loss": ["rpn.head.conv", "rpn.head.bbox_pred"],
+            "obj_loss": ["rpn.head.conv", "rpn.head.cls_logits"],
+            "cls_loss": ["roi_heads.box_head.fc7", "roi_heads.box_predictor.cls_score"],
+        },
         "bbox_loss": combo["rpn_bbox_loss"],
-        "obj_direction": combo["rpn_obj_direction"],
-        "bbox_direction": combo["rpn_bbox_direction"],
-    }
-    grad_cfg["roi"] = {
-        "cand_score_threshold": 0.0,
+        "obj_loss": combo["rpn_obj_loss"],
         "cls_loss": combo["roi_cls_loss"],
-        "bbox_loss": combo["roi_bbox_loss"],
+        "bbox_direction": combo["rpn_bbox_direction"],
+        "obj_direction": combo["rpn_obj_direction"],
         "cls_direction": combo["roi_cls_direction"],
-        "bbox_direction": combo["roi_bbox_direction"],
     }
     return config
 
