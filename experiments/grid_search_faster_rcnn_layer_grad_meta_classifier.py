@@ -214,7 +214,10 @@ def _prepare_layer_grad_config(base_config: dict, combo: dict) -> dict:
             "layer": {
                 "rpn_obj_loss": ["rpn.head.conv", "rpn.head.cls_logits"],
                 "rpn_bbox_loss": ["rpn.head.conv", "rpn.head.bbox_pred"],
-                "roi_cls_loss": ["roi_heads.box_head.fc7", "roi_heads.box_predictor.cls_score"],
+                "roi_cls_loss": [
+                    "roi_heads.box_head.fc7",
+                    "roi_heads.box_predictor.cls_score",
+                ],
                 "roi_bbox_loss": [
                     "roi_heads.box_head.fc7",
                     "roi_heads.box_predictor.bbox_pred",
@@ -241,7 +244,10 @@ def _prepare_layer_grad_config(base_config: dict, combo: dict) -> dict:
             "layer": {
                 "bbox_loss": ["rpn.head.conv", "rpn.head.bbox_pred"],
                 "obj_loss": ["rpn.head.conv", "rpn.head.cls_logits"],
-                "cls_loss": ["roi_heads.box_head.fc7", "roi_heads.box_predictor.cls_score"],
+                "cls_loss": [
+                    "roi_heads.box_head.fc7",
+                    "roi_heads.box_predictor.cls_score",
+                ],
             },
             "bbox_loss": combo["bbox_loss"],
             "obj_loss": combo["obj_loss"],
@@ -407,7 +413,9 @@ def main() -> None:
 
         if slug not in run_cache:
             layer_dir = _run_layer_grad_if_needed(od_base_config, od_grid_root, combo)
-            meta_dir = _run_meta_if_needed(meta_base_config, meta_grid_root, combo, layer_dir, gt_root)
+            meta_dir = _run_meta_if_needed(
+                meta_base_config, meta_grid_root, combo, layer_dir, gt_root
+            )
             run_cache[slug] = (layer_dir, meta_dir)
         layer_dir, meta_dir = run_cache[slug]
         eval_csv = meta_dir / "results" / "evaluation_results.csv"
