@@ -35,15 +35,11 @@ SCALARS = {
     "cand_target": ["rpn_obj_loss", "rpn_bbox_loss", "roi_cls_loss", "roi_bbox_loss"],
     "null_target": ["bbox_loss", "obj_loss", "cls_loss"],
 }
-TARGETS = ["cand_target", "null_target"]
 
-RPN_BBOX_LOSSES = ["l1", "l2"]
-RPN_BBOX_DIRECTIONS = ["pred_to_target"]
-RPN_OBJ_LOSSES = ["bcewithlogits", "abs_diff", "signed_diff"]
-
-ROI_BBOX_LOSSES = ["l1", "l2"]
-ROI_BBOX_DIRECTIONS = ["pred_to_target"]
-ROI_CLS_LOSSES = ["bcewithlogits", "kl", "ce"]
+BBOX_LOSSES = ["l1", "l2"]
+BBOX_DIRECTIONS = ["pred_to_target"]
+OBJ_LOSSES = ["bcewithlogits", "abs_diff", "signed_diff"]
+CLS_LOSSES = ["bcewithlogits", "kl", "ce"]
 
 
 def _load_yaml(path: Path) -> dict:
@@ -113,30 +109,21 @@ def _valid_obj_directions(obj_loss: str) -> list[str]:
     return ["pred_to_target"]
 
 
-def _common_key(combo: dict) -> tuple:
-    return (
-        combo["rpn_bbox_loss"],
-        combo["rpn_bbox_direction"],
-        combo["rpn_obj_loss"],
-        combo["rpn_obj_direction"],
-        combo["roi_bbox_loss"],
-        combo["roi_bbox_direction"],
-        combo["roi_cls_loss"],
-        combo["roi_cls_direction"],
-    )
-
-
-def _pair_key(combo: dict) -> tuple:
-    return _common_key(combo)
-
-
-def _combo_slug(combo: dict, target: str) -> str:
+def _combo_slug(combo: dict) -> str:
+    target = combo["target"]
+    if target == "cand_target":
+        return (
+            f"layer_grad_t-{_abbr(target)}"
+            f"__rb-{combo['rpn_bbox_loss']}-{_abbr(combo['rpn_bbox_direction'])}"
+            f"__roib-{combo['roi_bbox_loss']}-{_abbr(combo['roi_bbox_direction'])}"
+            f"__roic-{_abbr(combo['roi_cls_loss'])}-{_abbr(combo['roi_cls_direction'])}"
+            f"__rpno-{_abbr(combo['rpn_obj_loss'])}-{_abbr(combo['rpn_obj_direction'])}"
+        )
     return (
         f"layer_grad_t-{_abbr(target)}"
-        f"__rb-{combo['rpn_bbox_loss']}-{_abbr(combo['rpn_bbox_direction'])}"
-        f"__roib-{combo['roi_bbox_loss']}-{_abbr(combo['roi_bbox_direction'])}"
-        f"__roic-{_abbr(combo['roi_cls_loss'])}-{_abbr(combo['roi_cls_direction'])}"
-        f"__rpno-{_abbr(combo['rpn_obj_loss'])}-{_abbr(combo['rpn_obj_direction'])}"
+        f"__b-{combo['bbox_loss']}-{_abbr(combo['bbox_direction'])}"
+        f"__c-{_abbr(combo['cls_loss'])}-{_abbr(combo['cls_direction'])}"
+        f"__o-{_abbr(combo['obj_loss'])}-{_abbr(combo['obj_direction'])}"
     )
 
 
@@ -147,19 +134,19 @@ def _timestamped_combo_dir(root: Path, slug: str) -> Path:
     return root / f"{datetime.now().strftime('%m-%d-%Y_%H;%M')}_{slug}"
 
 
-def iter_combinations():
-    count = 0
+def iter_cand_combinations():
     for rpn_bbox_loss, rpn_obj_loss, roi_bbox_loss, roi_cls_loss in itertools.product(
-        RPN_BBOX_LOSSES,
-        RPN_OBJ_LOSSES,
-        ROI_BBOX_LOSSES,
-        ROI_CLS_LOSSES,
+        BBOX_LOSSES,
+        OBJ_LOSSES,
+        BBOX_LOSSES,
+        CLS_LOSSES,
     ):
-        for rpn_bbox_direction in RPN_BBOX_DIRECTIONS:
+        for rpn_bbox_direction in BBOX_DIRECTIONS:
             for rpn_obj_direction in _valid_obj_directions(rpn_obj_loss):
-                for roi_bbox_direction in ROI_BBOX_DIRECTIONS:
+                for roi_bbox_direction in BBOX_DIRECTIONS:
                     for roi_cls_direction in _valid_cls_directions(roi_cls_loss):
                         yield {
+                            "target": "cand_target",
                             "rpn_bbox_loss": rpn_bbox_loss,
                             "rpn_bbox_direction": rpn_bbox_direction,
                             "rpn_obj_loss": rpn_obj_loss,
@@ -169,11 +156,35 @@ def iter_combinations():
                             "roi_cls_loss": roi_cls_loss,
                             "roi_cls_direction": roi_cls_direction,
                         }
-                        count += 1
-                        if MAX_COMBINATIONS is not None and count >= int(
-                            MAX_COMBINATIONS
-                        ):
-                            return
+
+
+def iter_null_combinations():
+    for bbox_loss, obj_loss, cls_loss in itertools.product(
+        BBOX_LOSSES,
+        OBJ_LOSSES,
+        CLS_LOSSES,
+    ):
+        for bbox_direction in BBOX_DIRECTIONS:
+            for obj_direction in _valid_obj_directions(obj_loss):
+                for cls_direction in _valid_cls_directions(cls_loss):
+                    yield {
+                        "target": "null_target",
+                        "bbox_loss": bbox_loss,
+                        "bbox_direction": bbox_direction,
+                        "obj_loss": obj_loss,
+                        "obj_direction": obj_direction,
+                        "cls_loss": cls_loss,
+                        "cls_direction": cls_direction,
+                    }
+
+
+def iter_combinations():
+    count = 0
+    for combo in itertools.chain(iter_cand_combinations(), iter_null_combinations()):
+        yield combo
+        count += 1
+        if MAX_COMBINATIONS is not None and count >= int(MAX_COMBINATIONS):
+            return
 
 
 def _run(cmd: list[str]) -> None:
@@ -181,7 +192,7 @@ def _run(cmd: list[str]) -> None:
     subprocess.run(cmd, cwd=REPO_ROOT, check=True)
 
 
-def _prepare_layer_grad_config(base_config: dict, combo: dict, target: str) -> dict:
+def _prepare_layer_grad_config(base_config: dict, combo: dict) -> dict:
     config = deepcopy(base_config)
     config["mode"] = "predict"
     output_cfg = config.setdefault("output", {})
@@ -191,51 +202,54 @@ def _prepare_layer_grad_config(base_config: dict, combo: dict, target: str) -> d
     layer_grad_cfg.setdefault("save_csv", {})["enabled"] = True
     grad_cfg = layer_grad_cfg.setdefault("gradient", {})
 
+    target = combo["target"]
     grad_cfg["target"] = target
     grad_cfg.pop("scalar", None)
     grad_cfg.pop("layer", None)
     grad_cfg.pop("rpn", None)
     grad_cfg.pop("roi", None)
-    grad_cfg["cand_target"] = {
-        "scalar": list(SCALARS["cand_target"]),
-        "layer": {
-            "rpn_obj_loss": ["rpn.head.conv", "rpn.head.cls_logits"],
-            "rpn_bbox_loss": ["rpn.head.conv", "rpn.head.bbox_pred"],
-            "roi_cls_loss": ["roi_heads.box_head.fc7", "roi_heads.box_predictor.cls_score"],
-            "roi_bbox_loss": [
-                "roi_heads.box_head.fc7",
-                "roi_heads.box_predictor.bbox_pred",
-            ],
-        },
-        "rpn": {
-            "cand_obj_threshold": 0.0,
-            "obj_loss": combo["rpn_obj_loss"],
-            "bbox_loss": combo["rpn_bbox_loss"],
-            "obj_direction": combo["rpn_obj_direction"],
-            "bbox_direction": combo["rpn_bbox_direction"],
-        },
-        "roi": {
-            "cand_score_threshold": 0.0,
-            "cls_loss": combo["roi_cls_loss"],
-            "bbox_loss": combo["roi_bbox_loss"],
-            "cls_direction": combo["roi_cls_direction"],
-            "bbox_direction": combo["roi_bbox_direction"],
-        },
-    }
-    grad_cfg["null_target"] = {
-        "scalar": list(SCALARS["null_target"]),
-        "layer": {
-            "bbox_loss": ["rpn.head.conv", "rpn.head.bbox_pred"],
-            "obj_loss": ["rpn.head.conv", "rpn.head.cls_logits"],
-            "cls_loss": ["roi_heads.box_head.fc7", "roi_heads.box_predictor.cls_score"],
-        },
-        "bbox_loss": combo["rpn_bbox_loss"],
-        "obj_loss": combo["rpn_obj_loss"],
-        "cls_loss": combo["roi_cls_loss"],
-        "bbox_direction": combo["rpn_bbox_direction"],
-        "obj_direction": combo["rpn_obj_direction"],
-        "cls_direction": combo["roi_cls_direction"],
-    }
+    if target == "cand_target":
+        grad_cfg["cand_target"] = {
+            "scalar": list(SCALARS["cand_target"]),
+            "layer": {
+                "rpn_obj_loss": ["rpn.head.conv", "rpn.head.cls_logits"],
+                "rpn_bbox_loss": ["rpn.head.conv", "rpn.head.bbox_pred"],
+                "roi_cls_loss": ["roi_heads.box_head.fc7", "roi_heads.box_predictor.cls_score"],
+                "roi_bbox_loss": [
+                    "roi_heads.box_head.fc7",
+                    "roi_heads.box_predictor.bbox_pred",
+                ],
+            },
+            "rpn": {
+                "cand_obj_threshold": 0.0,
+                "obj_loss": combo["rpn_obj_loss"],
+                "bbox_loss": combo["rpn_bbox_loss"],
+                "obj_direction": combo["rpn_obj_direction"],
+                "bbox_direction": combo["rpn_bbox_direction"],
+            },
+            "roi": {
+                "cand_score_threshold": 0.0,
+                "cls_loss": combo["roi_cls_loss"],
+                "bbox_loss": combo["roi_bbox_loss"],
+                "cls_direction": combo["roi_cls_direction"],
+                "bbox_direction": combo["roi_bbox_direction"],
+            },
+        }
+    else:
+        grad_cfg["null_target"] = {
+            "scalar": list(SCALARS["null_target"]),
+            "layer": {
+                "bbox_loss": ["rpn.head.conv", "rpn.head.bbox_pred"],
+                "obj_loss": ["rpn.head.conv", "rpn.head.cls_logits"],
+                "cls_loss": ["roi_heads.box_head.fc7", "roi_heads.box_predictor.cls_score"],
+            },
+            "bbox_loss": combo["bbox_loss"],
+            "obj_loss": combo["obj_loss"],
+            "cls_loss": combo["cls_loss"],
+            "bbox_direction": combo["bbox_direction"],
+            "obj_direction": combo["obj_direction"],
+            "cls_direction": combo["cls_direction"],
+        }
     return config
 
 
@@ -285,13 +299,12 @@ def _run_layer_grad_if_needed(
     od_base_config: dict,
     od_grid_root: Path,
     combo: dict,
-    target: str,
 ) -> Path:
-    slug = _combo_slug(combo, target)
+    slug = _combo_slug(combo)
     layer_dir = _timestamped_combo_dir(od_grid_root, slug)
     layer_csv = layer_dir / "layer_grad.csv"
     if RUN_LAYER_GRAD and not (REUSE_EXISTING and layer_csv.is_file()):
-        od_config = _prepare_layer_grad_config(od_base_config, combo, target)
+        od_config = _prepare_layer_grad_config(od_base_config, combo)
         od_config_path = layer_dir / "grid_object_detector_config.yaml"
         _save_yaml(od_config, od_config_path)
         _run(
@@ -311,11 +324,10 @@ def _run_meta_if_needed(
     meta_base_config: dict,
     meta_grid_root: Path,
     combo: dict,
-    target: str,
     layer_dir: Path,
     gt_root: str,
 ) -> Path:
-    slug = _combo_slug(combo, target)
+    slug = _combo_slug(combo)
     meta_dir = _timestamped_combo_dir(meta_grid_root, slug)
     eval_csv = meta_dir / "results" / "evaluation_results.csv"
     if RUN_META_CLASSIFIER and not (REUSE_EXISTING and eval_csv.is_file()):
@@ -379,97 +391,64 @@ def main() -> None:
         )
 
     rows = []
-    pair_rows = []
     run_cache = {}
     result_seen = set()
     combo_list = list(iter_combinations())
+    cand_count = sum(1 for combo in combo_list if combo["target"] == "cand_target")
+    null_count = sum(1 for combo in combo_list if combo["target"] == "null_target")
+    print(
+        f"Total combinations: {len(combo_list)} "
+        f"(cand_target={cand_count}, null_target={null_count})",
+        flush=True,
+    )
     for idx, combo in enumerate(combo_list, start=1):
-        print(
-            f"[{idx}/{len(combo_list)}] {_combo_slug(combo, 'cand_target')} vs {_combo_slug(combo, 'null_target')}",
-            flush=True,
-        )
+        slug = _combo_slug(combo)
+        print(f"[{idx}/{len(combo_list)}] {slug}", flush=True)
 
-        metrics_by_target = {}
-        dirs_by_target = {}
-        for target in TARGETS:
-            cache_key = (target, _combo_slug(combo, target))
-            if cache_key not in run_cache:
-                layer_dir = _run_layer_grad_if_needed(
-                    od_base_config, od_grid_root, combo, target
-                )
-                meta_dir = _run_meta_if_needed(
-                    meta_base_config, meta_grid_root, combo, target, layer_dir, gt_root
-                )
-                run_cache[cache_key] = (layer_dir, meta_dir)
-            layer_dir, meta_dir = run_cache[cache_key]
-            eval_csv = meta_dir / "results" / "evaluation_results.csv"
-            metrics = _read_mean_metrics(eval_csv)
-            metrics_by_target[target] = metrics
-            dirs_by_target[target] = (layer_dir, meta_dir)
-            result_key = (target, _combo_slug(combo, target))
-            if result_key not in result_seen:
-                result_seen.add(result_key)
-                rows.append(
-                    {
-                        "target": target,
-                        "rpn_bbox_loss": combo["rpn_bbox_loss"],
-                        "rpn_bbox_direction": combo["rpn_bbox_direction"],
-                        "rpn_obj_loss": combo["rpn_obj_loss"],
-                        "rpn_obj_direction": combo["rpn_obj_direction"],
-                        "roi_bbox_loss": combo["roi_bbox_loss"],
-                        "roi_bbox_direction": combo["roi_bbox_direction"],
-                        "roi_cls_loss": combo["roi_cls_loss"],
-                        "roi_cls_direction": combo["roi_cls_direction"],
-                        "layer_grad_run_dir": str(layer_dir),
-                        "meta_classifier_run_dir": str(meta_dir),
-                        "auroc": metrics.get("auroc", ""),
-                        "ap": metrics.get("ap", ""),
-                        "ece": metrics.get("ece", ""),
-                        "ace": metrics.get("ace", ""),
-                    }
-                )
+        if slug not in run_cache:
+            layer_dir = _run_layer_grad_if_needed(od_base_config, od_grid_root, combo)
+            meta_dir = _run_meta_if_needed(meta_base_config, meta_grid_root, combo, layer_dir, gt_root)
+            run_cache[slug] = (layer_dir, meta_dir)
+        layer_dir, meta_dir = run_cache[slug]
+        eval_csv = meta_dir / "results" / "evaluation_results.csv"
+        metrics = _read_mean_metrics(eval_csv)
+        if slug not in result_seen:
+            result_seen.add(slug)
+            rows.append(_result_row(combo, layer_dir, meta_dir, metrics))
 
-        cand = metrics_by_target.get("cand_target", {})
-        null = metrics_by_target.get("null_target", {})
-        try:
-            cand_auroc = float(cand.get("auroc", "nan"))
-            null_auroc = float(null.get("auroc", "nan"))
-            cand_ap = float(cand.get("ap", "nan"))
-            null_ap = float(null.get("ap", "nan"))
-        except Exception:
-            cand_auroc = null_auroc = cand_ap = null_ap = float("nan")
-        pair_rows.append(
-            {
-                "rpn_bbox_loss": combo["rpn_bbox_loss"],
-                "rpn_bbox_direction": combo["rpn_bbox_direction"],
-                "rpn_obj_loss": combo["rpn_obj_loss"],
-                "rpn_obj_direction": combo["rpn_obj_direction"],
-                "roi_bbox_loss": combo["roi_bbox_loss"],
-                "roi_bbox_direction": combo["roi_bbox_direction"],
-                "roi_cls_loss": combo["roi_cls_loss"],
-                "roi_cls_direction": combo["roi_cls_direction"],
-                "cand_auroc": cand_auroc,
-                "null_auroc": null_auroc,
-                "delta_auroc": null_auroc - cand_auroc,
-                "cand_ap": cand_ap,
-                "null_ap": null_ap,
-                "delta_ap": null_ap - cand_ap,
-                "null_better_auroc": int(null_auroc > cand_auroc),
-                "null_better_ap": int(null_ap > cand_ap),
-                "cand_layer_grad_run_dir": str(dirs_by_target["cand_target"][0]),
-                "null_layer_grad_run_dir": str(dirs_by_target["null_target"][0]),
-                "cand_meta_classifier_run_dir": str(dirs_by_target["cand_target"][1]),
-                "null_meta_classifier_run_dir": str(dirs_by_target["null_target"][1]),
-            }
-        )
-        _write_results(meta_grid_root, rows, pair_rows)
+        _write_results(meta_grid_root, rows)
 
     print(f"Saved grid results: {meta_grid_root / 'grid_results.csv'}")
-    print(f"Saved pair comparison: {meta_grid_root / 'target_pair_comparison.csv'}")
-    print(f"Saved null comparison: {meta_grid_root / 'better_null_results.csv'}")
 
 
-def _write_results(out_dir: Path, rows: list[dict], pair_rows: list[dict]) -> None:
+def _result_row(combo: dict, layer_dir: Path, meta_dir: Path, metrics: dict) -> dict:
+    row = {
+        "target": combo["target"],
+        "rpn_bbox_loss": combo.get("rpn_bbox_loss", ""),
+        "rpn_bbox_direction": combo.get("rpn_bbox_direction", ""),
+        "rpn_obj_loss": combo.get("rpn_obj_loss", ""),
+        "rpn_obj_direction": combo.get("rpn_obj_direction", ""),
+        "roi_bbox_loss": combo.get("roi_bbox_loss", ""),
+        "roi_bbox_direction": combo.get("roi_bbox_direction", ""),
+        "roi_cls_loss": combo.get("roi_cls_loss", ""),
+        "roi_cls_direction": combo.get("roi_cls_direction", ""),
+        "bbox_loss": combo.get("bbox_loss", ""),
+        "bbox_direction": combo.get("bbox_direction", ""),
+        "obj_loss": combo.get("obj_loss", ""),
+        "obj_direction": combo.get("obj_direction", ""),
+        "cls_loss": combo.get("cls_loss", ""),
+        "cls_direction": combo.get("cls_direction", ""),
+        "layer_grad_run_dir": str(layer_dir),
+        "meta_classifier_run_dir": str(meta_dir),
+        "auroc": metrics.get("auroc", ""),
+        "ap": metrics.get("ap", ""),
+        "ece": metrics.get("ece", ""),
+        "ace": metrics.get("ace", ""),
+    }
+    return row
+
+
+def _write_results(out_dir: Path, rows: list[dict]) -> None:
     result_fields = [
         "target",
         "rpn_bbox_loss",
@@ -480,6 +459,12 @@ def _write_results(out_dir: Path, rows: list[dict], pair_rows: list[dict]) -> No
         "roi_bbox_direction",
         "roi_cls_loss",
         "roi_cls_direction",
+        "bbox_loss",
+        "bbox_direction",
+        "obj_loss",
+        "obj_direction",
+        "cls_loss",
+        "cls_direction",
         "layer_grad_run_dir",
         "meta_classifier_run_dir",
         "auroc",
@@ -488,38 +473,6 @@ def _write_results(out_dir: Path, rows: list[dict], pair_rows: list[dict]) -> No
         "ace",
     ]
     _write_csv(out_dir / "grid_results.csv", rows, result_fields)
-
-    pair_rows = sorted(
-        pair_rows, key=lambda r: (r["delta_auroc"], r["delta_ap"]), reverse=True
-    )
-    pair_fields = [
-        "rpn_bbox_loss",
-        "rpn_bbox_direction",
-        "rpn_obj_loss",
-        "rpn_obj_direction",
-        "roi_bbox_loss",
-        "roi_bbox_direction",
-        "roi_cls_loss",
-        "roi_cls_direction",
-        "cand_auroc",
-        "null_auroc",
-        "delta_auroc",
-        "cand_ap",
-        "null_ap",
-        "delta_ap",
-        "null_better_auroc",
-        "null_better_ap",
-        "cand_layer_grad_run_dir",
-        "null_layer_grad_run_dir",
-        "cand_meta_classifier_run_dir",
-        "null_meta_classifier_run_dir",
-    ]
-    _write_csv(out_dir / "target_pair_comparison.csv", pair_rows, pair_fields)
-    _write_csv(
-        out_dir / "better_null_results.csv",
-        [row for row in pair_rows if row["null_better_auroc"]],
-        pair_fields,
-    )
 
 
 if __name__ == "__main__":
