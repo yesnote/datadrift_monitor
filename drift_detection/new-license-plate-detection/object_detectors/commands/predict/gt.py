@@ -183,10 +183,7 @@ def run_tp_csv(config, run_dir):
             is_faster_rcnn = bool(getattr(detector, "is_faster_rcnn", False))
             inference_context = torch.inference_mode if is_faster_rcnn else torch.no_grad
             with inference_context():
-                if is_faster_rcnn:
-                    model_output = detector.model(infer_batch, augment=False, need_logits=False)
-                else:
-                    model_output = detector.model(infer_batch, augment=False)
+                model_output = detector.model(infer_batch, augment=False)
                 raw_prediction = model_output[0] if isinstance(model_output, (tuple, list)) else model_output
                 raw_logits = model_output[1] if isinstance(model_output, (tuple, list)) and len(model_output) > 1 else None
                 selected_preds, _selected_logits, _selected_objectness, selected_indices = detector.non_max_suppression(

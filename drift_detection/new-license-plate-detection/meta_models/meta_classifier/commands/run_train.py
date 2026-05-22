@@ -400,20 +400,29 @@ def load_training_dataframe(dataset_cfg: dict[str, Any]) -> tuple[pd.DataFrame, 
         raw_merge_keys = ["image_id", "image_path", "raw_pred_idx"]
         pred_merge_keys = ["image_id", "image_path", "pred_idx"]
         bbox_merge_keys = ["image_id", "image_path", "xmin", "ymin", "xmax", "ymax"]
-        candidate_merge_keys = [
-            raw_merge_keys,
-            bbox_merge_keys,
-            pred_merge_keys,
-        ]
-        available_merge_keys = [
-            keys
-            for keys in candidate_merge_keys
-            if set(keys).issubset(feature_df.columns) and set(keys).issubset(merged.columns)
-        ]
-        if not available_merge_keys:
+        has_feature_raw = set(raw_merge_keys).issubset(feature_df.columns)
+        has_feature_pred = set(pred_merge_keys).issubset(feature_df.columns)
+        has_feature_bbox = set(bbox_merge_keys).issubset(feature_df.columns)
+        has_merged_raw = set(raw_merge_keys).issubset(merged.columns)
+        has_merged_bbox = set(bbox_merge_keys).issubset(merged.columns)
+        has_merged_pred = set(pred_merge_keys).issubset(merged.columns)
+        prefer_raw = set(base_merge_keys) == set(raw_merge_keys)
+        prefer_pred = set(base_merge_keys) == set(pred_merge_keys)
+
+        if prefer_raw and has_feature_raw and has_merged_raw:
+            merge_keys = raw_merge_keys
+        elif prefer_pred and has_feature_pred and has_merged_pred:
+            merge_keys = pred_merge_keys
+        elif has_feature_raw and has_merged_raw:
+            merge_keys = raw_merge_keys
+        elif has_feature_bbox and has_merged_bbox:
+            merge_keys = bbox_merge_keys
+        elif has_feature_pred and has_merged_pred:
+            merge_keys = pred_merge_keys
+        else:
             raise ValueError(
                 f"Cannot match {input_csv_name} to tp.csv using keys available in current merged dataframe. "
-                f"base={base_merge_keys}, feature_columns={list(feature_df.columns)}, merged_columns={list(merged.columns)}."
+                f"base={base_merge_keys}, feature_has_raw={has_feature_raw}, feature_has_pred={has_feature_pred}, feature_has_bbox={has_feature_bbox}."
             )
         meta_columns = {
             "image_id",
@@ -460,25 +469,18 @@ def load_training_dataframe(dataset_cfg: dict[str, Any]) -> tuple[pd.DataFrame, 
         candidate_present = [c for c in tp_candidate_keys if c in feature_df.columns]
         feature_df = feature_df[list(dict.fromkeys(candidate_present + feature_columns))].rename(columns=rename_map)
 
-        merge_attempts: list[tuple[int, int, list[str], pd.DataFrame]] = []
-        priority = {tuple(raw_merge_keys): 0, tuple(bbox_merge_keys): 1, tuple(pred_merge_keys): 2}
-        for keys in available_merge_keys:
-            attempt = merged.merge(feature_df, on=keys, how="inner")
-            merge_attempts.append((int(len(attempt)), -priority.get(tuple(keys), 99), keys, attempt))
-        merge_attempts.sort(key=lambda item: (item[0], item[1]), reverse=True)
-        best_count, _priority, merge_keys, merged_next = merge_attempts[0]
-        base_attempt = next((count for count, _p, keys, _df in merge_attempts if keys == base_merge_keys), None)
-        if base_attempt is not None and best_count > base_attempt:
-            warnings.warn(
-                f"{input_csv_name} merge used {merge_keys} ({best_count} rows) instead of "
-                f"base keys {base_merge_keys} ({base_attempt} rows)."
+        merged_next = merged.merge(feature_df, on=merge_keys, how="inner")
+        if (
+            merged_next.empty
+            and merge_keys in (
+                ["image_id", "image_path", "raw_pred_idx"],
+                ["image_id", "image_path", "pred_idx"],
             )
-        if best_count < int(len(merged)) * 0.8:
-            diagnostics = ", ".join(f"{keys}={count}" for count, _p, keys, _df in merge_attempts)
-            warnings.warn(
-                f"{input_csv_name} matched only {best_count}/{len(merged)} rows. "
-                f"Merge diagnostics: {diagnostics}"
-            )
+            and set(["image_id", "image_path", "xmin", "ymin", "xmax", "ymax"]).issubset(feature_df.columns)
+            and set(["image_id", "image_path", "xmin", "ymin", "xmax", "ymax"]).issubset(merged.columns)
+        ):
+            fallback_keys = ["image_id", "image_path", "xmin", "ymin", "xmax", "ymax"]
+            merged_next = merged.merge(feature_df, on=fallback_keys, how="inner")
         merged = merged_next
         prefixed_feature_columns.extend(rename_map.values())
         input_uncertainties.append(input_cue)
