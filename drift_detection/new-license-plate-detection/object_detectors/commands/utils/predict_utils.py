@@ -8,6 +8,7 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 import torch.nn as nn
+from torchvision.ops import boxes as box_ops
 
 from dataloaders.utils.data_utils import DATASET_CLASS_NAMES
 from models.faster_rcnn import FasterRCNNTorchObjectDetector
@@ -383,6 +384,13 @@ def parse_output_config(output_cfg):
     layer_rpn_null_obj_loss = "bcewithlogits"
     layer_rpn_null_bbox_direction = "pred_to_target"
     layer_rpn_null_obj_direction = "pred_to_target"
+    layer_null_scalar = []
+    layer_null_bbox_loss = "l1"
+    layer_null_cls_loss = "bcewithlogits"
+    layer_null_obj_loss = "bcewithlogits"
+    layer_null_bbox_direction = "pred_to_target"
+    layer_null_cls_direction = "pred_to_target"
+    layer_null_obj_direction = "pred_to_target"
 
     loss_aliases = {
         "bce": "bcewithlogits",
@@ -437,8 +445,8 @@ def parse_output_config(output_cfg):
     if uncertainty == "layer_grad":
         g = as_dict(layer_grad_cfg.get("gradient", {}))
         cand_target_cfg = as_dict(g.get("cand_target", layer_grad_cfg.get("cand_target", {})))
-        roi_cand_cfg = as_dict(cand_target_cfg.get("roi_cand", {}))
-        rpn_cand_cfg = as_dict(cand_target_cfg.get("rpn_cand", {}))
+        roi_cand_cfg = as_dict(cand_target_cfg.get("roi", cand_target_cfg.get("roi_cand", {})))
+        rpn_cand_cfg = as_dict(cand_target_cfg.get("rpn", cand_target_cfg.get("rpn_cand", {})))
         null_target_cfg = as_dict(g.get("null_target", layer_grad_cfg.get("null_target", {})))
         roi_null_cfg = as_dict(null_target_cfg.get("roi", null_target_cfg.get("roi_null", {})))
         rpn_null_cfg = as_dict(null_target_cfg.get("rpn", null_target_cfg.get("rpn_null", {})))
@@ -447,7 +455,11 @@ def parse_output_config(output_cfg):
         t = g.get("target", "cand_target")
         t_policy = str(t).strip().lower() if t is not None else "null_target"
         layer_pseudo_gt = "uniform" if t_policy in {"null_target", "null"} else "cand"
-        layer_target_values = [v.lower() for v in normalize_to_list(g.get("scalar", ["loss"]))]
+        if layer_pseudo_gt == "uniform":
+            raw_scalar_cfg = null_target_cfg.get("scalar", g.get("scalar", ["bbox_loss", "obj_loss", "cls_loss"]))
+        else:
+            raw_scalar_cfg = cand_target_cfg.get("scalar", g.get("scalar", ["loss"]))
+        layer_target_values = [v.lower() for v in normalize_to_list(raw_scalar_cfg)]
         if "loss" in layer_target_values:
             exp = []
             for v in layer_target_values:
@@ -457,19 +469,23 @@ def parse_output_config(output_cfg):
         nested_layer_cfg = {}
         active_rpn_cfg = unified_rpn_cfg or (rpn_null_cfg if layer_pseudo_gt == "uniform" else rpn_cand_cfg)
         active_roi_cfg = unified_roi_cfg or (roi_null_cfg if layer_pseudo_gt == "uniform" else roi_cand_cfg)
-        for target_prefix, cand_cfg, allowed_targets in (
-            ("rpn", active_rpn_cfg, {"obj_loss", "bbox_loss"}),
-            ("roi", active_roi_cfg, {"cls_loss", "bbox_loss"}),
-        ):
-            raw_nested_layers = cand_cfg.get("layer", {})
-            if not isinstance(raw_nested_layers, dict):
-                continue
-            for target_name, layer_names in raw_nested_layers.items():
-                target_key = str(target_name).strip().lower()
-                prefixed_key = f"{target_prefix}_{target_key}" if target_key in allowed_targets else target_key
-                nested_layer_cfg[prefixed_key] = layer_names
-
-        raw_layer_cfg = nested_layer_cfg if nested_layer_cfg else g.get("layer", [])
+        if layer_pseudo_gt == "uniform":
+            raw_layer_cfg = null_target_cfg.get("layer", g.get("layer", []))
+        else:
+            raw_layer_cfg = cand_target_cfg.get("layer", None)
+            if raw_layer_cfg is None:
+                for target_prefix, cand_cfg, allowed_targets in (
+                    ("rpn", active_rpn_cfg, {"obj_loss", "bbox_loss"}),
+                    ("roi", active_roi_cfg, {"cls_loss", "bbox_loss"}),
+                ):
+                    raw_nested_layers = cand_cfg.get("layer", {})
+                    if not isinstance(raw_nested_layers, dict):
+                        continue
+                    for target_name, layer_names in raw_nested_layers.items():
+                        target_key = str(target_name).strip().lower()
+                        prefixed_key = f"{target_prefix}_{target_key}" if target_key in allowed_targets else target_key
+                        nested_layer_cfg[prefixed_key] = layer_names
+                raw_layer_cfg = nested_layer_cfg if nested_layer_cfg else g.get("layer", [])
         if isinstance(raw_layer_cfg, dict):
             layer_target_layer_map = {}
             layer_target_layers = []
@@ -665,6 +681,45 @@ def parse_output_config(output_cfg):
         if layer_rpn_null_obj_direction == "target_to_pred" and layer_rpn_null_obj_loss != "signed_diff":
             raise ValueError("layer_grad.gradient.rpn.obj_direction=target_to_pred is only supported when obj_loss=signed_diff.")
 
+        layer_null_scalar = [str(v).strip().lower() for v in normalize_to_list(null_target_cfg.get("scalar", []))]
+        layer_null_bbox_loss = normalize_loss_option(
+            null_target_cfg.get("bbox_loss", g.get("bbox_loss", "l1")),
+            "l1",
+            {"l1", "l2"},
+            "layer_grad.gradient.null_target.bbox_loss",
+        )
+        layer_null_cls_loss = normalize_loss_option(
+            null_target_cfg.get("cls_loss", g.get("cls_loss", "bcewithlogits")),
+            "bcewithlogits",
+            {"bcewithlogits", "kl", "ce"},
+            "layer_grad.gradient.null_target.cls_loss",
+        )
+        layer_null_obj_loss = normalize_loss_option(
+            null_target_cfg.get("obj_loss", g.get("obj_loss", "bcewithlogits")),
+            "bcewithlogits",
+            {"bcewithlogits", "abs_diff", "signed_diff"},
+            "layer_grad.gradient.null_target.obj_loss",
+        )
+        layer_null_bbox_direction = normalize_direction_option(
+            null_target_cfg.get("bbox_direction", g.get("bbox_direction", "pred_to_target")),
+            "layer_grad.gradient.null_target.bbox_direction",
+        )
+        layer_null_cls_direction = normalize_direction_option(
+            null_target_cfg.get("cls_direction", g.get("cls_direction", "pred_to_target")),
+            "layer_grad.gradient.null_target.cls_direction",
+        )
+        layer_null_obj_direction = normalize_direction_option(
+            null_target_cfg.get("obj_direction", g.get("obj_direction", "pred_to_target")),
+            "layer_grad.gradient.null_target.obj_direction",
+        )
+        validate_loss_directions(
+            layer_null_bbox_direction,
+            layer_null_cls_loss,
+            layer_null_obj_loss,
+            layer_null_cls_direction,
+            layer_null_obj_direction,
+        )
+
     null_bbox_loss = normalize_loss_option(null_detect_cfg.get("bbox_loss", "ciou"), "ciou", {"ciou", "l1", "l2"}, "null_detect.bbox_loss")
     null_cls_loss = normalize_loss_option(
         null_detect_cfg.get("cls_loss", "bcewithlogits"),
@@ -742,6 +797,13 @@ def parse_output_config(output_cfg):
         "layer_rpn_null_obj_loss": layer_rpn_null_obj_loss,
         "layer_rpn_null_bbox_direction": layer_rpn_null_bbox_direction,
         "layer_rpn_null_obj_direction": layer_rpn_null_obj_direction,
+        "layer_null_scalar": layer_null_scalar,
+        "layer_null_bbox_loss": layer_null_bbox_loss,
+        "layer_null_cls_loss": layer_null_cls_loss,
+        "layer_null_obj_loss": layer_null_obj_loss,
+        "layer_null_bbox_direction": layer_null_bbox_direction,
+        "layer_null_cls_direction": layer_null_cls_direction,
+        "layer_null_obj_direction": layer_null_obj_direction,
         "null_detect_bbox_loss": null_bbox_loss,
         "null_detect_cls_loss": null_cls_loss,
         "null_detect_obj_loss": null_obj_loss,
@@ -1453,6 +1515,49 @@ def _concat_rpn_prediction_layers(objectness, pred_bbox_deltas):
     return torch.cat(objectness_flat, dim=1), torch.cat(bbox_deltas_flat, dim=1)
 
 
+def _filter_rpn_proposals_with_indices(rpn, proposals, objectness, image_shapes, num_anchors_per_level):
+    num_images = proposals.shape[0]
+    device = proposals.device
+    objectness = objectness.detach().reshape(num_images, -1)
+    raw_indices = torch.arange(objectness.shape[1], device=device).reshape(1, -1).expand_as(objectness)
+
+    levels = [
+        torch.full((n,), idx, dtype=torch.int64, device=device)
+        for idx, n in enumerate(num_anchors_per_level)
+    ]
+    levels = torch.cat(levels, 0).reshape(1, -1).expand_as(objectness)
+
+    top_n_idx = rpn._get_top_n_idx(objectness, num_anchors_per_level)
+    image_range = torch.arange(num_images, device=device)
+    batch_idx = image_range[:, None]
+
+    objectness = objectness[batch_idx, top_n_idx]
+    levels = levels[batch_idx, top_n_idx]
+    proposals = proposals[batch_idx, top_n_idx]
+    raw_indices = raw_indices[batch_idx, top_n_idx]
+
+    objectness_prob = torch.sigmoid(objectness)
+    final_boxes = []
+    final_scores = []
+    final_raw_indices = []
+    for boxes, scores, lvl, raw_idx, img_shape in zip(proposals, objectness_prob, levels, raw_indices, image_shapes):
+        boxes = box_ops.clip_boxes_to_image(boxes, img_shape)
+
+        keep = box_ops.remove_small_boxes(boxes, rpn.min_size)
+        boxes, scores, lvl, raw_idx = boxes[keep], scores[keep], lvl[keep], raw_idx[keep]
+
+        keep = torch.where(scores >= rpn.score_thresh)[0]
+        boxes, scores, lvl, raw_idx = boxes[keep], scores[keep], lvl[keep], raw_idx[keep]
+
+        keep = box_ops.batched_nms(boxes, scores, lvl, rpn.nms_thresh)
+        keep = keep[: rpn.post_nms_top_n()]
+        final_boxes.append(boxes[keep])
+        final_scores.append(scores[keep])
+        final_raw_indices.append(raw_idx[keep])
+
+    return final_boxes, final_scores, final_raw_indices
+
+
 def _resize_boxes_xyxy_tensor(boxes, from_size, to_size):
     if boxes.numel() == 0:
         return boxes
@@ -1653,6 +1758,93 @@ def build_faster_rcnn_rpn_null_losses(
     }
 
 
+def build_faster_rcnn_null_losses(
+    rpn_box_coder,
+    rpn_bbox_deltas: torch.Tensor,
+    rpn_anchors: torch.Tensor,
+    pred_img: torch.Tensor,
+    logit_img: torch.Tensor,
+    raw_idx: int,
+    proposal_indices_img: torch.Tensor,
+    proposals_xyxy: torch.Tensor,
+    proposal_to_rpn_raw_idx: torch.Tensor,
+    rpn_objectness_logits: torch.Tensor,
+    final_box_xyxy: torch.Tensor,
+    from_size,
+    to_size,
+    bbox_loss: str = "l1",
+    cls_loss: str = "bcewithlogits",
+    obj_loss: str = "bcewithlogits",
+    bbox_direction: str = "pred_to_target",
+    cls_direction: str = "pred_to_target",
+    obj_direction: str = "pred_to_target",
+    timing_accumulator=None,
+    timing_device=None,
+):
+    if raw_idx >= pred_img.shape[0]:
+        return None
+    if logit_img is None or logit_img.numel() == 0 or raw_idx >= logit_img.shape[0]:
+        return None
+    if proposal_indices_img is None or raw_idx >= proposal_indices_img.shape[0]:
+        return None
+    if proposal_to_rpn_raw_idx is None or proposal_to_rpn_raw_idx.numel() == 0:
+        return None
+    if obj_direction == "target_to_pred" and obj_loss != "signed_diff":
+        raise ValueError("Faster R-CNN null obj_direction=target_to_pred is only supported when obj_loss=signed_diff.")
+
+    t_candidate = _start_timing(timing_device)
+    proposal_idx = int(proposal_indices_img[raw_idx].detach().cpu().item())
+    if proposal_idx < 0 or proposal_idx >= proposals_xyxy.shape[0] or proposal_idx >= proposal_to_rpn_raw_idx.shape[0]:
+        _add_elapsed_timing(timing_accumulator, "candidate_search_sec", t_candidate, timing_device)
+        return None
+    rpn_raw_idx = int(proposal_to_rpn_raw_idx[proposal_idx].detach().cpu().item())
+    if rpn_raw_idx < 0 or rpn_raw_idx >= rpn_objectness_logits.reshape(-1).shape[0]:
+        _add_elapsed_timing(timing_accumulator, "candidate_search_sec", t_candidate, timing_device)
+        return None
+    _add_elapsed_timing(timing_accumulator, "candidate_search_sec", t_candidate, timing_device)
+
+    t_loss = _start_timing(timing_device)
+    selected_delta = rpn_bbox_deltas[rpn_raw_idx].view(1, 4)
+    selected_anchor = rpn_anchors[rpn_raw_idx].view(1, 4)
+    source_proposal = rpn_box_coder.decode(selected_delta, [selected_anchor]).view(1, 4)
+    source_proposal = _resize_boxes_xyxy_tensor(source_proposal, from_size, to_size)
+    target_final_box = final_box_xyxy.detach().view(1, 4)
+    bbox_loss_value = _bbox_loss_xyxy_tensor(
+        source_proposal,
+        target_final_box,
+        mode=bbox_loss,
+        reduction="sum",
+        direction=bbox_direction,
+    )
+
+    selected_obj_logit = rpn_objectness_logits.reshape(-1)[rpn_raw_idx]
+    obj_target = torch.full_like(selected_obj_logit, 0.5)
+    obj_loss_value = _objectness_loss_tensor(
+        selected_obj_logit,
+        obj_target,
+        mode=obj_loss,
+        direction=obj_direction,
+        reduction="sum",
+    )
+
+    cls_logits = logit_img[raw_idx]
+    uniform_target = torch.full_like(cls_logits, 1.0 / float(cls_logits.numel()))
+    cls_loss_value = _class_loss_tensor(
+        cls_logits,
+        uniform_target,
+        class_idx=None,
+        mode=cls_loss,
+        direction=cls_direction,
+        reduction="sum",
+    )
+    _add_elapsed_timing(timing_accumulator, "loss_compute_sec", t_loss, timing_device)
+    return {
+        "bbox_loss": bbox_loss_value,
+        "obj_loss": obj_loss_value,
+        "cls_loss": cls_loss_value,
+    }
+
+
 def build_layer_target_scalar_bbox(
     target_value,
     pred_img,
@@ -1789,6 +1981,12 @@ def collect_faster_rcnn_candidate_layer_grads_per_target(
     rpn_null_bbox_direction: str = "pred_to_target",
     rpn_null_obj_direction: str = "pred_to_target",
     rpn_null_obj_target: float = 0.5,
+    null_bbox_loss: str = "l1",
+    null_cls_loss: str = "bcewithlogits",
+    null_obj_loss: str = "bcewithlogits",
+    null_bbox_direction: str = "pred_to_target",
+    null_cls_direction: str = "pred_to_target",
+    null_obj_direction: str = "pred_to_target",
     timing_accumulator=None,
     timing_device=None,
 ):
@@ -1857,7 +2055,8 @@ def collect_faster_rcnn_candidate_layer_grads_per_target(
     rpn_decoded_for_roi = model.rpn.box_coder.decode(rpn_bbox_deltas_flat.detach(), rpn_anchors).view(
         len(image_list), -1, 4
     )
-    proposals, _proposal_scores = model.rpn.filter_proposals(
+    proposals, _proposal_scores, proposal_to_rpn_raw_indices = _filter_rpn_proposals_with_indices(
+        model.rpn,
         rpn_decoded_for_roi,
         rpn_objectness_flat.detach(),
         transformed_images.image_sizes,
@@ -1917,6 +2116,7 @@ def collect_faster_rcnn_candidate_layer_grads_per_target(
         transformed_images.image_sizes[0],
         original_image_sizes[0],
     )
+    proposal_to_rpn_raw_idx_img = proposal_to_rpn_raw_indices[0] if proposal_to_rpn_raw_indices else None
 
     rows = []
     num_boxes = int(det.shape[0])
@@ -1928,17 +2128,45 @@ def collect_faster_rcnn_candidate_layer_grads_per_target(
             roi_target_scalar = None
             rpn_target_scalar = None
             for target_value in target_values:
-                if target_value not in {"roi_bbox_loss", "roi_cls_loss", "rpn_bbox_loss", "rpn_obj_loss"}:
+                if target_value not in {"roi_bbox_loss", "roi_cls_loss", "rpn_bbox_loss", "rpn_obj_loss", "bbox_loss", "obj_loss", "cls_loss"}:
                     continue
                 roi_enabled = roi_cand_enabled if target_mode == "cand" else roi_null_enabled
                 rpn_enabled = rpn_cand_enabled if target_mode == "cand" else rpn_null_enabled
+                if target_mode == "null" and target_value in {"bbox_loss", "obj_loss", "cls_loss"}:
+                    roi_enabled = rpn_enabled = True
                 if target_value.startswith("roi_") and not roi_enabled:
                     continue
                 if target_value.startswith("rpn_") and not rpn_enabled:
                     continue
                 layers_for_target = list(target_layer_map.get(target_value, []))
                 params_for_target = [layer_params_by_name[layer_name] for layer_name in layers_for_target]
-                if target_value.startswith("roi_"):
+                if target_mode == "null" and target_value in {"bbox_loss", "obj_loss", "cls_loss"}:
+                    if roi_target_scalar is None:
+                        roi_target_scalar = build_faster_rcnn_null_losses(
+                            rpn_box_coder=model.rpn.box_coder,
+                            rpn_bbox_deltas=rpn_bbox_deltas_img,
+                            rpn_anchors=rpn_anchors_img,
+                            pred_img=pred_img,
+                            logit_img=logit_img,
+                            raw_idx=raw_idx,
+                            proposal_indices_img=proposal_indices_img,
+                            proposals_xyxy=proposals_img,
+                            proposal_to_rpn_raw_idx=proposal_to_rpn_raw_idx_img,
+                            rpn_objectness_logits=rpn_objectness_img,
+                            final_box_xyxy=det[bbox_idx, :4],
+                            from_size=transformed_images.image_sizes[0],
+                            to_size=original_image_sizes[0],
+                            bbox_loss=null_bbox_loss,
+                            cls_loss=null_cls_loss,
+                            obj_loss=null_obj_loss,
+                            bbox_direction=null_bbox_direction,
+                            cls_direction=null_cls_direction,
+                            obj_direction=null_obj_direction,
+                            timing_accumulator=timing_accumulator,
+                            timing_device=timing_device,
+                        )
+                    target_scalar = roi_target_scalar
+                elif target_value.startswith("roi_"):
                     if roi_target_scalar is None:
                         if target_mode == "cand":
                             roi_target_scalar = build_faster_rcnn_roi_candidate_losses(
