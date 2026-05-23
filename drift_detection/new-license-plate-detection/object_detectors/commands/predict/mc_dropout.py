@@ -1,5 +1,22 @@
 from commands.predict.common import *
 
+
+def _match_faster_rcnn_mc_feature(det_box, det_cls, run_features_b, run_labels_b, raw_idx):
+    if run_features_b is None or int(run_features_b.shape[0]) == 0:
+        return None
+    if run_labels_b is not None and int(run_labels_b.shape[0]) == int(run_features_b.shape[0]):
+        cls_mask = run_labels_b.to(det_box.device) == int(det_cls)
+        if bool(cls_mask.any()):
+            candidate_indices = torch.where(cls_mask)[0]
+            candidate_boxes = run_features_b[candidate_indices, :4]
+            ious = _box_iou_1vN_tensor(det_box.view(1, 4), candidate_boxes)
+            best_pos = int(torch.argmax(ious).detach().cpu().item())
+            return run_features_b[candidate_indices[best_pos]]
+    if 0 <= int(raw_idx) < int(run_features_b.shape[0]):
+        return run_features_b[int(raw_idx)]
+    return None
+
+
 def run_mc_dropout_csv(config, run_dir):
     run_dir = Path(run_dir)
     mode = str(config.get("mode", "predict"))
@@ -146,16 +163,22 @@ def run_mc_dropout_csv(config, run_dir):
                         t_feature = timing.start()
                         if isinstance(raw_prediction, list):
                             variable_candidate_runs = True
+                            is_faster_rcnn = bool(getattr(detector, "is_faster_rcnn", False))
                             run_features = []
+                            run_labels = []
                             for pred_img in raw_prediction:
                                 pred_img = pred_img.detach().float()
                                 bbox_xyxy = _xywh_to_xyxy_tensor(pred_img[:, :4])
                                 score_vec = pred_img[:, 4:5]
                                 prob_mat = get_prediction_class_probs(detector, pred_img).detach().float()
                                 run_features.append(torch.cat([bbox_xyxy, score_vec, prob_mat], dim=1))
+                                if is_faster_rcnn and pred_img.shape[1] > 5:
+                                    run_labels.append(pred_img[:, 5].detach().long())
+                                else:
+                                    run_labels.append(None)
                                 if n_classes is None:
                                     n_classes = int(prob_mat.shape[-1])
-                            feature_runs.append(run_features)
+                            feature_runs.append({"features": run_features, "labels": run_labels} if is_faster_rcnn else run_features)
                         else:
                             pred_batch = raw_prediction.detach().float()
                             bbox_xyxy = _xywh_to_xyxy_tensor(pred_batch[..., :4])
@@ -220,7 +243,22 @@ def run_mc_dropout_csv(config, run_dir):
                     if variable_candidate_runs:
                         per_run_values = []
                         for run_features in feature_runs:
-                            if b < len(run_features) and 0 <= raw_idx < int(run_features[b].shape[0]):
+                            if isinstance(run_features, dict):
+                                features_by_image = run_features["features"]
+                                labels_by_image = run_features["labels"]
+                                if b < len(features_by_image):
+                                    det_box = det_b[pred_idx, :4].to(features_by_image[b].device)
+                                    det_cls = int(det_b[pred_idx, 5].detach().cpu().item()) if det_b.shape[1] > 5 else -1
+                                    matched = _match_faster_rcnn_mc_feature(
+                                        det_box,
+                                        det_cls,
+                                        features_by_image[b],
+                                        labels_by_image[b] if b < len(labels_by_image) else None,
+                                        raw_idx,
+                                    )
+                                    if matched is not None:
+                                        per_run_values.append(matched)
+                            elif b < len(run_features) and 0 <= raw_idx < int(run_features[b].shape[0]):
                                 per_run_values.append(run_features[b][raw_idx])
                         if not per_run_values:
                             continue
