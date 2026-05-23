@@ -1759,8 +1759,6 @@ def build_faster_rcnn_rpn_null_losses(
 
 
 def build_faster_rcnn_null_losses(
-    rpn_box_coder,
-    rpn_bbox_deltas: torch.Tensor,
     rpn_anchors: torch.Tensor,
     pred_img: torch.Tensor,
     logit_img: torch.Tensor,
@@ -1804,14 +1802,12 @@ def build_faster_rcnn_null_losses(
     _add_elapsed_timing(timing_accumulator, "candidate_search_sec", t_candidate, timing_device)
 
     t_loss = _start_timing(timing_device)
-    selected_delta = rpn_bbox_deltas[rpn_raw_idx].view(1, 4)
     selected_anchor = rpn_anchors[rpn_raw_idx].view(1, 4)
-    source_proposal = rpn_box_coder.decode(selected_delta, [selected_anchor]).view(1, 4)
-    source_proposal = _resize_boxes_xyxy_tensor(source_proposal, from_size, to_size)
+    source_anchor = _resize_boxes_xyxy_tensor(selected_anchor.detach(), from_size, to_size)
     target_final_box = final_box_xyxy.detach().view(1, 4)
     bbox_loss_value = _bbox_loss_xyxy_tensor(
-        source_proposal,
         target_final_box,
+        source_anchor,
         mode=bbox_loss,
         reduction="sum",
         direction=bbox_direction,
@@ -2143,8 +2139,6 @@ def collect_faster_rcnn_candidate_layer_grads_per_target(
                 if target_mode == "null" and target_value in {"bbox_loss", "obj_loss", "cls_loss"}:
                     if roi_target_scalar is None:
                         roi_target_scalar = build_faster_rcnn_null_losses(
-                            rpn_box_coder=model.rpn.box_coder,
-                            rpn_bbox_deltas=rpn_bbox_deltas_img,
                             rpn_anchors=rpn_anchors_img,
                             pred_img=pred_img,
                             logit_img=logit_img,
