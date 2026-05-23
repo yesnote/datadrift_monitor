@@ -242,7 +242,10 @@ def _prepare_layer_grad_config(base_config: dict, combo: dict) -> dict:
         grad_cfg["null_target"] = {
             "scalar": list(SCALARS["null_target"]),
             "layer": {
-                "bbox_loss": ["rpn.head.conv", "rpn.head.bbox_pred"],
+                "bbox_loss": [
+                    "roi_heads.box_head.fc7",
+                    "roi_heads.box_predictor.bbox_pred",
+                ],
                 "obj_loss": ["rpn.head.conv", "rpn.head.cls_logits"],
                 "cls_loss": [
                     "roi_heads.box_head.fc7",

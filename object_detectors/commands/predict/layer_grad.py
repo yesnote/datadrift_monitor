@@ -98,7 +98,7 @@ def _faster_rcnn_target_layer_map(target_values, target_layers):
         "roi_bbox_loss": ["roi_heads.box_head.fc7", "roi_heads.box_predictor.bbox_pred"],
         "rpn_obj_loss": ["rpn.head.conv", "rpn.head.cls_logits"],
         "rpn_bbox_loss": ["rpn.head.conv", "rpn.head.bbox_pred"],
-        "bbox_loss": ["rpn.head.conv", "rpn.head.bbox_pred"],
+        "bbox_loss": ["roi_heads.box_head.fc7", "roi_heads.box_predictor.bbox_pred"],
         "obj_loss": ["rpn.head.conv", "rpn.head.cls_logits"],
         "cls_loss": ["roi_heads.box_head.fc7", "roi_heads.box_predictor.cls_score"],
     }
@@ -113,7 +113,7 @@ def _faster_rcnn_target_layer_map(target_values, target_layers):
                 for layer in target_layers
                 if layer.endswith("box_head.fc7") or layer.endswith("box_predictor.cls_score")
             ]
-        elif target_value == "roi_bbox_loss":
+        elif target_value in {"roi_bbox_loss", "bbox_loss"}:
             selected = [
                 layer
                 for layer in target_layers
