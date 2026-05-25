@@ -33,7 +33,6 @@ MAX_COMBINATIONS = None
 
 SCALARS = {
     "cand_target": ["rpn_obj_loss", "rpn_bbox_loss", "roi_cls_loss", "roi_bbox_loss"],
-    "null_target": ["bbox_loss", "obj_loss", "cls_loss"],
     "null_target_2": ["rpn_obj_loss", "rpn_bbox_loss", "roi_cls_loss", "roi_bbox_loss"],
 }
 
@@ -88,7 +87,6 @@ def _model_name(config: dict) -> str:
 def _abbr(value: str) -> str:
     aliases = {
         "cand_target": "cand",
-        "null_target": "null",
         "null_target_2": "null2",
         "pred_to_target": "pred",
         "target_to_pred": "rev",
@@ -136,7 +134,7 @@ def _timestamped_combo_dir(root: Path, slug: str) -> Path:
     return root / f"{datetime.now().strftime('%m-%d-%Y_%H;%M')}_{slug}"
 
 
-def iter_cand_combinations():
+def iter_base_combinations():
     for rpn_bbox_loss, rpn_obj_loss, roi_bbox_loss, roi_cls_loss in itertools.product(
         BBOX_LOSSES,
         OBJ_LOSSES,
@@ -148,51 +146,6 @@ def iter_cand_combinations():
                 for roi_bbox_direction in BBOX_DIRECTIONS:
                     for roi_cls_direction in _valid_cls_directions(roi_cls_loss):
                         yield {
-                            "target": "cand_target",
-                            "rpn_bbox_loss": rpn_bbox_loss,
-                            "rpn_bbox_direction": rpn_bbox_direction,
-                            "rpn_obj_loss": rpn_obj_loss,
-                            "rpn_obj_direction": rpn_obj_direction,
-                            "roi_bbox_loss": roi_bbox_loss,
-                            "roi_bbox_direction": roi_bbox_direction,
-                            "roi_cls_loss": roi_cls_loss,
-                            "roi_cls_direction": roi_cls_direction,
-                        }
-
-
-def iter_null_combinations():
-    for bbox_loss, obj_loss, cls_loss in itertools.product(
-        BBOX_LOSSES,
-        OBJ_LOSSES,
-        CLS_LOSSES,
-    ):
-        for bbox_direction in BBOX_DIRECTIONS:
-            for obj_direction in _valid_obj_directions(obj_loss):
-                for cls_direction in _valid_cls_directions(cls_loss):
-                    yield {
-                        "target": "null_target",
-                        "bbox_loss": bbox_loss,
-                        "bbox_direction": bbox_direction,
-                        "obj_loss": obj_loss,
-                        "obj_direction": obj_direction,
-                        "cls_loss": cls_loss,
-                        "cls_direction": cls_direction,
-                    }
-
-
-def iter_null2_combinations():
-    for rpn_bbox_loss, rpn_obj_loss, roi_bbox_loss, roi_cls_loss in itertools.product(
-        BBOX_LOSSES,
-        OBJ_LOSSES,
-        BBOX_LOSSES,
-        CLS_LOSSES,
-    ):
-        for rpn_bbox_direction in BBOX_DIRECTIONS:
-            for rpn_obj_direction in _valid_obj_directions(rpn_obj_loss):
-                for roi_bbox_direction in BBOX_DIRECTIONS:
-                    for roi_cls_direction in _valid_cls_directions(roi_cls_loss):
-                        yield {
-                            "target": "null_target_2",
                             "rpn_bbox_loss": rpn_bbox_loss,
                             "rpn_bbox_direction": rpn_bbox_direction,
                             "rpn_obj_loss": rpn_obj_loss,
@@ -206,13 +159,13 @@ def iter_null2_combinations():
 
 def iter_combinations():
     count = 0
-    for combo in itertools.chain(
-        iter_cand_combinations(), iter_null_combinations(), iter_null2_combinations()
-    ):
-        yield combo
-        count += 1
-        if MAX_COMBINATIONS is not None and count >= int(MAX_COMBINATIONS):
-            return
+    for base_combo in iter_base_combinations():
+        for target in ("cand_target", "null_target_2"):
+            combo = {**base_combo, "target": target}
+            yield combo
+            count += 1
+            if MAX_COMBINATIONS is not None and count >= int(MAX_COMBINATIONS):
+                return
 
 
 def _run(cmd: list[str]) -> None:
@@ -271,26 +224,7 @@ def _prepare_layer_grad_config(base_config: dict, combo: dict) -> dict:
             "roi": roi_cfg,
         }
     else:
-        grad_cfg["null_target"] = {
-            "scalar": list(SCALARS["null_target"]),
-            "layer": {
-                "bbox_loss": [
-                    "roi_heads.box_head.fc7",
-                    "roi_heads.box_predictor.bbox_pred",
-                ],
-                "obj_loss": ["rpn.head.conv", "rpn.head.cls_logits"],
-                "cls_loss": [
-                    "roi_heads.box_head.fc7",
-                    "roi_heads.box_predictor.cls_score",
-                ],
-            },
-            "bbox_loss": combo["bbox_loss"],
-            "obj_loss": combo["obj_loss"],
-            "cls_loss": combo["cls_loss"],
-            "bbox_direction": combo["bbox_direction"],
-            "obj_direction": combo["obj_direction"],
-            "cls_direction": combo["cls_direction"],
-        }
+        raise ValueError(f"Unsupported Faster R-CNN layer_grad target: {target}")
     return config
 
 
@@ -436,11 +370,10 @@ def main() -> None:
     result_seen = set()
     combo_list = list(iter_combinations())
     cand_count = sum(1 for combo in combo_list if combo["target"] == "cand_target")
-    null_count = sum(1 for combo in combo_list if combo["target"] == "null_target")
     null2_count = sum(1 for combo in combo_list if combo["target"] == "null_target_2")
     print(
         f"Total combinations: {len(combo_list)} "
-        f"(cand_target={cand_count}, null_target={null_count}, null_target_2={null2_count})",
+        f"(cand_target={cand_count}, null_target_2={null2_count})",
         flush=True,
     )
     for idx, combo in enumerate(combo_list, start=1):
@@ -463,6 +396,8 @@ def main() -> None:
         _write_results(meta_grid_root, rows)
 
     print(f"Saved grid results: {meta_grid_root / 'grid_results.csv'}")
+    print(f"Saved pair comparison: {meta_grid_root / 'target_pair_comparison.csv'}")
+    print(f"Saved null2 comparison: {meta_grid_root / 'better_null2_results.csv'}")
 
 
 def _result_row(combo: dict, layer_dir: Path, meta_dir: Path, metrics: dict) -> dict:
@@ -492,6 +427,19 @@ def _result_row(combo: dict, layer_dir: Path, meta_dir: Path, metrics: dict) -> 
     return row
 
 
+def _comparison_key(row: dict) -> tuple:
+    return (
+        row["rpn_bbox_loss"],
+        row["rpn_bbox_direction"],
+        row["rpn_obj_loss"],
+        row["rpn_obj_direction"],
+        row["roi_bbox_loss"],
+        row["roi_bbox_direction"],
+        row["roi_cls_loss"],
+        row["roi_cls_direction"],
+    )
+
+
 def _write_results(out_dir: Path, rows: list[dict]) -> None:
     result_fields = [
         "target",
@@ -517,6 +465,69 @@ def _write_results(out_dir: Path, rows: list[dict]) -> None:
         "ace",
     ]
     _write_csv(out_dir / "grid_results.csv", rows, result_fields)
+
+    by_key = {}
+    for row in rows:
+        by_key.setdefault(_comparison_key(row), {})[row["target"]] = row
+
+    compare_rows = []
+    for key, pair in by_key.items():
+        if "cand_target" not in pair or "null_target_2" not in pair:
+            continue
+        cand = pair["cand_target"]
+        null2 = pair["null_target_2"]
+        try:
+            cand_auroc = float(cand["auroc"])
+            null2_auroc = float(null2["auroc"])
+            cand_ap = float(cand["ap"])
+            null2_ap = float(null2["ap"])
+        except Exception:
+            continue
+        compare_rows.append(
+            {
+                "rpn_bbox_loss": key[0],
+                "rpn_bbox_direction": key[1],
+                "rpn_obj_loss": key[2],
+                "rpn_obj_direction": key[3],
+                "roi_bbox_loss": key[4],
+                "roi_bbox_direction": key[5],
+                "roi_cls_loss": key[6],
+                "roi_cls_direction": key[7],
+                "cand_auroc": cand_auroc,
+                "null2_auroc": null2_auroc,
+                "delta_auroc": null2_auroc - cand_auroc,
+                "cand_ap": cand_ap,
+                "null2_ap": null2_ap,
+                "delta_ap": null2_ap - cand_ap,
+                "null2_better_auroc": int(null2_auroc > cand_auroc),
+                "null2_better_ap": int(null2_ap > cand_ap),
+            }
+        )
+    compare_rows.sort(key=lambda r: (r["delta_auroc"], r["delta_ap"]), reverse=True)
+    comparison_fields = [
+        "rpn_bbox_loss",
+        "rpn_bbox_direction",
+        "rpn_obj_loss",
+        "rpn_obj_direction",
+        "roi_bbox_loss",
+        "roi_bbox_direction",
+        "roi_cls_loss",
+        "roi_cls_direction",
+        "cand_auroc",
+        "null2_auroc",
+        "delta_auroc",
+        "cand_ap",
+        "null2_ap",
+        "delta_ap",
+        "null2_better_auroc",
+        "null2_better_ap",
+    ]
+    _write_csv(out_dir / "target_pair_comparison.csv", compare_rows, comparison_fields)
+    _write_csv(
+        out_dir / "better_null2_results.csv",
+        [row for row in compare_rows if row["null2_better_auroc"]],
+        comparison_fields,
+    )
 
 
 if __name__ == "__main__":
