@@ -1804,7 +1804,10 @@ def build_faster_rcnn_null_losses(
     t_loss = _start_timing(timing_device)
     selected_anchor = rpn_anchors[rpn_raw_idx].view(1, 4)
     source_anchor = _resize_boxes_xyxy_tensor(selected_anchor.detach(), from_size, to_size)
-    target_final_box = final_box_xyxy.detach().view(1, 4)
+    # Use the ROI decoded pre-NMS box from pred_img so bbox_loss keeps a
+    # gradient path to roi_heads.box_predictor.bbox_pred.  The NMS-selected
+    # final_box_xyxy argument is detached and is used only to identify the row.
+    target_final_box = _xywh_to_xyxy_tensor(pred_img[raw_idx, :4].view(1, 4))
     bbox_loss_value = _bbox_loss_xyxy_tensor(
         target_final_box,
         source_anchor,
