@@ -94,15 +94,15 @@ output:
         rpn:
           cand_obj_threshold: 0.0
           obj_loss: bcewithlogits  # bcewithlogits | abs_diff | signed_diff
-          bbox_loss: l1  # l1 | l2
+          bbox_loss: l1  # l1 | l2 | smooth_l1
           obj_direction: pred_to_target  # pred_to_target | target_to_pred, only for obj_loss: signed_diff
-          bbox_direction: pred_to_target  # fixed; reverse is redundant for l1/l2
+          bbox_direction: pred_to_target  # fixed; reverse is redundant for l1/l2/smooth_l1
         roi:
           cand_score_threshold: 0.0
           cls_loss: bcewithlogits  # bcewithlogits | kl | ce
-          bbox_loss: l1  # l1 | l2
+          bbox_loss: l1  # l1 | l2 | smooth_l1
           cls_direction: pred_to_target  # pred_to_target | target_to_pred, only for cls_loss: kl
-          bbox_direction: pred_to_target  # fixed; reverse is redundant for l1/l2
+          bbox_direction: pred_to_target  # fixed; reverse is redundant for l1/l2/smooth_l1
 
       null_target:
         scalar: [bbox_loss, obj_loss, cls_loss]
@@ -110,10 +110,10 @@ output:
           bbox_loss: ["roi_heads.box_head.fc7", "roi_heads.box_predictor.bbox_pred"]
           obj_loss: ["rpn.head.conv", "rpn.head.cls_logits"]
           cls_loss: ["roi_heads.box_head.fc7", "roi_heads.box_predictor.cls_score"]
-        bbox_loss: l1  # l1 | l2
+        bbox_loss: l1  # l1 | l2 | smooth_l1
         obj_loss: bcewithlogits  # bcewithlogits | abs_diff | signed_diff
         cls_loss: bcewithlogits  # bcewithlogits | kl | ce
-        bbox_direction: pred_to_target  # fixed; reverse is redundant for l1/l2
+        bbox_direction: pred_to_target  # fixed; reverse is redundant for l1/l2/smooth_l1
         obj_direction: pred_to_target  # pred_to_target | target_to_pred, only for obj_loss: signed_diff
         cls_direction: pred_to_target  # pred_to_target | target_to_pred, only for cls_loss: kl
       
@@ -126,13 +126,13 @@ output:
           roi_bbox_loss: ["roi_heads.box_head.fc7", "roi_heads.box_predictor.bbox_pred"]
         rpn:
           obj_loss: bcewithlogits  # bcewithlogits | abs_diff | signed_diff
-          bbox_loss: l1  # l1 | l2
+          bbox_loss: smooth_l1  # l1 | l2 | smooth_l1
           obj_direction: pred_to_target  # pred_to_target | target_to_pred, only for obj_loss: signed_diff
-          bbox_direction: pred_to_target  # fixed; reverse is redundant for l1/l2
+          bbox_direction: pred_to_target  # fixed; reverse is redundant for l1/l2/smooth_l1
         roi:
           cls_loss: bcewithlogits  # bcewithlogits | kl | ce
-          bbox_loss: l1  # l1 | l2
+          bbox_loss: smooth_l1  # l1 | l2 | smooth_l1
           cls_direction: pred_to_target  # pred_to_target | target_to_pred, only for cls_loss: kl
-          bbox_direction: pred_to_target  # fixed; reverse is redundant for l1/l2
+          bbox_direction: pred_to_target  # fixed; reverse is redundant for l1/l2/smooth_l1
     save_csv:
       enabled: true
