@@ -186,6 +186,9 @@ def _normalize_config_paths(config):
             for v in weight_path
             if isinstance(v, str) and v
         ]
+    config_file = model_cfg.get("config_file")
+    if isinstance(config_file, str) and config_file:
+        model_cfg["config_file"] = str(_resolve_path_value(config_file))
 
     dataset_cfg = config.get("dataset", {})
     used_dataset = dataset_cfg.get("used_dataset")

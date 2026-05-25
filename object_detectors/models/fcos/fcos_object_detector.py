@@ -152,12 +152,28 @@ class FCOSTorchObjectDetector(nn.Module):
             print(f"[WARN] FCOS checkpoint partial load: loaded={len(filtered)}, skipped={skipped}")
         self.detector_model.load_state_dict(filtered, strict=False)
 
-    def forward(self, images):
+    def preprocess_images(self, images):
         if isinstance(images, torch.Tensor):
             if images.dim() == 4:
-                image_list = [img.to(self.device) for img in images]
+                image_list = [img.to(self.device, dtype=torch.float32) for img in images]
             else:
-                image_list = [images.to(self.device)]
+                image_list = [images.to(self.device, dtype=torch.float32)]
         else:
-            image_list = [img.to(self.device) for img in images]
-        return self.detector_model(image_list)
+            image_list = [img.to(self.device, dtype=torch.float32) for img in images]
+
+        if bool(getattr(self.cfg.INPUT, "TO_BGR255", True)):
+            processed = []
+            mean = torch.tensor(self.cfg.INPUT.PIXEL_MEAN, dtype=torch.float32, device=self.device).view(3, 1, 1)
+            std = torch.tensor(self.cfg.INPUT.PIXEL_STD, dtype=torch.float32, device=self.device).view(3, 1, 1)
+            for img in image_list:
+                img = img[[2, 1, 0], :, :]
+                img = img * 255.0
+                processed.append((img - mean) / std)
+            return processed
+
+        mean = torch.tensor(self.cfg.INPUT.PIXEL_MEAN, dtype=torch.float32, device=self.device).view(3, 1, 1)
+        std = torch.tensor(self.cfg.INPUT.PIXEL_STD, dtype=torch.float32, device=self.device).view(3, 1, 1)
+        return [(img - mean) / std for img in image_list]
+
+    def forward(self, images):
+        return self.detector_model(self.preprocess_images(images))

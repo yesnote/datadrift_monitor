@@ -15,6 +15,7 @@ from tqdm import tqdm
 from dataloaders.dataloader_yolo import create_dataloader
 from dataloaders.utils.data_utils import DATASET_CLASS_NAMES
 from losses.loss import build_loss
+from models.fcos import FCOSTorchObjectDetector
 from models.yolo.models.experimental import attempt_load
 from models.yolo.utils.general import coco80_to_coco91_class
 
@@ -380,6 +381,158 @@ def _target_to_faster_rcnn(target, device):
     return {"boxes": boxes[valid], "labels": labels[valid]}
 
 
+def _resolve_fcos_class_names(config):
+    names = _resolve_train_class_names(config)
+    if names is not None:
+        return list(names)
+    active = _active_dataset_names(config)
+    if active == ["coco"]:
+        return list(DATASET_CLASS_NAMES["coco"])
+    return None
+
+
+def _target_to_fcos(target, image, device):
+    from fcos_core.structures.bounding_box import BoxList
+
+    boxes = target.get("boxes", torch.zeros((0, 4), dtype=torch.float32)).to(device=device, dtype=torch.float32)
+    labels = target.get("labels", torch.zeros((0,), dtype=torch.int64)).to(device=device, dtype=torch.int64)
+    dataset_name = str(target.get("dataset_name", "")).lower()
+    if dataset_name == "coco":
+        coco91_to_80 = {int(cat_id): int(i) for i, cat_id in enumerate(coco80_to_coco91_class())}
+        mapped = []
+        keep = []
+        for idx, value in enumerate(labels.tolist()):
+            if int(value) in coco91_to_80:
+                mapped.append(coco91_to_80[int(value)] + 1)
+                keep.append(idx)
+        if keep:
+            boxes = boxes[keep]
+            labels = torch.tensor(mapped, dtype=torch.int64, device=device)
+        else:
+            boxes = boxes[:0]
+            labels = labels[:0]
+    else:
+        labels = labels + 1
+
+    if boxes.numel():
+        valid = (boxes[:, 2] > boxes[:, 0]) & (boxes[:, 3] > boxes[:, 1]) & (labels > 0)
+        boxes = boxes[valid]
+        labels = labels[valid]
+    width = int(image.shape[-1])
+    height = int(image.shape[-2])
+    boxlist = BoxList(boxes, (width, height), mode="xyxy")
+    boxlist.add_field("labels", labels)
+    return boxlist
+
+
+def _build_fcos_for_train(config, device):
+    model_cfg = config.get("model", {})
+    class_names = _resolve_fcos_class_names(config)
+    if not class_names:
+        raise ValueError("Could not resolve FCOS class names for training.")
+
+    weights_path = str(model_cfg.get("weights", "") or "").strip()
+    use_finetune = bool(weights_path)
+    detector = FCOSTorchObjectDetector(
+        model_weight=weights_path if weights_path else None,
+        device=str(device),
+        names=class_names,
+        mode="train",
+        confidence=float(model_cfg.get("confidence_threshold", 0.05)),
+        iou_thresh=float(model_cfg.get("iou_threshold", 0.6)),
+        config_file=model_cfg.get("config_file"),
+        max_detections=int(model_cfg.get("max_det", 100)),
+    )
+    model = detector.detector_model
+    model.to(device)
+    model.train()
+    return detector, model, use_finetune, class_names, detector.cfg
+
+
+def _run_fcos_one_epoch(detector, model, dataloader, optimizer, device, train_mode=True):
+    model.train()
+    total_loss = 0.0
+    total_steps = 0
+    pbar = tqdm(dataloader, total=len(dataloader), desc="train" if train_mode else "val")
+    for images, targets in pbar:
+        image_list = detector.preprocess_images(images)
+        target_list = [_target_to_fcos(t, img, device) for img, t in zip(image_list, targets)]
+        if train_mode:
+            optimizer.zero_grad(set_to_none=True)
+            loss_dict = model(image_list, target_list)
+            loss = sum(v for v in loss_dict.values())
+            loss.backward()
+            optimizer.step()
+        else:
+            with torch.no_grad():
+                loss_dict = model(image_list, target_list)
+                loss = sum(v for v in loss_dict.values())
+        loss_value = float(loss.detach().cpu().item())
+        total_loss += loss_value
+        total_steps += 1
+        pbar.set_postfix(loss=f"{loss_value:.4f}")
+        del image_list, target_list, loss_dict, loss
+    return (total_loss / total_steps) if total_steps else 0.0
+
+
+def _save_fcos_ckpt(path, epoch, model, optimizer, train_loss, val_loss, class_names, cfg):
+    torch.save(
+        {
+            "epoch": int(epoch),
+            "model_state_dict": model.state_dict(),
+            "optimizer_state_dict": optimizer.state_dict(),
+            "train_loss": float(train_loss),
+            "val_loss": None if val_loss is None else float(val_loss),
+            "class_names": list(class_names),
+            "num_classes": int(len(class_names) + 1),
+            "fcos_cfg": cfg.dump() if hasattr(cfg, "dump") else None,
+            "date": datetime.now().isoformat(),
+        },
+        path,
+    )
+
+
+def _run_fcos_train(config, run_dir, device, epochs, lr, weight_decay):
+    train_loader = create_dataloader(config, split="train")
+    val_loader = None
+    try:
+        val_loader = create_dataloader(config, split="val")
+    except Exception:
+        val_loader = None
+    detector, model, use_finetune, class_names, cfg = _build_fcos_for_train(config, device)
+    optimizer = torch.optim.AdamW(
+        [p for p in model.parameters() if p.requires_grad],
+        lr=lr,
+        weight_decay=weight_decay,
+    )
+    weights_dir = Path(run_dir) / "weights"
+    best_metric = float("inf")
+    history = []
+    for epoch in range(1, epochs + 1):
+        train_loss = _run_fcos_one_epoch(detector, model, train_loader, optimizer, device, train_mode=True)
+        val_loss = None
+        if val_loader is not None:
+            val_loss = _run_fcos_one_epoch(detector, model, val_loader, optimizer, device, train_mode=False)
+        metric = val_loss if val_loss is not None else train_loss
+        _save_fcos_ckpt(weights_dir / "last.pt", epoch, model, optimizer, train_loss, val_loss, class_names, cfg)
+        if metric <= best_metric:
+            best_metric = metric
+            _save_fcos_ckpt(weights_dir / "best.pt", epoch, model, optimizer, train_loss, val_loss, class_names, cfg)
+        history.append(
+            {
+                "epoch": int(epoch),
+                "train_loss": float(train_loss),
+                "val_loss": None if val_loss is None else float(val_loss),
+                "best_metric": float(best_metric),
+            }
+        )
+        print(
+            f"[train] epoch={epoch}/{epochs} train_loss={train_loss:.6f} "
+            f"val_loss={'none' if val_loss is None else f'{val_loss:.6f}'}"
+        )
+    return model, use_finetune, class_names, history, best_metric
+
+
 def _build_faster_rcnn_for_train(config, device):
     model_cfg = config.get("model", {})
     pretrained = bool(model_cfg.get("pretrained", True))
@@ -533,7 +686,34 @@ def run_train(config, run_dir):
 
     model_type = str(config.get("model", {}).get("type", "yolov5")).strip().lower()
     if model_type in {"fcos"}:
-        raise NotImplementedError("FCOS model code is available, but FCOS training is not implemented yet.")
+        model, use_finetune, class_names, history, best_metric = _run_fcos_train(
+            config=config,
+            run_dir=run_dir,
+            device=device,
+            epochs=epochs,
+            lr=lr,
+            weight_decay=weight_decay,
+        )
+        summary = {
+            "mode": "train",
+            "model_type": "fcos",
+            "epochs": int(epochs),
+            "seed": None if seed is None else int(seed),
+            "device": str(device),
+            "finetune": bool(use_finetune),
+            "num_classes": int(len(class_names)),
+            "num_classes_with_background": int(len(class_names) + 1),
+            "class_names": list(class_names),
+            "history": history,
+            "best_metric": float(best_metric),
+            "weights": {
+                "last": str((weights_dir / "last.pt").resolve()),
+                "best": str((weights_dir / "best.pt").resolve()),
+            },
+        }
+        with open(run_dir / "train_summary.json", "w", encoding="utf-8") as f:
+            json.dump(summary, f, ensure_ascii=False, indent=2)
+        return
     if model_type in {"faster_rcnn", "faster-rcnn", "frcnn"}:
         model, use_finetune, class_names, history, best_metric = _run_faster_rcnn_train(
             config=config,
