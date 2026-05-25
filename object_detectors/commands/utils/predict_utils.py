@@ -1658,7 +1658,8 @@ def build_faster_rcnn_rpn_candidate_losses(
     rpn_anchors: torch.Tensor,
     rpn_search_boxes_xyxy: torch.Tensor,
     rpn_objectness_logits: torch.Tensor,
-    final_box_xyxy: torch.Tensor,
+    source_proposal_xyxy: torch.Tensor,
+    source_obj_logit: torch.Tensor,
     from_size,
     to_size,
     iou_threshold: float,
@@ -1674,24 +1675,26 @@ def build_faster_rcnn_rpn_candidate_losses(
         return None
     if rpn_objectness_logits is None or rpn_objectness_logits.numel() == 0:
         return None
+    if source_proposal_xyxy is None or source_obj_logit is None:
+        return None
     if obj_direction == "target_to_pred" and obj_loss != "signed_diff":
         raise ValueError("Faster R-CNN RPN candidate obj_direction=target_to_pred is only supported when obj_loss=signed_diff.")
 
     t_candidate = _start_timing(timing_device)
     with torch.no_grad():
-        final_box = final_box_xyxy.detach().view(1, 4)
+        source_proposal = source_proposal_xyxy.detach().view(1, 4)
         scores = torch.sigmoid(rpn_objectness_logits.detach().reshape(-1))
         score_mask = scores >= float(obj_threshold)
         candidate_mask = torch.zeros_like(scores, dtype=torch.bool)
         search_boxes = rpn_search_boxes_xyxy.detach()
         if bool(score_mask.any()):
             score_indices = torch.where(score_mask)[0]
-            ious = _box_iou_1vN_tensor(final_box, search_boxes[score_indices])
+            ious = _box_iou_1vN_tensor(source_proposal, search_boxes[score_indices])
             keep_indices = score_indices[ious > float(iou_threshold)]
             if keep_indices.numel() > 0:
                 candidate_mask[keep_indices] = True
         if not bool(candidate_mask.any()):
-            ious = _box_iou_1vN_tensor(final_box, search_boxes)
+            ious = _box_iou_1vN_tensor(source_proposal, search_boxes)
             best_idx = torch.argmax(ious)
             candidate_mask = torch.zeros_like(scores, dtype=torch.bool)
             candidate_mask[best_idx] = True
@@ -1702,7 +1705,7 @@ def build_faster_rcnn_rpn_candidate_losses(
     selected_anchors = rpn_anchors[candidate_mask]
     selected_boxes = rpn_box_coder.decode(selected_deltas, [selected_anchors]).view(-1, 4)
     selected_boxes = _resize_boxes_xyxy_tensor(selected_boxes, from_size, to_size)
-    target_boxes = final_box_xyxy.detach().view(1, 4).expand(selected_boxes.shape[0], -1)
+    target_boxes = source_proposal_xyxy.detach().view(1, 4).expand(selected_boxes.shape[0], -1)
     bbox_loss_value = _bbox_loss_xyxy_tensor(
         selected_boxes,
         target_boxes,
@@ -1712,7 +1715,10 @@ def build_faster_rcnn_rpn_candidate_losses(
     )
 
     selected_logits = rpn_objectness_logits.reshape(-1)[candidate_mask]
-    obj_target = torch.ones_like(selected_logits)
+    obj_target = torch.sigmoid(source_obj_logit.detach()).to(
+        dtype=selected_logits.dtype,
+        device=selected_logits.device,
+    ).expand_as(selected_logits)
     obj_loss_value = _objectness_loss_tensor(
         selected_logits,
         obj_target,
@@ -1990,21 +1996,14 @@ def build_faster_rcnn_null2_losses(
     _add_elapsed_timing(timing_accumulator, "candidate_search_sec", t_candidate, timing_device)
 
     t_loss = _start_timing(timing_device)
-    final_box_transformed = _resize_boxes_xyxy_tensor(
-        final_box_xyxy.detach().view(1, 4),
-        to_size,
-        from_size,
-    )
     selected_deltas = rpn_bbox_deltas[rpn_raw_idx].view(1, 4)
     selected_anchor = rpn_anchors[rpn_raw_idx].view(1, 4)
-    rpn_target_delta = _box_coder_encode_single(
-        rpn_box_coder,
-        final_box_transformed.to(dtype=selected_anchor.dtype, device=selected_anchor.device),
-        selected_anchor.detach(),
-    )
-    rpn_bbox_loss_value = _delta_loss_tensor(
-        selected_deltas,
-        rpn_target_delta,
+    source_rpn_proposal = rpn_box_coder.decode(selected_deltas, [selected_anchor]).view(1, 4)
+    source_rpn_proposal = _resize_boxes_xyxy_tensor(source_rpn_proposal, from_size, to_size)
+    source_anchor = _resize_boxes_xyxy_tensor(selected_anchor.detach(), from_size, to_size)
+    rpn_bbox_loss_value = _bbox_loss_xyxy_tensor(
+        source_rpn_proposal,
+        source_anchor,
         mode=rpn_bbox_loss,
         reduction="sum",
         direction=rpn_bbox_direction,
@@ -2021,15 +2020,10 @@ def build_faster_rcnn_null2_losses(
     )
 
     source_proposal = proposals_xyxy[proposal_idx].detach().view(1, 4)
-    roi_pred_delta = box_regression.view(-1, num_classes, 4)[proposal_idx, label_internal].view(1, 4)
-    roi_target_delta = _box_coder_encode_single(
-        roi_box_coder,
-        final_box_transformed.to(dtype=source_proposal.dtype, device=source_proposal.device),
+    final_box_from_roi = _xywh_to_xyxy_tensor(pred_img[raw_idx, :4].view(1, 4))
+    roi_bbox_loss_value = _bbox_loss_xyxy_tensor(
+        final_box_from_roi,
         source_proposal,
-    )
-    roi_bbox_loss_value = _delta_loss_tensor(
-        roi_pred_delta,
-        roi_target_delta,
         mode=roi_bbox_loss,
         reduction="sum",
         direction=roi_bbox_direction,
@@ -2366,7 +2360,7 @@ def collect_faster_rcnn_candidate_layer_grads_per_target(
                             raw_idx=raw_idx,
                             labels_internal_img=labels_internal_img,
                             proposal_indices_img=proposal_indices_img,
-                            proposals_xyxy=proposals[0],
+                            proposals_xyxy=proposals_img,
                             proposal_to_rpn_raw_idx=proposal_to_rpn_raw_idx_img,
                             rpn_objectness_logits=rpn_objectness_img,
                             final_box_xyxy=det[bbox_idx, :4],
@@ -2442,13 +2436,28 @@ def collect_faster_rcnn_candidate_layer_grads_per_target(
                 else:
                     if rpn_target_scalar is None:
                         if target_mode == "cand":
+                            source_proposal_xyxy = None
+                            source_obj_logit = None
+                            if proposal_indices_img is not None and raw_idx < proposal_indices_img.shape[0]:
+                                proposal_idx = int(proposal_indices_img[raw_idx].detach().cpu().item())
+                                if 0 <= proposal_idx < proposals_img.shape[0]:
+                                    source_proposal_xyxy = proposals_img[proposal_idx]
+                                if (
+                                    proposal_to_rpn_raw_idx_img is not None
+                                    and 0 <= proposal_idx < proposal_to_rpn_raw_idx_img.shape[0]
+                                ):
+                                    source_rpn_raw_idx = int(proposal_to_rpn_raw_idx_img[proposal_idx].detach().cpu().item())
+                                    flat_rpn_obj = rpn_objectness_img.reshape(-1)
+                                    if 0 <= source_rpn_raw_idx < flat_rpn_obj.shape[0]:
+                                        source_obj_logit = flat_rpn_obj[source_rpn_raw_idx]
                             rpn_target_scalar = build_faster_rcnn_rpn_candidate_losses(
                                 rpn_box_coder=model.rpn.box_coder,
                                 rpn_bbox_deltas=rpn_bbox_deltas_img,
                                 rpn_anchors=rpn_anchors_img,
                                 rpn_search_boxes_xyxy=rpn_search_boxes_img,
                                 rpn_objectness_logits=rpn_objectness_img,
-                                final_box_xyxy=det[bbox_idx, :4],
+                                source_proposal_xyxy=source_proposal_xyxy,
+                                source_obj_logit=source_obj_logit,
                                 from_size=transformed_images.image_sizes[0],
                                 to_size=original_image_sizes[0],
                                 iou_threshold=iou_threshold,
