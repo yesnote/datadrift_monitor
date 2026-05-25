@@ -177,7 +177,7 @@ def iter_null_combinations():
                         "obj_direction": obj_direction,
                         "cls_loss": cls_loss,
                         "cls_direction": cls_direction,
-                        }
+                    }
 
 
 def iter_null2_combinations():
@@ -206,7 +206,9 @@ def iter_null2_combinations():
 
 def iter_combinations():
     count = 0
-    for combo in itertools.chain(iter_cand_combinations(), iter_null_combinations(), iter_null2_combinations()):
+    for combo in itertools.chain(
+        iter_cand_combinations(), iter_null_combinations(), iter_null2_combinations()
+    ):
         yield combo
         count += 1
         if MAX_COMBINATIONS is not None and count >= int(MAX_COMBINATIONS):
