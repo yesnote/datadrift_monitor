@@ -169,7 +169,6 @@ def iter_combinations():
 
 
 def _run(cmd: list[str]) -> None:
-    print(" ".join(str(x) for x in cmd), flush=True)
     subprocess.run(cmd, cwd=REPO_ROOT, check=True)
 
 
