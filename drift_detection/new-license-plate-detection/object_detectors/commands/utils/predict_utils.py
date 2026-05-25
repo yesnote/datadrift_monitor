@@ -11,6 +11,7 @@ import torch.nn as nn
 from torchvision.ops import boxes as box_ops
 
 from dataloaders.utils.data_utils import DATASET_CLASS_NAMES
+from models.fcos import FCOSTorchObjectDetector
 from models.faster_rcnn import FasterRCNNTorchObjectDetector
 from models.yolo.models.yolo_v5_object_detector import YOLOV5TorchObjectDetector
 
@@ -234,6 +235,17 @@ def build_detector(config, model_weight=None):
             confidence=confidence,
             iou_thresh=iou_thresh,
             pretrained=bool(model_cfg.get("pretrained", True)),
+        )
+    elif model_type in {"fcos"}:
+        detector = FCOSTorchObjectDetector(
+            model_weight=str(weight_path) if weight_path is not None else None,
+            device=device,
+            names=_resolve_detector_class_names(config),
+            mode="eval",
+            confidence=confidence,
+            iou_thresh=iou_thresh,
+            config_file=model_cfg.get("config_file", None),
+            max_detections=int(model_cfg.get("max_detections", 100)),
         )
     else:
         raise ValueError(f"Unsupported model.type: {model_type}")
