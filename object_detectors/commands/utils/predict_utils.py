@@ -415,9 +415,6 @@ def parse_output_config(output_cfg):
         "l2": "l2",
         "l2_loss": "l2",
         "mse": "l2",
-        "smooth_l1": "smooth_l1",
-        "smoothl1": "smooth_l1",
-        "smooth_l1_loss": "smooth_l1",
         "kl": "kl",
         "kl_div": "kl",
         "kl_divergence": "kl",
@@ -638,7 +635,7 @@ def parse_output_config(output_cfg):
         layer_roi_bbox_loss = normalize_loss_option(
             active_roi_cfg.get("bbox_loss", g.get("bbox_loss", "l1")),
             "l1",
-            {"l1", "l2", "smooth_l1"},
+            {"l1", "l2"},
             "layer_grad.gradient.roi.bbox_loss",
         )
         layer_roi_cls_loss = normalize_loss_option(
@@ -666,7 +663,7 @@ def parse_output_config(output_cfg):
         layer_rpn_bbox_loss = normalize_loss_option(
             active_rpn_cfg.get("bbox_loss", "l1"),
             "l1",
-            {"l1", "l2", "smooth_l1"},
+            {"l1", "l2"},
             "layer_grad.gradient.rpn.bbox_loss",
         )
         layer_rpn_obj_loss = normalize_loss_option(
@@ -687,7 +684,7 @@ def parse_output_config(output_cfg):
         layer_roi_null_bbox_loss = normalize_loss_option(
             active_roi_cfg.get("bbox_loss", "l1"),
             "l1",
-            {"l1", "l2", "smooth_l1"},
+            {"l1", "l2"},
             "layer_grad.gradient.roi.bbox_loss",
         )
         layer_roi_null_cls_loss = normalize_loss_option(
@@ -715,7 +712,7 @@ def parse_output_config(output_cfg):
         layer_rpn_null_bbox_loss = normalize_loss_option(
             active_rpn_cfg.get("bbox_loss", "l1"),
             "l1",
-            {"l1", "l2", "smooth_l1"},
+            {"l1", "l2"},
             "layer_grad.gradient.rpn.bbox_loss",
         )
         layer_rpn_null_obj_loss = normalize_loss_option(
@@ -739,7 +736,7 @@ def parse_output_config(output_cfg):
         layer_null_bbox_loss = normalize_loss_option(
             null_target_cfg.get("bbox_loss", g.get("bbox_loss", "l1")),
             "l1",
-            {"l1", "l2", "smooth_l1"},
+            {"l1", "l2"},
             "layer_grad.gradient.null_target.bbox_loss",
         )
         layer_null_cls_loss = normalize_loss_option(
@@ -1301,10 +1298,8 @@ def _bbox_loss_xyxy_tensor(
         loss = torch.abs(left - right)
     elif mode == "l2":
         loss = torch.square(left - right)
-    elif mode == "smooth_l1":
-        loss = F.smooth_l1_loss(left, right, beta=1.0 / 9.0, reduction="none")
     else:
-        raise ValueError("Faster R-CNN ROI bbox_loss must be one of: l1, l2, smooth_l1")
+        raise ValueError("Faster R-CNN ROI bbox_loss must be one of: l1, l2")
 
     if reduction == "sum":
         return loss.sum()
@@ -1323,7 +1318,7 @@ def _box_coder_encode_single(box_coder, reference_boxes: torch.Tensor, proposals
 def _delta_loss_tensor(
     pred_delta: torch.Tensor,
     target_delta: torch.Tensor,
-    mode: str = "smooth_l1",
+    mode: str = "l1",
     reduction: str = "sum",
     direction: str = "pred_to_target",
 ):
@@ -1334,10 +1329,8 @@ def _delta_loss_tensor(
         loss = torch.abs(left - right)
     elif mode == "l2":
         loss = torch.square(left - right)
-    elif mode == "smooth_l1":
-        loss = F.smooth_l1_loss(left, right, beta=1.0 / 9.0, reduction="none")
     else:
-        raise ValueError("Faster R-CNN bbox delta loss must be one of: l1, l2, smooth_l1")
+        raise ValueError("Faster R-CNN bbox delta loss must be one of: l1, l2")
 
     if reduction == "sum":
         return loss.sum()
@@ -2214,12 +2207,12 @@ def collect_faster_rcnn_candidate_layer_grads_per_target(
     roi_null_bbox_loss = str(roi_null_bbox_loss).strip().lower()
     rpn_null_bbox_loss = str(rpn_null_bbox_loss).strip().lower()
     if (
-        roi_bbox_loss not in {"l1", "l2", "smooth_l1"}
-        or rpn_bbox_loss not in {"l1", "l2", "smooth_l1"}
-        or roi_null_bbox_loss not in {"l1", "l2", "smooth_l1"}
-        or rpn_null_bbox_loss not in {"l1", "l2", "smooth_l1"}
+        roi_bbox_loss not in {"l1", "l2"}
+        or rpn_bbox_loss not in {"l1", "l2"}
+        or roi_null_bbox_loss not in {"l1", "l2"}
+        or rpn_null_bbox_loss not in {"l1", "l2"}
     ):
-        raise ValueError("Faster R-CNN layer_grad bbox_loss supports only l1, l2, or smooth_l1.")
+        raise ValueError("Faster R-CNN layer_grad bbox_loss supports only l1 or l2.")
 
     if not isinstance(input_tensor, list):
         input_images = [img for img in input_tensor] if isinstance(input_tensor, torch.Tensor) else list(input_tensor)
