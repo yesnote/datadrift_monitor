@@ -235,72 +235,52 @@ def run_layer_grad_csv(config, run_dir):
                 npz_rel_path = (Path("gradients") / npz_name).as_posix()
                 npz_path = gradients_dir / npz_name
 
-            for sample_idx in range(len(image_list)):
-                target = targets[sample_idx]
-                image_id = int(target["image_id"][0].item())
-                image_path = target["path"]
-
-                if is_faster_rcnn:
-                    bbox_rows = collect_faster_rcnn_roi_layer_grads_per_target(
-                        detector=detector,
-                        input_tensor=infer_batch[sample_idx: sample_idx + 1],
-                        target_values=target_values,
-                        target_layers=target_layers,
-                        target_layer_map=target_layer_map,
-                        map_reduction=layer_map_reduction,
-                        vector_reduction=layer_gradient_reduction,
-                        target_mode=target_mode,
-                        roi_cand_enabled=layer_roi_cand_enabled,
-                        roi_cand_score_threshold=layer_roi_cand_score_threshold,
-                        roi_bbox_loss=layer_roi_bbox_loss,
-                        roi_cls_loss=layer_roi_cls_loss,
-                        roi_bbox_direction=layer_roi_bbox_direction,
-                        roi_cls_direction=layer_roi_cls_direction,
-                        rpn_cand_enabled=layer_rpn_cand_enabled,
-                        rpn_cand_obj_threshold=layer_rpn_cand_obj_threshold,
-                        rpn_bbox_loss=layer_rpn_bbox_loss,
-                        rpn_obj_loss=layer_rpn_obj_loss,
-                        rpn_bbox_direction=layer_rpn_bbox_direction,
-                        rpn_obj_direction=layer_rpn_obj_direction,
-                        roi_null_enabled=layer_roi_null_enabled,
-                        roi_null_bbox_loss=layer_roi_null_bbox_loss,
-                        roi_null_cls_loss=layer_roi_null_cls_loss,
-                        roi_null_bbox_direction=layer_roi_null_bbox_direction,
-                        roi_null_cls_direction=layer_roi_null_cls_direction,
-                        rpn_null_enabled=layer_rpn_null_enabled,
-                        rpn_null_bbox_loss=layer_rpn_null_bbox_loss,
-                        rpn_null_obj_loss=layer_rpn_null_obj_loss,
-                        rpn_null_bbox_direction=layer_rpn_null_bbox_direction,
-                        rpn_null_obj_direction=layer_rpn_null_obj_direction,
-                        null_bbox_loss=layer_null_bbox_loss,
-                        null_cls_loss=layer_null_cls_loss,
-                        null_obj_loss=layer_null_obj_loss,
-                        null_bbox_direction=layer_null_bbox_direction,
-                        null_cls_direction=layer_null_cls_direction,
-                        null_obj_direction=layer_null_obj_direction,
-                        timing_accumulator=stage_seconds,
-                        timing_device=device,
-                    )
-                else:
-                    bbox_rows = collect_bbox_layer_grads_per_target(
-                        detector=detector,
-                        input_tensor=infer_batch[sample_idx: sample_idx + 1],
-                        target_values=target_values,
-                        target_layers=target_layers,
-                        map_reduction=layer_map_reduction,
-                        vector_reduction=layer_gradient_reduction,
-                        pseudo_gt=layer_pseudo_gt,
-                        cand_score_threshold=layer_cand_score_threshold,
-                        bbox_loss=layer_bbox_loss,
-                        cls_loss=layer_cls_loss,
-                        obj_loss=layer_obj_loss,
-                        bbox_direction=layer_bbox_direction,
-                        cls_direction=layer_cls_direction,
-                        obj_direction=layer_obj_direction,
-                        timing_accumulator=stage_seconds,
-                        timing_device=device,
-                    )
+            if is_faster_rcnn:
+                bbox_rows = collect_faster_rcnn_roi_layer_grads_per_target(
+                    detector=detector,
+                    input_tensor=infer_batch,
+                    target_values=target_values,
+                    target_layers=target_layers,
+                    target_layer_map=target_layer_map,
+                    map_reduction=layer_map_reduction,
+                    vector_reduction=layer_gradient_reduction,
+                    target_mode=target_mode,
+                    roi_cand_enabled=layer_roi_cand_enabled,
+                    roi_cand_score_threshold=layer_roi_cand_score_threshold,
+                    roi_bbox_loss=layer_roi_bbox_loss,
+                    roi_cls_loss=layer_roi_cls_loss,
+                    roi_bbox_direction=layer_roi_bbox_direction,
+                    roi_cls_direction=layer_roi_cls_direction,
+                    rpn_cand_enabled=layer_rpn_cand_enabled,
+                    rpn_cand_obj_threshold=layer_rpn_cand_obj_threshold,
+                    rpn_bbox_loss=layer_rpn_bbox_loss,
+                    rpn_obj_loss=layer_rpn_obj_loss,
+                    rpn_bbox_direction=layer_rpn_bbox_direction,
+                    rpn_obj_direction=layer_rpn_obj_direction,
+                    roi_null_enabled=layer_roi_null_enabled,
+                    roi_null_bbox_loss=layer_roi_null_bbox_loss,
+                    roi_null_cls_loss=layer_roi_null_cls_loss,
+                    roi_null_bbox_direction=layer_roi_null_bbox_direction,
+                    roi_null_cls_direction=layer_roi_null_cls_direction,
+                    rpn_null_enabled=layer_rpn_null_enabled,
+                    rpn_null_bbox_loss=layer_rpn_null_bbox_loss,
+                    rpn_null_obj_loss=layer_rpn_null_obj_loss,
+                    rpn_null_bbox_direction=layer_rpn_null_bbox_direction,
+                    rpn_null_obj_direction=layer_rpn_null_obj_direction,
+                    null_bbox_loss=layer_null_bbox_loss,
+                    null_cls_loss=layer_null_cls_loss,
+                    null_obj_loss=layer_null_obj_loss,
+                    null_bbox_direction=layer_null_bbox_direction,
+                    null_cls_direction=layer_null_cls_direction,
+                    null_obj_direction=layer_null_obj_direction,
+                    timing_accumulator=stage_seconds,
+                    timing_device=device,
+                )
                 for bbox_row in bbox_rows:
+                    sample_idx = int(bbox_row.get("sample_idx", 0))
+                    target = targets[sample_idx]
+                    image_id = int(target["image_id"][0].item())
+                    image_path = target["path"]
                     output_pred_idx = bbox_row["pred_idx"]
                     output_raw_pred_idx = bbox_row["raw_pred_idx"]
                     row = {
@@ -330,6 +310,59 @@ def run_layer_grad_csv(config, run_dir):
                     batch_csv_rows.append(row)
                 batch_items += int(len(bbox_rows))
                 del bbox_rows
+            else:
+                for sample_idx in range(len(image_list)):
+                    target = targets[sample_idx]
+                    image_id = int(target["image_id"][0].item())
+                    image_path = target["path"]
+                    bbox_rows = collect_bbox_layer_grads_per_target(
+                        detector=detector,
+                        input_tensor=infer_batch[sample_idx: sample_idx + 1],
+                        target_values=target_values,
+                        target_layers=target_layers,
+                        map_reduction=layer_map_reduction,
+                        vector_reduction=layer_gradient_reduction,
+                        pseudo_gt=layer_pseudo_gt,
+                        cand_score_threshold=layer_cand_score_threshold,
+                        bbox_loss=layer_bbox_loss,
+                        cls_loss=layer_cls_loss,
+                        obj_loss=layer_obj_loss,
+                        bbox_direction=layer_bbox_direction,
+                        cls_direction=layer_cls_direction,
+                        obj_direction=layer_obj_direction,
+                        timing_accumulator=stage_seconds,
+                        timing_device=device,
+                    )
+                    for bbox_row in bbox_rows:
+                        output_pred_idx = bbox_row["pred_idx"]
+                        output_raw_pred_idx = bbox_row["raw_pred_idx"]
+                        row = {
+                            "image_id": image_id,
+                            "image_path": image_path,
+                            "pred_idx": output_pred_idx,
+                            "raw_pred_idx": output_raw_pred_idx,
+                            "xmin": bbox_row["xmin"],
+                            "ymin": bbox_row["ymin"],
+                            "xmax": bbox_row["xmax"],
+                            "ymax": bbox_row["ymax"],
+                            "score": bbox_row["score"],
+                            "pred_class": bbox_row["pred_class"],
+                        }
+                        for grad_key, grad_value in bbox_row["grad_stats"].items():
+                            if save_raw_gradients:
+                                array_key = (
+                                    f"s{sample_idx:03d}_p{int(output_pred_idx):06d}_"
+                                    f"r{int(output_raw_pred_idx):06d}_{_safe_npz_key(grad_key)}"
+                                )
+                                batch_grad_arrays[array_key] = _gradient_to_np_array(grad_value)
+                                row[grad_key] = f"{npz_rel_path}::{array_key}"
+                            else:
+                                for metric in layer_gradient_reduction:
+                                    value = grad_value.get(metric, 0.0) if isinstance(grad_value, dict) else 0.0
+                                    row[f"{grad_key}_{metric}"] = _scalar_to_float(value)
+                        batch_csv_rows.append(row)
+                    batch_items += int(len(bbox_rows))
+                    del bbox_rows
 
             if save_raw_gradients and batch_grad_arrays:
                 np.savez(npz_path, **batch_grad_arrays)
