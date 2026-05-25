@@ -37,7 +37,7 @@ SCALARS = {
     "null_target_2": ["rpn_obj_loss", "rpn_bbox_loss", "roi_cls_loss", "roi_bbox_loss"],
 }
 
-BBOX_LOSSES = ["l1", "l2"]
+BBOX_LOSSES = ["l1", "l2", "smooth_l1"]
 BBOX_DIRECTIONS = ["pred_to_target"]
 OBJ_LOSSES = ["bcewithlogits", "abs_diff", "signed_diff"]
 CLS_LOSSES = ["bcewithlogits", "kl", "ce"]

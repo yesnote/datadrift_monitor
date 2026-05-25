@@ -403,6 +403,9 @@ def parse_output_config(output_cfg):
         "l2": "l2",
         "l2_loss": "l2",
         "mse": "l2",
+        "smooth_l1": "smooth_l1",
+        "smoothl1": "smooth_l1",
+        "smooth_l1_loss": "smooth_l1",
         "kl": "kl",
         "kl_div": "kl",
         "kl_divergence": "kl",
@@ -623,7 +626,7 @@ def parse_output_config(output_cfg):
         layer_roi_bbox_loss = normalize_loss_option(
             active_roi_cfg.get("bbox_loss", g.get("bbox_loss", "l1")),
             "l1",
-            {"l1", "l2"},
+            {"l1", "l2", "smooth_l1"},
             "layer_grad.gradient.roi.bbox_loss",
         )
         layer_roi_cls_loss = normalize_loss_option(
@@ -651,7 +654,7 @@ def parse_output_config(output_cfg):
         layer_rpn_bbox_loss = normalize_loss_option(
             active_rpn_cfg.get("bbox_loss", "l1"),
             "l1",
-            {"l1", "l2"},
+            {"l1", "l2", "smooth_l1"},
             "layer_grad.gradient.rpn.bbox_loss",
         )
         layer_rpn_obj_loss = normalize_loss_option(
@@ -672,7 +675,7 @@ def parse_output_config(output_cfg):
         layer_roi_null_bbox_loss = normalize_loss_option(
             active_roi_cfg.get("bbox_loss", "l1"),
             "l1",
-            {"l1", "l2"},
+            {"l1", "l2", "smooth_l1"},
             "layer_grad.gradient.roi.bbox_loss",
         )
         layer_roi_null_cls_loss = normalize_loss_option(
@@ -700,7 +703,7 @@ def parse_output_config(output_cfg):
         layer_rpn_null_bbox_loss = normalize_loss_option(
             active_rpn_cfg.get("bbox_loss", "l1"),
             "l1",
-            {"l1", "l2"},
+            {"l1", "l2", "smooth_l1"},
             "layer_grad.gradient.rpn.bbox_loss",
         )
         layer_rpn_null_obj_loss = normalize_loss_option(
@@ -724,7 +727,7 @@ def parse_output_config(output_cfg):
         layer_null_bbox_loss = normalize_loss_option(
             null_target_cfg.get("bbox_loss", g.get("bbox_loss", "l1")),
             "l1",
-            {"l1", "l2"},
+            {"l1", "l2", "smooth_l1"},
             "layer_grad.gradient.null_target.bbox_loss",
         )
         layer_null_cls_loss = normalize_loss_option(
@@ -1286,8 +1289,43 @@ def _bbox_loss_xyxy_tensor(
         loss = torch.abs(left - right)
     elif mode == "l2":
         loss = torch.square(left - right)
+    elif mode == "smooth_l1":
+        loss = F.smooth_l1_loss(left, right, beta=1.0 / 9.0, reduction="none")
     else:
-        raise ValueError("Faster R-CNN ROI bbox_loss must be one of: l1, l2")
+        raise ValueError("Faster R-CNN ROI bbox_loss must be one of: l1, l2, smooth_l1")
+
+    if reduction == "sum":
+        return loss.sum()
+    if reduction == "none":
+        return loss
+    return loss.mean()
+
+
+def _box_coder_encode_single(box_coder, reference_boxes: torch.Tensor, proposals: torch.Tensor):
+    encoded = box_coder.encode([reference_boxes], [proposals])
+    if isinstance(encoded, (list, tuple)):
+        return encoded[0]
+    return encoded
+
+
+def _delta_loss_tensor(
+    pred_delta: torch.Tensor,
+    target_delta: torch.Tensor,
+    mode: str = "smooth_l1",
+    reduction: str = "sum",
+    direction: str = "pred_to_target",
+):
+    mode = str(mode).strip().lower()
+    target_delta = target_delta.to(dtype=pred_delta.dtype, device=pred_delta.device)
+    left, right = _apply_direction(pred_delta, target_delta, direction)
+    if mode == "l1":
+        loss = torch.abs(left - right)
+    elif mode == "l2":
+        loss = torch.square(left - right)
+    elif mode == "smooth_l1":
+        loss = F.smooth_l1_loss(left, right, beta=1.0 / 9.0, reduction="none")
+    else:
+        raise ValueError("Faster R-CNN bbox delta loss must be one of: l1, l2, smooth_l1")
 
     if reduction == "sum":
         return loss.sum()
@@ -1886,15 +1924,19 @@ def build_faster_rcnn_null_losses(
 
 def build_faster_rcnn_null2_losses(
     rpn_box_coder,
+    roi_box_coder,
     rpn_bbox_deltas: torch.Tensor,
     rpn_anchors: torch.Tensor,
+    box_regression: torch.Tensor,
     pred_img: torch.Tensor,
     logit_img: torch.Tensor,
     raw_idx: int,
+    labels_internal_img: torch.Tensor,
     proposal_indices_img: torch.Tensor,
     proposals_xyxy: torch.Tensor,
     proposal_to_rpn_raw_idx: torch.Tensor,
     rpn_objectness_logits: torch.Tensor,
+    final_box_xyxy: torch.Tensor,
     from_size,
     to_size,
     rpn_bbox_loss: str = "l1",
@@ -1911,6 +1953,10 @@ def build_faster_rcnn_null2_losses(
     if raw_idx >= pred_img.shape[0]:
         return None
     if logit_img is None or logit_img.numel() == 0 or raw_idx >= logit_img.shape[0]:
+        return None
+    if box_regression is None or box_regression.numel() == 0:
+        return None
+    if labels_internal_img is None or raw_idx >= labels_internal_img.shape[0]:
         return None
     if proposal_indices_img is None or raw_idx >= proposal_indices_img.shape[0]:
         return None
@@ -1931,17 +1977,29 @@ def build_faster_rcnn_null2_losses(
     if rpn_raw_idx >= rpn_bbox_deltas.shape[0] or rpn_raw_idx >= rpn_anchors.shape[0]:
         _add_elapsed_timing(timing_accumulator, "candidate_search_sec", t_candidate, timing_device)
         return None
+    label_internal = int(labels_internal_img[raw_idx].detach().cpu().item())
+    num_classes = int(box_regression.shape[-1] // 4)
+    if label_internal < 0 or label_internal >= num_classes:
+        _add_elapsed_timing(timing_accumulator, "candidate_search_sec", t_candidate, timing_device)
+        return None
     _add_elapsed_timing(timing_accumulator, "candidate_search_sec", t_candidate, timing_device)
 
     t_loss = _start_timing(timing_device)
+    final_box_transformed = _resize_boxes_xyxy_tensor(
+        final_box_xyxy.detach().view(1, 4),
+        to_size,
+        from_size,
+    )
     selected_deltas = rpn_bbox_deltas[rpn_raw_idx].view(1, 4)
     selected_anchor = rpn_anchors[rpn_raw_idx].view(1, 4)
-    source_rpn_proposal = rpn_box_coder.decode(selected_deltas, [selected_anchor]).view(1, 4)
-    source_rpn_proposal = _resize_boxes_xyxy_tensor(source_rpn_proposal, from_size, to_size)
-    source_anchor = _resize_boxes_xyxy_tensor(selected_anchor.detach(), from_size, to_size)
-    rpn_bbox_loss_value = _bbox_loss_xyxy_tensor(
-        source_rpn_proposal,
-        source_anchor,
+    rpn_target_delta = _box_coder_encode_single(
+        rpn_box_coder,
+        final_box_transformed.to(dtype=selected_anchor.dtype, device=selected_anchor.device),
+        selected_anchor.detach(),
+    )
+    rpn_bbox_loss_value = _delta_loss_tensor(
+        selected_deltas,
+        rpn_target_delta,
         mode=rpn_bbox_loss,
         reduction="sum",
         direction=rpn_bbox_direction,
@@ -1958,10 +2016,15 @@ def build_faster_rcnn_null2_losses(
     )
 
     source_proposal = proposals_xyxy[proposal_idx].detach().view(1, 4)
-    final_roi_box = _xywh_to_xyxy_tensor(pred_img[raw_idx, :4].view(1, 4))
-    roi_bbox_loss_value = _bbox_loss_xyxy_tensor(
-        final_roi_box,
+    roi_pred_delta = box_regression.view(-1, num_classes, 4)[proposal_idx, label_internal].view(1, 4)
+    roi_target_delta = _box_coder_encode_single(
+        roi_box_coder,
+        final_box_transformed.to(dtype=source_proposal.dtype, device=source_proposal.device),
         source_proposal,
+    )
+    roi_bbox_loss_value = _delta_loss_tensor(
+        roi_pred_delta,
+        roi_target_delta,
         mode=roi_bbox_loss,
         reduction="sum",
         direction=roi_bbox_direction,
@@ -2139,12 +2202,12 @@ def collect_faster_rcnn_candidate_layer_grads_per_target(
     roi_null_bbox_loss = str(roi_null_bbox_loss).strip().lower()
     rpn_null_bbox_loss = str(rpn_null_bbox_loss).strip().lower()
     if (
-        roi_bbox_loss not in {"l1", "l2"}
-        or rpn_bbox_loss not in {"l1", "l2"}
-        or roi_null_bbox_loss not in {"l1", "l2"}
-        or rpn_null_bbox_loss not in {"l1", "l2"}
+        roi_bbox_loss not in {"l1", "l2", "smooth_l1"}
+        or rpn_bbox_loss not in {"l1", "l2", "smooth_l1"}
+        or roi_null_bbox_loss not in {"l1", "l2", "smooth_l1"}
+        or rpn_null_bbox_loss not in {"l1", "l2", "smooth_l1"}
     ):
-        raise ValueError("Faster R-CNN layer_grad bbox_loss supports only l1 or l2.")
+        raise ValueError("Faster R-CNN layer_grad bbox_loss supports only l1, l2, or smooth_l1.")
 
     if not isinstance(input_tensor, list):
         input_images = [img for img in input_tensor] if isinstance(input_tensor, torch.Tensor) else list(input_tensor)
@@ -2215,11 +2278,14 @@ def collect_faster_rcnn_candidate_layer_grads_per_target(
     )
     detections = model.transform.postprocess(detections, transformed_images.image_sizes, original_image_sizes)
     proposal_indices_img = None
+    labels_internal_img = None
     if detections and "proposal_indices" in detections[0]:
         with torch.no_grad():
-            labels_out, valid = detector._map_labels_to_output(detections[0]["labels"].to(detector.device))
+            labels_internal_all = detections[0]["labels"].to(detector.device)
+            labels_out, valid = detector._map_labels_to_output(labels_internal_all)
             valid &= detections[0]["scores"].to(detector.device) > 0.0
         proposal_indices_img = detections[0]["proposal_indices"].to(detector.device)[valid]
+        labels_internal_img = labels_internal_all[valid]
     raw_prediction, raw_logits = detector._detections_to_contract(
         detections,
         detector.device,
@@ -2286,15 +2352,19 @@ def collect_faster_rcnn_candidate_layer_grads_per_target(
                     if null2_target_scalar is None:
                         null2_target_scalar = build_faster_rcnn_null2_losses(
                             rpn_box_coder=model.rpn.box_coder,
+                            roi_box_coder=roi_heads.box_coder,
                             rpn_bbox_deltas=rpn_bbox_deltas_img,
                             rpn_anchors=rpn_anchors_img,
+                            box_regression=box_regression,
                             pred_img=pred_img,
                             logit_img=logit_img,
                             raw_idx=raw_idx,
+                            labels_internal_img=labels_internal_img,
                             proposal_indices_img=proposal_indices_img,
-                            proposals_xyxy=proposals_img,
+                            proposals_xyxy=proposals[0],
                             proposal_to_rpn_raw_idx=proposal_to_rpn_raw_idx_img,
                             rpn_objectness_logits=rpn_objectness_img,
+                            final_box_xyxy=det[bbox_idx, :4],
                             from_size=transformed_images.image_sizes[0],
                             to_size=original_image_sizes[0],
                             rpn_bbox_loss=rpn_null_bbox_loss,
