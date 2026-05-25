@@ -7,7 +7,6 @@ from .inference import make_fcos_postprocessor
 from .loss import make_fcos_loss_evaluator
 
 from fcos_core.layers import Scale
-from fcos_core.layers import DFConv2d
 
 
 class FCOSHead(torch.nn.Module):
@@ -29,7 +28,7 @@ class FCOSHead(torch.nn.Module):
         for i in range(cfg.MODEL.FCOS.NUM_CONVS):
             if self.use_dcn_in_tower and \
                     i == cfg.MODEL.FCOS.NUM_CONVS - 1:
-                conv_func = DFConv2d
+                raise NotImplementedError("DCN in the FCOS tower is not supported in this FCOS-only copy.")
             else:
                 conv_func = nn.Conv2d
 

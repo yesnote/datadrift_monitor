@@ -24,7 +24,6 @@ from torch import nn
 
 from fcos_core.layers import FrozenBatchNorm2d
 from fcos_core.layers import Conv2d
-from fcos_core.layers import DFConv2d
 from fcos_core.modeling.make_layers import group_norm
 from fcos_core.utils.registry import Registry
 
@@ -285,19 +284,7 @@ class Bottleneck(nn.Module):
         # TODO: specify init for the above
         with_dcn = dcn_config.get("stage_with_dcn", False)
         if with_dcn:
-            deformable_groups = dcn_config.get("deformable_groups", 1)
-            with_modulated_dcn = dcn_config.get("with_modulated_dcn", False)
-            self.conv2 = DFConv2d(
-                bottleneck_channels,
-                bottleneck_channels,
-                with_modulated_dcn=with_modulated_dcn,
-                kernel_size=3,
-                stride=stride_3x3,
-                groups=num_groups,
-                dilation=dilation,
-                deformable_groups=deformable_groups,
-                bias=False
-            )
+            raise NotImplementedError("DCN stages are not supported in this FCOS-only copy.")
         else:
             self.conv2 = Conv2d(
                 bottleneck_channels,
