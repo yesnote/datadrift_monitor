@@ -1,9 +1,5 @@
 import torch
 
-from ..inference import RPNPostProcessor
-from ..utils import permute_and_flatten
-
-from fcos_core.modeling.box_coder import BoxCoder
 from fcos_core.modeling.utils import cat
 from fcos_core.structures.bounding_box import BoxList
 from fcos_core.structures.boxlist_ops import cat_boxlist
@@ -48,7 +44,7 @@ class FCOSPostProcessor(torch.nn.Module):
     def forward_for_single_feature_map(
             self, locations, box_cls,
             box_regression, centerness,
-            image_sizes):
+            image_sizes, level_idx):
         """
         Arguments:
             anchors: list[BoxList]
@@ -91,6 +87,7 @@ class FCOSPostProcessor(torch.nn.Module):
             if per_candidate_inds.sum().item() > per_pre_nms_top_n.item():
                 per_box_cls, top_k_indices = \
                     per_box_cls.topk(per_pre_nms_top_n, sorted=False)
+                per_box_loc = per_box_loc[top_k_indices]
                 per_class = per_class[top_k_indices]
                 per_box_regression = per_box_regression[top_k_indices]
                 per_locations = per_locations[top_k_indices]
@@ -106,6 +103,9 @@ class FCOSPostProcessor(torch.nn.Module):
             boxlist = BoxList(detections, (int(w), int(h)), mode="xyxy")
             boxlist.add_field("labels", per_class)
             boxlist.add_field("scores", torch.sqrt(per_box_cls))
+            boxlist.add_field("pre_nms_level", torch.full_like(per_class, int(level_idx)))
+            boxlist.add_field("pre_nms_location_idx", per_box_loc)
+            boxlist.add_field("pre_nms_class", per_class)
             boxlist = boxlist.clip_to_image(remove_empty=False)
             boxlist = remove_small_boxes(boxlist, self.min_size)
             results.append(boxlist)
@@ -124,10 +124,10 @@ class FCOSPostProcessor(torch.nn.Module):
                 applying box decoding and NMS
         """
         sampled_boxes = []
-        for _, (l, o, b, c) in enumerate(zip(locations, box_cls, box_regression, centerness)):
+        for level_idx, (l, o, b, c) in enumerate(zip(locations, box_cls, box_regression, centerness)):
             sampled_boxes.append(
                 self.forward_for_single_feature_map(
-                    l, o, b, c, image_sizes
+                    l, o, b, c, image_sizes, level_idx
                 )
             )
 
