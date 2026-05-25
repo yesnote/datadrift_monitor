@@ -114,10 +114,10 @@ def _combo_slug(combo: dict) -> str:
     if target in {"cand_target", "null_target_2"}:
         return (
             f"layer_grad_t-{_abbr(target)}"
-            f"__rb-{combo['rpn_bbox_loss']}-{_abbr(combo['rpn_bbox_direction'])}"
+            f"__rpnb-{combo['rpn_bbox_loss']}-{_abbr(combo['rpn_bbox_direction'])}"
+            f"__rpno-{_abbr(combo['rpn_obj_loss'])}-{_abbr(combo['rpn_obj_direction'])}"
             f"__roib-{combo['roi_bbox_loss']}-{_abbr(combo['roi_bbox_direction'])}"
             f"__roic-{_abbr(combo['roi_cls_loss'])}-{_abbr(combo['roi_cls_direction'])}"
-            f"__rpno-{_abbr(combo['rpn_obj_loss'])}-{_abbr(combo['rpn_obj_direction'])}"
         )
     return (
         f"layer_grad_t-{_abbr(target)}"
