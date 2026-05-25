@@ -963,13 +963,15 @@ def collect_gradients_per_target(
                             target_scalar = logits_for_cls[keep_idx].max(dim=1).values.sum()
             else:
                 with torch.no_grad():
+                    max_det = getattr(detector, "max_det", 300)
                     _selected_preds, _selected_logits, _selected_objectness, selected_indices = detector.non_max_suppression(
-                        raw_prediction.detach(),
-                        raw_logits.detach() if raw_logits is not None else raw_logits,
-                        detector.confidence,
-                        detector.iou_thresh,
-                        classes=None,
-                        agnostic=detector.agnostic,
+                        prediction=raw_prediction.detach(),
+                        logits=raw_logits.detach() if raw_logits is not None else raw_logits,
+                        conf_thres=float(getattr(detector, "conf_thresh", getattr(detector, "confidence", 0.25))),
+                        iou_thres=float(getattr(detector, "iou_thresh", 0.45)),
+                        classes=getattr(detector, "filter_classes", None),
+                        agnostic=bool(getattr(detector, "agnostic_nms", getattr(detector, "agnostic", False))),
+                        max_det=int(max_det) if max_det is not None else None,
                         return_indices=True,
                     )
                     raw_keep_indices = (
@@ -988,13 +990,15 @@ def collect_gradients_per_target(
         else:
             # Loss targets use the final NMS predictions.
             with torch.no_grad():
+                max_det = getattr(detector, "max_det", 300)
                 _selected_preds, _selected_logits, _selected_objectness, selected_indices = detector.non_max_suppression(
-                    raw_prediction.detach(),
-                    raw_logits.detach() if raw_logits is not None else raw_logits,
-                    detector.confidence,
-                    detector.iou_thresh,
-                    classes=None,
-                    agnostic=detector.agnostic,
+                    prediction=raw_prediction.detach(),
+                    logits=raw_logits.detach() if raw_logits is not None else raw_logits,
+                    conf_thres=float(getattr(detector, "conf_thresh", getattr(detector, "confidence", 0.25))),
+                    iou_thres=float(getattr(detector, "iou_thresh", 0.45)),
+                    classes=getattr(detector, "filter_classes", None),
+                    agnostic=bool(getattr(detector, "agnostic_nms", getattr(detector, "agnostic", False))),
+                    max_det=int(max_det) if max_det is not None else None,
                     return_indices=True,
                 )
                 raw_keep_indices = (
@@ -2293,14 +2297,15 @@ def collect_faster_rcnn_candidate_layer_grads_per_target(
     with torch.no_grad():
         detached_prediction = [p.detach().clone() for p in raw_prediction]
         detached_logits = [l.detach().clone() for l in raw_logits] if raw_logits is not None else None
+        max_det = getattr(detector, "max_det", 300)
         selected_preds, _selected_logits, _selected_objectness, selected_indices = detector.non_max_suppression(
-            detached_prediction,
-            detached_logits,
-            detector.confidence,
-            detector.iou_thresh,
-            classes=None,
-            agnostic=detector.agnostic,
-            max_det=getattr(detector, "max_det", None),
+            prediction=detached_prediction,
+            logits=detached_logits,
+            conf_thres=float(getattr(detector, "conf_thresh", getattr(detector, "confidence", 0.25))),
+            iou_thres=float(getattr(detector, "iou_thresh", 0.45)),
+            classes=getattr(detector, "filter_classes", None),
+            agnostic=bool(getattr(detector, "agnostic_nms", getattr(detector, "agnostic", False))),
+            max_det=int(max_det) if max_det is not None else None,
             return_indices=True,
         )
     _add_elapsed_timing(timing_accumulator, "detector_inference_sec", t_detector, timing_device)
@@ -2576,13 +2581,15 @@ def collect_bbox_layer_grads_per_target(
     with torch.no_grad():
         nms_prediction = raw_prediction.detach().clone()
         nms_logits = raw_logits.detach().clone() if raw_logits is not None else None
+        max_det = getattr(detector, "max_det", 300)
         selected_preds, _selected_logits, _selected_objectness, selected_indices = detector.non_max_suppression(
-            nms_prediction,
-            nms_logits,
-            detector.confidence,
-            detector.iou_thresh,
-            classes=None,
-            agnostic=detector.agnostic,
+            prediction=nms_prediction,
+            logits=nms_logits,
+            conf_thres=float(getattr(detector, "conf_thresh", getattr(detector, "confidence", 0.25))),
+            iou_thres=float(getattr(detector, "iou_thresh", 0.45)),
+            classes=getattr(detector, "filter_classes", None),
+            agnostic=bool(getattr(detector, "agnostic_nms", getattr(detector, "agnostic", False))),
+            max_det=int(max_det) if max_det is not None else None,
             return_indices=True,
         )
     _add_elapsed_timing(timing_accumulator, "detector_inference_sec", t_detector, timing_device)

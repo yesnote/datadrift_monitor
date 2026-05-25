@@ -53,6 +53,7 @@ def run_null_detect_csv(config, run_dir):
         raise ValueError("Loaded 0 images. Check dataset root/image_dir/split configuration in YAML.")
 
     detector, device = build_detector(config)
+    nms_kwargs = _resolve_detector_nms_kwargs(detector)
     num_classes = len(detector.names) if detector.names is not None else int(config.get("model", {}).get("num_classes", 0))
     output_feature_names = [] if feature_set == "losses_only" else ["prob_sum"] + [f"prob_{i}" for i in range(max(0, num_classes))]
     null_feature_names = ["bbox_loss", "obj_loss", "cls_loss"] if feature_set == "losses_only" else ["size", "circum", "size_circum", "bbox_loss", "obj_loss", "cls_loss"]
@@ -92,12 +93,13 @@ def run_null_detect_csv(config, run_dir):
                 if raw_flat is None:
                     raise RuntimeError("null_detect requires raw YOLO prediction layers, but detector.model() did not return them.")
                 selected_preds, _selected_logits, _selected_objectness, selected_indices = detector.non_max_suppression(
-                    raw_prediction,
-                    raw_logits,
-                    detector.confidence,
-                    detector.iou_thresh,
-                    classes=None,
-                    agnostic=detector.agnostic,
+                    prediction=raw_prediction,
+                    logits=raw_logits,
+                    conf_thres=nms_kwargs["conf_thres"],
+                    iou_thres=nms_kwargs["iou_thres"],
+                    classes=nms_kwargs["classes"],
+                    agnostic=nms_kwargs["agnostic"],
+                    max_det=nms_kwargs["max_det"],
                     return_indices=True,
                 )
             detector_inference_sec = timing.elapsed(t_detector)
