@@ -638,7 +638,7 @@ def run_train(config: dict[str, Any], run_dir: Path) -> Path:
         "augmentation": augmentation,
         "feature_dimension": int(x.shape[1]),
         "num_rows": int(len(df)),
-        "num_positive_fn": int(np.sum(y)),
+        "num_positive_tp": int(np.sum(y)),
         "input_features": grad_columns,
         "dim_by_feature": spec.dim_by_column,
         "best_params": best_params,
