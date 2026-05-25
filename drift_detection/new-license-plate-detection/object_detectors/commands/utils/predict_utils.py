@@ -384,6 +384,7 @@ def parse_output_config(output_cfg):
     layer_rpn_null_obj_loss = "bcewithlogits"
     layer_rpn_null_bbox_direction = "pred_to_target"
     layer_rpn_null_obj_direction = "pred_to_target"
+    layer_null2_scalar = []
     layer_null_scalar = []
     layer_null_bbox_loss = "l1"
     layer_null_cls_loss = "bcewithlogits"
@@ -450,12 +451,25 @@ def parse_output_config(output_cfg):
         null_target_cfg = as_dict(g.get("null_target", layer_grad_cfg.get("null_target", {})))
         roi_null_cfg = as_dict(null_target_cfg.get("roi", null_target_cfg.get("roi_null", {})))
         rpn_null_cfg = as_dict(null_target_cfg.get("rpn", null_target_cfg.get("rpn_null", {})))
+        null_target2_cfg = as_dict(g.get("null_target_2", layer_grad_cfg.get("null_target_2", {})))
+        roi_null2_cfg = as_dict(null_target2_cfg.get("roi", null_target2_cfg.get("roi_null", {})))
+        rpn_null2_cfg = as_dict(null_target2_cfg.get("rpn", null_target2_cfg.get("rpn_null", {})))
         unified_roi_cfg = as_dict(g.get("roi", {}))
         unified_rpn_cfg = as_dict(g.get("rpn", {}))
         t = g.get("target", "cand_target")
         t_policy = str(t).strip().lower() if t is not None else "null_target"
-        layer_pseudo_gt = "uniform" if t_policy in {"null_target", "null"} else "cand"
-        if layer_pseudo_gt == "uniform":
+        if t_policy in {"null_target_2", "null2", "null_target2"}:
+            layer_pseudo_gt = "null2"
+        elif t_policy in {"null_target", "null"}:
+            layer_pseudo_gt = "uniform"
+        else:
+            layer_pseudo_gt = "cand"
+        if layer_pseudo_gt == "null2":
+            raw_scalar_cfg = null_target2_cfg.get(
+                "scalar",
+                g.get("scalar", ["rpn_obj_loss", "rpn_bbox_loss", "roi_cls_loss", "roi_bbox_loss"]),
+            )
+        elif layer_pseudo_gt == "uniform":
             raw_scalar_cfg = null_target_cfg.get("scalar", g.get("scalar", ["bbox_loss", "obj_loss", "cls_loss"]))
         else:
             raw_scalar_cfg = cand_target_cfg.get("scalar", g.get("scalar", ["loss"]))
@@ -463,13 +477,24 @@ def parse_output_config(output_cfg):
         if "loss" in layer_target_values:
             exp = []
             for v in layer_target_values:
-                exp.extend(["obj_loss", "cls_loss", "bbox_loss"] if v == "loss" else [v])
+                if v != "loss":
+                    exp.append(v)
+                elif layer_pseudo_gt == "null2":
+                    exp.extend(["rpn_obj_loss", "rpn_bbox_loss", "roi_cls_loss", "roi_bbox_loss"])
+                else:
+                    exp.extend(["obj_loss", "cls_loss", "bbox_loss"])
             layer_target_values = list(dict.fromkeys(exp))
 
         nested_layer_cfg = {}
-        active_rpn_cfg = unified_rpn_cfg or (rpn_null_cfg if layer_pseudo_gt == "uniform" else rpn_cand_cfg)
-        active_roi_cfg = unified_roi_cfg or (roi_null_cfg if layer_pseudo_gt == "uniform" else roi_cand_cfg)
-        if layer_pseudo_gt == "uniform":
+        active_rpn_cfg = unified_rpn_cfg or (
+            rpn_null2_cfg if layer_pseudo_gt == "null2" else rpn_null_cfg if layer_pseudo_gt == "uniform" else rpn_cand_cfg
+        )
+        active_roi_cfg = unified_roi_cfg or (
+            roi_null2_cfg if layer_pseudo_gt == "null2" else roi_null_cfg if layer_pseudo_gt == "uniform" else roi_cand_cfg
+        )
+        if layer_pseudo_gt == "null2":
+            raw_layer_cfg = null_target2_cfg.get("layer", g.get("layer", []))
+        elif layer_pseudo_gt == "uniform":
             raw_layer_cfg = null_target_cfg.get("layer", g.get("layer", []))
         else:
             raw_layer_cfg = cand_target_cfg.get("layer", None)
@@ -563,6 +588,20 @@ def parse_output_config(output_cfg):
             f"rpn_{v}" if v in {"bbox_loss", "obj_loss"} else v
             for v in [str(v).strip().lower() for v in normalize_to_list(rpn_null_cfg.get("scalar", []))]
         ]
+        layer_null2_scalar = [
+            str(v).strip().lower()
+            for v in normalize_to_list(
+                null_target2_cfg.get("scalar", ["rpn_obj_loss", "rpn_bbox_loss", "roi_cls_loss", "roi_bbox_loss"])
+            )
+        ]
+        if "loss" in layer_null2_scalar:
+            expanded_null2_scalar = []
+            for value in layer_null2_scalar:
+                if value == "loss":
+                    expanded_null2_scalar.extend(["rpn_obj_loss", "rpn_bbox_loss", "roi_cls_loss", "roi_bbox_loss"])
+                else:
+                    expanded_null2_scalar.append(value)
+            layer_null2_scalar = list(dict.fromkeys(expanded_null2_scalar))
         layer_bbox_loss = normalize_loss_option(g.get("bbox_loss", "ciou"), "ciou", {"ciou", "l1", "l2"}, "layer_grad.gradient.bbox_loss")
         layer_cls_loss = normalize_loss_option(
             g.get("cls_loss", "bcewithlogits"),
@@ -797,6 +836,7 @@ def parse_output_config(output_cfg):
         "layer_rpn_null_obj_loss": layer_rpn_null_obj_loss,
         "layer_rpn_null_bbox_direction": layer_rpn_null_bbox_direction,
         "layer_rpn_null_obj_direction": layer_rpn_null_obj_direction,
+        "layer_null2_scalar": layer_null2_scalar,
         "layer_null_scalar": layer_null_scalar,
         "layer_null_bbox_loss": layer_null_bbox_loss,
         "layer_null_cls_loss": layer_null_cls_loss,
@@ -1844,6 +1884,108 @@ def build_faster_rcnn_null_losses(
     }
 
 
+def build_faster_rcnn_null2_losses(
+    rpn_box_coder,
+    rpn_bbox_deltas: torch.Tensor,
+    rpn_anchors: torch.Tensor,
+    pred_img: torch.Tensor,
+    logit_img: torch.Tensor,
+    raw_idx: int,
+    proposal_indices_img: torch.Tensor,
+    proposals_xyxy: torch.Tensor,
+    proposal_to_rpn_raw_idx: torch.Tensor,
+    rpn_objectness_logits: torch.Tensor,
+    from_size,
+    to_size,
+    rpn_bbox_loss: str = "l1",
+    rpn_obj_loss: str = "bcewithlogits",
+    roi_bbox_loss: str = "l1",
+    roi_cls_loss: str = "bcewithlogits",
+    rpn_bbox_direction: str = "pred_to_target",
+    rpn_obj_direction: str = "pred_to_target",
+    roi_bbox_direction: str = "pred_to_target",
+    roi_cls_direction: str = "pred_to_target",
+    timing_accumulator=None,
+    timing_device=None,
+):
+    if raw_idx >= pred_img.shape[0]:
+        return None
+    if logit_img is None or logit_img.numel() == 0 or raw_idx >= logit_img.shape[0]:
+        return None
+    if proposal_indices_img is None or raw_idx >= proposal_indices_img.shape[0]:
+        return None
+    if proposal_to_rpn_raw_idx is None or proposal_to_rpn_raw_idx.numel() == 0:
+        return None
+    if rpn_obj_direction == "target_to_pred" and rpn_obj_loss != "signed_diff":
+        raise ValueError("Faster R-CNN null_target_2 rpn.obj_direction=target_to_pred is only supported when obj_loss=signed_diff.")
+
+    t_candidate = _start_timing(timing_device)
+    proposal_idx = int(proposal_indices_img[raw_idx].detach().cpu().item())
+    if proposal_idx < 0 or proposal_idx >= proposals_xyxy.shape[0] or proposal_idx >= proposal_to_rpn_raw_idx.shape[0]:
+        _add_elapsed_timing(timing_accumulator, "candidate_search_sec", t_candidate, timing_device)
+        return None
+    rpn_raw_idx = int(proposal_to_rpn_raw_idx[proposal_idx].detach().cpu().item())
+    if rpn_raw_idx < 0 or rpn_raw_idx >= rpn_objectness_logits.reshape(-1).shape[0]:
+        _add_elapsed_timing(timing_accumulator, "candidate_search_sec", t_candidate, timing_device)
+        return None
+    if rpn_raw_idx >= rpn_bbox_deltas.shape[0] or rpn_raw_idx >= rpn_anchors.shape[0]:
+        _add_elapsed_timing(timing_accumulator, "candidate_search_sec", t_candidate, timing_device)
+        return None
+    _add_elapsed_timing(timing_accumulator, "candidate_search_sec", t_candidate, timing_device)
+
+    t_loss = _start_timing(timing_device)
+    selected_deltas = rpn_bbox_deltas[rpn_raw_idx].view(1, 4)
+    selected_anchor = rpn_anchors[rpn_raw_idx].view(1, 4)
+    source_rpn_proposal = rpn_box_coder.decode(selected_deltas, [selected_anchor]).view(1, 4)
+    source_rpn_proposal = _resize_boxes_xyxy_tensor(source_rpn_proposal, from_size, to_size)
+    source_anchor = _resize_boxes_xyxy_tensor(selected_anchor.detach(), from_size, to_size)
+    rpn_bbox_loss_value = _bbox_loss_xyxy_tensor(
+        source_rpn_proposal,
+        source_anchor,
+        mode=rpn_bbox_loss,
+        reduction="sum",
+        direction=rpn_bbox_direction,
+    )
+
+    selected_obj_logit = rpn_objectness_logits.reshape(-1)[rpn_raw_idx]
+    obj_target = torch.full_like(selected_obj_logit, 0.5)
+    rpn_obj_loss_value = _objectness_loss_tensor(
+        selected_obj_logit,
+        obj_target,
+        mode=rpn_obj_loss,
+        direction=rpn_obj_direction,
+        reduction="sum",
+    )
+
+    source_proposal = proposals_xyxy[proposal_idx].detach().view(1, 4)
+    final_roi_box = _xywh_to_xyxy_tensor(pred_img[raw_idx, :4].view(1, 4))
+    roi_bbox_loss_value = _bbox_loss_xyxy_tensor(
+        final_roi_box,
+        source_proposal,
+        mode=roi_bbox_loss,
+        reduction="sum",
+        direction=roi_bbox_direction,
+    )
+
+    cls_logits = logit_img[raw_idx]
+    uniform_target = torch.full_like(cls_logits, 1.0 / float(cls_logits.numel()))
+    roi_cls_loss_value = _class_loss_tensor(
+        cls_logits,
+        uniform_target,
+        class_idx=None,
+        mode=roi_cls_loss,
+        direction=roi_cls_direction,
+        reduction="sum",
+    )
+    _add_elapsed_timing(timing_accumulator, "loss_compute_sec", t_loss, timing_device)
+    return {
+        "rpn_bbox_loss": rpn_bbox_loss_value,
+        "rpn_obj_loss": rpn_obj_loss_value,
+        "roi_bbox_loss": roi_bbox_loss_value,
+        "roi_cls_loss": roi_cls_loss_value,
+    }
+
+
 def build_layer_target_scalar_bbox(
     target_value,
     pred_img,
@@ -1990,8 +2132,8 @@ def collect_faster_rcnn_candidate_layer_grads_per_target(
     timing_device=None,
 ):
     target_mode = str(target_mode).strip().lower()
-    if target_mode not in {"cand", "null"}:
-        raise ValueError("Faster R-CNN layer_grad target_mode must be cand or null.")
+    if target_mode not in {"cand", "null", "null2"}:
+        raise ValueError("Faster R-CNN layer_grad target_mode must be cand, null, or null2.")
     roi_bbox_loss = str(roi_bbox_loss).strip().lower()
     rpn_bbox_loss = str(rpn_bbox_loss).strip().lower()
     roi_null_bbox_loss = str(roi_null_bbox_loss).strip().lower()
@@ -2126,6 +2268,7 @@ def collect_faster_rcnn_candidate_layer_grads_per_target(
             grad_stats = {}
             roi_target_scalar = None
             rpn_target_scalar = None
+            null2_target_scalar = None
             for target_value in target_values:
                 if target_value not in {"roi_bbox_loss", "roi_cls_loss", "rpn_bbox_loss", "rpn_obj_loss", "bbox_loss", "obj_loss", "cls_loss"}:
                     continue
@@ -2139,7 +2282,34 @@ def collect_faster_rcnn_candidate_layer_grads_per_target(
                     continue
                 layers_for_target = list(target_layer_map.get(target_value, []))
                 params_for_target = [layer_params_by_name[layer_name] for layer_name in layers_for_target]
-                if target_mode == "null" and target_value in {"bbox_loss", "obj_loss", "cls_loss"}:
+                if target_mode == "null2":
+                    if null2_target_scalar is None:
+                        null2_target_scalar = build_faster_rcnn_null2_losses(
+                            rpn_box_coder=model.rpn.box_coder,
+                            rpn_bbox_deltas=rpn_bbox_deltas_img,
+                            rpn_anchors=rpn_anchors_img,
+                            pred_img=pred_img,
+                            logit_img=logit_img,
+                            raw_idx=raw_idx,
+                            proposal_indices_img=proposal_indices_img,
+                            proposals_xyxy=proposals_img,
+                            proposal_to_rpn_raw_idx=proposal_to_rpn_raw_idx_img,
+                            rpn_objectness_logits=rpn_objectness_img,
+                            from_size=transformed_images.image_sizes[0],
+                            to_size=original_image_sizes[0],
+                            rpn_bbox_loss=rpn_null_bbox_loss,
+                            rpn_obj_loss=rpn_null_obj_loss,
+                            roi_bbox_loss=roi_null_bbox_loss,
+                            roi_cls_loss=roi_null_cls_loss,
+                            rpn_bbox_direction=rpn_null_bbox_direction,
+                            rpn_obj_direction=rpn_null_obj_direction,
+                            roi_bbox_direction=roi_null_bbox_direction,
+                            roi_cls_direction=roi_null_cls_direction,
+                            timing_accumulator=timing_accumulator,
+                            timing_device=timing_device,
+                        )
+                    target_scalar = null2_target_scalar
+                elif target_mode == "null" and target_value in {"bbox_loss", "obj_loss", "cls_loss"}:
                     if roi_target_scalar is None:
                         roi_target_scalar = build_faster_rcnn_null_losses(
                             rpn_anchors=rpn_anchors_img,

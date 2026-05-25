@@ -34,6 +34,7 @@ MAX_COMBINATIONS = None
 SCALARS = {
     "cand_target": ["rpn_obj_loss", "rpn_bbox_loss", "roi_cls_loss", "roi_bbox_loss"],
     "null_target": ["bbox_loss", "obj_loss", "cls_loss"],
+    "null_target_2": ["rpn_obj_loss", "rpn_bbox_loss", "roi_cls_loss", "roi_bbox_loss"],
 }
 
 BBOX_LOSSES = ["l1", "l2"]
@@ -88,6 +89,7 @@ def _abbr(value: str) -> str:
     aliases = {
         "cand_target": "cand",
         "null_target": "null",
+        "null_target_2": "null2",
         "pred_to_target": "pred",
         "target_to_pred": "rev",
         "bcewithlogits": "bce",
@@ -111,7 +113,7 @@ def _valid_obj_directions(obj_loss: str) -> list[str]:
 
 def _combo_slug(combo: dict) -> str:
     target = combo["target"]
-    if target == "cand_target":
+    if target in {"cand_target", "null_target_2"}:
         return (
             f"layer_grad_t-{_abbr(target)}"
             f"__rb-{combo['rpn_bbox_loss']}-{_abbr(combo['rpn_bbox_direction'])}"
@@ -175,12 +177,36 @@ def iter_null_combinations():
                         "obj_direction": obj_direction,
                         "cls_loss": cls_loss,
                         "cls_direction": cls_direction,
-                    }
+                        }
+
+
+def iter_null2_combinations():
+    for rpn_bbox_loss, rpn_obj_loss, roi_bbox_loss, roi_cls_loss in itertools.product(
+        BBOX_LOSSES,
+        OBJ_LOSSES,
+        BBOX_LOSSES,
+        CLS_LOSSES,
+    ):
+        for rpn_bbox_direction in BBOX_DIRECTIONS:
+            for rpn_obj_direction in _valid_obj_directions(rpn_obj_loss):
+                for roi_bbox_direction in BBOX_DIRECTIONS:
+                    for roi_cls_direction in _valid_cls_directions(roi_cls_loss):
+                        yield {
+                            "target": "null_target_2",
+                            "rpn_bbox_loss": rpn_bbox_loss,
+                            "rpn_bbox_direction": rpn_bbox_direction,
+                            "rpn_obj_loss": rpn_obj_loss,
+                            "rpn_obj_direction": rpn_obj_direction,
+                            "roi_bbox_loss": roi_bbox_loss,
+                            "roi_bbox_direction": roi_bbox_direction,
+                            "roi_cls_loss": roi_cls_loss,
+                            "roi_cls_direction": roi_cls_direction,
+                        }
 
 
 def iter_combinations():
     count = 0
-    for combo in itertools.chain(iter_cand_combinations(), iter_null_combinations()):
+    for combo in itertools.chain(iter_cand_combinations(), iter_null_combinations(), iter_null2_combinations()):
         yield combo
         count += 1
         if MAX_COMBINATIONS is not None and count >= int(MAX_COMBINATIONS):
@@ -208,9 +234,25 @@ def _prepare_layer_grad_config(base_config: dict, combo: dict) -> dict:
     grad_cfg.pop("layer", None)
     grad_cfg.pop("rpn", None)
     grad_cfg.pop("roi", None)
-    if target == "cand_target":
-        grad_cfg["cand_target"] = {
-            "scalar": list(SCALARS["cand_target"]),
+    if target in {"cand_target", "null_target_2"}:
+        block_name = "cand_target" if target == "cand_target" else "null_target_2"
+        rpn_cfg = {
+            "obj_loss": combo["rpn_obj_loss"],
+            "bbox_loss": combo["rpn_bbox_loss"],
+            "obj_direction": combo["rpn_obj_direction"],
+            "bbox_direction": combo["rpn_bbox_direction"],
+        }
+        roi_cfg = {
+            "cls_loss": combo["roi_cls_loss"],
+            "bbox_loss": combo["roi_bbox_loss"],
+            "cls_direction": combo["roi_cls_direction"],
+            "bbox_direction": combo["roi_bbox_direction"],
+        }
+        if target == "cand_target":
+            rpn_cfg["cand_obj_threshold"] = 0.0
+            roi_cfg["cand_score_threshold"] = 0.0
+        grad_cfg[block_name] = {
+            "scalar": list(SCALARS[target]),
             "layer": {
                 "rpn_obj_loss": ["rpn.head.conv", "rpn.head.cls_logits"],
                 "rpn_bbox_loss": ["rpn.head.conv", "rpn.head.bbox_pred"],
@@ -223,20 +265,8 @@ def _prepare_layer_grad_config(base_config: dict, combo: dict) -> dict:
                     "roi_heads.box_predictor.bbox_pred",
                 ],
             },
-            "rpn": {
-                "cand_obj_threshold": 0.0,
-                "obj_loss": combo["rpn_obj_loss"],
-                "bbox_loss": combo["rpn_bbox_loss"],
-                "obj_direction": combo["rpn_obj_direction"],
-                "bbox_direction": combo["rpn_bbox_direction"],
-            },
-            "roi": {
-                "cand_score_threshold": 0.0,
-                "cls_loss": combo["roi_cls_loss"],
-                "bbox_loss": combo["roi_bbox_loss"],
-                "cls_direction": combo["roi_cls_direction"],
-                "bbox_direction": combo["roi_bbox_direction"],
-            },
+            "rpn": rpn_cfg,
+            "roi": roi_cfg,
         }
     else:
         grad_cfg["null_target"] = {
@@ -405,9 +435,10 @@ def main() -> None:
     combo_list = list(iter_combinations())
     cand_count = sum(1 for combo in combo_list if combo["target"] == "cand_target")
     null_count = sum(1 for combo in combo_list if combo["target"] == "null_target")
+    null2_count = sum(1 for combo in combo_list if combo["target"] == "null_target_2")
     print(
         f"Total combinations: {len(combo_list)} "
-        f"(cand_target={cand_count}, null_target={null_count})",
+        f"(cand_target={cand_count}, null_target={null_count}, null_target_2={null2_count})",
         flush=True,
     )
     for idx, combo in enumerate(combo_list, start=1):
