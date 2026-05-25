@@ -532,6 +532,8 @@ def run_train(config, run_dir):
         print("[train][warn] CUDA unavailable -> training on CPU (very slow).")
 
     model_type = str(config.get("model", {}).get("type", "yolov5")).strip().lower()
+    if model_type in {"fcos"}:
+        raise NotImplementedError("FCOS model code is available, but FCOS training is not implemented yet.")
     if model_type in {"faster_rcnn", "faster-rcnn", "frcnn"}:
         model, use_finetune, class_names, history, best_metric = _run_faster_rcnn_train(
             config=config,
