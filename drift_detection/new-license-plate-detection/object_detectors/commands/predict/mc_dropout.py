@@ -50,6 +50,7 @@ def run_mc_dropout_csv(config, run_dir):
         raise ValueError("Loaded 0 images. Check dataset root/image_dir/split configuration in YAML.")
 
     detector, device = build_detector(config)
+    nms_kwargs = _resolve_detector_nms_kwargs(detector)
     timing = StageTimingProfiler(
         run_dir=run_dir,
         uncertainty=uncertainty,
@@ -123,12 +124,13 @@ def run_mc_dropout_csv(config, run_dir):
                 det_raw_pred = det_output[0] if isinstance(det_output, (tuple, list)) else det_output
                 det_raw_logits = det_output[1] if isinstance(det_output, (tuple, list)) and len(det_output) > 1 else None
                 selected_preds, _selected_logits, _selected_objectness, selected_indices = detector.non_max_suppression(
-                    det_raw_pred,
-                    det_raw_logits,
-                    detector.confidence,
-                    detector.iou_thresh,
-                    classes=None,
-                    agnostic=detector.agnostic,
+                    prediction=det_raw_pred,
+                    logits=det_raw_logits,
+                    conf_thres=nms_kwargs["conf_thres"],
+                    iou_thres=nms_kwargs["iou_thres"],
+                    classes=nms_kwargs["classes"],
+                    agnostic=nms_kwargs["agnostic"],
+                    max_det=nms_kwargs["max_det"],
                     return_indices=True,
                 )
             detector_inference_sec += timing.elapsed(t_detector)

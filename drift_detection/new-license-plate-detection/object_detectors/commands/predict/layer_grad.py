@@ -18,80 +18,6 @@ def _scalar_to_float(value):
     return float(value)
 
 
-def _faster_rcnn_batch_reference_rows(detector, infer_batch):
-    with torch.no_grad():
-        model_output = detector.model(infer_batch, augment=False)
-        raw_prediction = model_output[0] if isinstance(model_output, (tuple, list)) else model_output
-        raw_logits = model_output[1] if isinstance(model_output, (tuple, list)) and len(model_output) > 1 else None
-        nms_logits = _resolve_nms_logits(raw_prediction, raw_logits)
-        selected_preds, _selected_logits, _selected_objectness, selected_indices = detector.non_max_suppression(
-            prediction=raw_prediction,
-            logits=nms_logits,
-            conf_thres=float(getattr(detector, "conf_thresh", getattr(detector, "confidence", 0.25))),
-            iou_thres=float(getattr(detector, "iou_thresh", 0.45)),
-            classes=getattr(detector, "filter_classes", None),
-            agnostic=bool(getattr(detector, "agnostic_nms", getattr(detector, "agnostic", False))),
-            max_det=getattr(detector, "max_det", None),
-            return_indices=True,
-        )
-
-    references = []
-    for sample_idx, det in enumerate(selected_preds):
-        raw_keep = (
-            selected_indices[sample_idx]
-            if selected_indices and sample_idx < len(selected_indices)
-            else torch.zeros((0,), dtype=torch.long, device=det.device)
-        )
-        sample_refs = []
-        for pred_idx in range(int(det.shape[0])):
-            cls_idx = int(det[pred_idx, 5].detach().cpu().item()) if det.shape[1] > 5 else 0
-            sample_refs.append(
-                {
-                    "pred_idx": pred_idx,
-                    "raw_pred_idx": int(raw_keep[pred_idx].detach().cpu().item()) if pred_idx < int(raw_keep.shape[0]) else pred_idx,
-                    "xmin": float(det[pred_idx, 0].detach().cpu().item()),
-                    "ymin": float(det[pred_idx, 1].detach().cpu().item()),
-                    "xmax": float(det[pred_idx, 2].detach().cpu().item()),
-                    "ymax": float(det[pred_idx, 3].detach().cpu().item()),
-                    "score": float(det[pred_idx, 4].detach().cpu().item()) if det.shape[1] > 4 else 0.0,
-                    "pred_class": detector.names[cls_idx] if detector.names is not None else cls_idx,
-                    "_box": det[pred_idx, :4].detach().float().cpu(),
-                }
-            )
-        references.append(sample_refs)
-    return references
-
-
-def _match_faster_rcnn_reference_row(bbox_row, reference_rows, used_indices):
-    if not reference_rows:
-        return None
-    row_box = torch.tensor(
-        [bbox_row["xmin"], bbox_row["ymin"], bbox_row["xmax"], bbox_row["ymax"]],
-        dtype=torch.float32,
-    )
-    row_class = bbox_row.get("pred_class")
-    candidates = [
-        (idx, ref)
-        for idx, ref in enumerate(reference_rows)
-        if idx not in used_indices and ref.get("pred_class") == row_class
-    ]
-    if not candidates:
-        pred_idx = int(bbox_row.get("pred_idx", -1))
-        if 0 <= pred_idx < len(reference_rows) and pred_idx not in used_indices:
-            return pred_idx, reference_rows[pred_idx]
-        return None
-
-    boxes = torch.stack([ref["_box"] for _idx, ref in candidates], dim=0)
-    ious = _box_iou_1vN_tensor(row_box.view(1, 4), boxes)
-    best_pos = int(torch.argmax(ious).item())
-    best_iou = float(ious[best_pos].item())
-    if best_iou < 0.5:
-        pred_idx = int(bbox_row.get("pred_idx", -1))
-        if 0 <= pred_idx < len(reference_rows) and pred_idx not in used_indices:
-            return pred_idx, reference_rows[pred_idx]
-    return candidates[best_pos][0], candidates[best_pos][1]
-
-
 def _faster_rcnn_target_layer_map(target_values, target_layers):
     defaults = {
         "roi_cls_loss": ["roi_heads.box_head.fc7", "roi_heads.box_predictor.cls_score"],
@@ -309,12 +235,10 @@ def run_layer_grad_csv(config, run_dir):
                 npz_rel_path = (Path("gradients") / npz_name).as_posix()
                 npz_path = gradients_dir / npz_name
 
-            stable_reference_rows = _faster_rcnn_batch_reference_rows(detector, infer_batch) if is_faster_rcnn else None
             for sample_idx in range(len(image_list)):
                 target = targets[sample_idx]
                 image_id = int(target["image_id"][0].item())
                 image_path = target["path"]
-                used_reference_indices = set()
 
                 if is_faster_rcnn:
                     bbox_rows = collect_faster_rcnn_roi_layer_grads_per_target(
@@ -377,29 +301,19 @@ def run_layer_grad_csv(config, run_dir):
                         timing_device=device,
                     )
                 for bbox_row in bbox_rows:
-                    stable_ref = None
-                    if stable_reference_rows is not None and sample_idx < len(stable_reference_rows):
-                        matched = _match_faster_rcnn_reference_row(
-                            bbox_row,
-                            stable_reference_rows[sample_idx],
-                            used_reference_indices,
-                        )
-                        if matched is not None:
-                            ref_idx, stable_ref = matched
-                            used_reference_indices.add(ref_idx)
-                    output_pred_idx = stable_ref["pred_idx"] if stable_ref is not None else bbox_row["pred_idx"]
-                    output_raw_pred_idx = stable_ref["raw_pred_idx"] if stable_ref is not None else bbox_row["raw_pred_idx"]
+                    output_pred_idx = bbox_row["pred_idx"]
+                    output_raw_pred_idx = bbox_row["raw_pred_idx"]
                     row = {
                         "image_id": image_id,
                         "image_path": image_path,
                         "pred_idx": output_pred_idx,
                         "raw_pred_idx": output_raw_pred_idx,
-                        "xmin": stable_ref["xmin"] if stable_ref is not None else bbox_row["xmin"],
-                        "ymin": stable_ref["ymin"] if stable_ref is not None else bbox_row["ymin"],
-                        "xmax": stable_ref["xmax"] if stable_ref is not None else bbox_row["xmax"],
-                        "ymax": stable_ref["ymax"] if stable_ref is not None else bbox_row["ymax"],
-                        "score": stable_ref["score"] if stable_ref is not None else bbox_row["score"],
-                        "pred_class": stable_ref["pred_class"] if stable_ref is not None else bbox_row["pred_class"],
+                        "xmin": bbox_row["xmin"],
+                        "ymin": bbox_row["ymin"],
+                        "xmax": bbox_row["xmax"],
+                        "ymax": bbox_row["ymax"],
+                        "score": bbox_row["score"],
+                        "pred_class": bbox_row["pred_class"],
                     }
                     for grad_key, grad_value in bbox_row["grad_stats"].items():
                         if save_raw_gradients:
