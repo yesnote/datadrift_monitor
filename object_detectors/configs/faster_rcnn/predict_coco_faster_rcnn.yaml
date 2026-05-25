@@ -15,7 +15,7 @@ dataset:
   split:
     - train
   used_ratio:
-    - 0.05
+    - 0.01
 
   coco:
     root: D:/SEONGJIN/datasets/COCO
