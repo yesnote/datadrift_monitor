@@ -1,5 +1,4 @@
 import csv
-import itertools
 import subprocess
 import sys
 from copy import deepcopy
@@ -35,7 +34,6 @@ BBOX_LOSSES_BY_TARGET = {
     "cand_target": ["box_l1", "box_l2", "offset_l1", "offset_l2"],
     "null_target": ["box_l1", "box_l2", "offset_l1", "offset_l2"],
 }
-BBOX_DIRECTIONS = ["pred_to_target"]
 CLS_LOSSES = ["bcewithlogits", "kl", "ce"]
 OBJ_LOSSES = ["bcewithlogits", "abs_diff", "signed_diff"]
 
@@ -88,17 +86,24 @@ def _abbr(value: str) -> str:
         "bcewithlogits": "bce",
         "abs_diff": "abs",
         "signed_diff": "signed",
+        "bbox_loss": "bbox",
+        "cls_loss": "cls",
+        "obj_loss": "obj",
     }
     return aliases.get(value, value)
 
 
 def _combo_slug(combo: dict) -> str:
-    return (
-        f"layer_grad_t-{_abbr(combo['target'])}"
-        f"__b-{combo['bbox_loss']}-{_abbr(combo['bbox_direction'])}"
-        f"__c-{_abbr(combo['cls_loss'])}-{_abbr(combo['cls_direction'])}"
-        f"__o-{_abbr(combo['obj_loss'])}-{_abbr(combo['obj_direction'])}"
-    )
+    term = combo["term"]
+    if term == "bbox_loss":
+        spec = f"b-{combo['bbox_loss']}-{_abbr(combo['bbox_direction'])}"
+    elif term == "cls_loss":
+        spec = f"c-{_abbr(combo['cls_loss'])}-{_abbr(combo['cls_direction'])}"
+    elif term == "obj_loss":
+        spec = f"o-{_abbr(combo['obj_loss'])}-{_abbr(combo['obj_direction'])}"
+    else:
+        raise ValueError(f"Unsupported term: {term}")
+    return f"layer_grad_t-{_abbr(combo['target'])}__term-{_abbr(term)}__{spec}"
 
 
 def _timestamped_combo_dir(root: Path, slug: str) -> Path:
@@ -127,28 +132,53 @@ def _valid_obj_directions(obj_loss: str) -> list[str]:
 def iter_combinations():
     count = 0
     for target in TARGETS:
-        for bbox_loss, cls_loss, obj_loss in itertools.product(
-            BBOX_LOSSES_BY_TARGET[target],
-            CLS_LOSSES,
-            OBJ_LOSSES,
-        ):
+        for bbox_loss in BBOX_LOSSES_BY_TARGET[target]:
             for bbox_direction in _valid_bbox_directions(bbox_loss):
-                for cls_direction in _valid_cls_directions(cls_loss):
-                    for obj_direction in _valid_obj_directions(obj_loss):
-                        yield {
-                            "target": target,
-                            "bbox_loss": bbox_loss,
-                            "bbox_direction": bbox_direction,
-                            "cls_loss": cls_loss,
-                            "cls_direction": cls_direction,
-                            "obj_loss": obj_loss,
-                            "obj_direction": obj_direction,
-                        }
-                        count += 1
-                        if MAX_COMBINATIONS is not None and count >= int(
-                            MAX_COMBINATIONS
-                        ):
-                            return
+                yield {
+                    "target": target,
+                    "term": "bbox_loss",
+                    "bbox_loss": bbox_loss,
+                    "bbox_direction": bbox_direction,
+                    "cls_loss": "bcewithlogits",
+                    "cls_direction": "pred_to_target",
+                    "obj_loss": "bcewithlogits",
+                    "obj_direction": "pred_to_target",
+                }
+                count += 1
+                if MAX_COMBINATIONS is not None and count >= int(MAX_COMBINATIONS):
+                    return
+
+        for cls_loss in CLS_LOSSES:
+            for cls_direction in _valid_cls_directions(cls_loss):
+                yield {
+                    "target": target,
+                    "term": "cls_loss",
+                    "bbox_loss": "box_l1",
+                    "bbox_direction": "pred_to_target",
+                    "cls_loss": cls_loss,
+                    "cls_direction": cls_direction,
+                    "obj_loss": "bcewithlogits",
+                    "obj_direction": "pred_to_target",
+                }
+                count += 1
+                if MAX_COMBINATIONS is not None and count >= int(MAX_COMBINATIONS):
+                    return
+
+        for obj_loss in OBJ_LOSSES:
+            for obj_direction in _valid_obj_directions(obj_loss):
+                yield {
+                    "target": target,
+                    "term": "obj_loss",
+                    "bbox_loss": "box_l1",
+                    "bbox_direction": "pred_to_target",
+                    "cls_loss": "bcewithlogits",
+                    "cls_direction": "pred_to_target",
+                    "obj_loss": obj_loss,
+                    "obj_direction": obj_direction,
+                }
+                count += 1
+                if MAX_COMBINATIONS is not None and count >= int(MAX_COMBINATIONS):
+                    return
 
 
 def _run(cmd: list[str]) -> None:
@@ -167,6 +197,7 @@ def _prepare_layer_grad_config(base_config: dict, combo: dict) -> dict:
     grad_cfg.update(
         {
             "target": combo["target"],
+            "scalar": [combo["term"]],
             "bbox_loss": combo["bbox_loss"],
             "cls_loss": combo["cls_loss"],
             "obj_loss": combo["obj_loss"],
@@ -223,6 +254,7 @@ def _write_csv(path: Path, rows: list[dict], fieldnames: list[str]) -> None:
 
 def _comparison_key(row: dict) -> tuple:
     return (
+        row["term"],
         row["bbox_loss"],
         row["bbox_direction"],
         row["cls_loss"],
@@ -332,6 +364,7 @@ def main() -> None:
 def _write_results(out_dir: Path, rows: list[dict]) -> None:
     fields = [
         "target",
+        "term",
         "bbox_loss",
         "bbox_direction",
         "cls_loss",
@@ -366,12 +399,13 @@ def _write_results(out_dir: Path, rows: list[dict]) -> None:
             continue
         compare_rows.append(
             {
-                "bbox_loss": key[0],
-                "bbox_direction": key[1],
-                "cls_loss": key[2],
-                "cls_direction": key[3],
-                "obj_loss": key[4],
-                "obj_direction": key[5],
+                "term": key[0],
+                "bbox_loss": key[1],
+                "bbox_direction": key[2],
+                "cls_loss": key[3],
+                "cls_direction": key[4],
+                "obj_loss": key[5],
+                "obj_direction": key[6],
                 "cand_auroc": cand_auroc,
                 "null_auroc": null_auroc,
                 "delta_auroc": null_auroc - cand_auroc,
@@ -384,6 +418,7 @@ def _write_results(out_dir: Path, rows: list[dict]) -> None:
         )
     compare_rows.sort(key=lambda r: (r["delta_auroc"], r["delta_ap"]), reverse=True)
     comparison_fields = [
+        "term",
         "bbox_loss",
         "bbox_direction",
         "cls_loss",
