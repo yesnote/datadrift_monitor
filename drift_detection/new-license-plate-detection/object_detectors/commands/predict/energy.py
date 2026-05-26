@@ -80,15 +80,17 @@ def run_energy_csv(config, run_dir):
                 det = selected_preds[sample_idx]
                 batch_items += int(det.shape[0])
                 raw_keep_b = selected_indices[sample_idx]
-                if raw_logits is not None:
+                if bool(getattr(detector, "is_fcos", False)):
+                    selected_probs = get_selected_prediction_class_probs(
+                        detector, raw_prediction[sample_idx], raw_keep_b
+                    ) if int(raw_keep_b.shape[0]) > 0 and raw_prediction[sample_idx].shape[1] > 6 else torch.zeros((0, num_classes), dtype=torch.float32, device=device)
+                    selected_logits = torch.logit(selected_probs.clamp(min=1e-8, max=1.0 - 1e-8)) if selected_probs.numel() else selected_probs
+                elif raw_logits is not None:
                     selected_logits = raw_logits[sample_idx][raw_keep_b] if int(raw_keep_b.shape[0]) > 0 else torch.zeros((0, num_classes), dtype=torch.float32, device=device)
                 else:
                     selected_logits = get_selected_prediction_class_probs(detector, raw_prediction[sample_idx], raw_keep_b) if int(raw_keep_b.shape[0]) > 0 and raw_prediction[sample_idx].shape[1] > 5 else torch.zeros((0, num_classes), dtype=torch.float32, device=device)
-                selected_probs = torch.softmax(selected_logits, dim=-1) if selected_logits.numel() else selected_logits
-                if selected_probs.numel():
-                    probs_clipped = selected_probs.clamp(min=1e-8, max=1.0 - 1e-8)
-                    pseudo_logits = torch.log(probs_clipped / (1.0 - probs_clipped))
-                    pred_energy = -100.0 * torch.log(torch.clamp(torch.sum(torch.exp(pseudo_logits / 100.0), dim=-1), min=1e-8))
+                if selected_logits.numel():
+                    pred_energy = -100.0 * torch.log(torch.clamp(torch.sum(torch.exp(selected_logits / 100.0), dim=-1), min=1e-8))
                 else:
                     pred_energy = torch.zeros((0,), device=device)
                 for pred_idx, box in enumerate(det):

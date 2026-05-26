@@ -87,19 +87,26 @@ def run_class_probability_csv(config, run_dir):
                 det = selected_preds[sample_idx]
                 batch_items += int(det.shape[0])
                 raw_keep_b = selected_indices[sample_idx]
-                if raw_logits is not None:
+                if bool(getattr(detector, "is_fcos", False)):
+                    pred_probs = (
+                        get_selected_prediction_class_probs(detector, raw_prediction[sample_idx], raw_keep_b)
+                        if int(raw_keep_b.shape[0]) > 0 and raw_prediction[sample_idx].shape[1] > 6
+                        else torch.zeros((0, num_classes), dtype=torch.float32, device=device)
+                    )
+                elif raw_logits is not None:
                     selected_logits = (
                         raw_logits[sample_idx][raw_keep_b]
                         if int(raw_keep_b.shape[0]) > 0
                         else torch.zeros((0, num_classes), dtype=torch.float32, device=device)
                     )
+                    pred_probs = torch.softmax(selected_logits, dim=-1) if selected_logits.numel() else selected_logits
                 else:
                     selected_logits = (
                         get_selected_prediction_class_probs(detector, raw_prediction[sample_idx], raw_keep_b)
                         if int(raw_keep_b.shape[0]) > 0 and raw_prediction[sample_idx].shape[1] > 5
                         else torch.zeros((0, num_classes), dtype=torch.float32, device=device)
                     )
-                pred_probs = torch.softmax(selected_logits, dim=-1) if selected_logits.numel() else selected_logits
+                    pred_probs = torch.softmax(selected_logits, dim=-1) if selected_logits.numel() else selected_logits
                 for pred_idx, box in enumerate(det):
                     raw_pred_idx = int(raw_keep_b[pred_idx].detach().cpu().item()) if pred_idx < int(raw_keep_b.shape[0]) else pred_idx
                     cls_idx = int(box[5].detach().cpu().item()) if box.shape[0] > 5 else 0

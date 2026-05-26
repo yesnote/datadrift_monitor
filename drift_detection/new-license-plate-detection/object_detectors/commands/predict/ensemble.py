@@ -89,6 +89,11 @@ def run_ensemble_csv(config, run_dir):
                 infer_batch, _ratios, _pads, _resized_chws = _prepare_infer_batch(
                     base_detector, images, device, auto=False
                 )
+                fcos_preprocessed = (
+                    base_detector.preprocess_images(infer_batch)
+                    if bool(getattr(base_detector, "is_fcos", False)) and hasattr(base_detector, "preprocess_images")
+                    else None
+                )
                 batch_size = len(infer_batch) if isinstance(infer_batch, list) else int(infer_batch.shape[0])
                 image_ids = [int(targets[i]["image_id"][0].item()) for i in range(batch_size)]
                 image_paths = [targets[i]["path"] for i in range(batch_size)]
@@ -103,7 +108,10 @@ def run_ensemble_csv(config, run_dir):
                 for det_idx, detector in enumerate(detectors):
                     t_detector = timing.start()
                     with torch.no_grad():
-                        det_output = detector.model(infer_batch, augment=False)
+                        if fcos_preprocessed is not None and bool(getattr(detector, "is_fcos", False)) and hasattr(detector, "forward_preprocessed"):
+                            det_output = detector.forward_preprocessed(fcos_preprocessed)
+                        else:
+                            det_output = detector.model(infer_batch, augment=False)
                         det_raw_pred = det_output[0] if isinstance(det_output, (tuple, list)) else det_output
                         det_raw_logits = det_output[1] if isinstance(det_output, (tuple, list)) and len(det_output) > 1 else None
                         nms_logits = _resolve_nms_logits(det_raw_pred, det_raw_logits, num_classes_hint=n_classes_hint)
@@ -178,6 +186,8 @@ def run_ensemble_csv(config, run_dir):
                     del runs_tensor
                 feature_compute_sec += timing.elapsed(t_feature)
                 del infer_batch
+                if fcos_preprocessed is not None:
+                    del fcos_preprocessed
 
                 batch_items = 0
                 t_matching = timing.start()

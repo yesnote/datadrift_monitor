@@ -105,6 +105,11 @@ def run_mc_dropout_csv(config, run_dir):
             infer_batch, _ratios, _pads, _resized_chws = _prepare_infer_batch(
                 detector, image_list, device, auto=False
             )
+            fcos_preprocessed = (
+                detector.preprocess_images(infer_batch)
+                if bool(getattr(detector, "is_fcos", False)) and hasattr(detector, "preprocess_images")
+                else None
+            )
 
             # 1) Deterministic forward once: get final NMS predictions and raw pre-NMS indices.
             detector_inference_sec = 0.0
@@ -119,6 +124,8 @@ def run_mc_dropout_csv(config, run_dir):
                 if bool(getattr(detector, "is_faster_rcnn", False)) and hasattr(detector, "prepare_roi_cache"):
                     roi_cache = detector.prepare_roi_cache(infer_batch)
                     det_output = detector.forward_from_roi_cache(roi_cache)
+                elif fcos_preprocessed is not None and hasattr(detector, "forward_preprocessed"):
+                    det_output = detector.forward_preprocessed(fcos_preprocessed)
                 else:
                     det_output = detector.model(infer_batch, augment=False)
                 det_raw_pred = det_output[0] if isinstance(det_output, (tuple, list)) else det_output
@@ -152,6 +159,8 @@ def run_mc_dropout_csv(config, run_dir):
                         t_detector = timing.start()
                         if roi_cache is not None:
                             model_output = detector.forward_from_roi_cache(roi_cache)
+                        elif fcos_preprocessed is not None and hasattr(detector, "forward_preprocessed"):
+                            model_output = detector.forward_preprocessed(fcos_preprocessed)
                         else:
                             model_output = detector.model(infer_batch, augment=False)
                         raw_prediction = model_output[0] if isinstance(model_output, (tuple, list)) else model_output
@@ -165,7 +174,7 @@ def run_mc_dropout_csv(config, run_dir):
                         t_feature = timing.start()
                         if isinstance(raw_prediction, list):
                             variable_candidate_runs = True
-                            is_faster_rcnn = bool(getattr(detector, "is_faster_rcnn", False))
+                            needs_iou_matching = bool(getattr(detector, "is_faster_rcnn", False)) or bool(getattr(detector, "is_fcos", False))
                             run_features = []
                             run_labels = []
                             for pred_img in raw_prediction:
@@ -174,13 +183,13 @@ def run_mc_dropout_csv(config, run_dir):
                                 score_vec = pred_img[:, 4:5]
                                 prob_mat = get_prediction_class_probs(detector, pred_img).detach().float()
                                 run_features.append(torch.cat([bbox_xyxy, score_vec, prob_mat], dim=1))
-                                if is_faster_rcnn and pred_img.shape[1] > 5:
+                                if needs_iou_matching and pred_img.shape[1] > 5:
                                     run_labels.append(pred_img[:, 5].detach().long())
                                 else:
                                     run_labels.append(None)
                                 if n_classes is None:
                                     n_classes = int(prob_mat.shape[-1])
-                            feature_runs.append({"features": run_features, "labels": run_labels} if is_faster_rcnn else run_features)
+                            feature_runs.append({"features": run_features, "labels": run_labels} if needs_iou_matching else run_features)
                         else:
                             pred_batch = raw_prediction.detach().float()
                             bbox_xyxy = _xywh_to_xyxy_tensor(pred_batch[..., :4])
@@ -207,6 +216,8 @@ def run_mc_dropout_csv(config, run_dir):
 
             if (not variable_candidate_runs) and n_candidates is None:
                 del infer_batch
+                if fcos_preprocessed is not None:
+                    del fcos_preprocessed
                 continue
 
             feat_mean = None
@@ -321,6 +332,8 @@ def run_mc_dropout_csv(config, run_dir):
             if "roi_cache" in locals() and roi_cache is not None:
                 del roi_cache
             del infer_batch
+            if fcos_preprocessed is not None:
+                del fcos_preprocessed
     except Exception:
         had_error = True
         raise

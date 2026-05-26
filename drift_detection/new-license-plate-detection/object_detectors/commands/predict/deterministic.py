@@ -13,18 +13,30 @@ def _empty_class_tensor(num_classes, device):
     return torch.zeros((0, num_classes), dtype=torch.float32, device=device)
 
 
-def _selected_class_scores(detector, raw_prediction, raw_logits, sample_idx, raw_keep_b, num_classes, device):
+def _selected_class_probs_and_logits(detector, raw_prediction, raw_logits, sample_idx, raw_keep_b, num_classes, device):
+    if bool(getattr(detector, "is_fcos", False)):
+        probs = (
+            get_selected_prediction_class_probs(detector, raw_prediction[sample_idx], raw_keep_b)
+            if int(raw_keep_b.shape[0]) > 0 and raw_prediction[sample_idx].shape[1] > 6
+            else _empty_class_tensor(num_classes, device)
+        )
+        logits = torch.logit(probs.clamp(min=1e-8, max=1.0 - 1e-8)) if probs.numel() else probs
+        return probs, logits
     if raw_logits is not None:
-        return (
+        logits = (
             raw_logits[sample_idx][raw_keep_b]
             if int(raw_keep_b.shape[0]) > 0
             else _empty_class_tensor(num_classes, device)
         )
-    return (
+        probs = torch.softmax(logits, dim=-1) if logits.numel() else logits
+        return probs, logits
+    logits = (
         get_selected_prediction_class_probs(detector, raw_prediction[sample_idx], raw_keep_b)
         if int(raw_keep_b.shape[0]) > 0 and raw_prediction[sample_idx].shape[1] > 5
         else _empty_class_tensor(num_classes, device)
     )
+    probs = torch.softmax(logits, dim=-1) if logits.numel() else logits
+    return probs, logits
 
 
 def _energy_from_probs(probs):
@@ -34,6 +46,14 @@ def _energy_from_probs(probs):
     pseudo_logits = torch.log(probs_clipped / (1.0 - probs_clipped))
     return -100.0 * torch.log(
         torch.clamp(torch.sum(torch.exp(pseudo_logits / 100.0), dim=-1), min=1e-8)
+    )
+
+
+def _energy_from_logits(logits):
+    if not logits.numel():
+        return torch.zeros((0,), dtype=torch.float32, device=logits.device)
+    return -100.0 * torch.log(
+        torch.clamp(torch.sum(torch.exp(logits / 100.0), dim=-1), min=1e-8)
     )
 
 
@@ -192,10 +212,9 @@ def run_deterministic_uncertainties_csv(config, run_dir, uncertainties):
                 raw_keep_b = selected_indices[sample_idx]
                 batch_items += int(det.shape[0])
 
-                selected_scores = _selected_class_scores(
+                selected_probs, selected_logits = _selected_class_probs_and_logits(
                     detector, raw_prediction, raw_logits, sample_idx, raw_keep_b, num_classes, device
                 )
-                selected_probs = torch.softmax(selected_scores, dim=-1) if selected_scores.numel() else selected_scores
 
                 pred_entropy = None
                 pred_energy = None
@@ -209,7 +228,7 @@ def run_deterministic_uncertainties_csv(config, run_dir, uncertainties):
                     entropy_feature_sec += profilers["entropy"].elapsed(t_feature)
                 if "energy" in active:
                     t_feature = profilers["energy"].start()
-                    pred_energy = _energy_from_probs(selected_probs)
+                    pred_energy = _energy_from_logits(selected_logits)
                     energy_feature_sec += profilers["energy"].elapsed(t_feature)
 
                 for pred_idx, box in enumerate(det):

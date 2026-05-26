@@ -5,7 +5,6 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torchvision.ops import batched_nms
 from torchvision.transforms import functional as TF
 
 
@@ -248,9 +247,18 @@ class FCOSTorchObjectDetector(nn.Module):
             self.detector_model.train()
         return self._detections_to_contract(detections)
 
+    def forward_preprocessed(self, processed_images):
+        was_training = self.detector_model.training
+        if self.mode != "train":
+            self.detector_model.eval()
+        with torch.no_grad():
+            detections = self.detector_model(processed_images)
+        if was_training and self.mode == "train":
+            self.detector_model.train()
+        return self._detections_to_contract(detections)
+
     def _boxlists_to_contract(self, detections):
         rows_by_image = []
-        logits_by_image = []
         num_classes = int(self.num_classes_no_bg)
         for det in detections:
             boxes = det.convert("xyxy").bbox.to(self.device)
@@ -274,10 +282,8 @@ class FCOSTorchObjectDetector(nn.Module):
             if boxes.shape[0] > 0 and num_classes > 0 and not det.has_field("class_probs"):
                 row_idx = torch.arange(boxes.shape[0], device=self.device)
                 probs[row_idx, labels] = scores.clamp(min=0.0, max=1.0)
-            logits = torch.logit(probs.clamp(min=1e-6, max=1.0 - 1e-6))
             rows_by_image.append(torch.cat([xywh, scores[:, None], labels.to(scores.dtype)[:, None], probs], dim=1))
-            logits_by_image.append(logits)
-        return rows_by_image, logits_by_image
+        return rows_by_image, None
 
     def _detections_to_contract(self, detections):
         return self._boxlists_to_contract(detections)
@@ -319,23 +325,16 @@ class FCOSTorchObjectDetector(nn.Module):
 
             scores = pred[:, 4]
             labels = pred[:, 5].long()
+            # FCOSPostProcessor already applies score filtering, top-k, and class-wise NMS.
+            # Keep this wrapper as a lightweight compatibility adapter: optional class
+            # filtering, max_det truncation, xywh->xyxy conversion, and index reporting.
             keep = scores > float(conf_thres)
             if classes is not None:
                 class_tensor = torch.as_tensor(classes, device=pred.device, dtype=torch.long)
                 keep &= (labels[:, None] == class_tensor[None]).any(dim=1)
             keep_idx = torch.nonzero(keep, as_tuple=False).flatten()
-            if keep_idx.numel() > 0:
-                xywh = pred[keep_idx, :4]
-                xyxy = xywh.clone()
-                xyxy[:, 0] = xywh[:, 0] - xywh[:, 2] * 0.5
-                xyxy[:, 1] = xywh[:, 1] - xywh[:, 3] * 0.5
-                xyxy[:, 2] = xywh[:, 0] + xywh[:, 2] * 0.5
-                xyxy[:, 3] = xywh[:, 1] + xywh[:, 3] * 0.5
-                nms_labels = torch.zeros_like(labels[keep_idx]) if agnostic else labels[keep_idx]
-                nms_keep = batched_nms(xyxy, scores[keep_idx], nms_labels, float(iou_thres))
-                if max_det is not None:
-                    nms_keep = nms_keep[: int(max_det)]
-                keep_idx = keep_idx[nms_keep]
+            if max_det is not None and keep_idx.numel() > int(max_det):
+                keep_idx = keep_idx[: int(max_det)]
 
             xywh = pred[keep_idx, :4]
             xyxy = xywh.clone()
