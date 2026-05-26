@@ -82,7 +82,7 @@ def run_layer_grad_csv(config, run_dir):
     layer_rpn_cand_scalar = [str(v) for v in parsed.get("layer_rpn_cand_scalar", [])]
     layer_roi_null_scalar = [str(v) for v in parsed.get("layer_roi_null_scalar", [])]
     layer_rpn_null_scalar = [str(v) for v in parsed.get("layer_rpn_null_scalar", [])]
-    layer_bbox_loss = parsed.get("layer_bbox_loss", "ciou")
+    layer_bbox_loss = parsed.get("layer_bbox_loss", "box_l1")
     layer_cls_loss = parsed.get("layer_cls_loss", "bcewithlogits")
     layer_obj_loss = parsed.get("layer_obj_loss", "bcewithlogits")
     layer_bbox_direction = parsed.get("layer_bbox_direction", "pred_to_target")
@@ -134,6 +134,13 @@ def run_layer_grad_csv(config, run_dir):
 
     detector, device = build_detector(config)
     is_faster_rcnn = bool(getattr(detector, "is_faster_rcnn", False))
+    if (not is_faster_rcnn) and layer_pseudo_gt == "uniform":
+        layer_bbox_loss = parsed.get("layer_null_bbox_loss", layer_bbox_loss)
+        layer_cls_loss = parsed.get("layer_null_cls_loss", layer_cls_loss)
+        layer_obj_loss = parsed.get("layer_null_obj_loss", layer_obj_loss)
+        layer_bbox_direction = parsed.get("layer_null_bbox_direction", layer_bbox_direction)
+        layer_cls_direction = parsed.get("layer_null_cls_direction", layer_cls_direction)
+        layer_obj_direction = parsed.get("layer_null_obj_direction", layer_obj_direction)
     if is_faster_rcnn:
         target_mode = "null2" if layer_pseudo_gt == "null2" else "null" if layer_pseudo_gt == "uniform" else "cand"
         alias = {

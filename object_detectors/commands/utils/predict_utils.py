@@ -362,7 +362,7 @@ def parse_output_config(output_cfg):
     layer_gradient_reduction = []
     layer_pseudo_gt = "cand"
     layer_cand_score_threshold = 0.01
-    layer_bbox_loss = "ciou"
+    layer_bbox_loss = "box_l1"
     layer_cls_loss = "bcewithlogits"
     layer_obj_loss = "bcewithlogits"
     layer_bbox_direction = "pred_to_target"
@@ -407,7 +407,6 @@ def parse_output_config(output_cfg):
         "bce": "bcewithlogits",
         "bce_with_logits": "bcewithlogits",
         "bcewithlogits": "bcewithlogits",
-        "ciou": "ciou",
         "l1": "l1",
         "l1_loss": "l1",
         "l2": "l2",
@@ -435,6 +434,30 @@ def parse_output_config(output_cfg):
 
     def normalize_loss_option(raw, default, supported, key_name):
         normalized = loss_aliases.get(str(raw if raw is not None else default).strip().lower().replace("-", "_"))
+        if normalized not in supported:
+            raise ValueError(f"Unsupported {key_name}: {raw}. Supported values: {', '.join(sorted(supported))}.")
+        return normalized
+
+    def normalize_yolo_bbox_loss_option(raw, default, key_name, allow_offset=True):
+        key = str(raw if raw is not None else default).strip().lower().replace("-", "_")
+        aliases = {
+            "box_l1": "box_l1",
+            "box_l1_loss": "box_l1",
+            "l1": "box_l1",
+            "l1_loss": "box_l1",
+            "box_l2": "box_l2",
+            "box_l2_loss": "box_l2",
+            "l2": "box_l2",
+            "l2_loss": "box_l2",
+            "mse": "box_l2",
+            "offset_l1": "offset_l1",
+            "offset_l1_loss": "offset_l1",
+            "offset_l2": "offset_l2",
+            "offset_l2_loss": "offset_l2",
+            "offset_mse": "offset_l2",
+        }
+        normalized = aliases.get(key)
+        supported = {"box_l1", "box_l2", "offset_l1", "offset_l2"} if allow_offset else {"box_l1", "box_l2"}
         if normalized not in supported:
             raise ValueError(f"Unsupported {key_name}: {raw}. Supported values: {', '.join(sorted(supported))}.")
         return normalized
@@ -612,7 +635,12 @@ def parse_output_config(output_cfg):
                 else:
                     expanded_null2_scalar.append(value)
             layer_null2_scalar = list(dict.fromkeys(expanded_null2_scalar))
-        layer_bbox_loss = normalize_loss_option(g.get("bbox_loss", "ciou"), "ciou", {"ciou", "l1", "l2"}, "layer_grad.gradient.bbox_loss")
+        layer_bbox_loss = normalize_yolo_bbox_loss_option(
+            g.get("bbox_loss", "box_l1"),
+            "box_l1",
+            "layer_grad.gradient.bbox_loss",
+            allow_offset=(layer_pseudo_gt == "uniform"),
+        )
         layer_cls_loss = normalize_loss_option(
             g.get("cls_loss", "bcewithlogits"),
             "bcewithlogits",
@@ -731,11 +759,10 @@ def parse_output_config(output_cfg):
             raise ValueError("layer_grad.gradient.rpn.obj_direction=target_to_pred is only supported when obj_loss=signed_diff.")
 
         layer_null_scalar = [str(v).strip().lower() for v in normalize_to_list(null_target_cfg.get("scalar", []))]
-        layer_null_bbox_loss = normalize_loss_option(
+        layer_null_bbox_loss = normalize_yolo_bbox_loss_option(
             null_target_cfg.get("bbox_loss", g.get("bbox_loss", "l1")),
-            "l1",
-            {"l1", "l2"},
             "layer_grad.gradient.null_target.bbox_loss",
+            allow_offset=True,
         )
         layer_null_cls_loss = normalize_loss_option(
             null_target_cfg.get("cls_loss", g.get("cls_loss", "bcewithlogits")),
@@ -769,7 +796,12 @@ def parse_output_config(output_cfg):
             layer_null_obj_direction,
         )
 
-    null_bbox_loss = normalize_loss_option(null_detect_cfg.get("bbox_loss", "ciou"), "ciou", {"ciou", "l1", "l2"}, "null_detect.bbox_loss")
+    null_bbox_loss = normalize_yolo_bbox_loss_option(
+        null_detect_cfg.get("bbox_loss", "box_l1"),
+        "box_l1",
+        "null_detect.bbox_loss",
+        allow_offset=True,
+    )
     null_cls_loss = normalize_loss_option(
         null_detect_cfg.get("cls_loss", "bcewithlogits"),
         "bcewithlogits",
@@ -1167,44 +1199,6 @@ def _xywh_to_xyxy_tensor(xywh: torch.Tensor) -> torch.Tensor:
     return out
 
 
-def _bbox_ciou_xywh_tensor(box1: torch.Tensor, box2: torch.Tensor, eps: float = 1e-7) -> torch.Tensor:
-    if box1.ndim == 1:
-        box1 = box1.view(1, 4)
-    if box2.ndim == 1:
-        box2 = box2.view(1, 4)
-    if box2.shape[0] == 1 and box1.shape[0] > 1:
-        box2 = box2.expand(box1.shape[0], -1)
-
-    b1_x1 = box1[:, 0] - box1[:, 2] / 2.0
-    b1_y1 = box1[:, 1] - box1[:, 3] / 2.0
-    b1_x2 = box1[:, 0] + box1[:, 2] / 2.0
-    b1_y2 = box1[:, 1] + box1[:, 3] / 2.0
-    b2_x1 = box2[:, 0] - box2[:, 2] / 2.0
-    b2_y1 = box2[:, 1] - box2[:, 3] / 2.0
-    b2_x2 = box2[:, 0] + box2[:, 2] / 2.0
-    b2_y2 = box2[:, 1] + box2[:, 3] / 2.0
-
-    inter = (
-        (torch.min(b1_x2, b2_x2) - torch.max(b1_x1, b2_x1)).clamp(0)
-        * (torch.min(b1_y2, b2_y2) - torch.max(b1_y1, b2_y1)).clamp(0)
-    )
-    w1 = (b1_x2 - b1_x1).clamp(min=0)
-    h1 = (b1_y2 - b1_y1).clamp(min=0)
-    w2 = (b2_x2 - b2_x1).clamp(min=0)
-    h2 = (b2_y2 - b2_y1).clamp(min=0)
-    union = w1 * h1 + w2 * h2 - inter + eps
-    iou = inter / union
-
-    cw = torch.max(b1_x2, b2_x2) - torch.min(b1_x1, b2_x1)
-    ch = torch.max(b1_y2, b2_y2) - torch.min(b1_y1, b2_y1)
-    c2 = cw.pow(2) + ch.pow(2) + eps
-    rho2 = (box1[:, 0] - box2[:, 0]).pow(2) + (box1[:, 1] - box2[:, 1]).pow(2)
-    v = (4.0 / (math.pi ** 2)) * torch.pow(torch.atan(w2 / (h2 + eps)) - torch.atan(w1 / (h1 + eps)), 2)
-    with torch.no_grad():
-        alpha = v / (1.0 - iou + v + eps)
-    return iou - (rho2 / c2 + alpha * v)
-
-
 def _box_iou_tensor(boxes1: torch.Tensor, boxes2: torch.Tensor) -> torch.Tensor:
     area1 = (boxes1[:, 2] - boxes1[:, 0]).clamp(min=0) * (boxes1[:, 3] - boxes1[:, 1]).clamp(min=0)
     area2 = (boxes2[:, 2] - boxes2[:, 0]).clamp(min=0) * (boxes2[:, 3] - boxes2[:, 1]).clamp(min=0)
@@ -1262,23 +1256,44 @@ def _apply_direction(pred_value: torch.Tensor, target_value: torch.Tensor, direc
 def _bbox_loss_xywh_tensor(
     pred_xywh: torch.Tensor,
     target_xywh: torch.Tensor,
-    mode: str = "ciou",
+    mode: str = "box_l1",
     reduction: str = "mean",
     direction: str = "pred_to_target",
 ):
     mode = str(mode).strip().lower()
+    if mode == "l1":
+        mode = "box_l1"
+    elif mode in {"l2", "mse"}:
+        mode = "box_l2"
     target_xywh = target_xywh.to(dtype=pred_xywh.dtype, device=pred_xywh.device)
     left, right = _apply_direction(pred_xywh, target_xywh, direction)
 
-    if mode == "ciou":
-        loss = 1.0 - _bbox_ciou_xywh_tensor(left, right)
-    elif mode == "l1":
+    if mode == "box_l1":
         loss = torch.abs(left - right)
-    elif mode == "l2":
+    elif mode == "box_l2":
         loss = torch.square(left - right)
     else:
-        raise ValueError("bbox_loss must be one of: ciou, l1, l2")
+        raise ValueError("YOLO bbox_loss must be one of: box_l1, box_l2")
 
+    if reduction == "sum":
+        return loss.sum()
+    if reduction == "none":
+        return loss
+    return loss.mean()
+
+
+def _yolo_offset_loss_tensor(
+    raw_xywh: torch.Tensor,
+    mode: str = "offset_l1",
+    reduction: str = "mean",
+    direction: str = "pred_to_target",
+):
+    mode = str(mode).strip().lower()
+    if mode not in {"offset_l1", "offset_l2"}:
+        raise ValueError("YOLO offset bbox_loss must be one of: offset_l1, offset_l2")
+    target = torch.zeros_like(raw_xywh)
+    left, right = _apply_direction(raw_xywh, target, direction)
+    loss = torch.abs(left - right) if mode == "offset_l1" else torch.square(left - right)
     if reduction == "sum":
         return loss.sum()
     if reduction == "none":
@@ -1437,7 +1452,7 @@ def build_pseudo_label_losses_for_candidates(
     raw_idx: int,
     iou_threshold: float,
     score_threshold: float = 0.01,
-    bbox_loss: str = "ciou",
+    bbox_loss: str = "box_l1",
     cls_loss: str = "bcewithlogits",
     obj_loss: str = "bcewithlogits",
     bbox_direction: str = "pred_to_target",
@@ -1468,6 +1483,8 @@ def build_pseudo_label_losses_for_candidates(
     _add_elapsed_timing(timing_accumulator, "candidate_search_sec", t_candidate, timing_device)
 
     t_loss = _start_timing(timing_device)
+    if str(bbox_loss).strip().lower().startswith("offset_"):
+        raise ValueError("YOLO cand_target bbox_loss supports only box_l1 or box_l2. Use offset_l1/offset_l2 only with null_target.")
     candidate_pred = pred_img[candidate_mask]
     if raw_img is not None and raw_img.shape[0] == pred_img.shape[0]:
         raw_obj = raw_img[:, 4]
@@ -2060,7 +2077,7 @@ def build_layer_target_scalar_bbox(
     pseudo_gt="cand",
     anchor_xywh=None,
     cand_score_threshold=0.01,
-    bbox_loss: str = "ciou",
+    bbox_loss: str = "box_l1",
     cls_loss: str = "bcewithlogits",
     obj_loss: str = "bcewithlogits",
     bbox_direction: str = "pred_to_target",
@@ -2120,15 +2137,25 @@ def build_layer_target_scalar_bbox(
         if target_value == "bbox_loss":
             if anchor_xywh is None:
                 return None
-            pred_xywh = pred_row[:4]
-            anchor_xywh = anchor_xywh.to(dtype=pred_xywh.dtype, device=pred_xywh.device)
-            loss = _bbox_loss_xywh_tensor(
-                pred_xywh,
-                anchor_xywh,
-                mode=bbox_loss,
-                reduction="mean",
-                direction=bbox_direction,
-            )
+            if str(bbox_loss).strip().lower().startswith("offset_"):
+                if raw_row is None:
+                    return None
+                loss = _yolo_offset_loss_tensor(
+                    raw_row[:4],
+                    mode=bbox_loss,
+                    reduction="mean",
+                    direction=bbox_direction,
+                )
+            else:
+                pred_xywh = pred_row[:4]
+                anchor_xywh = anchor_xywh.to(dtype=pred_xywh.dtype, device=pred_xywh.device)
+                loss = _bbox_loss_xywh_tensor(
+                    pred_xywh,
+                    anchor_xywh,
+                    mode=bbox_loss,
+                    reduction="mean",
+                    direction=bbox_direction,
+                )
             _add_elapsed_timing(timing_accumulator, "loss_compute_sec", t_loss, timing_device)
             return loss
         _add_elapsed_timing(timing_accumulator, "loss_compute_sec", t_loss, timing_device)
@@ -2573,7 +2600,7 @@ def collect_bbox_layer_grads_per_target(
     vector_reduction=None,
     pseudo_gt="cand",
     cand_score_threshold=0.01,
-    bbox_loss: str = "ciou",
+    bbox_loss: str = "box_l1",
     cls_loss: str = "bcewithlogits",
     obj_loss: str = "bcewithlogits",
     bbox_direction: str = "pred_to_target",

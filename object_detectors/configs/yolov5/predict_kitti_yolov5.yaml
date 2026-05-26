@@ -83,10 +83,10 @@ output:
       enabled: false
 
   null_detect:
-    bbox_loss: ciou  # ciou | l1 | l2
+    bbox_loss: box_l1  # box_l1 | box_l2 | offset_l1 | offset_l2
     cls_loss: bcewithlogits  # bcewithlogits | kl | ce
     obj_loss: bcewithlogits  # bcewithlogits | abs_diff | signed_diff
-    bbox_direction: pred_to_target  # fixed; reverse is redundant for ciou/l1/l2
+    bbox_direction: pred_to_target  # fixed; reverse is redundant for box_l1/box_l2/offset_l1/offset_l2
     cls_direction: pred_to_target  # pred_to_target | target_to_pred, only for cls_loss: kl
     obj_direction: pred_to_target  # pred_to_target | target_to_pred, only for obj_loss: signed_diff
     feature_set: full  # full | losses_only
@@ -100,10 +100,10 @@ output:
       reduction: [l1_norm, l2_norm, min, max, mean, std]
       target: cand_target
       cand_score_threshold: 0.0
-      bbox_loss: ciou  # ciou | l1 | l2
+      bbox_loss: box_l1  # box_l1 | box_l2; null_target also supports offset_l1 | offset_l2
       cls_loss: bcewithlogits  # bcewithlogits | kl | ce
       obj_loss: bcewithlogits  # bcewithlogits | abs_diff | signed_diff
-      bbox_direction: pred_to_target  # fixed; reverse is redundant for ciou/l1/l2
+      bbox_direction: pred_to_target  # fixed; reverse is redundant for box_l1/box_l2/offset_l1/offset_l2
       cls_direction: pred_to_target  # pred_to_target | target_to_pred, only for cls_loss: kl
       obj_direction: pred_to_target  # pred_to_target | target_to_pred, only for obj_loss: signed_diff
     save_csv:

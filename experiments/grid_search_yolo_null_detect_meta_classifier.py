@@ -29,7 +29,7 @@ REUSE_EXISTING = False
 # Use None for all 48 valid combinations, or set a small int for a smoke test.
 MAX_COMBINATIONS = None
 
-BBOX_LOSSES = ["ciou", "l1", "l2"]
+BBOX_LOSSES = ["box_l1", "box_l2", "offset_l1", "offset_l2"]
 CLS_LOSSES = ["bcewithlogits", "kl", "ce"]
 OBJ_LOSSES = ["bcewithlogits", "abs_diff", "signed_diff"]
 
