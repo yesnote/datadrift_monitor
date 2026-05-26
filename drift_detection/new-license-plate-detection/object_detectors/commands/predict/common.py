@@ -71,7 +71,7 @@ def _as_image_list(images):
 
 def _prepare_infer_batch(detector, images, device, auto=False):
     image_list = _as_image_list(images)
-    if bool(getattr(detector, "is_faster_rcnn", False)) or bool(getattr(detector, "is_fcos", False)):
+    if bool(getattr(detector, "is_faster_rcnn", False)):
         infer_batch = image_list
         ratios = [(1.0, 1.0) for _ in image_list]
         pads = [(0.0, 0.0) for _ in image_list]
@@ -80,6 +80,12 @@ def _prepare_infer_batch(detector, images, device, auto=False):
             for img in image_list
         ]
         return infer_batch, ratios, pads, resized_chws
+
+    if bool(getattr(detector, "is_fcos", False)):
+        infer_batch = image_list
+        ratios = [detector.get_resize_ratio(img) for img in image_list]
+        pads = [(0.0, 0.0) for _ in image_list]
+        return infer_batch, ratios, pads, None
 
     infer_tensors = []
     ratios = []

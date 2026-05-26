@@ -76,7 +76,11 @@ def run_fn_csv(config, run_dir):
                     csv_writer.writerow(row)
 
                 if should_save_step and sample_idx < image_max_num:
-                    vis_image = draw_predictions(resized_chws[sample_idx], pred_boxes, pred_class_names, pred_scores)
+                    if resized_chws is None and bool(getattr(detector, "is_fcos", False)):
+                        image_chw = detector.resize_image_for_display(image_list[sample_idx])
+                    else:
+                        image_chw = resized_chws[sample_idx]
+                    vis_image = draw_predictions(image_chw, pred_boxes, pred_class_names, pred_scores)
                     fn_gt_indices = get_fn_gt_indices(
                         gt_boxes=gt_boxes,
                         gt_class_names=gt_class_names,
@@ -235,7 +239,9 @@ def run_tp_csv(config, run_dir):
                 if should_save_image:
                     step_dir = run_dir / "images" / f"0_{step_idx}"
                     step_dir.mkdir(parents=True, exist_ok=True)
-                    if resized_chws is None:
+                    if resized_chws is None and bool(getattr(detector, "is_fcos", False)):
+                        image_chw = detector.resize_image_for_display(image_list[sample_idx])
+                    elif resized_chws is None:
                         image_chw = np.ascontiguousarray(
                             np.clip(image_list[sample_idx].detach().cpu().numpy() * 255.0, 0, 255).astype(np.uint8)
                         )
