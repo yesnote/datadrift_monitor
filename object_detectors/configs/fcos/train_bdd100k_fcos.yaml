@@ -1,14 +1,11 @@
-mode: train
+﻿mode: train
 
 model:
   type: fcos
   backbone: resnet50_fpn
-  weights: ""
-  pretrained: false
-  config_file: ""
+  weights: object_detectors/models/fcos/weights/coco/FCOS_R_50_FPN_1x.pth
   confidence_threshold: 0.05
   iou_threshold: 0.6
-  max_det: 100
   device: cuda
 
 dataset:

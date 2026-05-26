@@ -13,6 +13,11 @@ FCOS_PACKAGE_ROOT = Path(__file__).resolve().parent
 if str(FCOS_PACKAGE_ROOT) not in sys.path:
     sys.path.insert(0, str(FCOS_PACKAGE_ROOT))
 
+DEFAULT_FCOS_COCO_WEIGHT = FCOS_PACKAGE_ROOT / "weights" / "coco" / "FCOS_R_50_FPN_1x.pth"
+DEFAULT_FCOS_COCO_WEIGHT_URL = (
+    "https://huggingface.co/tianzhi/FCOS/resolve/main/FCOS_R_50_FPN_1x.pth?download=true"
+)
+
 
 def _torch_load(path, map_location):
     try:
@@ -53,6 +58,18 @@ def _strip_prefixes(state_dict):
     return cleaned
 
 
+def _ensure_fcos_weight(path):
+    path = Path(path)
+    if path.is_file():
+        return path
+    if path.name != DEFAULT_FCOS_COCO_WEIGHT.name:
+        raise FileNotFoundError(f"FCOS weight file not found: {path}")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    print(f"[INFO] Downloading FCOS COCO weight to {path}")
+    torch.hub.download_url_to_file(DEFAULT_FCOS_COCO_WEIGHT_URL, str(path), progress=True)
+    return path
+
+
 class _ForwardProxy:
     def __init__(self, owner):
         self._owner = owner
@@ -73,8 +90,6 @@ class FCOSTorchObjectDetector(nn.Module):
         mode="eval",
         confidence=0.05,
         iou_thresh=0.6,
-        config_file=None,
-        max_detections=100,
     ):
         super().__init__()
         self.device = torch.device(device)
@@ -82,7 +97,6 @@ class FCOSTorchObjectDetector(nn.Module):
         self.confidence = float(confidence)
         self.conf_thresh = float(confidence)
         self.iou_thresh = float(iou_thresh)
-        self.max_det = int(max_detections)
         self.agnostic = False
         self.agnostic_nms = False
         self.is_fcos = True
@@ -93,7 +107,8 @@ class FCOSTorchObjectDetector(nn.Module):
         self.names = list(names or [])
         self.num_classes_no_bg = len(self.names) if self.names else 80
 
-        self.cfg = self._build_cfg(config_file)
+        self.cfg = self._build_cfg()
+        self.max_det = int(self.cfg.TEST.DETECTIONS_PER_IMG)
         self.detector_model = self._build_model()
         self.model = _ForwardProxy(self)
         self._resize_transform, self._normalize_transform = self._build_preprocess_transforms()
@@ -115,7 +130,7 @@ class FCOSTorchObjectDetector(nn.Module):
     def eval(self):
         return self.train(False)
 
-    def _build_cfg(self, config_file=None):
+    def _build_cfg(self):
         try:
             from fcos_core.config import cfg as base_cfg
         except ImportError as exc:
@@ -125,10 +140,6 @@ class FCOSTorchObjectDetector(nn.Module):
             ) from exc
 
         cfg = base_cfg.clone()
-        if config_file:
-            config_path = Path(config_file)
-            if config_path.is_file():
-                cfg.merge_from_file(str(config_path))
 
         cfg.defrost()
         cfg.MODEL.META_ARCHITECTURE = "GeneralizedRCNN"
@@ -142,7 +153,6 @@ class FCOSTorchObjectDetector(nn.Module):
         cfg.MODEL.FCOS.INFERENCE_TH = float(self.confidence)
         cfg.MODEL.FCOS.NMS_TH = float(self.iou_thresh)
         cfg.MODEL.FCOS.USE_DCN_IN_TOWER = False
-        cfg.TEST.DETECTIONS_PER_IMG = int(self.max_det)
         cfg.MODEL.DEVICE = str(self.device)
         cfg.freeze()
         return cfg
@@ -165,9 +175,7 @@ class FCOSTorchObjectDetector(nn.Module):
         return resize, normalize
 
     def load_weights(self, model_weight):
-        path = Path(model_weight)
-        if not path.is_file():
-            raise FileNotFoundError(f"FCOS weight file not found: {path}")
+        path = _ensure_fcos_weight(model_weight)
         state_dict = _strip_prefixes(_checkpoint_state_dict(_torch_load(path, self.device)))
         current = self.detector_model.state_dict()
         filtered = {
