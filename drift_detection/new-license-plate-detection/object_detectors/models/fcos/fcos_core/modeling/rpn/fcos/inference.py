@@ -136,6 +136,7 @@ class FCOSPostProcessor(torch.nn.Module):
 
         boxlists = list(zip(*sampled_boxes))
         boxlists = [cat_boxlist(boxlist) for boxlist in boxlists]
+        self.last_pre_nms_boxlists = boxlists
         if not self.bbox_aug_enabled:
             boxlists = self.select_over_all_levels(boxlists)
 
