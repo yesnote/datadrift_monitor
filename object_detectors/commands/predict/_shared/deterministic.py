@@ -20,7 +20,14 @@ def _selected_class_probs_and_logits(detector, raw_prediction, raw_logits, sampl
             if int(raw_keep_b.shape[0]) > 0 and raw_prediction[sample_idx].shape[1] > 6
             else _empty_class_tensor(num_classes, device)
         )
-        logits = torch.logit(probs.clamp(min=1e-8, max=1.0 - 1e-8)) if probs.numel() else probs
+        if raw_logits is not None:
+            logits = (
+                raw_logits[sample_idx][raw_keep_b]
+                if int(raw_keep_b.shape[0]) > 0
+                else _empty_class_tensor(num_classes, device)
+            )
+        else:
+            logits = torch.logit(probs.clamp(min=1e-8, max=1.0 - 1e-8)) if probs.numel() else probs
         return probs, logits
     if raw_logits is not None:
         logits = (
