@@ -5,6 +5,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torchvision.ops import batched_nms
+from torchvision.transforms import functional as TF
 
 
 FCOS_PACKAGE_ROOT = Path(__file__).resolve().parent
@@ -94,6 +95,9 @@ class FCOSTorchObjectDetector(nn.Module):
         self.cfg = self._build_cfg(config_file)
         self.detector_model = self._build_model()
         self.model = _ForwardProxy(self)
+        self._resize_transform, self._normalize_transform = self._build_preprocess_transforms()
+        self._last_original_sizes = []
+        self._last_resized_sizes = []
 
         if model_weight:
             self.load_weights(model_weight)
@@ -150,6 +154,17 @@ class FCOSTorchObjectDetector(nn.Module):
         model = build_detection_model(self.cfg)
         return model.to(self.device)
 
+    def _build_preprocess_transforms(self):
+        from fcos_core.data.transforms.transforms import Normalize, Resize
+
+        resize = Resize(self.cfg.INPUT.MIN_SIZE_TEST, self.cfg.INPUT.MAX_SIZE_TEST)
+        normalize = Normalize(
+            mean=self.cfg.INPUT.PIXEL_MEAN,
+            std=self.cfg.INPUT.PIXEL_STD,
+            to_bgr255=self.cfg.INPUT.TO_BGR255,
+        )
+        return resize, normalize
+
     def load_weights(self, model_weight):
         path = Path(model_weight)
         if not path.is_file():
@@ -175,19 +190,37 @@ class FCOSTorchObjectDetector(nn.Module):
         else:
             image_list = [img.to(self.device, dtype=torch.float32) for img in images]
 
-        if bool(getattr(self.cfg.INPUT, "TO_BGR255", True)):
-            processed = []
-            mean = torch.tensor(self.cfg.INPUT.PIXEL_MEAN, dtype=torch.float32, device=self.device).view(3, 1, 1)
-            std = torch.tensor(self.cfg.INPUT.PIXEL_STD, dtype=torch.float32, device=self.device).view(3, 1, 1)
-            for img in image_list:
-                img = img[[2, 1, 0], :, :]
-                img = img * 255.0
-                processed.append((img - mean) / std)
-            return processed
+        processed = []
+        original_sizes = []
+        resized_sizes = []
+        for img in image_list:
+            orig_h, orig_w = int(img.shape[-2]), int(img.shape[-1])
+            resize_size = self._resize_transform.get_size((orig_w, orig_h))
+            if (orig_h, orig_w) != tuple(resize_size):
+                img = TF.resize(img, resize_size)
+            resized_h, resized_w = int(img.shape[-2]), int(img.shape[-1])
+            img = self._normalize_transform(img)
+            processed.append(img)
+            original_sizes.append((orig_h, orig_w))
+            resized_sizes.append((resized_h, resized_w))
 
-        mean = torch.tensor(self.cfg.INPUT.PIXEL_MEAN, dtype=torch.float32, device=self.device).view(3, 1, 1)
-        std = torch.tensor(self.cfg.INPUT.PIXEL_STD, dtype=torch.float32, device=self.device).view(3, 1, 1)
-        return [(img - mean) / std for img in image_list]
+        self._last_original_sizes = original_sizes
+        self._last_resized_sizes = resized_sizes
+        return processed
+
+    def _scale_boxes_to_original(self, boxes, image_idx):
+        if image_idx >= len(self._last_original_sizes) or image_idx >= len(self._last_resized_sizes):
+            return boxes
+        orig_h, orig_w = self._last_original_sizes[image_idx]
+        resized_h, resized_w = self._last_resized_sizes[image_idx]
+        if resized_h <= 0 or resized_w <= 0:
+            return boxes
+        scaled = boxes.clone()
+        scaled[:, [0, 2]] *= float(orig_w) / float(resized_w)
+        scaled[:, [1, 3]] *= float(orig_h) / float(resized_h)
+        scaled[:, [0, 2]] = scaled[:, [0, 2]].clamp(min=0.0, max=float(orig_w))
+        scaled[:, [1, 3]] = scaled[:, [1, 3]].clamp(min=0.0, max=float(orig_h))
+        return scaled
 
     def forward(self, images):
         was_training = self.detector_model.training
@@ -203,8 +236,9 @@ class FCOSTorchObjectDetector(nn.Module):
         rows_by_image = []
         logits_by_image = []
         num_classes = int(self.num_classes_no_bg)
-        for det in detections:
+        for image_idx, det in enumerate(detections):
             boxes = det.convert("xyxy").bbox.to(self.device)
+            boxes = self._scale_boxes_to_original(boxes, image_idx)
             scores = det.get_field("scores").to(self.device) if det.has_field("scores") else boxes.new_zeros((boxes.shape[0],))
             labels_raw = det.get_field("labels").to(self.device).long() if det.has_field("labels") else boxes.new_zeros((boxes.shape[0],), dtype=torch.long)
             labels = (labels_raw - 1).clamp(min=0, max=max(num_classes - 1, 0))
