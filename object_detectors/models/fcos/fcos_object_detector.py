@@ -1,6 +1,7 @@
 from pathlib import Path
 import sys
 
+import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -96,8 +97,6 @@ class FCOSTorchObjectDetector(nn.Module):
         self.detector_model = self._build_model()
         self.model = _ForwardProxy(self)
         self._resize_transform, self._normalize_transform = self._build_preprocess_transforms()
-        self._last_original_sizes = []
-        self._last_resized_sizes = []
 
         if model_weight:
             self.load_weights(model_weight)
@@ -181,6 +180,37 @@ class FCOSTorchObjectDetector(nn.Module):
             print(f"[WARN] FCOS checkpoint partial load: loaded={len(filtered)}, skipped={skipped}")
         self.detector_model.load_state_dict(filtered, strict=False)
 
+    def get_resize_size(self, image_or_size):
+        if isinstance(image_or_size, torch.Tensor):
+            orig_h, orig_w = int(image_or_size.shape[-2]), int(image_or_size.shape[-1])
+        else:
+            orig_h, orig_w = int(image_or_size[0]), int(image_or_size[1])
+        min_sizes = self._resize_transform.min_size
+        size = int(min_sizes[0] if isinstance(min_sizes, (tuple, list)) else min_sizes)
+        max_size = self._resize_transform.max_size
+        min_original_size = float(min(orig_w, orig_h))
+        max_original_size = float(max(orig_w, orig_h))
+        if max_size is not None and max_original_size / min_original_size * size > max_size:
+            size = int(round(max_size * min_original_size / max_original_size))
+        if (orig_w <= orig_h and orig_w == size) or (orig_h <= orig_w and orig_h == size):
+            return (orig_h, orig_w)
+        if orig_w < orig_h:
+            return (int(size * orig_h / orig_w), size)
+        return (size, int(size * orig_w / orig_h))
+
+    def get_resize_ratio(self, image_or_size):
+        if isinstance(image_or_size, torch.Tensor):
+            orig_h, orig_w = int(image_or_size.shape[-2]), int(image_or_size.shape[-1])
+        else:
+            orig_h, orig_w = int(image_or_size[0]), int(image_or_size[1])
+        resized_h, resized_w = self.get_resize_size((orig_h, orig_w))
+        return (float(resized_w) / float(max(orig_w, 1)), float(resized_h) / float(max(orig_h, 1)))
+
+    def resize_image_for_display(self, image):
+        resize_size = self.get_resize_size(image)
+        resized = TF.resize(image.detach().cpu(), resize_size)
+        return np.ascontiguousarray(np.clip(resized.numpy() * 255.0, 0, 255).astype(np.uint8))
+
     def preprocess_images(self, images):
         if isinstance(images, torch.Tensor):
             if images.dim() == 4:
@@ -191,36 +221,14 @@ class FCOSTorchObjectDetector(nn.Module):
             image_list = [img.to(self.device, dtype=torch.float32) for img in images]
 
         processed = []
-        original_sizes = []
-        resized_sizes = []
         for img in image_list:
             orig_h, orig_w = int(img.shape[-2]), int(img.shape[-1])
-            resize_size = self._resize_transform.get_size((orig_w, orig_h))
+            resize_size = self.get_resize_size((orig_h, orig_w))
             if (orig_h, orig_w) != tuple(resize_size):
                 img = TF.resize(img, resize_size)
-            resized_h, resized_w = int(img.shape[-2]), int(img.shape[-1])
             img = self._normalize_transform(img)
             processed.append(img)
-            original_sizes.append((orig_h, orig_w))
-            resized_sizes.append((resized_h, resized_w))
-
-        self._last_original_sizes = original_sizes
-        self._last_resized_sizes = resized_sizes
         return processed
-
-    def _scale_boxes_to_original(self, boxes, image_idx):
-        if image_idx >= len(self._last_original_sizes) or image_idx >= len(self._last_resized_sizes):
-            return boxes
-        orig_h, orig_w = self._last_original_sizes[image_idx]
-        resized_h, resized_w = self._last_resized_sizes[image_idx]
-        if resized_h <= 0 or resized_w <= 0:
-            return boxes
-        scaled = boxes.clone()
-        scaled[:, [0, 2]] *= float(orig_w) / float(resized_w)
-        scaled[:, [1, 3]] *= float(orig_h) / float(resized_h)
-        scaled[:, [0, 2]] = scaled[:, [0, 2]].clamp(min=0.0, max=float(orig_w))
-        scaled[:, [1, 3]] = scaled[:, [1, 3]].clamp(min=0.0, max=float(orig_h))
-        return scaled
 
     def forward(self, images):
         was_training = self.detector_model.training
@@ -236,9 +244,8 @@ class FCOSTorchObjectDetector(nn.Module):
         rows_by_image = []
         logits_by_image = []
         num_classes = int(self.num_classes_no_bg)
-        for image_idx, det in enumerate(detections):
+        for det in detections:
             boxes = det.convert("xyxy").bbox.to(self.device)
-            boxes = self._scale_boxes_to_original(boxes, image_idx)
             scores = det.get_field("scores").to(self.device) if det.has_field("scores") else boxes.new_zeros((boxes.shape[0],))
             labels_raw = det.get_field("labels").to(self.device).long() if det.has_field("labels") else boxes.new_zeros((boxes.shape[0],), dtype=torch.long)
             labels = (labels_raw - 1).clamp(min=0, max=max(num_classes - 1, 0))

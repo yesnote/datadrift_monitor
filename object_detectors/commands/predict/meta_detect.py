@@ -125,6 +125,7 @@ def run_meta_detect_csv(config, run_dir):
                     continue
 
                 raw_xyxy_orig = None
+                keep_resize_coords = bool(getattr(detector, "is_fcos", False))
                 for pred_idx, (box, pred_score, pred_class_name) in enumerate(zip(pred_boxes, pred_scores, pred_class_names)):
                     raw_pred_idx = int(raw_keep_b[pred_idx].detach().cpu().item()) if pred_idx < int(raw_keep_b.shape[0]) else pred_idx
                     if raw_pred_idx >= int(pred_img.shape[0]):
@@ -164,9 +165,9 @@ def run_meta_detect_csv(config, run_dir):
 
                     t_feature = timing.start()
                     if raw_xyxy_orig is None:
-                        raw_xyxy_orig = _boxes_to_original_xyxy(raw_xyxy, ratios[sample_idx], pads[sample_idx], image_list[sample_idx])
+                        raw_xyxy_orig = raw_xyxy if keep_resize_coords else _boxes_to_original_xyxy(raw_xyxy, ratios[sample_idx], pads[sample_idx], image_list[sample_idx])
                     fbox = torch.tensor(box, dtype=torch.float32, device=device)
-                    fbox_orig = _boxes_to_original_xyxy(fbox.view(1, 4), ratios[sample_idx], pads[sample_idx], image_list[sample_idx]).view(4)
+                    fbox_orig = fbox if keep_resize_coords else _boxes_to_original_xyxy(fbox.view(1, 4), ratios[sample_idx], pads[sample_idx], image_list[sample_idx]).view(4)
                     cand_boxes = raw_xyxy_orig[cand_mask]
                     cand_scores = score[cand_mask]
                     cand_ious = ious[cand_mask]
