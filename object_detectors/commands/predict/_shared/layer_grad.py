@@ -110,7 +110,7 @@ def run_layer_grad_csv(config, run_dir):
     layer_rpn_null_obj_loss = parsed.get("layer_rpn_null_obj_loss", "bcewithlogits")
     layer_rpn_null_bbox_direction = parsed.get("layer_rpn_null_bbox_direction", "pred_to_target")
     layer_rpn_null_obj_direction = parsed.get("layer_rpn_null_obj_direction", "pred_to_target")
-    layer_null2_scalar = [str(v) for v in parsed.get("layer_null2_scalar", [])]
+    layer_frcnn_null_scalar = [str(v) for v in parsed.get("layer_frcnn_null_scalar", [])]
     layer_null_scalar = [str(v) for v in parsed.get("layer_null_scalar", [])]
     layer_null_bbox_loss = parsed.get("layer_null_bbox_loss", "l1")
     layer_null_cls_loss = parsed.get("layer_null_cls_loss", "bcewithlogits")
@@ -142,29 +142,25 @@ def run_layer_grad_csv(config, run_dir):
         layer_cls_direction = parsed.get("layer_null_cls_direction", layer_cls_direction)
         layer_obj_direction = parsed.get("layer_null_obj_direction", layer_obj_direction)
     if is_faster_rcnn:
-        target_mode = "null2" if layer_pseudo_gt == "null2" else "null" if layer_pseudo_gt == "uniform" else "cand"
+        target_mode = "frcnn_null" if layer_pseudo_gt == "frcnn_null" else "cand"
         alias = {
-            "bbox_loss": "roi_bbox_loss" if target_mode == "cand" else "bbox_loss",
-            "cls_loss": "roi_cls_loss" if target_mode == "cand" else "cls_loss",
-            "obj_loss": "rpn_obj_loss" if target_mode == "cand" else "obj_loss",
+            "bbox_loss": "roi_bbox_loss",
+            "cls_loss": "roi_cls_loss",
+            "obj_loss": "rpn_obj_loss",
         }
         nested_target_values = []
         if target_mode == "cand" and layer_rpn_cand_enabled:
             nested_target_values.extend(layer_rpn_cand_scalar)
         if target_mode == "cand" and layer_roi_cand_enabled:
             nested_target_values.extend(layer_roi_cand_scalar)
-        if target_mode == "null":
-            nested_target_values.extend(layer_null_scalar)
-        if target_mode == "null2":
-            nested_target_values.extend(layer_null2_scalar)
+        if target_mode == "frcnn_null":
+            nested_target_values.extend(layer_frcnn_null_scalar)
         if nested_target_values:
             target_values = list(dict.fromkeys(nested_target_values))
         else:
             target_values = list(dict.fromkeys(alias.get(v, v) for v in target_values))
         allowed = (
             {"roi_bbox_loss", "roi_cls_loss", "rpn_bbox_loss", "rpn_obj_loss"}
-            if target_mode in {"cand", "null2"}
-            else {"bbox_loss", "obj_loss", "cls_loss"}
         )
         target_values = [v for v in target_values if v in allowed]
         if not target_values:
@@ -172,8 +168,8 @@ def run_layer_grad_csv(config, run_dir):
                 ["roi_bbox_loss", "roi_cls_loss"]
                 if target_mode == "cand"
                 else ["rpn_obj_loss", "rpn_bbox_loss", "roi_cls_loss", "roi_bbox_loss"]
-                if target_mode == "null2"
-                else ["bbox_loss", "obj_loss", "cls_loss"]
+                if target_mode == "frcnn_null"
+                else ["roi_bbox_loss", "roi_cls_loss"]
             )
         layer_roi_cand_enabled = layer_roi_null_enabled = any(v.startswith("roi_") for v in target_values)
         layer_rpn_cand_enabled = layer_rpn_null_enabled = any(v.startswith("rpn_") for v in target_values)
