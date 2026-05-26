@@ -71,7 +71,7 @@ def _as_image_list(images):
 
 def _prepare_infer_batch(detector, images, device, auto=False):
     image_list = _as_image_list(images)
-    if bool(getattr(detector, "is_faster_rcnn", False)):
+    if bool(getattr(detector, "is_faster_rcnn", False)) or bool(getattr(detector, "is_fcos", False)):
         infer_batch = image_list
         ratios = [(1.0, 1.0) for _ in image_list]
         pads = [(0.0, 0.0) for _ in image_list]

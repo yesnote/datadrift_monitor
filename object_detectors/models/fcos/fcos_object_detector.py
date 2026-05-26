@@ -3,6 +3,8 @@ import sys
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
+from torchvision.ops import batched_nms
 
 
 FCOS_PACKAGE_ROOT = Path(__file__).resolve().parent
@@ -82,6 +84,9 @@ class FCOSTorchObjectDetector(nn.Module):
         self.agnostic = False
         self.agnostic_nms = False
         self.is_fcos = True
+        self.has_faster_rcnn_label_column = True
+        self._dropout_handles = []
+        self._dropout_rate = 0.0
 
         self.names = list(names or [])
         self.num_classes_no_bg = len(self.names) if self.names else 80
@@ -97,6 +102,15 @@ class FCOSTorchObjectDetector(nn.Module):
             self.train()
         else:
             self.eval()
+
+    def train(self, mode=True):
+        super().train(mode)
+        if hasattr(self, "detector_model"):
+            self.detector_model.train(mode)
+        return self
+
+    def eval(self):
+        return self.train(False)
 
     def _build_cfg(self, config_file=None):
         try:
@@ -176,4 +190,130 @@ class FCOSTorchObjectDetector(nn.Module):
         return [(img - mean) / std for img in image_list]
 
     def forward(self, images):
-        return self.detector_model(self.preprocess_images(images))
+        was_training = self.detector_model.training
+        if self.mode != "train":
+            self.detector_model.eval()
+        with torch.no_grad():
+            detections = self.detector_model(self.preprocess_images(images))
+        if was_training and self.mode == "train":
+            self.detector_model.train()
+        return self._detections_to_contract(detections)
+
+    def _detections_to_contract(self, detections):
+        rows_by_image = []
+        logits_by_image = []
+        num_classes = int(self.num_classes_no_bg)
+        for det in detections:
+            boxes = det.convert("xyxy").bbox.to(self.device)
+            scores = det.get_field("scores").to(self.device) if det.has_field("scores") else boxes.new_zeros((boxes.shape[0],))
+            labels_raw = det.get_field("labels").to(self.device).long() if det.has_field("labels") else boxes.new_zeros((boxes.shape[0],), dtype=torch.long)
+            labels = (labels_raw - 1).clamp(min=0, max=max(num_classes - 1, 0))
+
+            xywh = boxes.clone()
+            if xywh.numel():
+                xywh[:, 0] = (boxes[:, 0] + boxes[:, 2]) * 0.5
+                xywh[:, 1] = (boxes[:, 1] + boxes[:, 3]) * 0.5
+                xywh[:, 2] = (boxes[:, 2] - boxes[:, 0]).clamp(min=0.0)
+                xywh[:, 3] = (boxes[:, 3] - boxes[:, 1]).clamp(min=0.0)
+
+            if det.has_field("class_probs"):
+                probs = det.get_field("class_probs").to(self.device, dtype=scores.dtype)
+                if probs.shape[-1] != num_classes:
+                    probs = probs[:, :num_classes] if probs.shape[-1] > num_classes else F.pad(probs, (0, num_classes - probs.shape[-1]))
+            else:
+                probs = torch.zeros((boxes.shape[0], num_classes), dtype=scores.dtype, device=self.device)
+            if boxes.shape[0] > 0 and num_classes > 0 and not det.has_field("class_probs"):
+                row_idx = torch.arange(boxes.shape[0], device=self.device)
+                probs[row_idx, labels] = scores.clamp(min=0.0, max=1.0)
+            logits = torch.logit(probs.clamp(min=1e-6, max=1.0 - 1e-6))
+            rows_by_image.append(torch.cat([xywh, scores[:, None], labels.to(scores.dtype)[:, None], probs], dim=1))
+            logits_by_image.append(logits)
+        return rows_by_image, logits_by_image
+
+    def non_max_suppression(
+        self,
+        prediction,
+        logits=None,
+        conf_thres=0.05,
+        iou_thres=0.6,
+        classes=None,
+        agnostic=False,
+        max_det=None,
+        return_indices=False,
+        **_kwargs,
+    ):
+        outputs = []
+        logits_outputs = []
+        objectness_outputs = []
+        index_outputs = []
+        for image_idx, pred in enumerate(prediction):
+            if pred.numel() == 0:
+                device = pred.device
+                logit_dim = 0
+                if isinstance(logits, list) and image_idx < len(logits):
+                    logit_dim = int(logits[image_idx].shape[-1])
+                outputs.append(torch.zeros((0, 6), dtype=pred.dtype, device=device))
+                logits_outputs.append(torch.zeros((0, logit_dim), dtype=pred.dtype, device=device))
+                objectness_outputs.append(torch.zeros((0, 1), dtype=pred.dtype, device=device))
+                index_outputs.append(torch.zeros((0,), dtype=torch.long, device=device))
+                continue
+
+            scores = pred[:, 4]
+            labels = pred[:, 5].long()
+            keep = scores > float(conf_thres)
+            if classes is not None:
+                class_tensor = torch.as_tensor(classes, device=pred.device, dtype=torch.long)
+                keep &= (labels[:, None] == class_tensor[None]).any(dim=1)
+            keep_idx = torch.nonzero(keep, as_tuple=False).flatten()
+            if keep_idx.numel() > 0:
+                xywh = pred[keep_idx, :4]
+                xyxy = xywh.clone()
+                xyxy[:, 0] = xywh[:, 0] - xywh[:, 2] * 0.5
+                xyxy[:, 1] = xywh[:, 1] - xywh[:, 3] * 0.5
+                xyxy[:, 2] = xywh[:, 0] + xywh[:, 2] * 0.5
+                xyxy[:, 3] = xywh[:, 1] + xywh[:, 3] * 0.5
+                nms_labels = torch.zeros_like(labels[keep_idx]) if agnostic else labels[keep_idx]
+                nms_keep = batched_nms(xyxy, scores[keep_idx], nms_labels, float(iou_thres))
+                if max_det is not None:
+                    nms_keep = nms_keep[: int(max_det)]
+                keep_idx = keep_idx[nms_keep]
+
+            xywh = pred[keep_idx, :4]
+            xyxy = xywh.clone()
+            if xyxy.numel():
+                xyxy[:, 0] = xywh[:, 0] - xywh[:, 2] * 0.5
+                xyxy[:, 1] = xywh[:, 1] - xywh[:, 3] * 0.5
+                xyxy[:, 2] = xywh[:, 0] + xywh[:, 2] * 0.5
+                xyxy[:, 3] = xywh[:, 1] + xywh[:, 3] * 0.5
+            det = torch.cat([xyxy, scores[keep_idx, None], labels[keep_idx, None].to(pred.dtype)], dim=1)
+            outputs.append(det)
+            if isinstance(logits, list) and image_idx < len(logits):
+                logits_outputs.append(logits[image_idx][keep_idx])
+            else:
+                logits_outputs.append(pred[keep_idx, 6:])
+            objectness_outputs.append(torch.ones((keep_idx.shape[0], 1), dtype=pred.dtype, device=pred.device))
+            index_outputs.append(keep_idx)
+
+        if return_indices:
+            return outputs, logits_outputs, objectness_outputs, index_outputs
+        return outputs, logits_outputs, objectness_outputs
+
+    def set_dropout_rate(self, dropout_rate):
+        for handle in self._dropout_handles:
+            handle.remove()
+        self._dropout_handles = []
+        self._dropout_rate = float(dropout_rate)
+        if self._dropout_rate <= 0.0:
+            return
+
+        def _dropout_hook(_module, _inputs, output):
+            return F.dropout2d(output, p=self._dropout_rate, training=True)
+
+        head = getattr(getattr(self.detector_model, "rpn", None), "head", None)
+        for tower_name in ("cls_tower", "bbox_tower"):
+            tower = getattr(head, tower_name, None)
+            if tower is None:
+                continue
+            for module in tower.modules():
+                if isinstance(module, nn.ReLU):
+                    self._dropout_handles.append(module.register_forward_hook(_dropout_hook))

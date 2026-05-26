@@ -12,7 +12,9 @@ def run_predict(config, run_dir):
     if model_type in {"faster_rcnn", "faster-rcnn", "frcnn"} and uncertainty in {"null_detect"}:
         raise NotImplementedError(f"Faster R-CNN does not support uncertainty='{uncertainty}' yet.")
     if model_type in {"fcos"}:
-        raise NotImplementedError("FCOS model code is available, but uncertainty CSV runners are not implemented yet.")
+        supported = {"gt", "score", "class_probability", "entropy", "energy", "deterministic", "mc_dropout", "ensemble"}
+        if uncertainty not in supported:
+            raise NotImplementedError(f"FCOS does not support uncertainty='{uncertainty}' yet.")
     device = str(config.get("model", {}).get("device", "cuda")).lower()
     if device == "cuda" and not torch.cuda.is_available():
         device = "cpu"
