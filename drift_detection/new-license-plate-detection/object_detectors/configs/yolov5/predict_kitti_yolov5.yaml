@@ -98,12 +98,12 @@ output:
       # cand_target:
       #   bbox_loss box_l1/box_l2: sum over candidates of bbox_loss(decoded candidate box, final detection box)
       #   bbox_loss offset_l1/offset_l2: sum over candidates of bbox_loss(candidate raw bbox offset, final detection raw bbox offset)
-      #   obj_loss: sum over candidates of obj_loss(candidate raw objectness logit, IoU(candidate box, final detection box))
+      #   obj_loss: sum over candidates of obj_loss(candidate raw objectness logit, final detection objectness)
       #   cls_loss: sum over candidates of cls_loss(candidate raw class logits, final detection class target)
       # null_target:
       #   bbox_loss box_l1/box_l2: bbox_loss(decoded final detection box, source anchor box)
       #   bbox_loss offset_l1/offset_l2: bbox_loss(final detection raw bbox offset, zero offset)
-      #   obj_loss: obj_loss(final raw objectness logit, IoU(final detection box, source anchor box))
+      #   obj_loss: obj_loss(final raw objectness logit, target 0.5)
       #   cls_loss: cls_loss(final raw class logits, uniform class target)
       scalar: [loss]
       layer: ["model.24.m.0", "model.24.m.1", "model.24.m.2"]

@@ -1523,7 +1523,8 @@ def build_pseudo_label_losses_for_candidates(
         )
 
     candidate_raw_obj = raw_obj[candidate_mask]
-    obj_target = ious[candidate_mask].detach().to(dtype=candidate_raw_obj.dtype).clamp(min=0.0, max=1.0)
+    obj_target = pseudo_row[4].detach().to(dtype=candidate_raw_obj.dtype, device=candidate_raw_obj.device)
+    obj_target = obj_target.clamp(min=0.0, max=1.0).expand_as(candidate_raw_obj)
     obj_loss_value = _objectness_loss_tensor(
         candidate_raw_obj,
         obj_target,
@@ -2120,17 +2121,11 @@ def build_layer_target_scalar_bbox(
         pred_row = pred_img[raw_idx]
         raw_row = raw_img[raw_idx] if raw_img is not None and raw_idx < raw_img.shape[0] else None
         if target_value == "obj_loss":
-            if anchor_xywh is None:
-                return None
             if raw_row is not None:
                 raw_obj = raw_row[4]
             else:
                 raw_obj = torch.logit(pred_row[4].clamp(1e-6, 1.0 - 1e-6))
-            target_iou = _plain_iou_xywh_tensor(pred_row[:4].detach(), anchor_xywh.detach()).to(
-                dtype=raw_obj.dtype,
-                device=raw_obj.device,
-            )
-            obj_target = target_iou.reshape(()).clamp(min=0.0, max=1.0)
+            obj_target = torch.full_like(raw_obj, 0.5)
             loss = _objectness_loss_tensor(raw_obj, obj_target, mode=obj_loss, direction=obj_direction, reduction="sum")
             _add_elapsed_timing(timing_accumulator, "loss_compute_sec", t_loss, timing_device)
             return loss
