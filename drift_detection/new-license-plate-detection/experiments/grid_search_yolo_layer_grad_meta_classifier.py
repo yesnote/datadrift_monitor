@@ -31,7 +31,10 @@ MAX_COMBINATIONS = None
 
 
 TARGETS = ["cand_target", "null_target"]
-BBOX_LOSSES = ["ciou", "l1", "l2"]
+BBOX_LOSSES_BY_TARGET = {
+    "cand_target": ["box_l1", "box_l2"],
+    "null_target": ["box_l1", "box_l2", "offset_l1", "offset_l2"],
+}
 BBOX_DIRECTIONS = ["pred_to_target"]
 CLS_LOSSES = ["bcewithlogits", "kl", "ce"]
 OBJ_LOSSES = ["bcewithlogits", "abs_diff", "signed_diff"]
@@ -123,15 +126,15 @@ def _valid_obj_directions(obj_loss: str) -> list[str]:
 
 def iter_combinations():
     count = 0
-    for bbox_loss, cls_loss, obj_loss in itertools.product(
-        BBOX_LOSSES,
-        CLS_LOSSES,
-        OBJ_LOSSES,
-    ):
-        for bbox_direction in _valid_bbox_directions(bbox_loss):
-            for cls_direction in _valid_cls_directions(cls_loss):
-                for obj_direction in _valid_obj_directions(obj_loss):
-                    for target in TARGETS:
+    for target in TARGETS:
+        for bbox_loss, cls_loss, obj_loss in itertools.product(
+            BBOX_LOSSES_BY_TARGET[target],
+            CLS_LOSSES,
+            OBJ_LOSSES,
+        ):
+            for bbox_direction in _valid_bbox_directions(bbox_loss):
+                for cls_direction in _valid_cls_directions(cls_loss):
+                    for obj_direction in _valid_obj_directions(obj_loss):
                         yield {
                             "target": target,
                             "bbox_loss": bbox_loss,

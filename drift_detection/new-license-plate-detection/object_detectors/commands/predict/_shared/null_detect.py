@@ -5,6 +5,7 @@ from commands.utils.predict_utils import (
     _flatten_raw_prediction_layers,
     _objectness_loss_tensor,
     _plain_iou_xywh_tensor,
+    _yolo_offset_loss_tensor,
 )
 
 
@@ -151,13 +152,21 @@ def run_null_detect_csv(config, run_dir):
                             "size_circum": size / circum.clamp(min=1e-12),
                         }
 
-                    bbox_loss_value = _bbox_loss_xywh_tensor(
-                        pred_row[:4],
-                        anchor_xywh,
-                        mode=bbox_loss,
-                        reduction="mean",
-                        direction=bbox_direction,
-                    )
+                    if str(bbox_loss).strip().lower().startswith("offset_"):
+                        bbox_loss_value = _yolo_offset_loss_tensor(
+                            raw_row[:4],
+                            mode=bbox_loss,
+                            reduction="mean",
+                            direction=bbox_direction,
+                        )
+                    else:
+                        bbox_loss_value = _bbox_loss_xywh_tensor(
+                            pred_row[:4],
+                            anchor_xywh,
+                            mode=bbox_loss,
+                            reduction="mean",
+                            direction=bbox_direction,
+                        )
                     target_iou = _plain_iou_xywh_tensor(pred_row[:4].detach(), anchor_xywh.detach()).to(
                         dtype=raw_row.dtype,
                         device=raw_row.device,
