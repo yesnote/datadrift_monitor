@@ -9,10 +9,7 @@ from torch import nn
 import os
 from fcos_core.layers import IOULoss
 from fcos_core.layers import SigmoidFocalLoss
-from fcos_core.modeling.matcher import Matcher
 from fcos_core.modeling.utils import cat
-from fcos_core.structures.boxlist_ops import boxlist_iou
-from fcos_core.structures.boxlist_ops import cat_boxlist
 
 
 INF = 100000000
