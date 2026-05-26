@@ -5,10 +5,8 @@ Miscellaneous utility functions
 
 import torch
 from torch import nn
-from torch.nn import functional as F
 from fcos_core.config import cfg
 from fcos_core.layers import Conv2d
-from fcos_core.modeling.poolers import Pooler
 
 
 def get_group_gn(dim, dim_per_gp, num_groups):
@@ -39,57 +37,6 @@ def group_norm(out_channels, affine=True, divisor=1):
         eps, 
         affine
     )
-
-
-def make_conv3x3(
-    in_channels, 
-    out_channels, 
-    dilation=1, 
-    stride=1, 
-    use_gn=False,
-    use_relu=False,
-    kaiming_init=True
-):
-    conv = Conv2d(
-        in_channels, 
-        out_channels, 
-        kernel_size=3, 
-        stride=stride, 
-        padding=dilation, 
-        dilation=dilation, 
-        bias=False if use_gn else True
-    )
-    if kaiming_init:
-        nn.init.kaiming_normal_(
-            conv.weight, mode="fan_out", nonlinearity="relu"
-        )
-    else:
-        torch.nn.init.normal_(conv.weight, std=0.01)
-    if not use_gn:
-        nn.init.constant_(conv.bias, 0)
-    module = [conv,]
-    if use_gn:
-        module.append(group_norm(out_channels))
-    if use_relu:
-        module.append(nn.ReLU(inplace=True))
-    if len(module) > 1:
-        return nn.Sequential(*module)
-    return conv
-
-
-def make_fc(dim_in, hidden_dim, use_gn=False):
-    '''
-        Caffe2 implementation uses XavierFill, which in fact
-        corresponds to kaiming_uniform_ in PyTorch
-    '''
-    if use_gn:
-        fc = nn.Linear(dim_in, hidden_dim, bias=False)
-        nn.init.kaiming_uniform_(fc.weight, a=1)
-        return nn.Sequential(fc, group_norm(hidden_dim))
-    fc = nn.Linear(dim_in, hidden_dim)
-    nn.init.kaiming_uniform_(fc.weight, a=1)
-    nn.init.constant_(fc.bias, 0)
-    return fc
 
 
 def conv_with_kaiming_uniform(use_gn=False, use_relu=False):
