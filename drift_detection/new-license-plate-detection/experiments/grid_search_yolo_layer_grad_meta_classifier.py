@@ -32,7 +32,7 @@ MAX_COMBINATIONS = None
 
 TARGETS = ["cand_target", "null_target"]
 BBOX_LOSSES_BY_TARGET = {
-    "cand_target": ["box_l1", "box_l2"],
+    "cand_target": ["box_l1", "box_l2", "offset_l1", "offset_l2"],
     "null_target": ["box_l1", "box_l2", "offset_l1", "offset_l2"],
 }
 BBOX_DIRECTIONS = ["pred_to_target"]

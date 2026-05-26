@@ -639,7 +639,7 @@ def parse_output_config(output_cfg):
             g.get("bbox_loss", "box_l1"),
             "box_l1",
             "layer_grad.gradient.bbox_loss",
-            allow_offset=(layer_pseudo_gt == "uniform"),
+            allow_offset=True,
         )
         layer_cls_loss = normalize_loss_option(
             g.get("cls_loss", "bcewithlogits"),
@@ -761,6 +761,7 @@ def parse_output_config(output_cfg):
         layer_null_scalar = [str(v).strip().lower() for v in normalize_to_list(null_target_cfg.get("scalar", []))]
         layer_null_bbox_loss = normalize_yolo_bbox_loss_option(
             null_target_cfg.get("bbox_loss", g.get("bbox_loss", "l1")),
+            "box_l1",
             "layer_grad.gradient.null_target.bbox_loss",
             allow_offset=True,
         )
@@ -1284,6 +1285,7 @@ def _bbox_loss_xywh_tensor(
 
 def _yolo_offset_loss_tensor(
     raw_xywh: torch.Tensor,
+    target_raw_xywh: torch.Tensor = None,
     mode: str = "offset_l1",
     reduction: str = "mean",
     direction: str = "pred_to_target",
@@ -1291,7 +1293,10 @@ def _yolo_offset_loss_tensor(
     mode = str(mode).strip().lower()
     if mode not in {"offset_l1", "offset_l2"}:
         raise ValueError("YOLO offset bbox_loss must be one of: offset_l1, offset_l2")
-    target = torch.zeros_like(raw_xywh)
+    target = torch.zeros_like(raw_xywh) if target_raw_xywh is None else target_raw_xywh.to(
+        dtype=raw_xywh.dtype,
+        device=raw_xywh.device,
+    )
     left, right = _apply_direction(raw_xywh, target, direction)
     loss = torch.abs(left - right) if mode == "offset_l1" else torch.square(left - right)
     if reduction == "sum":
@@ -1483,26 +1488,39 @@ def build_pseudo_label_losses_for_candidates(
     _add_elapsed_timing(timing_accumulator, "candidate_search_sec", t_candidate, timing_device)
 
     t_loss = _start_timing(timing_device)
-    if str(bbox_loss).strip().lower().startswith("offset_"):
-        raise ValueError("YOLO cand_target bbox_loss supports only box_l1 or box_l2. Use offset_l1/offset_l2 only with null_target.")
     candidate_pred = pred_img[candidate_mask]
     if raw_img is not None and raw_img.shape[0] == pred_img.shape[0]:
+        raw_bbox = raw_img[:, :4]
         raw_obj = raw_img[:, 4]
         raw_cls = raw_img[:, 5:]
     else:
+        raw_bbox = None
         eps = 1e-6
         raw_obj = torch.logit(pred_img[:, 4].clamp(eps, 1.0 - eps))
         raw_cls = torch.logit(pred_img[:, 5:].clamp(eps, 1.0 - eps))
     candidate_raw_cls = raw_cls[candidate_mask]
 
-    pseudo_box_target = pseudo_row[:4].view(1, 4).expand(candidate_pred.shape[0], -1)
-    bbox_loss_value = _bbox_loss_xywh_tensor(
-        candidate_pred[:, :4],
-        pseudo_box_target,
-        mode=bbox_loss,
-        reduction="sum",
-        direction=bbox_direction,
-    )
+    if str(bbox_loss).strip().lower().startswith("offset_"):
+        if raw_bbox is None:
+            raise ValueError("YOLO cand_target offset bbox_loss requires raw YOLO head outputs.")
+        candidate_raw_bbox = raw_bbox[candidate_mask]
+        pseudo_raw_bbox_target = raw_bbox[raw_idx].detach().view(1, 4).expand(candidate_raw_bbox.shape[0], -1)
+        bbox_loss_value = _yolo_offset_loss_tensor(
+            candidate_raw_bbox,
+            target_raw_xywh=pseudo_raw_bbox_target,
+            mode=bbox_loss,
+            reduction="sum",
+            direction=bbox_direction,
+        )
+    else:
+        pseudo_box_target = pseudo_row[:4].view(1, 4).expand(candidate_pred.shape[0], -1)
+        bbox_loss_value = _bbox_loss_xywh_tensor(
+            candidate_pred[:, :4],
+            pseudo_box_target,
+            mode=bbox_loss,
+            reduction="sum",
+            direction=bbox_direction,
+        )
 
     candidate_raw_obj = raw_obj[candidate_mask]
     obj_target = ious[candidate_mask].detach().to(dtype=candidate_raw_obj.dtype).clamp(min=0.0, max=1.0)
