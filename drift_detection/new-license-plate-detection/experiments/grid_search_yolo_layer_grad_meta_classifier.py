@@ -74,7 +74,12 @@ def _dataset_name(config: dict) -> str:
 
 def _model_name(config: dict) -> str:
     raw = str(config.get("model", {}).get("type", "yolov5")).strip().lower()
-    return "".join(ch if ch.isalnum() or ch in {"_", "-"} else "_" for ch in raw).strip("_") or "yolov5"
+    return (
+        "".join(ch if ch.isalnum() or ch in {"_", "-"} else "_" for ch in raw).strip(
+            "_"
+        )
+        or "yolov5"
+    )
 
 
 def _abbr(value: str) -> str:
@@ -277,7 +282,13 @@ def main() -> None:
         or f"{datetime.now().strftime('%m-%d-%Y_%H;%M')}_layer_grad_grid"
     )
     od_grid_root = (
-        REPO_ROOT / "object_detectors" / "runs" / model / "predict" / dataset / grid_name
+        REPO_ROOT
+        / "object_detectors"
+        / "runs"
+        / model
+        / "predict"
+        / dataset
+        / grid_name
     )
     meta_grid_root = (
         REPO_ROOT
