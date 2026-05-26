@@ -245,7 +245,7 @@ def build_detector(config, model_weight=None):
             confidence=confidence,
             iou_thresh=iou_thresh,
             config_file=model_cfg.get("config_file", None),
-            max_detections=int(model_cfg.get("max_detections", 100)),
+            max_detections=int(model_cfg.get("max_det", model_cfg.get("max_detections", 100))),
         )
     else:
         raise ValueError(f"Unsupported model.type: {model_type}")
