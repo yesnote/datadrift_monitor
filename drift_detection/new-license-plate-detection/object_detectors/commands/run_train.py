@@ -440,8 +440,6 @@ def _build_fcos_for_train(config, device):
         mode="train",
         confidence=float(model_cfg.get("confidence_threshold", 0.05)),
         iou_thresh=float(model_cfg.get("iou_threshold", 0.6)),
-        config_file=model_cfg.get("config_file"),
-        max_detections=int(model_cfg.get("max_det", 100)),
     )
     model = detector.detector_model
     model.to(device)
