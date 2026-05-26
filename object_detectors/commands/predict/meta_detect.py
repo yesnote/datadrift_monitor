@@ -90,6 +90,9 @@ def run_meta_detect_csv(config, run_dir):
                 model_output = detector.model(infer_batch, augment=False)
                 raw_prediction = model_output[0] if isinstance(model_output, (tuple, list)) else model_output
                 raw_logits = model_output[1] if isinstance(model_output, (tuple, list)) and len(model_output) > 1 else None
+                pre_nms_prediction = None
+                if bool(getattr(detector, "is_fcos", False)):
+                    pre_nms_prediction, _pre_nms_logits = detector.get_last_pre_nms_predictions()
                 selected_preds, _selected_logits, _selected_objectness, selected_indices = detector.non_max_suppression(
                     prediction=raw_prediction,
                     logits=raw_logits,
@@ -125,25 +128,40 @@ def run_meta_detect_csv(config, run_dir):
                     continue
 
                 raw_xyxy_orig = None
-                keep_resize_coords = bool(getattr(detector, "is_fcos", False))
+                is_fcos = bool(getattr(detector, "is_fcos", False))
+                keep_resize_coords = is_fcos
+                candidate_img = pred_img
+                if is_fcos and isinstance(pre_nms_prediction, list) and sample_idx < len(pre_nms_prediction):
+                    candidate_img = pre_nms_prediction[sample_idx].float()
+                if candidate_img.numel() == 0:
+                    continue
+
                 for pred_idx, (box, pred_score, pred_class_name) in enumerate(zip(pred_boxes, pred_scores, pred_class_names)):
                     raw_pred_idx = int(raw_keep_b[pred_idx].detach().cpu().item()) if pred_idx < int(raw_keep_b.shape[0]) else pred_idx
-                    if raw_pred_idx >= int(pred_img.shape[0]):
+                    if not is_fcos and raw_pred_idx >= int(pred_img.shape[0]):
                         continue
 
                     t_candidate = timing.start()
+                    fbox = torch.tensor(box, dtype=torch.float32, device=device)
                     with torch.no_grad():
-                        pseudo_row = pred_img[raw_pred_idx].detach()
+                        pseudo_row = pred_img[raw_pred_idx].detach() if raw_pred_idx < int(pred_img.shape[0]) else None
                         is_faster_rcnn = bool(getattr(detector, "is_faster_rcnn", False))
-                        raw_xyxy = _xywh_to_xyxy_tensor(pred_img[:, :4].detach())
-                        pseudo_box_xyxy = _xywh_to_xyxy_tensor(pseudo_row[:4].view(1, 4))
-
-                        score = pred_img[:, 4].detach()
-                        if is_faster_rcnn:
-                            pseudo_cls = int(pseudo_row[5].detach().long().item())
-                            pred_cls = pred_img[:, 5].detach().long()
+                        has_label_column = is_faster_rcnn or is_fcos
+                        raw_xyxy = _xywh_to_xyxy_tensor(candidate_img[:, :4].detach())
+                        if is_fcos:
+                            pseudo_box_xyxy = fbox.view(1, 4)
                         else:
-                            cls_probs = pred_img[:, 5:].detach()
+                            pseudo_box_xyxy = _xywh_to_xyxy_tensor(pseudo_row[:4].view(1, 4))
+
+                        score = candidate_img[:, 4].detach()
+                        if has_label_column:
+                            if is_fcos:
+                                pseudo_cls = int(det_b[pred_idx, 5].detach().long().item())
+                            else:
+                                pseudo_cls = int(pseudo_row[5].detach().long().item())
+                            pred_cls = candidate_img[:, 5].detach().long()
+                        else:
+                            cls_probs = candidate_img[:, 5:].detach()
                             pseudo_cls = int(torch.argmax(pseudo_row[5:]).item())
                             pred_cls = torch.argmax(cls_probs, dim=1)
                             cls_max = cls_probs.max(dim=1).values if cls_probs.numel() else torch.ones_like(score)
@@ -166,15 +184,14 @@ def run_meta_detect_csv(config, run_dir):
                     t_feature = timing.start()
                     if raw_xyxy_orig is None:
                         raw_xyxy_orig = raw_xyxy if keep_resize_coords else _boxes_to_original_xyxy(raw_xyxy, ratios[sample_idx], pads[sample_idx], image_list[sample_idx])
-                    fbox = torch.tensor(box, dtype=torch.float32, device=device)
                     fbox_orig = fbox if keep_resize_coords else _boxes_to_original_xyxy(fbox.view(1, 4), ratios[sample_idx], pads[sample_idx], image_list[sample_idx]).view(4)
                     cand_boxes = raw_xyxy_orig[cand_mask]
                     cand_scores = score[cand_mask]
                     cand_ious = ious[cand_mask]
-                    raw_cls_start = 6 if bool(getattr(detector, "is_faster_rcnn", False)) else 5
-                    raw_cls = pred_img[:, raw_cls_start:] if pred_img.shape[1] > raw_cls_start else torch.zeros((pred_img.shape[0], 0), device=device)
-                    if 0 <= raw_pred_idx < int(raw_cls.shape[0]) and raw_cls.numel() > 0:
-                        pred_probs = raw_cls[raw_pred_idx].detach().float()
+                    raw_cls_start = 6 if (bool(getattr(detector, "is_faster_rcnn", False)) or is_fcos) else 5
+                    final_cls = pred_img[:, raw_cls_start:] if pred_img.shape[1] > raw_cls_start else torch.zeros((pred_img.shape[0], 0), device=device)
+                    if 0 <= raw_pred_idx < int(final_cls.shape[0]) and final_cls.numel() > 0:
+                        pred_probs = final_cls[raw_pred_idx].detach().float()
                     else:
                         pred_probs = torch.zeros((num_classes,), dtype=torch.float32, device=device)
                     prob_values = {"prob_sum": pred_probs.sum() if pred_probs.numel() else torch.zeros((), dtype=torch.float32, device=device)}

@@ -240,7 +240,7 @@ class FCOSTorchObjectDetector(nn.Module):
             self.detector_model.train()
         return self._detections_to_contract(detections)
 
-    def _detections_to_contract(self, detections):
+    def _boxlists_to_contract(self, detections):
         rows_by_image = []
         logits_by_image = []
         num_classes = int(self.num_classes_no_bg)
@@ -270,6 +270,16 @@ class FCOSTorchObjectDetector(nn.Module):
             rows_by_image.append(torch.cat([xywh, scores[:, None], labels.to(scores.dtype)[:, None], probs], dim=1))
             logits_by_image.append(logits)
         return rows_by_image, logits_by_image
+
+    def _detections_to_contract(self, detections):
+        return self._boxlists_to_contract(detections)
+
+    def get_last_pre_nms_predictions(self):
+        box_selector = getattr(getattr(self.detector_model, "rpn", None), "box_selector_test", None)
+        pre_nms_boxlists = getattr(box_selector, "last_pre_nms_boxlists", None)
+        if pre_nms_boxlists is None:
+            return None, None
+        return self._boxlists_to_contract(pre_nms_boxlists)
 
     def non_max_suppression(
         self,

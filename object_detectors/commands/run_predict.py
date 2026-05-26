@@ -12,7 +12,7 @@ def run_predict(config, run_dir):
     if model_type in {"faster_rcnn", "faster-rcnn", "frcnn"} and uncertainty in {"null_detect"}:
         raise NotImplementedError(f"Faster R-CNN does not support uncertainty='{uncertainty}' yet.")
     if model_type in {"fcos"}:
-        supported = {"gt", "score", "class_probability", "entropy", "energy", "deterministic", "mc_dropout", "ensemble"}
+        supported = {"gt", "score", "class_probability", "entropy", "energy", "deterministic", "mc_dropout", "ensemble", "meta_detect"}
         if uncertainty not in supported:
             raise NotImplementedError(f"FCOS does not support uncertainty='{uncertainty}' yet.")
     device = str(config.get("model", {}).get("device", "cuda")).lower()
