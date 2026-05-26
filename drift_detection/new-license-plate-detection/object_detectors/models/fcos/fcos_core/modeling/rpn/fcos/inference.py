@@ -54,8 +54,9 @@ class FCOSPostProcessor(torch.nn.Module):
         N, C, H, W = box_cls.shape
 
         # put in the same format as locations
-        box_cls = box_cls.view(N, C, H, W).permute(0, 2, 3, 1)
-        box_cls = box_cls.reshape(N, -1, C).sigmoid()
+        raw_box_cls = box_cls.view(N, C, H, W).permute(0, 2, 3, 1)
+        raw_box_cls = raw_box_cls.reshape(N, -1, C)
+        box_cls = raw_box_cls.sigmoid()
         box_regression = box_regression.view(N, 4, H, W).permute(0, 2, 3, 1)
         box_regression = box_regression.reshape(N, -1, 4)
         centerness = centerness.view(N, 1, H, W).permute(0, 2, 3, 1)
@@ -82,6 +83,7 @@ class FCOSPostProcessor(torch.nn.Module):
             per_box_regression = per_box_regression[per_box_loc]
             per_locations = locations[per_box_loc]
             per_class_probs = torch.sqrt(box_cls[i][per_box_loc].clamp(min=0.0))
+            per_class_logits = raw_box_cls[i][per_box_loc]
 
             per_pre_nms_top_n = pre_nms_top_n[i]
 
@@ -93,6 +95,7 @@ class FCOSPostProcessor(torch.nn.Module):
                 per_box_regression = per_box_regression[top_k_indices]
                 per_locations = per_locations[top_k_indices]
                 per_class_probs = per_class_probs[top_k_indices]
+                per_class_logits = per_class_logits[top_k_indices]
 
             detections = torch.stack([
                 per_locations[:, 0] - per_box_regression[:, 0],
@@ -106,6 +109,7 @@ class FCOSPostProcessor(torch.nn.Module):
             boxlist.add_field("labels", per_class)
             boxlist.add_field("scores", torch.sqrt(per_box_cls))
             boxlist.add_field("class_probs", per_class_probs)
+            boxlist.add_field("class_logits", per_class_logits)
             boxlist.add_field("pre_nms_level", torch.full_like(per_class, int(level_idx)))
             boxlist.add_field("pre_nms_location_idx", per_box_loc)
             boxlist.add_field("pre_nms_class", per_class)

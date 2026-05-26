@@ -259,6 +259,8 @@ class FCOSTorchObjectDetector(nn.Module):
 
     def _boxlists_to_contract(self, detections):
         rows_by_image = []
+        logits_by_image = []
+        has_logits = False
         num_classes = int(self.num_classes_no_bg)
         for det in detections:
             boxes = det.convert("xyxy").bbox.to(self.device)
@@ -282,8 +284,16 @@ class FCOSTorchObjectDetector(nn.Module):
             if boxes.shape[0] > 0 and num_classes > 0 and not det.has_field("class_probs"):
                 row_idx = torch.arange(boxes.shape[0], device=self.device)
                 probs[row_idx, labels] = scores.clamp(min=0.0, max=1.0)
+            if det.has_field("class_logits"):
+                logits = det.get_field("class_logits").to(self.device, dtype=scores.dtype)
+                if logits.shape[-1] != num_classes:
+                    logits = logits[:, :num_classes] if logits.shape[-1] > num_classes else F.pad(logits, (0, num_classes - logits.shape[-1]))
+                has_logits = True
+            else:
+                logits = torch.empty((boxes.shape[0], 0), dtype=scores.dtype, device=self.device)
             rows_by_image.append(torch.cat([xywh, scores[:, None], labels.to(scores.dtype)[:, None], probs], dim=1))
-        return rows_by_image, None
+            logits_by_image.append(logits)
+        return rows_by_image, logits_by_image if has_logits else None
 
     def _detections_to_contract(self, detections):
         return self._boxlists_to_contract(detections)
