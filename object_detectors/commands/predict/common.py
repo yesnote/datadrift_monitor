@@ -75,11 +75,7 @@ def _prepare_infer_batch(detector, images, device, auto=False):
         infer_batch = image_list
         ratios = [(1.0, 1.0) for _ in image_list]
         pads = [(0.0, 0.0) for _ in image_list]
-        resized_chws = [
-            np.ascontiguousarray(np.clip(img.detach().cpu().numpy() * 255.0, 0, 255).astype(np.uint8))
-            for img in image_list
-        ]
-        return infer_batch, ratios, pads, resized_chws
+        return infer_batch, ratios, pads, None
 
     if bool(getattr(detector, "is_fcos", False)):
         infer_batch = image_list
