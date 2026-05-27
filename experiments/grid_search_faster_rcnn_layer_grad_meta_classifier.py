@@ -113,11 +113,15 @@ def _combo_slug(combo: dict) -> str:
     if term == "rpn_bbox_loss":
         spec = f"rpnb-{combo['rpn_bbox_loss']}-{_abbr(combo['rpn_bbox_direction'])}"
     elif term == "rpn_obj_loss":
-        spec = f"rpno-{_abbr(combo['rpn_obj_loss'])}-{_abbr(combo['rpn_obj_direction'])}"
+        spec = (
+            f"rpno-{_abbr(combo['rpn_obj_loss'])}-{_abbr(combo['rpn_obj_direction'])}"
+        )
     elif term == "roi_bbox_loss":
         spec = f"roib-{combo['roi_bbox_loss']}-{_abbr(combo['roi_bbox_direction'])}"
     elif term == "roi_cls_loss":
-        spec = f"roic-{_abbr(combo['roi_cls_loss'])}-{_abbr(combo['roi_cls_direction'])}"
+        spec = (
+            f"roic-{_abbr(combo['roi_cls_loss'])}-{_abbr(combo['roi_cls_direction'])}"
+        )
     else:
         raise ValueError(f"Unsupported Faster R-CNN layer_grad term: {term}")
     return f"layer_grad_t-{_abbr(target)}__term-{_abbr(term)}__{spec}"
