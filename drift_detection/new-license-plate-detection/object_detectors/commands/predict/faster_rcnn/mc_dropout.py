@@ -1,7 +1,7 @@
 from commands.predict.common import *
 
 
-def _match_faster_rcnn_mc_feature(det_box, det_cls, run_features_b, run_labels_b, raw_idx):
+def _match_faster_rcnn_mc_feature(det_box, det_cls, run_features_b, run_labels_b):
     if run_features_b is None or int(run_features_b.shape[0]) == 0:
         return None
     if run_labels_b is not None and int(run_labels_b.shape[0]) == int(run_features_b.shape[0]):
@@ -12,9 +12,27 @@ def _match_faster_rcnn_mc_feature(det_box, det_cls, run_features_b, run_labels_b
             ious = _box_iou_1vN_tensor(det_box.view(1, 4), candidate_boxes)
             best_pos = int(torch.argmax(ious).detach().cpu().item())
             return run_features_b[candidate_indices[best_pos]]
-    if 0 <= int(raw_idx) < int(run_features_b.shape[0]):
-        return run_features_b[int(raw_idx)]
     return None
+
+
+def _deterministic_mc_feature(detector, det_row, det_raw_pred_b, raw_idx, class_count):
+    device = det_row.device
+    dtype = det_row.dtype
+    bbox_score = det_row[:5].detach().to(dtype=torch.float32)
+    probs = torch.zeros((class_count,), dtype=torch.float32, device=device)
+    if det_raw_pred_b is not None and 0 <= int(raw_idx) < int(det_raw_pred_b.shape[0]):
+        raw_probs = get_prediction_class_probs(
+            detector,
+            det_raw_pred_b[int(raw_idx) : int(raw_idx) + 1],
+        ).detach().float().reshape(-1)
+        n = min(class_count, int(raw_probs.shape[0]))
+        if n > 0:
+            probs[:n] = raw_probs[:n].to(device=device)
+    elif det_row.shape[0] > 5:
+        cls_idx = int(det_row[5].detach().cpu().item())
+        if 0 <= cls_idx < class_count:
+            probs[cls_idx] = det_row[4].detach().to(dtype=torch.float32)
+    return torch.cat([bbox_score.to(device=device, dtype=dtype), probs.to(device=device, dtype=dtype)], dim=0)
 
 
 def _is_yolov5_detector(detector):
@@ -291,16 +309,20 @@ def run_mc_dropout_csv(config, run_dir):
                     else torch.zeros((0,), dtype=torch.long, device=device)
                 )
                 num_final = int(det_b.shape[0])
-                valid_pairs = []
-                for pred_idx in range(num_final):
-                    raw_idx = int(raw_keep_b[pred_idx].detach().cpu().item())
-                    if variable_candidate_runs:
-                        if raw_idx >= 0:
-                            valid_pairs.append((pred_idx, raw_idx))
-                    elif 0 <= raw_idx < n_candidates:
-                        valid_pairs.append((pred_idx, raw_idx))
+                det_raw_pred_b = (
+                    det_raw_pred[b]
+                    if isinstance(det_raw_pred, list) and b < len(det_raw_pred)
+                    else None
+                )
 
-                for pred_idx, raw_idx in valid_pairs:
+                for pred_idx in range(num_final):
+                    raw_idx = (
+                        int(raw_keep_b[pred_idx].detach().cpu().item())
+                        if pred_idx < int(raw_keep_b.shape[0])
+                        else -1
+                    )
+                    cls_idx = int(det_b[pred_idx, 5].detach().cpu().item()) if det_b.shape[1] > 5 else -1
+                    class_count = int(n_classes) if n_classes is not None else int(n_classes_hint)
                     if variable_candidate_runs:
                         per_run_values = []
                         for run_features in feature_runs:
@@ -315,23 +337,41 @@ def run_mc_dropout_csv(config, run_dir):
                                         det_cls,
                                         features_by_image[b],
                                         labels_by_image[b] if b < len(labels_by_image) else None,
-                                        raw_idx,
                                     )
                                     if matched is not None:
                                         per_run_values.append(matched)
                             elif b < len(run_features) and 0 <= raw_idx < int(run_features[b].shape[0]):
                                 per_run_values.append(run_features[b][raw_idx])
-                        if not per_run_values:
-                            continue
                         t_feature = timing.start()
-                        run_values = torch.stack(per_run_values, dim=0)
-                        mean_vec = run_values.mean(dim=0).detach().float().cpu()
-                        std_vec = run_values.std(dim=0, unbiased=False).detach().float().cpu()
+                        if per_run_values:
+                            run_values = torch.stack(per_run_values, dim=0)
+                            mean_vec = run_values.mean(dim=0).detach().float().cpu()
+                            std_vec = run_values.std(dim=0, unbiased=False).detach().float().cpu()
+                        else:
+                            det_vec = _deterministic_mc_feature(
+                                detector,
+                                det_b[pred_idx],
+                                det_raw_pred_b,
+                                raw_idx,
+                                class_count,
+                            )
+                            mean_vec = det_vec.detach().float().cpu()
+                            std_vec = torch.zeros_like(mean_vec)
                         feature_compute_sec += timing.elapsed(t_feature)
                     else:
-                        mean_vec = feat_mean[b, raw_idx].detach().float().cpu()
-                        std_vec = feat_std[b, raw_idx].detach().float().cpu()
-                    cls_idx = int(det_b[pred_idx, 5].detach().cpu().item()) if det_b.shape[1] > 5 else -1
+                        if 0 <= raw_idx < n_candidates:
+                            mean_vec = feat_mean[b, raw_idx].detach().float().cpu()
+                            std_vec = feat_std[b, raw_idx].detach().float().cpu()
+                        else:
+                            det_vec = _deterministic_mc_feature(
+                                detector,
+                                det_b[pred_idx],
+                                det_raw_pred_b,
+                                raw_idx,
+                                class_count,
+                            )
+                            mean_vec = det_vec.detach().float().cpu()
+                            std_vec = torch.zeros_like(mean_vec)
                     row = {
                         "image_id": image_id,
                         "image_path": image_path,
@@ -354,12 +394,11 @@ def run_mc_dropout_csv(config, run_dir):
                         "ymax_std": float(std_vec[3].item()),
                         "score_std": float(std_vec[4].item()),
                     }
-                    class_count = int(n_classes) if n_classes is not None else 0
                     for class_idx in range(class_count):
                         row[f"prob_{class_idx}_mean"] = float(mean_vec[5 + class_idx].item())
                         row[f"prob_{class_idx}_std"] = float(std_vec[5 + class_idx].item())
                     batch_rows.append(row)
-                batch_items += int(len(valid_pairs))
+                batch_items += num_final
             prediction_matching_sec += timing.elapsed(t_matching)
 
             write_queue.put(batch_rows)
