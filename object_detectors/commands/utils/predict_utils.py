@@ -644,7 +644,7 @@ def parse_output_config(output_cfg):
         layer_cls_loss = normalize_loss_option(
             g.get("cls_loss", "bcewithlogits"),
             "bcewithlogits",
-            {"bcewithlogits", "kl", "ce"},
+            {"bcewithlogits", "kl"},
             "layer_grad.gradient.cls_loss",
         )
         layer_obj_loss = normalize_loss_option(
@@ -666,7 +666,7 @@ def parse_output_config(output_cfg):
         layer_roi_cls_loss = normalize_loss_option(
             active_roi_cfg.get("cls_loss", g.get("cls_loss", "bcewithlogits")),
             "bcewithlogits",
-            {"bcewithlogits", "kl", "ce"},
+            {"bcewithlogits", "kl"},
             "layer_grad.gradient.roi.cls_loss",
         )
         layer_roi_bbox_direction = normalize_direction_option(
@@ -713,7 +713,7 @@ def parse_output_config(output_cfg):
         layer_roi_null_cls_loss = normalize_loss_option(
             active_roi_cfg.get("cls_loss", "bcewithlogits"),
             "bcewithlogits",
-            {"bcewithlogits", "kl", "ce"},
+            {"bcewithlogits", "kl"},
             "layer_grad.gradient.roi.cls_loss",
         )
         layer_roi_null_bbox_direction = normalize_direction_option(
@@ -764,7 +764,7 @@ def parse_output_config(output_cfg):
         layer_null_cls_loss = normalize_loss_option(
             null_target_cfg.get("cls_loss", g.get("cls_loss", "bcewithlogits")),
             "bcewithlogits",
-            {"bcewithlogits", "kl", "ce"},
+            {"bcewithlogits", "kl"},
             "layer_grad.gradient.null_target.cls_loss",
         )
         layer_null_obj_loss = normalize_loss_option(

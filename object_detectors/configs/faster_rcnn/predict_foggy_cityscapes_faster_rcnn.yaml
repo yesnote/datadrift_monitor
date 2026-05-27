@@ -80,7 +80,7 @@ output:
           bbox_direction: pred_to_target  # fixed; reverse is redundant for box_l1/box_l2/offset_l1/offset_l2
         roi:
           cand_score_threshold: 0.0
-          cls_loss: bcewithlogits  # bcewithlogits | kl | ce
+          cls_loss: bcewithlogits  # bcewithlogits | kl
           bbox_loss: box_l1  # box_l1 | box_l2 | offset_l1 | offset_l2
           cls_direction: pred_to_target  # pred_to_target | target_to_pred, only for cls_loss: kl
           bbox_direction: pred_to_target  # fixed; reverse is redundant for box_l1/box_l2/offset_l1/offset_l2
@@ -104,7 +104,7 @@ output:
           obj_direction: pred_to_target  # pred_to_target | target_to_pred, only for obj_loss: signed_diff
           bbox_direction: pred_to_target  # fixed; reverse is redundant for box_l1/box_l2/offset_l1/offset_l2
         roi:
-          cls_loss: bcewithlogits  # bcewithlogits | kl | ce
+          cls_loss: bcewithlogits  # bcewithlogits | kl
           bbox_loss: box_l1  # box_l1 | box_l2 | offset_l1 | offset_l2
           cls_direction: pred_to_target  # pred_to_target | target_to_pred, only for cls_loss: kl
           bbox_direction: pred_to_target  # fixed; reverse is redundant for box_l1/box_l2/offset_l1/offset_l2
