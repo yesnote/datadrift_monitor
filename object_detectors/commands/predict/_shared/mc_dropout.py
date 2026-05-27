@@ -17,6 +17,44 @@ def _match_faster_rcnn_mc_feature(det_box, det_cls, run_features_b, run_labels_b
     return None
 
 
+def _is_yolov5_detector(detector):
+    return not bool(getattr(detector, "is_faster_rcnn", False)) and not bool(getattr(detector, "is_fcos", False))
+
+
+def _get_yolov5_detect_module(detector):
+    model = getattr(detector, "model", None)
+    modules = getattr(model, "model", None)
+    if modules is None or len(modules) == 0:
+        raise RuntimeError("YOLOv5 MC-dropout requires detector.model.model modules.")
+    detect_module = modules[-1]
+    if not (hasattr(detect_module, "m") and hasattr(detect_module, "nc") and hasattr(detect_module, "na")):
+        raise RuntimeError("YOLOv5 MC-dropout requires a YOLO Detect head as the final module.")
+    return detect_module
+
+
+def _forward_yolov5_features_to_head(model, img):
+    modules = model.model
+    detect_module = modules[-1]
+    if not (hasattr(detect_module, "m") and hasattr(detect_module, "nc") and hasattr(detect_module, "na")):
+        raise RuntimeError("YOLOv5 MC-dropout requires a YOLO Detect head as the final module.")
+    y = []
+    x = img
+    for module in modules[:-1]:
+        if module.f != -1:
+            x = y[module.f] if isinstance(module.f, int) else [x if j == -1 else y[j] for j in module.f]
+        x = module(x)
+        y.append(x if module.i in model.save else None)
+    head_input = y[detect_module.f] if isinstance(detect_module.f, int) else [x if j == -1 else y[j] for j in detect_module.f]
+    if isinstance(head_input, torch.Tensor):
+        return [head_input.detach()]
+    return [feature.detach() for feature in head_input]
+
+
+def _forward_yolov5_head_from_cache(detector, cached_features):
+    features = [feature.clone() for feature in cached_features]
+    return detector.model.model[-1](features)
+
+
 def run_mc_dropout_csv(config, run_dir):
     run_dir = Path(run_dir)
     mode = str(config.get("mode", "predict"))
@@ -110,6 +148,8 @@ def run_mc_dropout_csv(config, run_dir):
                 if bool(getattr(detector, "is_fcos", False)) and hasattr(detector, "preprocess_images")
                 else None
             )
+            yolo_cached_features = None
+            use_yolo_head_cache = _is_yolov5_detector(detector)
 
             # 1) Deterministic forward once: get final NMS predictions and raw pre-NMS indices.
             detector_inference_sec = 0.0
@@ -126,6 +166,10 @@ def run_mc_dropout_csv(config, run_dir):
                     det_output = detector.forward_from_roi_cache(roi_cache)
                 elif fcos_preprocessed is not None and hasattr(detector, "forward_preprocessed"):
                     det_output = detector.forward_preprocessed(fcos_preprocessed)
+                elif use_yolo_head_cache:
+                    _get_yolov5_detect_module(detector)
+                    yolo_cached_features = _forward_yolov5_features_to_head(detector.model, infer_batch)
+                    det_output = _forward_yolov5_head_from_cache(detector, yolo_cached_features)
                 else:
                     det_output = detector.model(infer_batch, augment=False)
                 det_raw_pred = det_output[0] if isinstance(det_output, (tuple, list)) else det_output
@@ -161,6 +205,8 @@ def run_mc_dropout_csv(config, run_dir):
                             model_output = detector.forward_from_roi_cache(roi_cache)
                         elif fcos_preprocessed is not None and hasattr(detector, "forward_preprocessed"):
                             model_output = detector.forward_preprocessed(fcos_preprocessed)
+                        elif use_yolo_head_cache:
+                            model_output = _forward_yolov5_head_from_cache(detector, yolo_cached_features)
                         else:
                             model_output = detector.model(infer_batch, augment=False)
                         raw_prediction = model_output[0] if isinstance(model_output, (tuple, list)) else model_output
@@ -218,6 +264,8 @@ def run_mc_dropout_csv(config, run_dir):
                 del infer_batch
                 if fcos_preprocessed is not None:
                     del fcos_preprocessed
+                if yolo_cached_features is not None:
+                    del yolo_cached_features
                 continue
 
             feat_mean = None
@@ -334,6 +382,8 @@ def run_mc_dropout_csv(config, run_dir):
             del infer_batch
             if fcos_preprocessed is not None:
                 del fcos_preprocessed
+            if yolo_cached_features is not None:
+                del yolo_cached_features
     except Exception:
         had_error = True
         raise
