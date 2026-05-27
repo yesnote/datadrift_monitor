@@ -1,5 +1,4 @@
 ﻿import csv
-import itertools
 import subprocess
 import sys
 from copy import deepcopy
@@ -30,11 +29,6 @@ REUSE_EXISTING = False
 
 # Use None for all valid combinations, or set a small int for a smoke test.
 MAX_COMBINATIONS = None
-
-SCALARS = {
-    "cand_target": ["rpn_obj_loss", "rpn_bbox_loss", "roi_cls_loss", "roi_bbox_loss"],
-    "null_target": ["rpn_obj_loss", "rpn_bbox_loss", "roi_cls_loss", "roi_bbox_loss"],
-}
 
 BBOX_LOSSES = ["box_l1", "box_l2", "offset_l1", "offset_l2"]
 BBOX_DIRECTIONS = ["pred_to_target"]
@@ -93,6 +87,10 @@ def _abbr(value: str) -> str:
         "bcewithlogits": "bce",
         "abs_diff": "abs",
         "signed_diff": "signed",
+        "rpn_bbox_loss": "rpnb",
+        "rpn_obj_loss": "rpno",
+        "roi_bbox_loss": "roib",
+        "roi_cls_loss": "roic",
     }
     return aliases.get(value, value)
 
@@ -111,20 +109,18 @@ def _valid_obj_directions(obj_loss: str) -> list[str]:
 
 def _combo_slug(combo: dict) -> str:
     target = combo["target"]
-    if target in {"cand_target", "null_target"}:
-        return (
-            f"layer_grad_t-{_abbr(target)}"
-            f"__rpnb-{combo['rpn_bbox_loss']}-{_abbr(combo['rpn_bbox_direction'])}"
-            f"__rpno-{_abbr(combo['rpn_obj_loss'])}-{_abbr(combo['rpn_obj_direction'])}"
-            f"__roib-{combo['roi_bbox_loss']}-{_abbr(combo['roi_bbox_direction'])}"
-            f"__roic-{_abbr(combo['roi_cls_loss'])}-{_abbr(combo['roi_cls_direction'])}"
-        )
-    return (
-        f"layer_grad_t-{_abbr(target)}"
-        f"__b-{combo['bbox_loss']}-{_abbr(combo['bbox_direction'])}"
-        f"__c-{_abbr(combo['cls_loss'])}-{_abbr(combo['cls_direction'])}"
-        f"__o-{_abbr(combo['obj_loss'])}-{_abbr(combo['obj_direction'])}"
-    )
+    term = combo["term"]
+    if term == "rpn_bbox_loss":
+        spec = f"rpnb-{combo['rpn_bbox_loss']}-{_abbr(combo['rpn_bbox_direction'])}"
+    elif term == "rpn_obj_loss":
+        spec = f"rpno-{_abbr(combo['rpn_obj_loss'])}-{_abbr(combo['rpn_obj_direction'])}"
+    elif term == "roi_bbox_loss":
+        spec = f"roib-{combo['roi_bbox_loss']}-{_abbr(combo['roi_bbox_direction'])}"
+    elif term == "roi_cls_loss":
+        spec = f"roic-{_abbr(combo['roi_cls_loss'])}-{_abbr(combo['roi_cls_direction'])}"
+    else:
+        raise ValueError(f"Unsupported Faster R-CNN layer_grad term: {term}")
+    return f"layer_grad_t-{_abbr(target)}__term-{_abbr(term)}__{spec}"
 
 
 def _timestamped_combo_dir(root: Path, slug: str) -> Path:
@@ -134,38 +130,79 @@ def _timestamped_combo_dir(root: Path, slug: str) -> Path:
     return root / f"{datetime.now().strftime('%m-%d-%Y_%H;%M')}_{slug}"
 
 
-def iter_base_combinations():
-    for rpn_bbox_loss, rpn_obj_loss, roi_bbox_loss, roi_cls_loss in itertools.product(
-        BBOX_LOSSES,
-        OBJ_LOSSES,
-        BBOX_LOSSES,
-        CLS_LOSSES,
-    ):
-        for rpn_bbox_direction in BBOX_DIRECTIONS:
-            for rpn_obj_direction in _valid_obj_directions(rpn_obj_loss):
-                for roi_bbox_direction in BBOX_DIRECTIONS:
-                    for roi_cls_direction in _valid_cls_directions(roi_cls_loss):
-                        yield {
-                            "rpn_bbox_loss": rpn_bbox_loss,
-                            "rpn_bbox_direction": rpn_bbox_direction,
-                            "rpn_obj_loss": rpn_obj_loss,
-                            "rpn_obj_direction": rpn_obj_direction,
-                            "roi_bbox_loss": roi_bbox_loss,
-                            "roi_bbox_direction": roi_bbox_direction,
-                            "roi_cls_loss": roi_cls_loss,
-                            "roi_cls_direction": roi_cls_direction,
-                        }
+def _base_combo(target: str, term: str) -> dict:
+    return {
+        "target": target,
+        "term": term,
+        "rpn_bbox_loss": "box_l1",
+        "rpn_bbox_direction": "pred_to_target",
+        "rpn_obj_loss": "bcewithlogits",
+        "rpn_obj_direction": "pred_to_target",
+        "roi_bbox_loss": "box_l1",
+        "roi_bbox_direction": "pred_to_target",
+        "roi_cls_loss": "bcewithlogits",
+        "roi_cls_direction": "pred_to_target",
+    }
 
 
 def iter_combinations():
     count = 0
-    for base_combo in iter_base_combinations():
-        for target in ("cand_target", "null_target"):
-            combo = {**base_combo, "target": target}
-            yield combo
-            count += 1
-            if MAX_COMBINATIONS is not None and count >= int(MAX_COMBINATIONS):
-                return
+    for target in ("cand_target", "null_target"):
+        for rpn_bbox_loss in BBOX_LOSSES:
+            for rpn_bbox_direction in BBOX_DIRECTIONS:
+                combo = _base_combo(target, "rpn_bbox_loss")
+                combo.update(
+                    {
+                        "rpn_bbox_loss": rpn_bbox_loss,
+                        "rpn_bbox_direction": rpn_bbox_direction,
+                    }
+                )
+                yield combo
+                count += 1
+                if MAX_COMBINATIONS is not None and count >= int(MAX_COMBINATIONS):
+                    return
+
+        for rpn_obj_loss in OBJ_LOSSES:
+            for rpn_obj_direction in _valid_obj_directions(rpn_obj_loss):
+                combo = _base_combo(target, "rpn_obj_loss")
+                combo.update(
+                    {
+                        "rpn_obj_loss": rpn_obj_loss,
+                        "rpn_obj_direction": rpn_obj_direction,
+                    }
+                )
+                yield combo
+                count += 1
+                if MAX_COMBINATIONS is not None and count >= int(MAX_COMBINATIONS):
+                    return
+
+        for roi_bbox_loss in BBOX_LOSSES:
+            for roi_bbox_direction in BBOX_DIRECTIONS:
+                combo = _base_combo(target, "roi_bbox_loss")
+                combo.update(
+                    {
+                        "roi_bbox_loss": roi_bbox_loss,
+                        "roi_bbox_direction": roi_bbox_direction,
+                    }
+                )
+                yield combo
+                count += 1
+                if MAX_COMBINATIONS is not None and count >= int(MAX_COMBINATIONS):
+                    return
+
+        for roi_cls_loss in CLS_LOSSES:
+            for roi_cls_direction in _valid_cls_directions(roi_cls_loss):
+                combo = _base_combo(target, "roi_cls_loss")
+                combo.update(
+                    {
+                        "roi_cls_loss": roi_cls_loss,
+                        "roi_cls_direction": roi_cls_direction,
+                    }
+                )
+                yield combo
+                count += 1
+                if MAX_COMBINATIONS is not None and count >= int(MAX_COMBINATIONS):
+                    return
 
 
 def _run(cmd: list[str]) -> None:
@@ -206,7 +243,7 @@ def _prepare_layer_grad_config(base_config: dict, combo: dict) -> dict:
             rpn_cfg["cand_obj_threshold"] = 0.0
             roi_cfg["cand_score_threshold"] = 0.0
         grad_cfg[block_name] = {
-            "scalar": list(SCALARS[target]),
+            "scalar": [combo["term"]],
             "layer": {
                 "rpn_obj_loss": ["rpn.head.conv", "rpn.head.cls_logits"],
                 "rpn_bbox_loss": ["rpn.head.conv", "rpn.head.bbox_pred"],
@@ -402,6 +439,7 @@ def main() -> None:
 def _result_row(combo: dict, layer_dir: Path, meta_dir: Path, metrics: dict) -> dict:
     row = {
         "target": combo["target"],
+        "term": combo["term"],
         "rpn_bbox_loss": combo.get("rpn_bbox_loss", ""),
         "rpn_bbox_direction": combo.get("rpn_bbox_direction", ""),
         "rpn_obj_loss": combo.get("rpn_obj_loss", ""),
@@ -428,6 +466,7 @@ def _result_row(combo: dict, layer_dir: Path, meta_dir: Path, metrics: dict) -> 
 
 def _comparison_key(row: dict) -> tuple:
     return (
+        row["term"],
         row["rpn_bbox_loss"],
         row["rpn_bbox_direction"],
         row["rpn_obj_loss"],
@@ -442,6 +481,7 @@ def _comparison_key(row: dict) -> tuple:
 def _write_results(out_dir: Path, rows: list[dict]) -> None:
     result_fields = [
         "target",
+        "term",
         "rpn_bbox_loss",
         "rpn_bbox_direction",
         "rpn_obj_loss",
@@ -484,14 +524,15 @@ def _write_results(out_dir: Path, rows: list[dict]) -> None:
             continue
         compare_rows.append(
             {
-                "rpn_bbox_loss": key[0],
-                "rpn_bbox_direction": key[1],
-                "rpn_obj_loss": key[2],
-                "rpn_obj_direction": key[3],
-                "roi_bbox_loss": key[4],
-                "roi_bbox_direction": key[5],
-                "roi_cls_loss": key[6],
-                "roi_cls_direction": key[7],
+                "term": key[0],
+                "rpn_bbox_loss": key[1],
+                "rpn_bbox_direction": key[2],
+                "rpn_obj_loss": key[3],
+                "rpn_obj_direction": key[4],
+                "roi_bbox_loss": key[5],
+                "roi_bbox_direction": key[6],
+                "roi_cls_loss": key[7],
+                "roi_cls_direction": key[8],
                 "cand_auroc": cand_auroc,
                 "null_auroc": null_auroc,
                 "delta_auroc": null_auroc - cand_auroc,
@@ -504,6 +545,7 @@ def _write_results(out_dir: Path, rows: list[dict]) -> None:
         )
     compare_rows.sort(key=lambda r: (r["delta_auroc"], r["delta_ap"]), reverse=True)
     comparison_fields = [
+        "term",
         "rpn_bbox_loss",
         "rpn_bbox_direction",
         "rpn_obj_loss",
