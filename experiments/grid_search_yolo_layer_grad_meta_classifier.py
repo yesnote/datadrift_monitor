@@ -267,7 +267,9 @@ def _prepare_layer_grad_config(base_config: dict, combo: dict) -> dict:
     return config
 
 
-def _prepare_meta_config(base_config: dict, input_roots: list[Path], gt_root: str) -> dict:
+def _prepare_meta_config(
+    base_config: dict, input_roots: list[Path], gt_root: str
+) -> dict:
     config = deepcopy(base_config)
     config["mode"] = "train"
     dataset_cfg = config.setdefault("dataset", {})
@@ -399,7 +401,9 @@ def main() -> None:
         eval_csv = meta_dir / "results" / "evaluation_results.csv"
 
         if RUN_META_CLASSIFIER and not (REUSE_EXISTING and eval_csv.is_file()):
-            meta_config = _prepare_meta_config(meta_base_config, combo["input_roots"], gt_root)
+            meta_config = _prepare_meta_config(
+                meta_base_config, combo["input_roots"], gt_root
+            )
             meta_config_path_i = meta_dir / "grid_meta_classifier_config.yaml"
             _save_yaml(meta_config, meta_config_path_i)
             _run(
