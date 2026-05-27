@@ -468,6 +468,13 @@ def load_training_dataframe(dataset_cfg: dict[str, Any]) -> tuple[pd.DataFrame, 
         ]
         candidate_present = [c for c in tp_candidate_keys if c in feature_df.columns]
         feature_df = feature_df[list(dict.fromkeys(candidate_present + feature_columns))].rename(columns=rename_map)
+        overlapping_context = [
+            col
+            for col in feature_df.columns
+            if col in merged.columns and col not in merge_keys and col not in rename_map.values()
+        ]
+        if overlapping_context:
+            feature_df = feature_df.drop(columns=overlapping_context)
 
         merged_next = merged.merge(feature_df, on=merge_keys, how="inner")
         if (
