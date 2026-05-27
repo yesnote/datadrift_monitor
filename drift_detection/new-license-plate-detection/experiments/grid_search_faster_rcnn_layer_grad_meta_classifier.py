@@ -28,13 +28,13 @@ RUN_META_CLASSIFIER = True
 REUSE_EXISTING = False
 
 # Use None for all meta-classifier combinations, or set a small int for a smoke test.
-# Object detector term CSVs are still generated once for all 32 single-term settings.
+# Object detector term CSVs are still generated once for all 30 single-term settings.
 MAX_COMBINATIONS = None
 
 BBOX_LOSSES = ["box_l1", "box_l2", "offset_l1", "offset_l2"]
 BBOX_DIRECTIONS = ["pred_to_target"]
 OBJ_LOSSES = ["bcewithlogits", "abs_diff", "signed_diff"]
-CLS_LOSSES = ["bcewithlogits", "kl", "ce"]
+CLS_LOSSES = ["bcewithlogits", "kl"]
 
 
 def _load_yaml(path: Path) -> dict:
