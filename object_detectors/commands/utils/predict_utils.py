@@ -2514,93 +2514,110 @@ def collect_bbox_layer_grads_per_target(
         )
     _add_elapsed_timing(timing_accumulator, "detector_inference_sec", t_detector, timing_device)
 
-    det = selected_preds[0] if selected_preds else torch.zeros((0, 6), device=input_tensor.device)
-    raw_keep_indices = selected_indices[0] if selected_indices else torch.zeros((0,), dtype=torch.long, device=input_tensor.device)
-    pred_img = raw_prediction[0]
-    logit_img = raw_logits[0] if raw_logits is not None else pred_img[:, 5:]
     raw_flat = _flatten_raw_prediction_layers(pred_layers)
-    raw_img = raw_flat[0] if raw_flat is not None and raw_flat.ndim == 3 else None
-    anchor_img = raw_anchor_priors[0] if raw_anchor_priors is not None else None
 
     rows = []
-    num_boxes = int(det.shape[0])
+    batch_size = int(raw_prediction.shape[0]) if raw_prediction.ndim >= 3 else 1
     iou_threshold = float(getattr(detector, "iou_thresh", 0.45))
     try:
-        for bbox_idx in range(num_boxes):
-            raw_idx = int(raw_keep_indices[bbox_idx].detach().cpu().item())
-            grad_stats = {}
-            for target_value in target_values:
-                detector.zero_grad(set_to_none=True)
-
-                anchor_row = anchor_img[raw_idx] if (anchor_img is not None and raw_idx < anchor_img.shape[0]) else None
-
-                target_scalar = build_layer_target_scalar_bbox(
-                    target_value=target_value,
-                    pred_img=pred_img,
-                    logit_img=logit_img,
-                    raw_img=raw_img,
-                    raw_idx=raw_idx,
-                    iou_threshold=iou_threshold,
-                    pseudo_gt=pseudo_gt,
-                    anchor_xywh=anchor_row,
-                    cand_score_threshold=cand_score_threshold,
-                    bbox_loss=bbox_loss,
-                    cls_loss=cls_loss,
-                    obj_loss=obj_loss,
-                    bbox_direction=bbox_direction,
-                    cls_direction=cls_direction,
-                    obj_direction=obj_direction,
-                    timing_accumulator=timing_accumulator,
-                    timing_device=timing_device,
-                )
-
-                if target_scalar is None:
-                    for layer_name in target_layers:
-                        grad_stats[f"{target_value}_{layer_name}"] = (
-                            {metric: 0.0 for metric in vector_reduction} if vector_reduction else []
-                        )
-                    continue
-
-                t_backprop = _start_timing(timing_device)
-                grads = torch.autograd.grad(
-                    target_scalar,
-                    layer_params,
-                    retain_graph=True,
-                    allow_unused=True,
-                )
-                _add_elapsed_timing(timing_accumulator, "backpropagation_sec", t_backprop, timing_device)
-                t_feature = _start_timing(timing_device)
-                for layer_idx, layer_name in enumerate(target_layers):
-                    key = f"{target_value}_{layer_name}"
-                    grad_tensor = grads[layer_idx]
-                    grad_stats[key] = format_gradient_output(
-                        grad_tensor,
-                        vector_reduction=vector_reduction,
-                        map_reduction=map_reduction,
-                    )
-                _add_elapsed_timing(timing_accumulator, "feature_compute_sec", t_feature, timing_device)
-
-                del target_scalar, grads
-
-            cls_idx = int(det[bbox_idx, 5].detach().cpu().item())
-            rows.append(
-                {
-                    "pred_idx": bbox_idx,
-                    "raw_pred_idx": raw_idx,
-                    "xmin": float(det[bbox_idx, 0].detach().cpu().item()),
-                    "ymin": float(det[bbox_idx, 1].detach().cpu().item()),
-                    "xmax": float(det[bbox_idx, 2].detach().cpu().item()),
-                    "ymax": float(det[bbox_idx, 3].detach().cpu().item()),
-                    "score": float(det[bbox_idx, 4].detach().cpu().item()),
-                    "pred_class": detector.names[cls_idx] if detector.names is not None else cls_idx,
-                    "grad_stats": grad_stats,
-                }
+        for sample_idx in range(batch_size):
+            det = (
+                selected_preds[sample_idx]
+                if selected_preds and sample_idx < len(selected_preds)
+                else torch.zeros((0, 6), device=input_tensor.device)
             )
+            raw_keep_indices = (
+                selected_indices[sample_idx]
+                if selected_indices and sample_idx < len(selected_indices)
+                else torch.zeros((0,), dtype=torch.long, device=input_tensor.device)
+            )
+            pred_img = raw_prediction[sample_idx]
+            logit_img = raw_logits[sample_idx] if raw_logits is not None else pred_img[:, 5:]
+            raw_img = raw_flat[sample_idx] if raw_flat is not None and raw_flat.ndim == 3 else None
+            anchor_img = (
+                raw_anchor_priors[sample_idx]
+                if raw_anchor_priors is not None and raw_anchor_priors.ndim >= 3
+                else raw_anchor_priors
+                if raw_anchor_priors is not None and raw_anchor_priors.ndim == 2 and batch_size == 1
+                else None
+            )
+
+            for bbox_idx in range(int(det.shape[0])):
+                raw_idx = int(raw_keep_indices[bbox_idx].detach().cpu().item())
+                grad_stats = {}
+                for target_value in target_values:
+                    detector.zero_grad(set_to_none=True)
+
+                    anchor_row = anchor_img[raw_idx] if (anchor_img is not None and raw_idx < anchor_img.shape[0]) else None
+
+                    target_scalar = build_layer_target_scalar_bbox(
+                        target_value=target_value,
+                        pred_img=pred_img,
+                        logit_img=logit_img,
+                        raw_img=raw_img,
+                        raw_idx=raw_idx,
+                        iou_threshold=iou_threshold,
+                        pseudo_gt=pseudo_gt,
+                        anchor_xywh=anchor_row,
+                        cand_score_threshold=cand_score_threshold,
+                        bbox_loss=bbox_loss,
+                        cls_loss=cls_loss,
+                        obj_loss=obj_loss,
+                        bbox_direction=bbox_direction,
+                        cls_direction=cls_direction,
+                        obj_direction=obj_direction,
+                        timing_accumulator=timing_accumulator,
+                        timing_device=timing_device,
+                    )
+
+                    if target_scalar is None:
+                        for layer_name in target_layers:
+                            grad_stats[f"{target_value}_{layer_name}"] = (
+                                {metric: 0.0 for metric in vector_reduction} if vector_reduction else []
+                            )
+                        continue
+
+                    t_backprop = _start_timing(timing_device)
+                    grads = torch.autograd.grad(
+                        target_scalar,
+                        layer_params,
+                        retain_graph=True,
+                        allow_unused=True,
+                    )
+                    _add_elapsed_timing(timing_accumulator, "backpropagation_sec", t_backprop, timing_device)
+                    t_feature = _start_timing(timing_device)
+                    for layer_idx, layer_name in enumerate(target_layers):
+                        key = f"{target_value}_{layer_name}"
+                        grad_tensor = grads[layer_idx]
+                        grad_stats[key] = format_gradient_output(
+                            grad_tensor,
+                            vector_reduction=vector_reduction,
+                            map_reduction=map_reduction,
+                        )
+                    _add_elapsed_timing(timing_accumulator, "feature_compute_sec", t_feature, timing_device)
+
+                    del target_scalar, grads
+
+                cls_idx = int(det[bbox_idx, 5].detach().cpu().item())
+                rows.append(
+                    {
+                        "sample_idx": sample_idx,
+                        "pred_idx": bbox_idx,
+                        "raw_pred_idx": raw_idx,
+                        "xmin": float(det[bbox_idx, 0].detach().cpu().item()),
+                        "ymin": float(det[bbox_idx, 1].detach().cpu().item()),
+                        "xmax": float(det[bbox_idx, 2].detach().cpu().item()),
+                        "ymax": float(det[bbox_idx, 3].detach().cpu().item()),
+                        "score": float(det[bbox_idx, 4].detach().cpu().item()),
+                        "pred_class": detector.names[cls_idx] if detector.names is not None else cls_idx,
+                        "grad_stats": grad_stats,
+                    }
+                )
     finally:
         for param, req_grad in zip(layer_params, original_requires_grad):
             param.requires_grad_(req_grad)
         detector.zero_grad(set_to_none=True)
-        del model_output, raw_prediction, raw_logits, raw_anchor_priors, pred_img, logit_img, raw_flat, raw_img, anchor_img
+        del model_output, raw_prediction, raw_logits, raw_anchor_priors, raw_flat, selected_preds, selected_indices
 
     return rows
 

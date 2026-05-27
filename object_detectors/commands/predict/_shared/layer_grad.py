@@ -314,58 +314,58 @@ def run_layer_grad_csv(config, run_dir):
                 batch_items += int(len(bbox_rows))
                 del bbox_rows
             else:
-                for sample_idx in range(len(image_list)):
+                bbox_rows = collect_bbox_layer_grads_per_target(
+                    detector=detector,
+                    input_tensor=infer_batch,
+                    target_values=target_values,
+                    target_layers=target_layers,
+                    map_reduction=layer_map_reduction,
+                    vector_reduction=layer_gradient_reduction,
+                    pseudo_gt=layer_pseudo_gt,
+                    cand_score_threshold=layer_cand_score_threshold,
+                    bbox_loss=layer_bbox_loss,
+                    cls_loss=layer_cls_loss,
+                    obj_loss=layer_obj_loss,
+                    bbox_direction=layer_bbox_direction,
+                    cls_direction=layer_cls_direction,
+                    obj_direction=layer_obj_direction,
+                    timing_accumulator=stage_seconds,
+                    timing_device=device,
+                )
+                for bbox_row in bbox_rows:
+                    sample_idx = int(bbox_row.get("sample_idx", 0))
                     target = targets[sample_idx]
                     image_id = int(target["image_id"][0].item())
                     image_path = target["path"]
-                    bbox_rows = collect_bbox_layer_grads_per_target(
-                        detector=detector,
-                        input_tensor=infer_batch[sample_idx: sample_idx + 1],
-                        target_values=target_values,
-                        target_layers=target_layers,
-                        map_reduction=layer_map_reduction,
-                        vector_reduction=layer_gradient_reduction,
-                        pseudo_gt=layer_pseudo_gt,
-                        cand_score_threshold=layer_cand_score_threshold,
-                        bbox_loss=layer_bbox_loss,
-                        cls_loss=layer_cls_loss,
-                        obj_loss=layer_obj_loss,
-                        bbox_direction=layer_bbox_direction,
-                        cls_direction=layer_cls_direction,
-                        obj_direction=layer_obj_direction,
-                        timing_accumulator=stage_seconds,
-                        timing_device=device,
-                    )
-                    for bbox_row in bbox_rows:
-                        output_pred_idx = bbox_row["pred_idx"]
-                        output_raw_pred_idx = bbox_row["raw_pred_idx"]
-                        row = {
-                            "image_id": image_id,
-                            "image_path": image_path,
-                            "pred_idx": output_pred_idx,
-                            "raw_pred_idx": output_raw_pred_idx,
-                            "xmin": bbox_row["xmin"],
-                            "ymin": bbox_row["ymin"],
-                            "xmax": bbox_row["xmax"],
-                            "ymax": bbox_row["ymax"],
-                            "score": bbox_row["score"],
-                            "pred_class": bbox_row["pred_class"],
-                        }
-                        for grad_key, grad_value in bbox_row["grad_stats"].items():
-                            if save_raw_gradients:
-                                array_key = (
-                                    f"s{sample_idx:03d}_p{int(output_pred_idx):06d}_"
-                                    f"r{int(output_raw_pred_idx):06d}_{_safe_npz_key(grad_key)}"
-                                )
-                                batch_grad_arrays[array_key] = _gradient_to_np_array(grad_value)
-                                row[grad_key] = f"{npz_rel_path}::{array_key}"
-                            else:
-                                for metric in layer_gradient_reduction:
-                                    value = grad_value.get(metric, 0.0) if isinstance(grad_value, dict) else 0.0
-                                    row[f"{grad_key}_{metric}"] = _scalar_to_float(value)
-                        batch_csv_rows.append(row)
-                    batch_items += int(len(bbox_rows))
-                    del bbox_rows
+                    output_pred_idx = bbox_row["pred_idx"]
+                    output_raw_pred_idx = bbox_row["raw_pred_idx"]
+                    row = {
+                        "image_id": image_id,
+                        "image_path": image_path,
+                        "pred_idx": output_pred_idx,
+                        "raw_pred_idx": output_raw_pred_idx,
+                        "xmin": bbox_row["xmin"],
+                        "ymin": bbox_row["ymin"],
+                        "xmax": bbox_row["xmax"],
+                        "ymax": bbox_row["ymax"],
+                        "score": bbox_row["score"],
+                        "pred_class": bbox_row["pred_class"],
+                    }
+                    for grad_key, grad_value in bbox_row["grad_stats"].items():
+                        if save_raw_gradients:
+                            array_key = (
+                                f"s{sample_idx:03d}_p{int(output_pred_idx):06d}_"
+                                f"r{int(output_raw_pred_idx):06d}_{_safe_npz_key(grad_key)}"
+                            )
+                            batch_grad_arrays[array_key] = _gradient_to_np_array(grad_value)
+                            row[grad_key] = f"{npz_rel_path}::{array_key}"
+                        else:
+                            for metric in layer_gradient_reduction:
+                                value = grad_value.get(metric, 0.0) if isinstance(grad_value, dict) else 0.0
+                                row[f"{grad_key}_{metric}"] = _scalar_to_float(value)
+                    batch_csv_rows.append(row)
+                batch_items += int(len(bbox_rows))
+                del bbox_rows
 
             if save_raw_gradients and batch_grad_arrays:
                 np.savez(npz_path, **batch_grad_arrays)
