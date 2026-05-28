@@ -135,6 +135,14 @@ def _timestamped_combo_dir(root: Path, slug: str) -> Path:
     return root / f"{datetime.now().strftime('%m-%d-%Y_%H;%M')}_{slug}"
 
 
+def _timestamped_meta_dir(root: Path, index: int, target: str) -> Path:
+    suffix = f"m{int(index):03d}_{_abbr(target)}"
+    existing = sorted(root.glob(f"??-??-????_??;??_{suffix}"))
+    if existing and REUSE_EXISTING:
+        return existing[-1]
+    return root / f"{datetime.now().strftime('%m-%d-%Y_%H;%M')}_{suffix}"
+
+
 def _base_combo(target: str, term: str) -> dict:
     return {
         "target": target,
@@ -465,7 +473,7 @@ def main() -> None:
         slug = _meta_combo_slug(combo)
         print(f"[META {idx}/{len(meta_combo_list)}] {slug}", flush=True)
 
-        meta_dir = _timestamped_combo_dir(meta_grid_root, slug)
+        meta_dir = _timestamped_meta_dir(meta_grid_root, idx, combo["target"])
         eval_csv = meta_dir / "results" / "evaluation_results.csv"
         if RUN_META_CLASSIFIER and not (REUSE_EXISTING and eval_csv.is_file()):
             meta_dir.mkdir(parents=True, exist_ok=True)
