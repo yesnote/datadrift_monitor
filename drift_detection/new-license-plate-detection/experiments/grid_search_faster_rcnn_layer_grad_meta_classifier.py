@@ -468,6 +468,7 @@ def main() -> None:
         meta_dir = _timestamped_combo_dir(meta_grid_root, slug)
         eval_csv = meta_dir / "results" / "evaluation_results.csv"
         if RUN_META_CLASSIFIER and not (REUSE_EXISTING and eval_csv.is_file()):
+            meta_dir.mkdir(parents=True, exist_ok=True)
             meta_config = _prepare_meta_config(
                 meta_base_config, combo["input_roots"], gt_root
             )
