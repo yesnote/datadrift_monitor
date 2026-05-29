@@ -257,6 +257,33 @@ class FCOSTorchObjectDetector(nn.Module):
             self.detector_model.train()
         return self._detections_to_contract(detections)
 
+    def prepare_feature_cache(self, processed_images):
+        from fcos_core.structures.image_list import to_image_list
+
+        was_training = self.detector_model.training
+        if self.mode != "train":
+            self.detector_model.eval()
+        with torch.no_grad():
+            image_list = to_image_list(processed_images)
+            features = self.detector_model.backbone(image_list.tensors)
+        if was_training and self.mode == "train":
+            self.detector_model.train()
+        return {"images": image_list, "features": features}
+
+    def forward_from_feature_cache(self, cache):
+        was_training = self.detector_model.training
+        if self.mode != "train":
+            self.detector_model.eval()
+        with torch.no_grad():
+            detections, _losses = self.detector_model.rpn(
+                cache["images"],
+                cache["features"],
+                None,
+            )
+        if was_training and self.mode == "train":
+            self.detector_model.train()
+        return self._detections_to_contract(detections)
+
     def _boxlists_to_contract(self, detections):
         rows_by_image = []
         logits_by_image = []
