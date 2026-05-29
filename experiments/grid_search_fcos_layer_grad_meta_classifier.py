@@ -11,7 +11,9 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 
 # Edit these paths before running.
 OBJECT_DETECTOR_CONFIG = r"object_detectors/configs/fcos/predict_coco_fcos.yaml"
-META_CLASSIFIER_CONFIG = r"meta_models/meta_classifier/configs/train_meta_classifier.yaml"
+META_CLASSIFIER_CONFIG = (
+    r"meta_models/meta_classifier/configs/train_meta_classifier.yaml"
+)
 
 # If empty, dataset.gt_root is read from META_CLASSIFIER_CONFIG.
 GT_ROOT = ""
@@ -225,9 +227,7 @@ def iter_meta_combinations(term_run_dirs: dict[tuple, Path]):
                         ],
                     }
                     count += 1
-                    if MAX_COMBINATIONS is not None and count >= int(
-                        MAX_COMBINATIONS
-                    ):
+                    if MAX_COMBINATIONS is not None and count >= int(MAX_COMBINATIONS):
                         return
 
 
