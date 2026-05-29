@@ -12,9 +12,9 @@ dataset:
   used_dataset:
     - coco
   split:
-    - val
+    - train
   used_ratio:
-    - 1.0
+    - 0.1
   coco:
     root: D:/SEONGJIN/datasets/COCO
     train_split: train2017
@@ -25,7 +25,7 @@ dataset:
     val_annotation_file: instances_val2017.json
 
 dataloader:
-  batch_size: 2
+  batch_size: 4
   num_workers: 4
   pin_memory: true
   shuffle_train: false
