@@ -1914,12 +1914,19 @@ def build_faster_rcnn_null_losses_by_stage(
     _add_elapsed_timing(timing_accumulator, "candidate_search_sec", t_candidate, timing_device)
 
     t_loss = _start_timing(timing_device)
+    final_box_target = final_box_xyxy.detach().to(device=pred_img.device).view(1, 4)
+    final_box_target_in_rpn_scale = _resize_boxes_xyxy_tensor(final_box_target, to_size, from_size)
     selected_deltas = rpn_bbox_deltas[rpn_raw_idx].view(1, 4)
     selected_anchor = rpn_anchors[rpn_raw_idx].view(1, 4)
     if str(rpn_bbox_loss).strip().lower().startswith("offset_"):
+        rpn_target_delta = _box_coder_encode_single(
+            rpn_box_coder,
+            final_box_target_in_rpn_scale,
+            selected_anchor.detach(),
+        ).view(1, 4)
         rpn_bbox_loss_value = _delta_loss_tensor(
             selected_deltas,
-            torch.zeros_like(selected_deltas),
+            rpn_target_delta.detach(),
             mode=rpn_bbox_loss,
             reduction="sum",
             direction=rpn_bbox_direction,
@@ -1927,10 +1934,9 @@ def build_faster_rcnn_null_losses_by_stage(
     else:
         source_rpn_proposal = rpn_box_coder.decode(selected_deltas, [selected_anchor]).view(1, 4)
         source_rpn_proposal = _resize_boxes_xyxy_tensor(source_rpn_proposal, from_size, to_size)
-        source_anchor = _resize_boxes_xyxy_tensor(selected_anchor.detach(), from_size, to_size)
         rpn_bbox_loss_value = _bbox_loss_xyxy_tensor(
             source_rpn_proposal,
-            source_anchor,
+            final_box_target,
             mode=rpn_bbox_loss,
             reduction="sum",
             direction=rpn_bbox_direction,
@@ -1957,9 +1963,14 @@ def build_faster_rcnn_null_losses_by_stage(
         )
         if roi_delta is None:
             return None
+        roi_target_delta = _box_coder_encode_single(
+            roi_box_coder,
+            final_box_target,
+            source_proposal,
+        ).view(1, 4)
         roi_bbox_loss_value = _delta_loss_tensor(
             roi_delta,
-            torch.zeros_like(roi_delta),
+            roi_target_delta.detach(),
             mode=roi_bbox_loss,
             reduction="sum",
             direction=roi_bbox_direction,
@@ -1968,7 +1979,7 @@ def build_faster_rcnn_null_losses_by_stage(
         final_box_from_roi = _xywh_to_xyxy_tensor(pred_img[raw_idx, :4].view(1, 4))
         roi_bbox_loss_value = _bbox_loss_xyxy_tensor(
             final_box_from_roi,
-            source_proposal,
+            final_box_target,
             mode=roi_bbox_loss,
             reduction="sum",
             direction=roi_bbox_direction,
