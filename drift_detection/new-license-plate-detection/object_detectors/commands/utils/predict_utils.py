@@ -378,7 +378,7 @@ def parse_output_config(output_cfg):
     layer_rpn_cand_enabled = False
     layer_rpn_cand_scalar = []
     layer_rpn_cand_obj_threshold = 0.0
-    layer_rpn_bbox_loss = "l1"
+    layer_rpn_bbox_loss = "offset_l1"
     layer_rpn_obj_loss = "bcewithlogits"
     layer_rpn_bbox_direction = "pred_to_target"
     layer_rpn_obj_direction = "pred_to_target"
@@ -390,7 +390,7 @@ def parse_output_config(output_cfg):
     layer_roi_null_cls_direction = "pred_to_target"
     layer_rpn_null_enabled = True
     layer_rpn_null_scalar = []
-    layer_rpn_null_bbox_loss = "l1"
+    layer_rpn_null_bbox_loss = "offset_l1"
     layer_rpn_null_obj_loss = "bcewithlogits"
     layer_rpn_null_bbox_direction = "pred_to_target"
     layer_rpn_null_obj_direction = "pred_to_target"
@@ -686,10 +686,12 @@ def parse_output_config(output_cfg):
         )
 
         layer_rpn_bbox_loss = normalize_faster_rcnn_bbox_loss_option(
-            active_rpn_cfg.get("bbox_loss", "l1"),
-            "box_l1",
+            active_rpn_cfg.get("bbox_loss", "offset_l1"),
+            "offset_l1",
             "layer_grad.gradient.rpn.bbox_loss",
         )
+        if not layer_rpn_bbox_loss.startswith("offset_"):
+            raise ValueError("Faster R-CNN layer_grad.gradient.rpn.bbox_loss supports only offset_l1 or offset_l2.")
         layer_rpn_obj_loss = normalize_loss_option(
             active_rpn_cfg.get("obj_loss", "bcewithlogits"),
             "bcewithlogits",
@@ -733,10 +735,12 @@ def parse_output_config(output_cfg):
         )
 
         layer_rpn_null_bbox_loss = normalize_faster_rcnn_bbox_loss_option(
-            active_rpn_cfg.get("bbox_loss", "l1"),
-            "box_l1",
+            active_rpn_cfg.get("bbox_loss", "offset_l1"),
+            "offset_l1",
             "layer_grad.gradient.rpn.bbox_loss",
         )
+        if not layer_rpn_null_bbox_loss.startswith("offset_"):
+            raise ValueError("Faster R-CNN layer_grad.gradient.rpn.bbox_loss supports only offset_l1 or offset_l2.")
         layer_rpn_null_obj_loss = normalize_loss_option(
             active_rpn_cfg.get("obj_loss", "bcewithlogits"),
             "bcewithlogits",
@@ -1492,7 +1496,7 @@ def build_pseudo_label_losses_for_candidates(
     raw_idx: int,
     iou_threshold: float,
     score_threshold: float = 0.01,
-    bbox_loss: str = "box_l1",
+    bbox_loss: str = "offset_l1",
     cls_loss: str = "bcewithlogits",
     obj_loss: str = "bcewithlogits",
     bbox_direction: str = "pred_to_target",
@@ -1589,11 +1593,13 @@ def build_pseudo_label_losses_for_candidates(
 
 
 def build_faster_rcnn_roi_candidate_losses(
+    roi_box_coder,
     pred_img: torch.Tensor,
     logit_img: torch.Tensor,
     raw_idx: int,
     iou_threshold: float,
     box_regression: torch.Tensor = None,
+    proposals_xyxy: torch.Tensor = None,
     proposal_indices_img: torch.Tensor = None,
     labels_internal_img: torch.Tensor = None,
     proposal_offset: int = 0,
@@ -1650,7 +1656,21 @@ def build_faster_rcnn_roi_candidate_losses(
         )
         if candidate_deltas is None or pseudo_delta is None:
             return None
-        pseudo_delta = pseudo_delta.detach().expand(candidate_deltas.shape[0], -1)
+        if proposals_xyxy is None:
+            pseudo_delta = pseudo_delta.detach().expand(candidate_deltas.shape[0], -1)
+        else:
+            proposal_idx = proposal_indices_img[candidate_indices].to(device=proposals_xyxy.device, dtype=torch.long)
+            valid = (proposal_idx >= 0) & (proposal_idx < proposals_xyxy.shape[0])
+            if not bool(valid.all()):
+                return None
+            candidate_proposals = proposals_xyxy[proposal_idx].detach()
+            pseudo_box_target = _xywh_to_xyxy_tensor(pred_img[raw_idx, :4].view(1, 4)).detach()
+            pseudo_box_target = pseudo_box_target.expand(candidate_proposals.shape[0], -1)
+            pseudo_delta = _box_coder_encode_single(
+                roi_box_coder,
+                pseudo_box_target,
+                candidate_proposals,
+            )
         bbox_loss_value = _delta_loss_tensor(
             candidate_deltas,
             pseudo_delta,
@@ -1768,8 +1788,9 @@ def build_faster_rcnn_rpn_candidate_losses(
     to_size,
     iou_threshold: float,
     source_bbox_delta: torch.Tensor = None,
+    final_box_xyxy: torch.Tensor = None,
     obj_threshold: float = 0.0,
-    bbox_loss: str = "box_l1",
+    bbox_loss: str = "offset_l1",
     obj_loss: str = "bcewithlogits",
     bbox_direction: str = "pred_to_target",
     obj_direction: str = "pred_to_target",
@@ -1780,14 +1801,17 @@ def build_faster_rcnn_rpn_candidate_losses(
         return None
     if rpn_objectness_logits is None or rpn_objectness_logits.numel() == 0:
         return None
-    if source_proposal_xyxy is None or source_obj_logit is None:
+    if source_proposal_xyxy is None and final_box_xyxy is None:
         return None
+    if not str(bbox_loss).strip().lower().startswith("offset_"):
+        raise ValueError("Faster R-CNN RPN bbox_loss supports only offset_l1 or offset_l2.")
     if obj_direction == "target_to_pred" and obj_loss != "signed_diff":
         raise ValueError("Faster R-CNN RPN candidate obj_direction=target_to_pred is only supported when obj_loss=signed_diff.")
 
     t_candidate = _start_timing(timing_device)
     with torch.no_grad():
-        source_proposal = source_proposal_xyxy.detach().view(1, 4)
+        target_box = final_box_xyxy if final_box_xyxy is not None else source_proposal_xyxy
+        source_proposal = target_box.detach().view(1, 4)
         scores = torch.sigmoid(rpn_objectness_logits.detach().reshape(-1))
         score_mask = scores >= float(obj_threshold)
         candidate_mask = torch.zeros_like(scores, dtype=torch.bool)
@@ -1807,35 +1831,24 @@ def build_faster_rcnn_rpn_candidate_losses(
 
     t_loss = _start_timing(timing_device)
     selected_deltas = rpn_bbox_deltas[candidate_mask]
-    if str(bbox_loss).strip().lower().startswith("offset_"):
-        if source_bbox_delta is None:
-            return None
-        target_delta = source_bbox_delta.detach().view(1, 4).expand(selected_deltas.shape[0], -1)
-        bbox_loss_value = _delta_loss_tensor(
-            selected_deltas,
-            target_delta,
-            mode=bbox_loss,
-            reduction="sum",
-            direction=bbox_direction,
-        )
-    else:
-        selected_anchors = rpn_anchors[candidate_mask]
-        selected_boxes = rpn_box_coder.decode(selected_deltas, [selected_anchors]).view(-1, 4)
-        selected_boxes = _resize_boxes_xyxy_tensor(selected_boxes, from_size, to_size)
-        target_boxes = source_proposal_xyxy.detach().view(1, 4).expand(selected_boxes.shape[0], -1)
-        bbox_loss_value = _bbox_loss_xyxy_tensor(
-            selected_boxes,
-            target_boxes,
-            mode=bbox_loss,
-            reduction="sum",
-            direction=bbox_direction,
-        )
+    selected_anchors = rpn_anchors[candidate_mask]
+    target_box_in_rpn_scale = _resize_boxes_xyxy_tensor(source_proposal, to_size, from_size)
+    target_boxes = target_box_in_rpn_scale.expand(selected_anchors.shape[0], -1)
+    target_delta = _box_coder_encode_single(
+        rpn_box_coder,
+        target_boxes,
+        selected_anchors.detach(),
+    )
+    bbox_loss_value = _delta_loss_tensor(
+        selected_deltas,
+        target_delta.detach(),
+        mode=bbox_loss,
+        reduction="sum",
+        direction=bbox_direction,
+    )
 
     selected_logits = rpn_objectness_logits.reshape(-1)[candidate_mask]
-    obj_target = torch.sigmoid(source_obj_logit.detach()).to(
-        dtype=selected_logits.dtype,
-        device=selected_logits.device,
-    ).expand_as(selected_logits)
+    obj_target = torch.ones_like(selected_logits)
     obj_loss_value = _objectness_loss_tensor(
         selected_logits,
         obj_target,
@@ -1868,7 +1881,7 @@ def build_faster_rcnn_null_losses_by_stage(
     from_size,
     to_size,
     proposal_offset: int = 0,
-    rpn_bbox_loss: str = "box_l1",
+    rpn_bbox_loss: str = "offset_l1",
     rpn_obj_loss: str = "bcewithlogits",
     roi_bbox_loss: str = "box_l1",
     roi_cls_loss: str = "bcewithlogits",
@@ -1918,29 +1931,20 @@ def build_faster_rcnn_null_losses_by_stage(
     final_box_target_in_rpn_scale = _resize_boxes_xyxy_tensor(final_box_target, to_size, from_size)
     selected_deltas = rpn_bbox_deltas[rpn_raw_idx].view(1, 4)
     selected_anchor = rpn_anchors[rpn_raw_idx].view(1, 4)
-    if str(rpn_bbox_loss).strip().lower().startswith("offset_"):
-        rpn_target_delta = _box_coder_encode_single(
-            rpn_box_coder,
-            final_box_target_in_rpn_scale,
-            selected_anchor.detach(),
-        ).view(1, 4)
-        rpn_bbox_loss_value = _delta_loss_tensor(
-            selected_deltas,
-            rpn_target_delta.detach(),
-            mode=rpn_bbox_loss,
-            reduction="sum",
-            direction=rpn_bbox_direction,
-        )
-    else:
-        source_rpn_proposal = rpn_box_coder.decode(selected_deltas, [selected_anchor]).view(1, 4)
-        source_rpn_proposal = _resize_boxes_xyxy_tensor(source_rpn_proposal, from_size, to_size)
-        rpn_bbox_loss_value = _bbox_loss_xyxy_tensor(
-            source_rpn_proposal,
-            final_box_target,
-            mode=rpn_bbox_loss,
-            reduction="sum",
-            direction=rpn_bbox_direction,
-        )
+    if not str(rpn_bbox_loss).strip().lower().startswith("offset_"):
+        raise ValueError("Faster R-CNN RPN null_target bbox_loss supports only offset_l1 or offset_l2.")
+    rpn_target_delta = _box_coder_encode_single(
+        rpn_box_coder,
+        final_box_target_in_rpn_scale,
+        selected_anchor.detach(),
+    ).view(1, 4)
+    rpn_bbox_loss_value = _delta_loss_tensor(
+        selected_deltas,
+        rpn_target_delta.detach(),
+        mode=rpn_bbox_loss,
+        reduction="sum",
+        direction=rpn_bbox_direction,
+    )
 
     selected_obj_logit = rpn_objectness_logits.reshape(-1)[rpn_raw_idx]
     obj_target = torch.full_like(selected_obj_logit, 0.5)
@@ -1963,14 +1967,9 @@ def build_faster_rcnn_null_losses_by_stage(
         )
         if roi_delta is None:
             return None
-        roi_target_delta = _box_coder_encode_single(
-            roi_box_coder,
-            final_box_target,
-            source_proposal,
-        ).view(1, 4)
         roi_bbox_loss_value = _delta_loss_tensor(
             roi_delta,
-            roi_target_delta.detach(),
+            torch.zeros_like(roi_delta),
             mode=roi_bbox_loss,
             reduction="sum",
             direction=roi_bbox_direction,
@@ -1979,18 +1978,21 @@ def build_faster_rcnn_null_losses_by_stage(
         final_box_from_roi = _xywh_to_xyxy_tensor(pred_img[raw_idx, :4].view(1, 4))
         roi_bbox_loss_value = _bbox_loss_xyxy_tensor(
             final_box_from_roi,
-            final_box_target,
+            source_proposal,
             mode=roi_bbox_loss,
             reduction="sum",
             direction=roi_bbox_direction,
         )
 
     cls_logits = logit_img[raw_idx]
-    uniform_target = torch.full_like(cls_logits, 1.0 / float(cls_logits.numel()))
+    final_cls = int(pred_img[raw_idx, 5].detach().long().item())
+    cls_target = torch.zeros_like(cls_logits)
+    if 0 <= final_cls < cls_target.numel():
+        cls_target[final_cls] = 1.0
     roi_cls_loss_value = _class_loss_tensor(
         cls_logits,
-        uniform_target,
-        class_idx=None,
+        cls_target,
+        class_idx=final_cls,
         mode=roi_cls_loss,
         direction=roi_cls_direction,
         reduction="sum",
@@ -2129,7 +2131,7 @@ def collect_faster_rcnn_candidate_layer_grads_per_target(
     roi_cls_direction: str = "pred_to_target",
     rpn_cand_enabled=False,
     rpn_cand_obj_threshold=0.0,
-    rpn_bbox_loss: str = "l1",
+    rpn_bbox_loss: str = "offset_l1",
     rpn_obj_loss: str = "bcewithlogits",
     rpn_bbox_direction: str = "pred_to_target",
     rpn_obj_direction: str = "pred_to_target",
@@ -2139,7 +2141,7 @@ def collect_faster_rcnn_candidate_layer_grads_per_target(
     roi_null_bbox_direction: str = "pred_to_target",
     roi_null_cls_direction: str = "pred_to_target",
     rpn_null_enabled=True,
-    rpn_null_bbox_loss: str = "l1",
+    rpn_null_bbox_loss: str = "offset_l1",
     rpn_null_obj_loss: str = "bcewithlogits",
     rpn_null_bbox_direction: str = "pred_to_target",
     rpn_null_obj_direction: str = "pred_to_target",
@@ -2168,6 +2170,8 @@ def collect_faster_rcnn_candidate_layer_grads_per_target(
         or rpn_null_bbox_loss not in bbox_supported
     ):
         raise ValueError("Faster R-CNN layer_grad bbox_loss supports box_l1, box_l2, offset_l1, offset_l2.")
+    if not rpn_bbox_loss.startswith("offset_") or not rpn_null_bbox_loss.startswith("offset_"):
+        raise ValueError("Faster R-CNN RPN layer_grad bbox_loss supports only offset_l1 or offset_l2.")
 
     if not isinstance(input_tensor, list):
         input_images = [img for img in input_tensor] if isinstance(input_tensor, torch.Tensor) else list(input_tensor)
@@ -2365,11 +2369,13 @@ def collect_faster_rcnn_candidate_layer_grads_per_target(
                         if roi_target_scalar is None:
                             if target_mode == "cand":
                                 roi_target_scalar = build_faster_rcnn_roi_candidate_losses(
+                                    roi_box_coder=roi_heads.box_coder,
                                     pred_img=pred_img,
                                     logit_img=logit_img,
                                     raw_idx=raw_idx,
                                     iou_threshold=iou_threshold,
                                     box_regression=box_regression,
+                                    proposals_xyxy=proposals_img,
                                     proposal_indices_img=proposal_indices_img,
                                     labels_internal_img=labels_internal_img,
                                     proposal_offset=proposal_offset_img,
@@ -2411,6 +2417,7 @@ def collect_faster_rcnn_candidate_layer_grads_per_target(
                                     source_proposal_xyxy=source_proposal_xyxy,
                                     source_obj_logit=source_obj_logit,
                                     source_bbox_delta=source_bbox_delta,
+                                    final_box_xyxy=det[bbox_idx, :4],
                                     from_size=transformed_images.image_sizes[image_idx],
                                     to_size=original_image_sizes[image_idx],
                                     iou_threshold=iou_threshold,

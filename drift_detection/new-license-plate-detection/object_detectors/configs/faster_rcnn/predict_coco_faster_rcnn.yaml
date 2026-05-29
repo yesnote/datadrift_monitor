@@ -85,9 +85,8 @@ output:
       reduction: [l1_norm, l2_norm, min, max, mean, std]
 
       cand_target:
-        # rpn_bbox_loss box_*: sum over candidates of bbox_loss(decoded candidate RPN proposal, source proposal after RPN NMS)
-        # rpn_bbox_loss offset_*: sum over candidates of bbox_loss(candidate RPN bbox delta, source proposal RPN bbox delta)
-        # rpn_obj_loss: sum over candidates of obj_loss(candidate RPN objectness logit, source proposal objectness)
+        # rpn_bbox_loss offset_*: sum over candidates of bbox_loss(candidate RPN bbox delta, delta(candidate RPN anchor -> final detection box))
+        # rpn_obj_loss: sum over candidates of obj_loss(candidate RPN objectness logit, positive anchor target 1)
         # roi_bbox_loss box_*: sum over candidates of bbox_loss(decoded candidate ROI box, final detection box after ROI NMS)
         # roi_bbox_loss offset_*: sum over candidates of bbox_loss(candidate ROI bbox delta, final detection ROI bbox delta)
         # roi_cls_loss: sum over candidates of cls_loss(candidate ROI class logits, final detection class target)
@@ -100,9 +99,9 @@ output:
         rpn:
           cand_obj_threshold: 0.0
           obj_loss: bcewithlogits  # bcewithlogits | abs_diff | signed_diff
-          bbox_loss: box_l1  # box_l1 | box_l2 | offset_l1 | offset_l2
+          bbox_loss: offset_l1  # offset_l1 | offset_l2
           obj_direction: pred_to_target  # pred_to_target | target_to_pred, only for obj_loss: signed_diff
-          bbox_direction: pred_to_target  # fixed; reverse is redundant for box_l1/box_l2/offset_l1/offset_l2
+          bbox_direction: pred_to_target  # fixed; reverse is redundant for offset_l1/offset_l2
         roi:
           cand_score_threshold: 0.0
           cls_loss: bcewithlogits  # bcewithlogits | kl
@@ -111,12 +110,11 @@ output:
           bbox_direction: pred_to_target  # fixed; reverse is redundant for box_l1/box_l2/offset_l1/offset_l2
 
       null_target:
-        # rpn_bbox_loss box_*: bbox_loss(decoded source RPN proposal, final detection box)
         # rpn_bbox_loss offset_*: bbox_loss(source RPN bbox delta, delta(source RPN anchor -> final detection box))
         # rpn_obj_loss: obj_loss(source RPN objectness logit, target 0.5)
-        # roi_bbox_loss box_*: bbox_loss(final ROI decoded box, final detection box)
-        # roi_bbox_loss offset_*: bbox_loss(final ROI bbox delta, delta(source proposal -> final detection box))
-        # roi_cls_loss: cls_loss(final detection class logits, uniform class target)
+        # roi_bbox_loss box_*: bbox_loss(final ROI decoded box, source proposal)
+        # roi_bbox_loss offset_*: bbox_loss(final ROI bbox delta, zero delta)
+        # roi_cls_loss: cls_loss(final detection class logits, final detection class target)
         scalar: [rpn_obj_loss, rpn_bbox_loss, roi_cls_loss, roi_bbox_loss]
         layer:
           rpn_obj_loss: ["rpn.head.conv", "rpn.head.cls_logits"]
@@ -125,9 +123,9 @@ output:
           roi_bbox_loss: ["roi_heads.box_head.fc7", "roi_heads.box_predictor.bbox_pred"]
         rpn:
           obj_loss: bcewithlogits  # bcewithlogits | abs_diff | signed_diff
-          bbox_loss: box_l1  # box_l1 | box_l2 | offset_l1 | offset_l2
+          bbox_loss: offset_l1  # offset_l1 | offset_l2
           obj_direction: pred_to_target  # pred_to_target | target_to_pred, only for obj_loss: signed_diff
-          bbox_direction: pred_to_target  # fixed; reverse is redundant for box_l1/box_l2/offset_l1/offset_l2
+          bbox_direction: pred_to_target  # fixed; reverse is redundant for offset_l1/offset_l2
         roi:
           cls_loss: bcewithlogits  # bcewithlogits | kl
           bbox_loss: box_l1  # box_l1 | box_l2 | offset_l1 | offset_l2

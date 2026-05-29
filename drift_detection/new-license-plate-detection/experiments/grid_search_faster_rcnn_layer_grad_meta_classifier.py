@@ -28,10 +28,11 @@ RUN_META_CLASSIFIER = True
 REUSE_EXISTING = False
 
 # Use None for all meta-classifier combinations, or set a small int for a smoke test.
-# Object detector term CSVs are still generated once for all 30 single-term settings.
+# Object detector term CSVs are still generated once for all 26 single-term settings.
 MAX_COMBINATIONS = None
 
-BBOX_LOSSES = ["box_l1", "box_l2", "offset_l1", "offset_l2"]
+RPN_BBOX_LOSSES = ["offset_l1", "offset_l2"]
+ROI_BBOX_LOSSES = ["box_l1", "box_l2", "offset_l1", "offset_l2"]
 BBOX_DIRECTIONS = ["pred_to_target"]
 OBJ_LOSSES = ["bcewithlogits", "abs_diff", "signed_diff"]
 CLS_LOSSES = ["bcewithlogits", "kl"]
@@ -147,7 +148,7 @@ def _base_combo(target: str, term: str) -> dict:
     return {
         "target": target,
         "term": term,
-        "rpn_bbox_loss": "box_l1",
+        "rpn_bbox_loss": "offset_l1",
         "rpn_bbox_direction": "pred_to_target",
         "rpn_obj_loss": "bcewithlogits",
         "rpn_obj_direction": "pred_to_target",
@@ -160,7 +161,7 @@ def _base_combo(target: str, term: str) -> dict:
 
 def iter_term_combinations():
     for target in ("cand_target", "null_target"):
-        for rpn_bbox_loss in BBOX_LOSSES:
+        for rpn_bbox_loss in RPN_BBOX_LOSSES:
             for rpn_bbox_direction in BBOX_DIRECTIONS:
                 combo = _base_combo(target, "rpn_bbox_loss")
                 combo.update(
@@ -182,7 +183,7 @@ def iter_term_combinations():
                 )
                 yield combo
 
-        for roi_bbox_loss in BBOX_LOSSES:
+        for roi_bbox_loss in ROI_BBOX_LOSSES:
             for roi_bbox_direction in BBOX_DIRECTIONS:
                 combo = _base_combo(target, "roi_bbox_loss")
                 combo.update(
