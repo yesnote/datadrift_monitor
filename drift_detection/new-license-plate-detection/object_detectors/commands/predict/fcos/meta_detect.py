@@ -1,4 +1,5 @@
 from commands.predict.common import *
+from commands.predict.fcos.common import select_fcos_post_nms, unpack_fcos_model_output
 
 def run_meta_detect_csv(config, run_dir):
     run_dir = Path(run_dir)
@@ -88,20 +89,12 @@ def run_meta_detect_csv(config, run_dir):
             t_detector = timing.start()
             with torch.no_grad():
                 model_output = detector.model(infer_batch, augment=False)
-                raw_prediction = model_output[0] if isinstance(model_output, (tuple, list)) else model_output
-                raw_logits = model_output[1] if isinstance(model_output, (tuple, list)) and len(model_output) > 1 else None
+                raw_prediction, raw_logits, raw_indices = unpack_fcos_model_output(model_output)
                 pre_nms_prediction = None
                 if bool(getattr(detector, "is_fcos", False)):
-                    pre_nms_prediction, _pre_nms_logits = detector.get_last_pre_nms_predictions()
-                selected_preds, _selected_logits, _selected_objectness, selected_indices = detector.non_max_suppression(
-                    prediction=raw_prediction,
-                    logits=raw_logits,
-                    conf_thres=nms_kwargs["conf_thres"],
-                    iou_thres=nms_kwargs["iou_thres"],
-                    classes=nms_kwargs["classes"],
-                    agnostic=nms_kwargs["agnostic"],
-                    max_det=nms_kwargs["max_det"],
-                    return_indices=True,
+                    pre_nms_prediction, _pre_nms_logits, _pre_nms_indices = detector.get_last_pre_nms_predictions()
+                selected_preds, _selected_logits, _selected_objectness, selected_indices = select_fcos_post_nms(
+                    detector, raw_prediction, raw_logits, raw_indices
                 )
             detector_inference_sec = timing.elapsed(t_detector)
 
@@ -144,7 +137,7 @@ def run_meta_detect_csv(config, run_dir):
                     t_candidate = timing.start()
                     fbox = torch.tensor(box, dtype=torch.float32, device=device)
                     with torch.no_grad():
-                        pseudo_row = pred_img[raw_pred_idx].detach() if raw_pred_idx < int(pred_img.shape[0]) else None
+                        pseudo_row = pred_img[pred_idx].detach() if is_fcos and pred_idx < int(pred_img.shape[0]) else pred_img[raw_pred_idx].detach() if raw_pred_idx < int(pred_img.shape[0]) else None
                         is_faster_rcnn = bool(getattr(detector, "is_faster_rcnn", False))
                         has_label_column = is_faster_rcnn or is_fcos
                         raw_xyxy = _xywh_to_xyxy_tensor(candidate_img[:, :4].detach())
@@ -200,8 +193,9 @@ def run_meta_detect_csv(config, run_dir):
                     cand_ious = ious[cand_mask]
                     raw_cls_start = 6 if (bool(getattr(detector, "is_faster_rcnn", False)) or is_fcos) else 5
                     final_cls = pred_img[:, raw_cls_start:] if pred_img.shape[1] > raw_cls_start else torch.zeros((pred_img.shape[0], 0), device=device)
-                    if 0 <= raw_pred_idx < int(final_cls.shape[0]) and final_cls.numel() > 0:
-                        pred_probs = final_cls[raw_pred_idx].detach().float()
+                    final_prob_idx = pred_idx if is_fcos else raw_pred_idx
+                    if 0 <= final_prob_idx < int(final_cls.shape[0]) and final_cls.numel() > 0:
+                        pred_probs = final_cls[final_prob_idx].detach().float()
                     else:
                         pred_probs = torch.zeros((num_classes,), dtype=torch.float32, device=device)
                     prob_values = {"prob_sum": pred_probs.sum() if pred_probs.numel() else torch.zeros((), dtype=torch.float32, device=device)}
@@ -283,7 +277,7 @@ def run_meta_detect_csv(config, run_dir):
                     "feature_compute_sec": feature_compute_sec,
                 },
             )
-            del infer_batch, model_output, raw_prediction, raw_logits, selected_preds, selected_indices
+            del infer_batch, model_output, raw_prediction, raw_logits, raw_indices, selected_preds, selected_indices
 
     del detector
     if device.type == "cuda":

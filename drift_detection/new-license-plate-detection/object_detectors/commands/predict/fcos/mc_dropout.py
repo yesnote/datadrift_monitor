@@ -1,4 +1,5 @@
 from commands.predict.common import *
+from commands.predict.fcos.common import select_fcos_post_nms, unpack_fcos_model_output
 
 
 def _match_faster_rcnn_mc_feature(det_box, det_cls, run_features_b, run_labels_b, raw_idx):
@@ -176,17 +177,9 @@ def run_mc_dropout_csv(config, run_dir):
                     det_output = _forward_yolov5_head_from_cache(detector, yolo_cached_features)
                 else:
                     det_output = detector.model(infer_batch, augment=False)
-                det_raw_pred = det_output[0] if isinstance(det_output, (tuple, list)) else det_output
-                det_raw_logits = det_output[1] if isinstance(det_output, (tuple, list)) and len(det_output) > 1 else None
-                selected_preds, _selected_logits, _selected_objectness, selected_indices = detector.non_max_suppression(
-                    prediction=det_raw_pred,
-                    logits=det_raw_logits,
-                    conf_thres=nms_kwargs["conf_thres"],
-                    iou_thres=nms_kwargs["iou_thres"],
-                    classes=nms_kwargs["classes"],
-                    agnostic=nms_kwargs["agnostic"],
-                    max_det=nms_kwargs["max_det"],
-                    return_indices=True,
+                det_raw_pred, det_raw_logits, det_raw_indices = unpack_fcos_model_output(det_output)
+                selected_preds, _selected_logits, _selected_objectness, selected_indices = select_fcos_post_nms(
+                    detector, det_raw_pred, det_raw_logits, det_raw_indices
                 )
             detector_inference_sec += timing.elapsed(t_detector)
 
@@ -215,12 +208,7 @@ def run_mc_dropout_csv(config, run_dir):
                             model_output = _forward_yolov5_head_from_cache(detector, yolo_cached_features)
                         else:
                             model_output = detector.model(infer_batch, augment=False)
-                        raw_prediction = model_output[0] if isinstance(model_output, (tuple, list)) else model_output
-                        raw_logits = (
-                            model_output[1]
-                            if isinstance(model_output, (tuple, list)) and len(model_output) > 1
-                            else None
-                        )
+                        raw_prediction, raw_logits, _raw_indices = unpack_fcos_model_output(model_output)
                         detector_inference_sec += timing.elapsed(t_detector)
 
                         t_feature = timing.start()
@@ -323,7 +311,7 @@ def run_mc_dropout_csv(config, run_dir):
                                         det_cls,
                                         features_by_image[b],
                                         labels_by_image[b] if b < len(labels_by_image) else None,
-                                        raw_idx,
+                                        -1 if bool(getattr(detector, "is_fcos", False)) else raw_idx,
                                     )
                                     if matched is not None:
                                         per_run_values.append(matched)
@@ -335,11 +323,11 @@ def run_mc_dropout_csv(config, run_dir):
                             prob_vec = torch.zeros((class_count,), dtype=det_b.dtype, device=det_b.device)
                             if (
                                 b < len(det_raw_pred)
-                                and 0 <= raw_idx < int(det_raw_pred[b].shape[0])
+                                and 0 <= pred_idx < int(det_raw_pred[b].shape[0])
                                 and det_raw_pred[b].shape[1] > 6
                             ):
                                 det_probs = get_prediction_class_probs(
-                                    detector, det_raw_pred[b][raw_idx : raw_idx + 1]
+                                    detector, det_raw_pred[b][pred_idx : pred_idx + 1]
                                 ).detach().float().view(-1)
                                 copy_count = min(class_count, int(det_probs.shape[0]))
                                 if copy_count > 0:

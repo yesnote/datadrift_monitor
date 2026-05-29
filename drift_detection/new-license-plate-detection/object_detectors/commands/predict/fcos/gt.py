@@ -1,4 +1,5 @@
 from commands.predict.common import *
+from commands.predict.fcos.common import select_fcos_post_nms, unpack_fcos_model_output
 
 def run_fn_csv(config, run_dir):
     run_dir = Path(run_dir)
@@ -187,17 +188,9 @@ def run_tp_csv(config, run_dir):
                 infer_batch, ratios, pads, resized_chws = _prepare_infer_batch(detector, image_list, device, auto=False)
             with torch.no_grad():
                 model_output = detector.model(infer_batch, augment=False)
-                raw_prediction = model_output[0] if isinstance(model_output, (tuple, list)) else model_output
-                raw_logits = model_output[1] if isinstance(model_output, (tuple, list)) and len(model_output) > 1 else None
-                selected_preds, _selected_logits, _selected_objectness, selected_indices = detector.non_max_suppression(
-                    prediction=raw_prediction,
-                    logits=raw_logits,
-                    conf_thres=nms_kwargs["conf_thres"],
-                    iou_thres=nms_kwargs["iou_thres"],
-                    classes=nms_kwargs["classes"],
-                    agnostic=nms_kwargs["agnostic"],
-                    max_det=nms_kwargs["max_det"],
-                    return_indices=True,
+                raw_prediction, raw_logits, raw_indices = unpack_fcos_model_output(model_output)
+                selected_preds, _selected_logits, _selected_objectness, selected_indices = select_fcos_post_nms(
+                    detector, raw_prediction, raw_logits, raw_indices
                 )
 
             for sample_idx in range(len(image_list)):
@@ -304,7 +297,7 @@ def run_tp_csv(config, run_dir):
                                 "error_type": error_row["error_type"],
                             }
                         )
-            del infer_batch, model_output, raw_prediction, raw_logits, selected_preds, selected_indices
+            del infer_batch, model_output, raw_prediction, raw_logits, raw_indices, selected_preds, selected_indices
     finally:
         if output_file is not None:
             output_file.close()

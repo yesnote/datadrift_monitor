@@ -140,6 +140,11 @@ class FCOSPostProcessor(torch.nn.Module):
 
         boxlists = list(zip(*sampled_boxes))
         boxlists = [cat_boxlist(boxlist) for boxlist in boxlists]
+        for boxlist in boxlists:
+            boxlist.add_field(
+                "pre_nms_candidate_idx",
+                torch.arange(len(boxlist), dtype=torch.long, device=boxlist.bbox.device),
+            )
         self.last_pre_nms_boxlists = boxlists
         if not self.bbox_aug_enabled:
             boxlists = self.select_over_all_levels(boxlists)
