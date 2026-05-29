@@ -48,6 +48,7 @@ _SUPPORTED = {
         "mc_dropout",
         "ensemble",
         "meta_detect",
+        "layer_grad",
     },
 }
 
@@ -72,4 +73,3 @@ def resolve_predict_runner(uncertainty: str, model_type: str = "yolov5"):
 
 
 __all__ = ["normalize_predict_model_type", "resolve_predict_runner"]
-
