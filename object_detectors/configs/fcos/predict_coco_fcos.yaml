@@ -95,7 +95,7 @@ output:
         cnt_loss: ["detector_model.rpn.head.centerness"]
       reduction: [l1_norm, l2_norm, min, max, mean, std]
       target: cand_target  # cand_target | null_target
-      cand_score_threshold: 0.05
+      cand_score_threshold: 0.0
       bbox_loss: l1  # l1 | l2
       cls_loss: bcewithlogits  # bcewithlogits | kl
       cnt_loss: bcewithlogits  # bcewithlogits | abs_diff | signed_diff
