@@ -284,6 +284,49 @@ class FCOSTorchObjectDetector(nn.Module):
             self.detector_model.train()
         return self._detections_to_contract(detections)
 
+    def forward_layer_grad(self, processed_images):
+        from fcos_core.structures.image_list import to_image_list
+
+        was_training = self.detector_model.training
+        self.detector_model.eval()
+        image_list = to_image_list(processed_images)
+        features = self.detector_model.backbone(image_list.tensors)
+        rpn = self.detector_model.rpn
+        box_cls, box_regression, centerness = rpn.head(features)
+        locations = rpn.compute_locations(features)
+        detections, _losses = rpn._forward_test(
+            locations,
+            box_cls,
+            box_regression,
+            centerness,
+            image_list.image_sizes,
+        )
+        post_prediction, post_logits, post_indices = self._boxlists_to_contract(detections)
+        pre_nms_boxlists = getattr(rpn.box_selector_test, "last_pre_nms_boxlists", None)
+        pre_prediction, pre_logits, pre_indices = (
+            self._boxlists_to_contract(pre_nms_boxlists)
+            if pre_nms_boxlists is not None
+            else (None, None, None)
+        )
+        if was_training and self.mode == "train":
+            self.detector_model.train()
+        return {
+            "image_list": image_list,
+            "features": features,
+            "locations": locations,
+            "box_cls": box_cls,
+            "box_regression": box_regression,
+            "centerness": centerness,
+            "detections": detections,
+            "pre_nms_boxlists": pre_nms_boxlists,
+            "post_prediction": post_prediction,
+            "post_logits": post_logits,
+            "post_indices": post_indices,
+            "pre_prediction": pre_prediction,
+            "pre_logits": pre_logits,
+            "pre_indices": pre_indices,
+        }
+
     def _boxlists_to_contract(self, detections):
         rows_by_image = []
         logits_by_image = []

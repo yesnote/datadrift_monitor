@@ -29,7 +29,7 @@ dataloader:
   aspect_ratio_grouping: true
 
 output:
-  # gt | deterministic | score | class_probability | entropy | energy | mc_dropout | ensemble | meta_detect
+  # gt | deterministic | score | class_probability | entropy | energy | mc_dropout | ensemble | meta_detect | layer_grad
   uncertainty: gt
   gt:
     iou_match_threshold: 0.5
@@ -63,5 +63,32 @@ output:
   meta_detect:
     score_threshold: 0.0
     iou_threshold: 0.45
+    save_csv:
+      enabled: true
+
+  layer_grad:
+    gradient:
+      # cand_target:
+      #   bbox_loss: sum over candidates of loss(candidate l,t,r,b, final detection box encoded as l,t,r,b at each candidate location)
+      #   cls_loss: sum over candidates of loss(candidate class logits, final detection class target)
+      #   cnt_loss: sum over candidates of loss(candidate centerness logit, FCOS centerness target from final detection box)
+      # null_target:
+      #   bbox_loss: loss(final/source l,t,r,b, zero l,t,r,b)
+      #   cls_loss: loss(final/source class logits, uniform class target)
+      #   cnt_loss: loss(final/source centerness logit, target 0.5)
+      scalar: [bbox_loss, cls_loss, cnt_loss]
+      layer:
+        bbox_loss: ["detector_model.rpn.head.bbox_pred"]
+        cls_loss: ["detector_model.rpn.head.cls_logits"]
+        cnt_loss: ["detector_model.rpn.head.centerness"]
+      reduction: [l1_norm, l2_norm, min, max, mean, std]
+      target: cand_target  # cand_target | null_target
+      cand_score_threshold: 0.05
+      bbox_loss: l1  # l1 | l2
+      cls_loss: bcewithlogits  # bcewithlogits | kl
+      cnt_loss: bcewithlogits  # bcewithlogits | abs_diff | signed_diff
+      bbox_direction: pred_to_target
+      cls_direction: pred_to_target  # pred_to_target | target_to_pred, only for cls_loss: kl
+      cnt_direction: pred_to_target  # pred_to_target | target_to_pred, only for cnt_loss: signed_diff
     save_csv:
       enabled: true
