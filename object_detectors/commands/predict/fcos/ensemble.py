@@ -1,4 +1,19 @@
 from commands.predict.common import *
+from commands.predict.fcos.common import select_fcos_post_nms, unpack_fcos_model_output
+
+
+def _match_post_nms_feature(det_box, det_cls, run_features_b, run_labels_b):
+    if run_features_b is None or int(run_features_b.shape[0]) == 0:
+        return None
+    if run_labels_b is None or int(run_labels_b.shape[0]) != int(run_features_b.shape[0]):
+        return None
+    cls_mask = run_labels_b.to(det_box.device) == int(det_cls)
+    if not bool(cls_mask.any()):
+        return None
+    candidate_indices = torch.where(cls_mask)[0]
+    ious = _box_iou_1vN_tensor(det_box.view(1, 4), run_features_b[candidate_indices, :4])
+    best_pos = int(torch.argmax(ious).detach().cpu().item())
+    return run_features_b[candidate_indices[best_pos]]
 
 def run_ensemble_csv(config, run_dir):
     run_dir = Path(run_dir)
@@ -112,19 +127,13 @@ def run_ensemble_csv(config, run_dir):
                             det_output = detector.forward_preprocessed(fcos_preprocessed)
                         else:
                             det_output = detector.model(infer_batch, augment=False)
-                        det_raw_pred = det_output[0] if isinstance(det_output, (tuple, list)) else det_output
-                        det_raw_logits = det_output[1] if isinstance(det_output, (tuple, list)) and len(det_output) > 1 else None
-                        nms_logits = _resolve_nms_logits(det_raw_pred, det_raw_logits, num_classes_hint=n_classes_hint)
+                        det_raw_pred, det_raw_logits, det_raw_indices = unpack_fcos_model_output(det_output)
                         nms_kwargs = _resolve_detector_nms_kwargs(detector)
-                        selected_preds, _selected_logits, _selected_objectness, selected_indices = detector.non_max_suppression(
+                        selected_preds, _selected_logits, _selected_objectness, selected_indices = select_fcos_post_nms(
+                            detector,
                             det_raw_pred,
-                            nms_logits,
-                            conf_thres=nms_kwargs["conf_thres"],
-                            iou_thres=nms_kwargs["iou_thres"],
-                            classes=nms_kwargs["classes"],
-                            agnostic=nms_kwargs["agnostic"],
-                            max_det=nms_kwargs["max_det"],
-                            return_indices=True,
+                            det_raw_logits,
+                            det_raw_indices,
                         )
                     detector_inference_total_sec += timing.elapsed(t_detector)
 
@@ -132,6 +141,7 @@ def run_ensemble_csv(config, run_dir):
                     if isinstance(det_raw_pred, list):
                         variable_candidate_runs = True
                         run_features = []
+                        run_labels = []
                         class_count = None
                         for pred_img in det_raw_pred:
                             pred_img = pred_img.detach().float()
@@ -139,6 +149,7 @@ def run_ensemble_csv(config, run_dir):
                             score_vec = pred_img[:, 4:5]
                             prob_mat = get_prediction_class_probs(detector, pred_img).detach().float()
                             run_features.append(torch.cat([bbox_xyxy, score_vec, prob_mat], dim=1).detach())
+                            run_labels.append(pred_img[:, 5].detach().long() if pred_img.shape[1] > 5 else None)
                             if class_count is None:
                                 class_count = int(prob_mat.shape[-1])
                         if class_count is None:
@@ -158,7 +169,7 @@ def run_ensemble_csv(config, run_dir):
                         raise ValueError(
                             f"All ensemble weights must have the same class count: {n_classes_actual} vs {class_count}."
                         )
-                    feature_runs.append(run_features)
+                    feature_runs.append({"features": run_features, "labels": run_labels} if variable_candidate_runs else run_features)
                     feature_compute_sec += timing.elapsed(t_feature)
 
                     if det_idx == 0:
@@ -212,8 +223,17 @@ def run_ensemble_csv(config, run_dir):
                         if variable_candidate_runs:
                             per_model_values = []
                             for run_features in feature_runs:
-                                if b < len(run_features) and 0 <= raw_idx < int(run_features[b].shape[0]):
-                                    per_model_values.append(run_features[b][raw_idx])
+                                features_by_image = run_features["features"] if isinstance(run_features, dict) else run_features
+                                labels_by_image = run_features.get("labels") if isinstance(run_features, dict) else None
+                                if b < len(features_by_image):
+                                    matched = _match_post_nms_feature(
+                                        det_b[pred_idx, :4].to(features_by_image[b].device),
+                                        cls_idx,
+                                        features_by_image[b],
+                                        labels_by_image[b] if labels_by_image is not None and b < len(labels_by_image) else None,
+                                    )
+                                    if matched is not None:
+                                        per_model_values.append(matched)
                             if not per_model_values:
                                 class_count = int(n_classes_actual) if n_classes_actual is not None else int(n_classes_hint)
                                 prob_vec = torch.zeros((class_count,), dtype=det_b.dtype)

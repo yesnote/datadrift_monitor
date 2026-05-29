@@ -1,4 +1,5 @@
 from commands.predict.common import *
+from commands.predict.fcos.common import select_fcos_post_nms, unpack_fcos_model_output
 
 def run_class_probability_csv(config, run_dir):
     run_dir = Path(run_dir)
@@ -54,27 +55,15 @@ def run_class_probability_csv(config, run_dir):
             infer_batch, _ratios, _pads, _resized_chws = _prepare_infer_batch(detector, image_list, device, auto=False)
             raw_prediction = None
             raw_logits = None
+            raw_indices = None
             selected_preds = None
             selected_indices = None
             t_detector = timing.start()
             with torch.no_grad():
                 model_output = detector.model(infer_batch, augment=False)
-                raw_prediction = model_output[0] if isinstance(model_output, (tuple, list)) else model_output
-                raw_logits = (
-                    model_output[1]
-                    if isinstance(model_output, (tuple, list)) and len(model_output) > 1
-                    else None
-                )
-                nms_logits = _resolve_nms_logits(raw_prediction, raw_logits)
-                selected_preds, _selected_logits, _selected_objectness, selected_indices = detector.non_max_suppression(
-                    prediction=raw_prediction,
-                    logits=nms_logits,
-                    conf_thres=nms_kwargs["conf_thres"],
-                    iou_thres=nms_kwargs["iou_thres"],
-                    classes=nms_kwargs["classes"],
-                    agnostic=nms_kwargs["agnostic"],
-                    max_det=nms_kwargs["max_det"],
-                    return_indices=True,
+                raw_prediction, raw_logits, raw_indices = unpack_fcos_model_output(model_output)
+                selected_preds, _selected_logits, _selected_objectness, selected_indices = select_fcos_post_nms(
+                    detector, raw_prediction, raw_logits, raw_indices
                 )
             detector_inference_sec = timing.elapsed(t_detector)
 
@@ -89,8 +78,8 @@ def run_class_probability_csv(config, run_dir):
                 raw_keep_b = selected_indices[sample_idx]
                 if bool(getattr(detector, "is_fcos", False)):
                     pred_probs = (
-                        get_selected_prediction_class_probs(detector, raw_prediction[sample_idx], raw_keep_b)
-                        if int(raw_keep_b.shape[0]) > 0 and raw_prediction[sample_idx].shape[1] > 6
+                        get_prediction_class_probs(detector, raw_prediction[sample_idx])
+                        if int(det.shape[0]) > 0 and raw_prediction[sample_idx].shape[1] > 6
                         else torch.zeros((0, num_classes), dtype=torch.float32, device=device)
                     )
                 elif raw_logits is not None:
@@ -137,7 +126,7 @@ def run_class_probability_csv(config, run_dir):
                 num_predictions=batch_items,
                 stage_seconds={"detector_inference_sec": detector_inference_sec},
             )
-            del infer_batch, raw_prediction, raw_logits, selected_preds, selected_indices
+            del infer_batch, raw_prediction, raw_logits, raw_indices, selected_preds, selected_indices
 
     del detector
     if device.type == "cuda":

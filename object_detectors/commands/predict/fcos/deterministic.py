@@ -1,4 +1,5 @@
 from commands.predict.common import *
+from commands.predict.fcos.common import select_fcos_post_nms, unpack_fcos_model_output
 
 
 def _pred_class_name(detector, cls_idx):
@@ -16,14 +17,14 @@ def _empty_class_tensor(num_classes, device):
 def _selected_class_probs_and_logits(detector, raw_prediction, raw_logits, sample_idx, raw_keep_b, num_classes, device):
     if bool(getattr(detector, "is_fcos", False)):
         probs = (
-            get_selected_prediction_class_probs(detector, raw_prediction[sample_idx], raw_keep_b)
-            if int(raw_keep_b.shape[0]) > 0 and raw_prediction[sample_idx].shape[1] > 6
+            get_prediction_class_probs(detector, raw_prediction[sample_idx])
+            if raw_prediction[sample_idx].shape[0] > 0 and raw_prediction[sample_idx].shape[1] > 6
             else _empty_class_tensor(num_classes, device)
         )
         if raw_logits is not None:
             logits = (
-                raw_logits[sample_idx][raw_keep_b]
-                if int(raw_keep_b.shape[0]) > 0
+                raw_logits[sample_idx]
+                if raw_prediction[sample_idx].shape[0] > 0
                 else _empty_class_tensor(num_classes, device)
             )
         else:
@@ -167,46 +168,18 @@ def run_deterministic_uncertainties_csv(config, run_dir, uncertainties=None):
             if needs_warmup:
                 with torch.no_grad():
                     warmup_output = detector.model(infer_batch, augment=False)
-                    warmup_prediction = warmup_output[0] if isinstance(warmup_output, (tuple, list)) else warmup_output
-                    warmup_logits = (
-                        warmup_output[1]
-                        if isinstance(warmup_output, (tuple, list)) and len(warmup_output) > 1
-                        else None
-                    )
-                    warmup_nms_logits = _resolve_nms_logits(warmup_prediction, warmup_logits)
-                    detector.non_max_suppression(
-                        prediction=warmup_prediction,
-                        logits=warmup_nms_logits,
-                        conf_thres=nms_kwargs["conf_thres"],
-                        iou_thres=nms_kwargs["iou_thres"],
-                        classes=nms_kwargs["classes"],
-                        agnostic=nms_kwargs["agnostic"],
-                        max_det=nms_kwargs["max_det"],
-                        return_indices=True,
-                    )
+                    warmup_prediction, warmup_logits, warmup_indices = unpack_fcos_model_output(warmup_output)
+                    select_fcos_post_nms(detector, warmup_prediction, warmup_logits, warmup_indices)
                 _sync_timing_device(device)
-                del warmup_output, warmup_prediction, warmup_logits, warmup_nms_logits
+                del warmup_output, warmup_prediction, warmup_logits, warmup_indices
                 needs_warmup = False
 
             t_detector = next(iter(profilers.values())).start()
             with torch.no_grad():
                 model_output = detector.model(infer_batch, augment=False)
-                raw_prediction = model_output[0] if isinstance(model_output, (tuple, list)) else model_output
-                raw_logits = (
-                    model_output[1]
-                    if isinstance(model_output, (tuple, list)) and len(model_output) > 1
-                    else None
-                )
-                nms_logits = _resolve_nms_logits(raw_prediction, raw_logits)
-                selected_preds, _selected_logits, _selected_objectness, selected_indices = detector.non_max_suppression(
-                    prediction=raw_prediction,
-                    logits=nms_logits,
-                    conf_thres=nms_kwargs["conf_thres"],
-                    iou_thres=nms_kwargs["iou_thres"],
-                    classes=nms_kwargs["classes"],
-                    agnostic=nms_kwargs["agnostic"],
-                    max_det=nms_kwargs["max_det"],
-                    return_indices=True,
+                raw_prediction, raw_logits, raw_indices = unpack_fcos_model_output(model_output)
+                selected_preds, _selected_logits, _selected_objectness, selected_indices = select_fcos_post_nms(
+                    detector, raw_prediction, raw_logits, raw_indices
                 )
             detector_inference_sec = next(iter(profilers.values())).elapsed(t_detector)
 
@@ -298,7 +271,7 @@ def run_deterministic_uncertainties_csv(config, run_dir, uncertainties=None):
                     num_predictions=batch_items,
                     stage_seconds=stage_seconds,
                 )
-            del infer_batch, raw_prediction, raw_logits, selected_preds, selected_indices
+            del infer_batch, raw_prediction, raw_logits, raw_indices, selected_preds, selected_indices
     finally:
         for f in files.values():
             f.close()

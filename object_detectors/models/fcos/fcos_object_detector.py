@@ -287,6 +287,7 @@ class FCOSTorchObjectDetector(nn.Module):
     def _boxlists_to_contract(self, detections):
         rows_by_image = []
         logits_by_image = []
+        indices_by_image = []
         has_logits = False
         num_classes = int(self.num_classes_no_bg)
         for det in detections:
@@ -318,9 +319,14 @@ class FCOSTorchObjectDetector(nn.Module):
                 has_logits = True
             else:
                 logits = torch.empty((boxes.shape[0], 0), dtype=scores.dtype, device=self.device)
+            if det.has_field("pre_nms_candidate_idx"):
+                raw_indices = det.get_field("pre_nms_candidate_idx").to(self.device).long()
+            else:
+                raw_indices = torch.arange(boxes.shape[0], dtype=torch.long, device=self.device)
             rows_by_image.append(torch.cat([xywh, scores[:, None], labels.to(scores.dtype)[:, None], probs], dim=1))
             logits_by_image.append(logits)
-        return rows_by_image, logits_by_image if has_logits else None
+            indices_by_image.append(raw_indices)
+        return rows_by_image, logits_by_image if has_logits else None, indices_by_image
 
     def _detections_to_contract(self, detections):
         return self._boxlists_to_contract(detections)
@@ -329,20 +335,16 @@ class FCOSTorchObjectDetector(nn.Module):
         box_selector = getattr(getattr(self.detector_model, "rpn", None), "box_selector_test", None)
         pre_nms_boxlists = getattr(box_selector, "last_pre_nms_boxlists", None)
         if pre_nms_boxlists is None:
-            return None, None
+            return None, None, None
         return self._boxlists_to_contract(pre_nms_boxlists)
 
-    def non_max_suppression(
+    def select_post_nms_predictions(
         self,
         prediction,
         logits=None,
-        conf_thres=0.05,
-        iou_thres=0.6,
+        raw_indices=None,
         classes=None,
-        agnostic=False,
         max_det=None,
-        return_indices=False,
-        **_kwargs,
     ):
         outputs = []
         logits_outputs = []
@@ -352,7 +354,7 @@ class FCOSTorchObjectDetector(nn.Module):
             if pred.numel() == 0:
                 device = pred.device
                 logit_dim = 0
-                if isinstance(logits, list) and image_idx < len(logits):
+                if isinstance(logits, list) and image_idx < len(logits) and logits[image_idx] is not None:
                     logit_dim = int(logits[image_idx].shape[-1])
                 outputs.append(torch.zeros((0, 6), dtype=pred.dtype, device=device))
                 logits_outputs.append(torch.zeros((0, logit_dim), dtype=pred.dtype, device=device))
@@ -360,16 +362,12 @@ class FCOSTorchObjectDetector(nn.Module):
                 index_outputs.append(torch.zeros((0,), dtype=torch.long, device=device))
                 continue
 
-            scores = pred[:, 4]
-            labels = pred[:, 5].long()
-            # FCOSPostProcessor already applies score filtering, top-k, and class-wise NMS.
-            # Keep this wrapper as a lightweight compatibility adapter: optional class
-            # filtering, max_det truncation, xywh->xyxy conversion, and index reporting.
-            keep = scores > float(conf_thres)
+            keep_idx = torch.arange(pred.shape[0], dtype=torch.long, device=pred.device)
             if classes is not None:
+                labels = pred[:, 5].long()
                 class_tensor = torch.as_tensor(classes, device=pred.device, dtype=torch.long)
-                keep &= (labels[:, None] == class_tensor[None]).any(dim=1)
-            keep_idx = torch.nonzero(keep, as_tuple=False).flatten()
+                keep_mask = (labels[:, None] == class_tensor[None]).any(dim=1)
+                keep_idx = keep_idx[keep_mask]
             if max_det is not None and keep_idx.numel() > int(max_det):
                 keep_idx = keep_idx[: int(max_det)]
 
@@ -380,18 +378,18 @@ class FCOSTorchObjectDetector(nn.Module):
                 xyxy[:, 1] = xywh[:, 1] - xywh[:, 3] * 0.5
                 xyxy[:, 2] = xywh[:, 0] + xywh[:, 2] * 0.5
                 xyxy[:, 3] = xywh[:, 1] + xywh[:, 3] * 0.5
-            det = torch.cat([xyxy, scores[keep_idx, None], labels[keep_idx, None].to(pred.dtype)], dim=1)
+            det = torch.cat([xyxy, pred[keep_idx, 4:5], pred[keep_idx, 5:6]], dim=1)
             outputs.append(det)
-            if isinstance(logits, list) and image_idx < len(logits):
+            if isinstance(logits, list) and image_idx < len(logits) and logits[image_idx] is not None:
                 logits_outputs.append(logits[image_idx][keep_idx])
             else:
                 logits_outputs.append(pred[keep_idx, 6:])
             objectness_outputs.append(torch.ones((keep_idx.shape[0], 1), dtype=pred.dtype, device=pred.device))
-            index_outputs.append(keep_idx)
-
-        if return_indices:
-            return outputs, logits_outputs, objectness_outputs, index_outputs
-        return outputs, logits_outputs, objectness_outputs
+            if isinstance(raw_indices, list) and image_idx < len(raw_indices) and raw_indices[image_idx] is not None:
+                index_outputs.append(raw_indices[image_idx].to(pred.device).long()[keep_idx])
+            else:
+                index_outputs.append(keep_idx)
+        return outputs, logits_outputs, objectness_outputs, index_outputs
 
     def set_dropout_rate(self, dropout_rate):
         for handle in self._dropout_handles:
