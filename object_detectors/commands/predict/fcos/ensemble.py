@@ -208,22 +208,28 @@ def run_ensemble_csv(config, run_dir):
                         if pred_idx >= len(raw_keep_b):
                             continue
                         raw_idx = int(raw_keep_b[pred_idx])
+                        cls_idx = int(det_b[pred_idx, 5].item()) if det_b.shape[1] > 5 else -1
                         if variable_candidate_runs:
                             per_model_values = []
                             for run_features in feature_runs:
                                 if b < len(run_features) and 0 <= raw_idx < int(run_features[b].shape[0]):
                                     per_model_values.append(run_features[b][raw_idx])
                             if not per_model_values:
-                                continue
-                            values = torch.stack(per_model_values, dim=0)
-                            mean_vec = values.mean(dim=0).detach().float().cpu()
-                            std_vec = values.std(dim=0, unbiased=False).detach().float().cpu()
+                                class_count = int(n_classes_actual) if n_classes_actual is not None else int(n_classes_hint)
+                                prob_vec = torch.zeros((class_count,), dtype=det_b.dtype)
+                                if 0 <= cls_idx < class_count:
+                                    prob_vec[cls_idx] = 1.0
+                                mean_vec = torch.cat([det_b[pred_idx, :5].detach().float(), prob_vec], dim=0)
+                                std_vec = torch.zeros_like(mean_vec)
+                            else:
+                                values = torch.stack(per_model_values, dim=0)
+                                mean_vec = values.mean(dim=0).detach().float().cpu()
+                                std_vec = values.std(dim=0, unbiased=False).detach().float().cpu()
                         else:
                             if raw_idx < 0 or raw_idx >= n_candidates:
                                 continue
                             mean_vec = mean_b[raw_idx]
                             std_vec = std_b[raw_idx]
-                        cls_idx = int(det_b[pred_idx, 5].item()) if det_b.shape[1] > 5 else -1
                         row = {
                             "image_id": image_id,
                             "image_path": image_path,

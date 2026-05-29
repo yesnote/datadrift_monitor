@@ -148,6 +148,7 @@ def run_mc_dropout_csv(config, run_dir):
                 if bool(getattr(detector, "is_fcos", False)) and hasattr(detector, "preprocess_images")
                 else None
             )
+            fcos_feature_cache = None
             yolo_cached_features = None
             use_yolo_head_cache = _is_yolov5_detector(detector)
 
@@ -164,6 +165,9 @@ def run_mc_dropout_csv(config, run_dir):
                 if bool(getattr(detector, "is_faster_rcnn", False)) and hasattr(detector, "prepare_roi_cache"):
                     roi_cache = detector.prepare_roi_cache(infer_batch)
                     det_output = detector.forward_from_roi_cache(roi_cache)
+                elif fcos_preprocessed is not None and hasattr(detector, "prepare_feature_cache"):
+                    fcos_feature_cache = detector.prepare_feature_cache(fcos_preprocessed)
+                    det_output = detector.forward_from_feature_cache(fcos_feature_cache)
                 elif fcos_preprocessed is not None and hasattr(detector, "forward_preprocessed"):
                     det_output = detector.forward_preprocessed(fcos_preprocessed)
                 elif use_yolo_head_cache:
@@ -203,6 +207,8 @@ def run_mc_dropout_csv(config, run_dir):
                         t_detector = timing.start()
                         if roi_cache is not None:
                             model_output = detector.forward_from_roi_cache(roi_cache)
+                        elif fcos_feature_cache is not None and hasattr(detector, "forward_from_feature_cache"):
+                            model_output = detector.forward_from_feature_cache(fcos_feature_cache)
                         elif fcos_preprocessed is not None and hasattr(detector, "forward_preprocessed"):
                             model_output = detector.forward_preprocessed(fcos_preprocessed)
                         elif use_yolo_head_cache:
@@ -264,6 +270,8 @@ def run_mc_dropout_csv(config, run_dir):
                 del infer_batch
                 if fcos_preprocessed is not None:
                     del fcos_preprocessed
+                if fcos_feature_cache is not None:
+                    del fcos_feature_cache
                 if yolo_cached_features is not None:
                     del yolo_cached_features
                 continue
@@ -322,12 +330,31 @@ def run_mc_dropout_csv(config, run_dir):
                             elif b < len(run_features) and 0 <= raw_idx < int(run_features[b].shape[0]):
                                 per_run_values.append(run_features[b][raw_idx])
                         if not per_run_values:
-                            continue
-                        t_feature = timing.start()
-                        run_values = torch.stack(per_run_values, dim=0)
-                        mean_vec = run_values.mean(dim=0).detach().float().cpu()
-                        std_vec = run_values.std(dim=0, unbiased=False).detach().float().cpu()
-                        feature_compute_sec += timing.elapsed(t_feature)
+                            t_feature = timing.start()
+                            class_count = int(n_classes) if n_classes is not None else int(len(detector.names or []))
+                            prob_vec = torch.zeros((class_count,), dtype=det_b.dtype, device=det_b.device)
+                            if (
+                                b < len(det_raw_pred)
+                                and 0 <= raw_idx < int(det_raw_pred[b].shape[0])
+                                and det_raw_pred[b].shape[1] > 6
+                            ):
+                                det_probs = get_prediction_class_probs(
+                                    detector, det_raw_pred[b][raw_idx : raw_idx + 1]
+                                ).detach().float().view(-1)
+                                copy_count = min(class_count, int(det_probs.shape[0]))
+                                if copy_count > 0:
+                                    prob_vec[:copy_count] = det_probs[:copy_count].to(prob_vec.device, dtype=prob_vec.dtype)
+                            elif 0 <= int(det_cls) < class_count:
+                                prob_vec[int(det_cls)] = 1.0
+                            mean_vec = torch.cat([det_b[pred_idx, :5].detach().float(), prob_vec], dim=0).cpu()
+                            std_vec = torch.zeros_like(mean_vec)
+                            feature_compute_sec += timing.elapsed(t_feature)
+                        else:
+                            t_feature = timing.start()
+                            run_values = torch.stack(per_run_values, dim=0)
+                            mean_vec = run_values.mean(dim=0).detach().float().cpu()
+                            std_vec = run_values.std(dim=0, unbiased=False).detach().float().cpu()
+                            feature_compute_sec += timing.elapsed(t_feature)
                     else:
                         mean_vec = feat_mean[b, raw_idx].detach().float().cpu()
                         std_vec = feat_std[b, raw_idx].detach().float().cpu()
@@ -382,6 +409,8 @@ def run_mc_dropout_csv(config, run_dir):
             del infer_batch
             if fcos_preprocessed is not None:
                 del fcos_preprocessed
+            if fcos_feature_cache is not None:
+                del fcos_feature_cache
             if yolo_cached_features is not None:
                 del yolo_cached_features
     except Exception:
