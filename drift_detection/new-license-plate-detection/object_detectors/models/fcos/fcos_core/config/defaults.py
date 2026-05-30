@@ -1,7 +1,36 @@
 # Copyright (c) Facebook, Inc. and its affiliates. All Rights Reserved.
 import os
 
-from yacs.config import CfgNode as CN
+try:
+    from yacs.config import CfgNode as CN
+except ModuleNotFoundError:
+    import copy
+
+    class CN(dict):
+        """Small yacs.CfgNode fallback for the copied FCOS reference config.
+
+        The FCOS code in this repository only needs attribute access plus
+        clone/defrost/freeze. Keeping this fallback local avoids requiring a
+        separate yacs install for prediction.
+        """
+
+        def __getattr__(self, name):
+            try:
+                return self[name]
+            except KeyError as exc:
+                raise AttributeError(name) from exc
+
+        def __setattr__(self, name, value):
+            self[name] = value
+
+        def clone(self):
+            return copy.deepcopy(self)
+
+        def defrost(self):
+            return self
+
+        def freeze(self):
+            return self
 
 
 # -----------------------------------------------------------------------------
