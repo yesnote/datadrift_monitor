@@ -21,30 +21,15 @@ for import_path in (REPO_ROOT, META_CLASSIFIER_ROOT):
 
 from sklearn.model_selection import StratifiedKFold, train_test_split
 
-try:
-    from commands.run_train import (  # noqa: E402
-        apply_augmentation,
-        build_feature_matrix,
-        infer_feature_spec,
-        load_training_dataframe,
-        sanitize_feature_matrix,
-    )
-    from losses.loss import compute_ace, compute_ece, evaluate_classifier  # noqa: E402
-    from models.meta_classifier import build_estimator  # noqa: E402
-except ModuleNotFoundError:
-    from meta_models.meta_classifier.commands.run_train import (  # noqa: E402
-        apply_augmentation,
-        build_feature_matrix,
-        infer_feature_spec,
-        load_training_dataframe,
-        sanitize_feature_matrix,
-    )
-    from meta_models.meta_classifier.losses.loss import (  # noqa: E402
-        compute_ace,
-        compute_ece,
-        evaluate_classifier,
-    )
-    from meta_models.meta_classifier.models.meta_classifier import build_estimator  # noqa: E402
+from commands.run_train import (  # noqa: E402
+    apply_augmentation,
+    build_feature_matrix,
+    infer_feature_spec,
+    load_training_dataframe,
+    sanitize_feature_matrix,
+)
+from losses.loss import compute_ace, compute_ece, evaluate_classifier  # noqa: E402
+from models.meta_classifier import build_estimator  # noqa: E402
 
 # Edit these paths before running.
 INPUT_ROOTS = [
