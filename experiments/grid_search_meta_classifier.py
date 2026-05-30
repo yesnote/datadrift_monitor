@@ -27,13 +27,14 @@ from commands.run_train import (  # noqa: E402
 from losses.loss import compute_ace, compute_ece, evaluate_classifier  # noqa: E402
 from models.meta_classifier import build_estimator  # noqa: E402
 
-
 # Edit these paths before running.
 INPUT_ROOTS = [
     r"object_detectors/runs/fcos/predict/coco/05-30-2026_19;13_meta_detect",
 ]
 GT_ROOT = r"object_detectors/runs/fcos/predict/coco/05-30-2026_18;46_gt"
-BASE_META_CLASSIFIER_CONFIG = r"meta_models/meta_classifier/configs/train_meta_classifier.yaml"
+BASE_META_CLASSIFIER_CONFIG = (
+    r"meta_models/meta_classifier/configs/train_meta_classifier.yaml"
+)
 
 # Set to a fixed name to resume/read beside a previous run. Empty string creates a new timestamped root.
 GRID_NAME = ""
@@ -151,7 +152,9 @@ def _evaluate_params(x: np.ndarray, y: np.ndarray, params: dict, config: dict) -
     process = str(exp_cfg.get("process", PROCESS)).strip().lower()
     if process == "kfold":
         num_fold = int(exp_cfg.get("kfold", {}).get("num_fold", NUM_FOLD))
-        splitter = StratifiedKFold(n_splits=num_fold, shuffle=True, random_state=random_seed)
+        splitter = StratifiedKFold(
+            n_splits=num_fold, shuffle=True, random_state=random_seed
+        )
         split_iter = enumerate(splitter.split(x, y))
     elif process == "repeat":
         split = float(exp_cfg.get("repeat", {}).get("split", REPEAT_SPLIT))
@@ -224,7 +227,10 @@ def main() -> None:
 
     input_root_paths = [_resolve_path(path) for path in INPUT_ROOTS]
     model_name, dataset_name = _parse_object_detector_root(input_root_paths[0])
-    grid_name = GRID_NAME.strip() or f"{datetime.now().strftime('%m-%d-%Y_%H;%M')}_meta_classifier_grid"
+    grid_name = (
+        GRID_NAME.strip()
+        or f"{datetime.now().strftime('%m-%d-%Y_%H;%M')}_meta_classifier_grid"
+    )
     run_dir = (
         META_CLASSIFIER_ROOT
         / "runs"
@@ -245,7 +251,9 @@ def main() -> None:
     if MAX_COMBINATIONS is not None:
         param_combos = param_combos[: int(MAX_COMBINATIONS)]
     print(f"Meta-classifier parameter combinations: {len(param_combos)}", flush=True)
-    print(f"Rows={len(df)}, features={x.shape[1]}, positives={int(np.sum(y))}", flush=True)
+    print(
+        f"Rows={len(df)}, features={x.shape[1]}, positives={int(np.sum(y))}", flush=True
+    )
 
     rows = []
     result_path = run_dir / "grid_results.csv"
