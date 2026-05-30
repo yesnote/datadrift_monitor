@@ -33,9 +33,12 @@ from models.meta_classifier import build_estimator  # noqa: E402
 
 # Edit these paths before running.
 INPUT_ROOTS = [
-    r"object_detectors/runs/fcos/predict/coco/05-30-2026_19;13_meta_detect",
+    r"object_detectors/runs/faster_rcnn/predict/coco/05-29-2026_14;52_faster_rcnn_layer_grad_grid/05-30-2026_01;35_layer_grad_t-null__term-rpnb__rpnb-offset_l2-pred",
+    r"object_detectors/runs/faster_rcnn/predict/coco/05-29-2026_14;52_faster_rcnn_layer_grad_grid/05-30-2026_03;33_layer_grad_t-null__term-rpno__rpno-abs-pred",
+    r"object_detectors/runs/faster_rcnn/predict/coco/05-29-2026_14;52_faster_rcnn_layer_grad_grid/05-30-2026_06;27_layer_grad_t-null__term-roib__roib-box_l1-pred",
+    r"object_detectors/runs/faster_rcnn/predict/coco/05-29-2026_14;52_faster_rcnn_layer_grad_grid/05-30-2026_08;17_layer_grad_t-null__term-roic__roic-bce-pred",
 ]
-GT_ROOT = r"object_detectors/runs/fcos/predict/coco/05-30-2026_18;46_gt"
+GT_ROOT = r"object_detectors/runs/faster_rcnn/predict/coco/05-27-2026_22;00_gt"
 BASE_META_CLASSIFIER_CONFIG = (
     r"meta_models/meta_classifier/configs/train_meta_classifier.yaml"
 )
