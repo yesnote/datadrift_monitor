@@ -54,16 +54,16 @@ class FCOSPostProcessor(torch.nn.Module):
         N, C, H, W = box_cls.shape
 
         # put in the same format as locations
-        raw_box_cls = box_cls.view(N, C, H, W).permute(0, 2, 3, 1)
+        raw_box_cls = box_cls.reshape(N, C, H, W).permute(0, 2, 3, 1)
         raw_box_cls = raw_box_cls.reshape(N, -1, C)
         box_cls = raw_box_cls.sigmoid()
-        box_regression = box_regression.view(N, 4, H, W).permute(0, 2, 3, 1)
+        box_regression = box_regression.reshape(N, 4, H, W).permute(0, 2, 3, 1)
         box_regression = box_regression.reshape(N, -1, 4)
-        centerness = centerness.view(N, 1, H, W).permute(0, 2, 3, 1)
+        centerness = centerness.reshape(N, 1, H, W).permute(0, 2, 3, 1)
         centerness = centerness.reshape(N, -1).sigmoid()
 
         candidate_inds = box_cls > self.pre_nms_thresh
-        pre_nms_top_n = candidate_inds.view(N, -1).sum(1)
+        pre_nms_top_n = candidate_inds.reshape(N, -1).sum(1)
         pre_nms_top_n = pre_nms_top_n.clamp(max=self.pre_nms_top_n)
 
         # multiply the classification scores with centerness scores
