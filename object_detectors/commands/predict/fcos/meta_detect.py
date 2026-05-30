@@ -88,7 +88,12 @@ def run_meta_detect_csv(config, run_dir):
             infer_batch, ratios, pads, _resized_chws = _prepare_infer_batch(detector, image_list, device, auto=False)
             t_detector = timing.start()
             with torch.no_grad():
-                model_output = detector.model(infer_batch, augment=False)
+                model_output = detector.model(
+                    infer_batch,
+                    augment=False,
+                    keep_pre_nms=True,
+                    keep_class_outputs=True,
+                )
                 raw_prediction, raw_logits, raw_indices = unpack_fcos_model_output(model_output)
                 pre_nms_prediction = None
                 if bool(getattr(detector, "is_fcos", False)):
@@ -277,6 +282,8 @@ def run_meta_detect_csv(config, run_dir):
                     "feature_compute_sec": feature_compute_sec,
                 },
             )
+            if hasattr(detector, "_clear_last_pre_nms_predictions"):
+                detector._clear_last_pre_nms_predictions()
             del infer_batch, model_output, raw_prediction, raw_logits, raw_indices, selected_preds, selected_indices
 
     del detector

@@ -187,7 +187,11 @@ def run_tp_csv(config, run_dir):
             else:
                 infer_batch, ratios, pads, resized_chws = _prepare_infer_batch(detector, image_list, device, auto=False)
             with torch.no_grad():
-                model_output = detector.model(infer_batch, augment=False)
+                model_output = detector.model(
+                    infer_batch,
+                    augment=False,
+                    keep_class_outputs=False,
+                )
                 raw_prediction, raw_logits, raw_indices = unpack_fcos_model_output(model_output)
                 selected_preds, _selected_logits, _selected_objectness, selected_indices = select_fcos_post_nms(
                     detector, raw_prediction, raw_logits, raw_indices

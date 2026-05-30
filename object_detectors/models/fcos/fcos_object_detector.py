@@ -74,7 +74,11 @@ class _ForwardProxy:
         self._owner = owner
 
     def __call__(self, images, *args, **kwargs):
-        return self._owner.forward(images)
+        return self._owner.forward(
+            images,
+            keep_pre_nms=bool(kwargs.get("keep_pre_nms", False)),
+            keep_class_outputs=bool(kwargs.get("keep_class_outputs", True)),
+        )
 
     def __getattr__(self, name):
         return getattr(self._owner.detector_model, name)
@@ -237,25 +241,43 @@ class FCOSTorchObjectDetector(nn.Module):
             processed.append(img)
         return processed
 
-    def forward(self, images):
+    def _set_postprocessor_flags(self, keep_class_outputs=True):
+        box_selector = getattr(getattr(self.detector_model, "rpn", None), "box_selector_test", None)
+        if box_selector is not None and hasattr(box_selector, "store_class_outputs"):
+            box_selector.store_class_outputs = bool(keep_class_outputs)
+
+    def _clear_last_pre_nms_predictions(self):
+        box_selector = getattr(getattr(self.detector_model, "rpn", None), "box_selector_test", None)
+        if box_selector is not None and hasattr(box_selector, "last_pre_nms_boxlists"):
+            box_selector.last_pre_nms_boxlists = None
+
+    def forward(self, images, keep_pre_nms=False, keep_class_outputs=True):
         was_training = self.detector_model.training
         if self.mode != "train":
             self.detector_model.eval()
+        self._set_postprocessor_flags(keep_class_outputs=keep_class_outputs)
         with torch.no_grad():
             detections = self.detector_model(self.preprocess_images(images))
         if was_training and self.mode == "train":
             self.detector_model.train()
-        return self._detections_to_contract(detections)
+        output = self._detections_to_contract(detections)
+        if not keep_pre_nms:
+            self._clear_last_pre_nms_predictions()
+        return output
 
-    def forward_preprocessed(self, processed_images):
+    def forward_preprocessed(self, processed_images, keep_pre_nms=False, keep_class_outputs=True):
         was_training = self.detector_model.training
         if self.mode != "train":
             self.detector_model.eval()
+        self._set_postprocessor_flags(keep_class_outputs=keep_class_outputs)
         with torch.no_grad():
             detections = self.detector_model(processed_images)
         if was_training and self.mode == "train":
             self.detector_model.train()
-        return self._detections_to_contract(detections)
+        output = self._detections_to_contract(detections)
+        if not keep_pre_nms:
+            self._clear_last_pre_nms_predictions()
+        return output
 
     def prepare_feature_cache(self, processed_images):
         from fcos_core.structures.image_list import to_image_list
@@ -274,6 +296,7 @@ class FCOSTorchObjectDetector(nn.Module):
         was_training = self.detector_model.training
         if self.mode != "train":
             self.detector_model.eval()
+        self._set_postprocessor_flags(keep_class_outputs=True)
         with torch.no_grad():
             detections, _losses = self.detector_model.rpn(
                 cache["images"],
@@ -282,13 +305,16 @@ class FCOSTorchObjectDetector(nn.Module):
             )
         if was_training and self.mode == "train":
             self.detector_model.train()
-        return self._detections_to_contract(detections)
+        output = self._detections_to_contract(detections)
+        self._clear_last_pre_nms_predictions()
+        return output
 
     def forward_layer_grad(self, processed_images):
         from fcos_core.structures.image_list import to_image_list
 
         was_training = self.detector_model.training
         self.detector_model.eval()
+        self._set_postprocessor_flags(keep_class_outputs=True)
         image_list = to_image_list(processed_images)
         features = self.detector_model.backbone(image_list.tensors)
         rpn = self.detector_model.rpn
