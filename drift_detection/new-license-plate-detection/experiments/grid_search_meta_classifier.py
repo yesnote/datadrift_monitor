@@ -10,22 +10,41 @@ from pathlib import Path
 
 import numpy as np
 import yaml
-from sklearn.model_selection import StratifiedKFold, train_test_split
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 META_CLASSIFIER_ROOT = REPO_ROOT / "meta_models" / "meta_classifier"
-if str(META_CLASSIFIER_ROOT) not in sys.path:
-    sys.path.insert(0, str(META_CLASSIFIER_ROOT))
 
-from commands.run_train import (  # noqa: E402
-    apply_augmentation,
-    build_feature_matrix,
-    infer_feature_spec,
-    load_training_dataframe,
-    sanitize_feature_matrix,
-)
-from losses.loss import compute_ace, compute_ece, evaluate_classifier  # noqa: E402
-from models.meta_classifier import build_estimator  # noqa: E402
+for import_path in (REPO_ROOT, META_CLASSIFIER_ROOT):
+    import_path_text = str(import_path)
+    if import_path_text not in sys.path:
+        sys.path.insert(0, import_path_text)
+
+from sklearn.model_selection import StratifiedKFold, train_test_split
+
+try:
+    from commands.run_train import (  # noqa: E402
+        apply_augmentation,
+        build_feature_matrix,
+        infer_feature_spec,
+        load_training_dataframe,
+        sanitize_feature_matrix,
+    )
+    from losses.loss import compute_ace, compute_ece, evaluate_classifier  # noqa: E402
+    from models.meta_classifier import build_estimator  # noqa: E402
+except ModuleNotFoundError:
+    from meta_models.meta_classifier.commands.run_train import (  # noqa: E402
+        apply_augmentation,
+        build_feature_matrix,
+        infer_feature_spec,
+        load_training_dataframe,
+        sanitize_feature_matrix,
+    )
+    from meta_models.meta_classifier.losses.loss import (  # noqa: E402
+        compute_ace,
+        compute_ece,
+        evaluate_classifier,
+    )
+    from meta_models.meta_classifier.models.meta_classifier import build_estimator  # noqa: E402
 
 # Edit these paths before running.
 INPUT_ROOTS = [
