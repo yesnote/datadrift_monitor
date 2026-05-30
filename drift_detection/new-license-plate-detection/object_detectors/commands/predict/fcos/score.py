@@ -60,7 +60,11 @@ def run_score_csv(config, run_dir):
             selected_indices = None
             t_detector = timing.start()
             with torch.no_grad():
-                model_output = detector.model(infer_batch, augment=False)
+                model_output = detector.model(
+                    infer_batch,
+                    augment=False,
+                    keep_class_outputs=False,
+                )
                 raw_prediction, raw_logits, raw_indices = unpack_fcos_model_output(model_output)
                 selected_preds, _selected_logits, _selected_objectness, selected_indices = select_fcos_post_nms(
                     detector, raw_prediction, raw_logits, raw_indices
