@@ -122,7 +122,7 @@ def load_combined_layer_grad_term_record(group, metric):
         stage_values = [record["values"].get(stage, 0.0) for record in records]
         if stage in {"detector_inference_sec", "candidate_search_sec"}:
             nonzero = [value for value in stage_values if value > 0.0]
-            values[stage] = float(np.mean(nonzero)) if nonzero else 0.0
+            values[stage] = float(max(nonzero)) if nonzero else 0.0
         else:
             values[stage] = float(sum(stage_values))
 
