@@ -102,7 +102,7 @@ output:
         # rpn_obj_loss: obj_loss(source RPN objectness logit, target 0.5)
         # roi_bbox_loss box_*: bbox_loss(final ROI decoded box, source proposal)
         # roi_bbox_loss offset_*: bbox_loss(final ROI bbox delta, zero delta)
-        # roi_cls_loss: cls_loss(final detection class logits, final detection class target)
+        # roi_cls_loss: cls_loss(final detection class logits, null class target: 0.5 vector for BCE, 1/C uniform for KL)
         scalar: [rpn_obj_loss, rpn_bbox_loss, roi_cls_loss, roi_bbox_loss]
         layer:
           rpn_obj_loss: ["rpn.head.conv", "rpn.head.cls_logits"]
