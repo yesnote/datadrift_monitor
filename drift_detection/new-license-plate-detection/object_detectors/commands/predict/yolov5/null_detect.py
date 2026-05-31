@@ -57,7 +57,11 @@ def run_null_detect_csv(config, run_dir):
     nms_kwargs = _resolve_detector_nms_kwargs(detector)
     num_classes = len(detector.names) if detector.names is not None else int(config.get("model", {}).get("num_classes", 0))
     output_feature_names = [] if feature_set == "losses_only" else ["prob_sum"] + [f"prob_{i}" for i in range(max(0, num_classes))]
-    null_feature_names = ["bbox_loss", "obj_loss", "cls_loss"] if feature_set == "losses_only" else ["size", "circum", "size_circum", "bbox_loss", "obj_loss", "cls_loss"]
+    null_feature_names = (
+        ["bbox_loss", "obj_loss", "cls_loss"]
+        if feature_set == "losses_only"
+        else ["final_score", "size", "circum", "size_circum", "bbox_loss", "obj_loss", "cls_loss"]
+    )
     fieldnames = [
         "image_id", "image_path", "pred_idx", "raw_pred_idx", "xmin", "ymin", "xmax", "ymax", "score", "pred_class",
         *output_feature_names,
@@ -147,6 +151,7 @@ def run_null_detect_csv(config, run_dir):
                         size = width * height
                         circum = width + height
                         shape_values = {
+                            "final_score": box[4],
                             "size": size,
                             "circum": circum,
                             "size_circum": size / circum.clamp(min=1e-12),
