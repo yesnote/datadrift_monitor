@@ -5,14 +5,12 @@ from pathlib import Path
 import numpy as np
 
 RUN_PATHS = [
-    r"object_detectors/runs/05-12-2026_19;06_score",
-    r"object_detectors/runs/05-12-2026_19;06_class_probability",
-    r"object_detectors/runs/05-12-2026_19;06_entropy",
-    r"object_detectors/runs/05-12-2026_19;06_energy",
-    r"object_detectors/runs/05-13-2026_13;33_mc_dropout",
-    r"object_detectors/runs/05-13-2026_14;49_ensemble",
-    r"object_detectors/runs/05-13-2026_22;25_meta_detect",
-    r"object_detectors/runs/05-13-2026_22;35_layer_grad_cand_target_loss",
+    r"object_detectors/runs/yolov5/predict/coco/05-27-2026_12;12_score",
+    r"object_detectors/runs/yolov5/predict/coco/05-27-2026_12;12_class_probability",
+    r"object_detectors/runs/yolov5/predict/coco/05-27-2026_12;12_entropy",
+    r"object_detectors/runs/yolov5/predict/coco/05-27-2026_12;12_energy",
+    r"object_detectors/runs/yolov5/predict/coco/05-27-2026_12;41_mc_dropout",
+    r"object_detectors/runs/yolov5/predict/coco/05-27-2026_12;54_meta_detect",
 ]
 
 # Use this when layer_grad was run as one loss term per run during grid search.
@@ -22,17 +20,17 @@ RUN_PATHS = [
 # per term. Other stages are summed.
 #
 # Example:
-# COMBINED_LAYER_GRAD_TERM_RUNS = [
-#     {
-#         "label": "layer_grad null\nbox_l1+bce+bce",
-#         "term_paths": [
-#             r"object_detectors/runs/yolov5/predict/coco/<grid>/...term-bbox...",
-#             r"object_detectors/runs/yolov5/predict/coco/<grid>/...term-cls...",
-#             r"object_detectors/runs/yolov5/predict/coco/<grid>/...term-obj...",
-#         ],
-#     },
-# ]
-COMBINED_LAYER_GRAD_TERM_RUNS = []
+COMBINED_LAYER_GRAD_TERM_RUNS = [
+    {
+        "label": "layer_grad cand/box_l1+kl+bce",
+        "term_paths": [
+            r"object_detectors/runs/yolov5/predict/coco/05-27-2026_13;17_layer_grad_grid/05-27-2026_13;17_layer_grad_t-cand__term-bbox__b-box_l1-pred",
+            r"object_detectors/runs/yolov5/predict/coco/05-27-2026_13;17_layer_grad_grid/05-27-2026_14;32_layer_grad_t-cand__term-cls__c-kl-pred",
+            r"object_detectors/runs/yolov5/predict/coco/05-27-2026_13;17_layer_grad_grid/05-27-2026_15;15_layer_grad_t-cand__term-obj__o-bce-pred",
+        ],
+    },
+]
+# COMBINED_LAYER_GRAD_TERM_RUNS = []
 
 OUTPUT_ROOT = Path(__file__).resolve().parent / "runs"
 OUTPUT_FILENAME = "uncertainty_timing_per_prediction.png"
