@@ -285,7 +285,8 @@ def _build_fcos_losses(
             row_idx = pred_idx
             level, loc_idx, _raw, _cls_one_based = _source_indices_from_boxlist(source_boxlist, row_idx)
             target_box = None
-            cls_target = torch.full((num_classes,), 1.0 / float(max(num_classes, 1)), dtype=box_cls[level].dtype, device=device)
+            cls_target_value = 0.5 if str(cls_loss).strip().lower() == "bcewithlogits" else 1.0 / float(max(num_classes, 1))
+            cls_target = torch.full((num_classes,), cls_target_value, dtype=box_cls[level].dtype, device=device)
 
         pred_ltrb_all = _flatten_level_output(box_regression[level], image_idx)
         cls_logits_all = _flatten_level_output(box_cls[level], image_idx)

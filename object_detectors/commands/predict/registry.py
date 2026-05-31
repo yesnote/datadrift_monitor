@@ -50,6 +50,7 @@ _SUPPORTED = {
         "ensemble",
         "meta_detect",
         "layer_grad",
+        "null_detect",
     },
 }
 
