@@ -119,7 +119,9 @@ def load_combined_layer_grad_term_record(group, metric):
 
     timing_paths = find_timing_jsons_in_config_order(term_paths)
     if not timing_paths:
-        raise FileNotFoundError(f"No *_timing.json files found for combined timing group '{label}'.")
+        raise FileNotFoundError(
+            f"No *_timing.json files found for combined timing group '{label}'."
+        )
 
     records = [load_timing_record(path, metric) for path in timing_paths]
     stages = ordered_stages(records)
@@ -132,7 +134,9 @@ def load_combined_layer_grad_term_record(group, metric):
         else:
             values[stage] = float(sum(stage_values))
 
-    total_predictions = min((record["total_predictions"] for record in records), default=0)
+    total_predictions = min(
+        (record["total_predictions"] for record in records), default=0
+    )
     return {
         "path": timing_paths[0],
         "run_dir": timing_paths[0].parent.parent,
