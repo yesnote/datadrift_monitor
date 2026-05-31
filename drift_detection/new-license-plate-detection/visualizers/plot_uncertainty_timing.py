@@ -15,9 +15,9 @@ RUN_PATHS = [
 
 # Use this when layer_grad was run as one loss term per run during grid search.
 # The plot will treat these term runs as one combined layer_grad bar.
-# detector_inference_sec is averaged across term runs because a real combined
-# run would forward the detector once, while term-wise grid runs forward it once
-# per term. Other stages are summed.
+# detector_inference_sec and candidate_search_sec are averaged across term runs
+# because a real combined run would run those stages once, while term-wise grid
+# runs repeat them once per term. Other stages are summed.
 #
 # Example:
 COMBINED_LAYER_GRAD_TERM_RUNS = [
@@ -127,7 +127,7 @@ def load_combined_layer_grad_term_record(group, metric):
     values = {}
     for stage in stages:
         stage_values = [record["values"].get(stage, 0.0) for record in records]
-        if stage == "detector_inference_sec":
+        if stage in {"detector_inference_sec", "candidate_search_sec"}:
             nonzero = [value for value in stage_values if value > 0.0]
             values[stage] = float(np.mean(nonzero)) if nonzero else 0.0
         else:
