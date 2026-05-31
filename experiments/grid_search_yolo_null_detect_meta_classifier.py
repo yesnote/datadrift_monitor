@@ -30,7 +30,7 @@ REUSE_EXISTING = False
 MAX_COMBINATIONS = None
 
 BBOX_LOSSES = ["box_l1", "box_l2", "offset_l1", "offset_l2"]
-CLS_LOSSES = ["bcewithlogits", "kl", "ce"]
+CLS_LOSSES = ["bcewithlogits", "kl"]
 OBJ_LOSSES = ["bcewithlogits", "abs_diff", "signed_diff"]
 
 

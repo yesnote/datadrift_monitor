@@ -182,7 +182,12 @@ def run_null_detect_csv(config, run_dir):
                     if cls_logits.numel() == 0:
                         cls_loss_value = torch.zeros((), dtype=torch.float32, device=device)
                     else:
-                        uniform_target = torch.full_like(cls_logits, 1.0 / float(cls_logits.numel()))
+                        cls_target_value = (
+                            0.5
+                            if str(cls_loss).strip().lower() == "bcewithlogits"
+                            else 1.0 / float(cls_logits.numel())
+                        )
+                        uniform_target = torch.full_like(cls_logits, cls_target_value)
                         cls_loss_value = _class_loss_tensor(
                             cls_logits,
                             uniform_target,

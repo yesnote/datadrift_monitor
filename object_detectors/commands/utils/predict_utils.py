@@ -806,7 +806,7 @@ def parse_output_config(output_cfg):
     null_cls_loss = normalize_loss_option(
         null_detect_cfg.get("cls_loss", "bcewithlogits"),
         "bcewithlogits",
-        {"bcewithlogits", "kl", "ce"},
+        {"bcewithlogits", "kl"},
         "null_detect.cls_loss",
     )
     null_obj_loss = normalize_loss_option(
