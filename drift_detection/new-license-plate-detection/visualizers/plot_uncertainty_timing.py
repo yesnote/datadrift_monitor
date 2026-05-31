@@ -15,6 +15,25 @@ RUN_PATHS = [
     r"object_detectors/runs/05-13-2026_22;35_layer_grad_cand_target_loss",
 ]
 
+# Use this when layer_grad was run as one loss term per run during grid search.
+# The plot will treat these term runs as one combined layer_grad bar.
+# detector_inference_sec is averaged across term runs because a real combined
+# run would forward the detector once, while term-wise grid runs forward it once
+# per term. Other stages are summed.
+#
+# Example:
+# COMBINED_LAYER_GRAD_TERM_RUNS = [
+#     {
+#         "label": "layer_grad null\nbox_l1+bce+bce",
+#         "term_paths": [
+#             r"object_detectors/runs/yolov5/predict/coco/<grid>/...term-bbox...",
+#             r"object_detectors/runs/yolov5/predict/coco/<grid>/...term-cls...",
+#             r"object_detectors/runs/yolov5/predict/coco/<grid>/...term-obj...",
+#         ],
+#     },
+# ]
+COMBINED_LAYER_GRAD_TERM_RUNS = []
+
 OUTPUT_ROOT = Path(__file__).resolve().parent / "runs"
 OUTPUT_FILENAME = "uncertainty_timing_per_prediction.png"
 METRIC = "mean_stage_ms_per_prediction"
@@ -89,6 +108,39 @@ def load_timing_record(path, metric):
         "label": f"{uncertainty}\n{run_dir.name}",
         "values": {str(k): float(v) for k, v in values.items()},
         "total_predictions": int(data.get("total_predictions", 0)),
+    }
+
+
+def load_combined_layer_grad_term_record(group, metric):
+    label = str(group.get("label") or "layer_grad\ncombined terms")
+    term_paths = list(group.get("term_paths") or [])
+    if not term_paths:
+        raise ValueError(f"Combined timing group '{label}' has no term_paths.")
+
+    timing_paths = find_timing_jsons_in_config_order(term_paths)
+    if not timing_paths:
+        raise FileNotFoundError(f"No *_timing.json files found for combined timing group '{label}'.")
+
+    records = [load_timing_record(path, metric) for path in timing_paths]
+    stages = ordered_stages(records)
+    values = {}
+    for stage in stages:
+        stage_values = [record["values"].get(stage, 0.0) for record in records]
+        if stage == "detector_inference_sec":
+            nonzero = [value for value in stage_values if value > 0.0]
+            values[stage] = float(np.mean(nonzero)) if nonzero else 0.0
+        else:
+            values[stage] = float(sum(stage_values))
+
+    total_predictions = min((record["total_predictions"] for record in records), default=0)
+    return {
+        "path": timing_paths[0],
+        "run_dir": timing_paths[0].parent.parent,
+        "uncertainty": "layer_grad",
+        "label": label,
+        "values": values,
+        "total_predictions": int(total_predictions),
+        "combined_from": timing_paths,
     }
 
 
@@ -249,11 +301,15 @@ def make_output_path():
 
 def main():
     timing_paths = find_timing_jsons_in_config_order(RUN_PATHS)
-    if not timing_paths:
+    if not timing_paths and not COMBINED_LAYER_GRAD_TERM_RUNS:
         searched = ", ".join(str(Path(p)) for p in RUN_PATHS)
         raise FileNotFoundError(f"No *_timing.json files found under: {searched}")
 
     records = [load_timing_record(path, METRIC) for path in timing_paths]
+    records.extend(
+        load_combined_layer_grad_term_record(group, METRIC)
+        for group in COMBINED_LAYER_GRAD_TERM_RUNS
+    )
     if not records:
         raise ValueError("No timing records to plot.")
 
