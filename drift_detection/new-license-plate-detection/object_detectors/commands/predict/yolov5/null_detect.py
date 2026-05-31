@@ -4,7 +4,6 @@ from commands.utils.predict_utils import (
     _class_loss_tensor,
     _flatten_raw_prediction_layers,
     _objectness_loss_tensor,
-    _plain_iou_xywh_tensor,
     _yolo_offset_loss_tensor,
 )
 
@@ -172,13 +171,10 @@ def run_null_detect_csv(config, run_dir):
                             reduction="mean",
                             direction=bbox_direction,
                         )
-                    target_iou = _plain_iou_xywh_tensor(pred_row[:4].detach(), anchor_xywh.detach()).to(
-                        dtype=raw_row.dtype,
-                        device=raw_row.device,
-                    ).reshape(()).clamp(min=0.0, max=1.0)
+                    obj_target = torch.full_like(raw_row[4], 0.5)
                     obj_loss_value = _objectness_loss_tensor(
                         raw_row[4],
-                        target_iou,
+                        obj_target,
                         mode=obj_loss,
                         direction=obj_direction,
                         reduction="sum",
