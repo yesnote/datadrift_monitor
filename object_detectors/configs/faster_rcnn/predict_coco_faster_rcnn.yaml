@@ -81,8 +81,8 @@ output:
 
   null_detect:
     rpn:
-      bbox_loss: offset_l1  # offset_l1 | offset_l2
-      obj_loss: bcewithlogits  # bcewithlogits | abs_diff | signed_diff
+      bbox_loss: offset_l2  # offset_l1 | offset_l2
+      obj_loss: abs_diff  # bcewithlogits | abs_diff | signed_diff
       bbox_direction: pred_to_target  # fixed; reverse is redundant for offset_l1/offset_l2
       obj_direction: pred_to_target  # pred_to_target | target_to_pred, only for obj_loss: signed_diff
     roi:
