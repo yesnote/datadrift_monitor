@@ -37,6 +37,7 @@ OUTPUT_FILENAME = "uncertainty_timing_per_prediction.png"
 METRIC = "mean_stage_ms_per_prediction"
 TITLE = "Uncertainty Timing Comparison"
 FIGSIZE = (11.8, 5.5)
+USE_BROKEN_AXIS = False
 
 DEFAULT_STAGE_ORDER = [
     "detector_inference_sec",
@@ -194,7 +195,7 @@ def plot_stacked_timing(records, output_path, title, figsize):
     totals = [
         sum(record["values"].get(stage, 0.0) for stage in stages) for record in records
     ]
-    break_limits = broken_axis_limits(totals)
+    break_limits = broken_axis_limits(totals) if USE_BROKEN_AXIS else None
 
     fig_width = max(figsize[0], 1.1 * len(records) + 3.0)
     if break_limits is None:
