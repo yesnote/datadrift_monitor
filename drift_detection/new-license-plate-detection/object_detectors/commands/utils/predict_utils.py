@@ -2056,7 +2056,12 @@ def build_layer_target_scalar_bbox(
                 cls_logits = logit_img[raw_idx] if (logit_img is not None and raw_idx < logit_img.shape[0]) else pred_row[5:]
             if cls_logits.numel() == 0:
                 return None
-            uniform_target = torch.full_like(cls_logits, 1.0 / float(cls_logits.numel()))
+            cls_target_value = (
+                0.5
+                if str(cls_loss).strip().lower() == "bcewithlogits"
+                else 1.0 / float(cls_logits.numel())
+            )
+            uniform_target = torch.full_like(cls_logits, cls_target_value)
             loss = _class_loss_tensor(
                 cls_logits,
                 uniform_target,
