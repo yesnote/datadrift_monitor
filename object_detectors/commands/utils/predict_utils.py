@@ -1985,14 +1985,16 @@ def build_faster_rcnn_null_losses_by_stage(
         )
 
     cls_logits = logit_img[raw_idx]
-    final_cls = int(pred_img[raw_idx, 5].detach().long().item())
-    cls_target = torch.zeros_like(cls_logits)
-    if 0 <= final_cls < cls_target.numel():
-        cls_target[final_cls] = 1.0
+    cls_target_value = (
+        0.5
+        if str(roi_cls_loss).strip().lower() == "bcewithlogits"
+        else 1.0 / float(cls_logits.numel())
+    )
+    cls_target = torch.full_like(cls_logits, cls_target_value)
     roi_cls_loss_value = _class_loss_tensor(
         cls_logits,
         cls_target,
-        class_idx=final_cls,
+        class_idx=None,
         mode=roi_cls_loss,
         direction=roi_cls_direction,
         reduction="sum",
