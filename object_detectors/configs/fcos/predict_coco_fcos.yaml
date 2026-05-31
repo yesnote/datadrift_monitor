@@ -84,7 +84,7 @@ output:
     # cls_loss: loss(final/source class logits, null class target: 0.5 vector for BCE, 1/C uniform for KL)
     # cnt_loss: loss(final/source centerness logit, target 0.5)
     bbox_loss: l1  # l1 | l2
-    cls_loss: bcewithlogits  # bcewithlogits | kl
+    cls_loss: kl  # bcewithlogits | kl
     cnt_loss: bcewithlogits  # bcewithlogits | abs_diff | signed_diff
     bbox_direction: pred_to_target
     cls_direction: pred_to_target  # pred_to_target | target_to_pred, only for cls_loss: kl
