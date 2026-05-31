@@ -13,13 +13,6 @@ RUN_PATHS = [
     r"object_detectors/runs/yolov5/predict/coco/05-27-2026_12;54_meta_detect",
 ]
 
-# Use this when layer_grad was run as one loss term per run during grid search.
-# The plot will treat these term runs as one combined layer_grad bar.
-# detector_inference_sec and candidate_search_sec are averaged across term runs
-# because a real combined run would run those stages once, while term-wise grid
-# runs repeat them once per term. Other stages are summed.
-#
-# Example:
 COMBINED_LAYER_GRAD_TERM_RUNS = [
     {
         "label": "layer_grad cand/box_l1+kl+bce",
