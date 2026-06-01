@@ -237,6 +237,7 @@ def _build_fcos_losses(
     losses = {}
 
     t_candidate = timing.start()
+    candidate_sources = []
     if target_mode == "cand_target":
         if pre_nms_boxlists is None or image_idx >= len(pre_nms_boxlists):
             timing_accumulator["candidate_search_sec"] += timing.elapsed(t_candidate)
@@ -258,11 +259,17 @@ def _build_fcos_losses(
         if not bool(cand_mask.any()) and 0 <= raw_idx < cand_mask.shape[0]:
             cand_mask[raw_idx] = True
         candidate_indices = torch.where(cand_mask)[0]
+        source_boxlist = pre_nms_boxlists[image_idx]
+        for candidate_idx in candidate_indices.detach().cpu().tolist():
+            level, loc_idx, _raw, _cls_one_based = _source_indices_from_boxlist(source_boxlist, int(candidate_idx))
+            candidate_sources.append((level, loc_idx))
     else:
         if image_idx >= len(detections) or pred_idx >= len(detections[image_idx]):
             timing_accumulator["candidate_search_sec"] += timing.elapsed(t_candidate)
             return losses
-        candidate_indices = torch.tensor([pred_idx], dtype=torch.long, device=device)
+        source_boxlist = detections[image_idx]
+        level, loc_idx, _raw, _cls_one_based = _source_indices_from_boxlist(source_boxlist, pred_idx)
+        candidate_sources.append((level, loc_idx))
     timing_accumulator["candidate_search_sec"] += timing.elapsed(t_candidate)
 
     t_loss = timing.start()
@@ -271,19 +278,13 @@ def _build_fcos_losses(
     cnt_terms = []
     num_classes = int(box_cls[0].shape[1])
     final_cls = int(final_cls)
-    for candidate_idx in candidate_indices.detach().cpu().tolist():
+    for level, loc_idx in candidate_sources:
         if target_mode == "cand_target":
-            source_boxlist = pre_nms_boxlists[image_idx]
-            row_idx = int(candidate_idx)
-            level, loc_idx, _raw, _cls_one_based = _source_indices_from_boxlist(source_boxlist, row_idx)
             target_box = final_box.detach()
             cls_target = torch.zeros((num_classes,), dtype=box_cls[level].dtype, device=device)
             if 0 <= final_cls < num_classes:
                 cls_target[final_cls] = 1.0
         else:
-            source_boxlist = detections[image_idx]
-            row_idx = pred_idx
-            level, loc_idx, _raw, _cls_one_based = _source_indices_from_boxlist(source_boxlist, row_idx)
             target_box = None
             cls_target_value = 0.5 if str(cls_loss).strip().lower() == "bcewithlogits" else 1.0 / float(max(num_classes, 1))
             cls_target = torch.full((num_classes,), cls_target_value, dtype=box_cls[level].dtype, device=device)
