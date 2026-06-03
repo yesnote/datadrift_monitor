@@ -84,21 +84,28 @@ def run_null_detect_csv(config, run_dir):
         ):
             image_list = _as_image_list(images)
             infer_batch, ratios, pads, _resized_chws = _prepare_infer_batch(detector, image_list, device, auto=False)
-            t_detector = timing.start()
             with torch.no_grad():
+                t_detector = timing.start()
                 model_output = detector.model(infer_batch, augment=False)
                 raw_prediction = model_output[0] if isinstance(model_output, (tuple, list)) else model_output
                 raw_logits = model_output[1] if isinstance(model_output, (tuple, list)) and len(model_output) > 1 else None
                 raw_layers = model_output[2] if isinstance(model_output, (tuple, list)) and len(model_output) > 2 else None
                 raw_anchor_priors = model_output[3] if isinstance(model_output, (tuple, list)) and len(model_output) > 3 else None
+                detector_inference_sec = timing.elapsed(t_detector)
+
                 if raw_anchor_priors is None:
                     raise RuntimeError("null_detect requires YOLO anchor priors, but detector.model() did not return them.")
+                t_feature = timing.start()
                 raw_flat = _flatten_raw_prediction_layers(raw_layers)
                 if raw_flat is None:
                     raise RuntimeError("null_detect requires raw YOLO prediction layers, but detector.model() did not return them.")
+                feature_compute_sec = timing.elapsed(t_feature)
+                nms_prediction = raw_prediction.detach().clone()
+                nms_logits = raw_logits.detach().clone() if raw_logits is not None else None
+                t_detector = timing.start()
                 selected_preds, _selected_logits, _selected_objectness, selected_indices = detector.non_max_suppression(
-                    prediction=raw_prediction,
-                    logits=raw_logits,
+                    prediction=nms_prediction,
+                    logits=nms_logits,
                     conf_thres=nms_kwargs["conf_thres"],
                     iou_thres=nms_kwargs["iou_thres"],
                     classes=nms_kwargs["classes"],
@@ -106,9 +113,8 @@ def run_null_detect_csv(config, run_dir):
                     max_det=nms_kwargs["max_det"],
                     return_indices=True,
                 )
-            detector_inference_sec = timing.elapsed(t_detector)
+                detector_inference_sec += timing.elapsed(t_detector)
 
-            feature_compute_sec = 0.0
             batch_items = 0
             for sample_idx in range(len(image_list)):
                 target = targets[sample_idx]
