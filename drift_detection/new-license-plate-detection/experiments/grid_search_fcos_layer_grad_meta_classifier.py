@@ -655,7 +655,7 @@ def _run_fcos_layer_grad_terms_once(
                                     row[grad_key] = ""
                                 else:
                                     for metric in reductions:
-                                            row[f"{grad_key}_{metric}"] = 0.0
+                                        row[f"{grad_key}_{metric}"] = 0.0
                             rows_by_key[key].append(row)
                             del losses
                             continue
