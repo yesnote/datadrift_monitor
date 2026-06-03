@@ -526,17 +526,11 @@ def _run_yolo_layer_grad_terms_once(
                 )
             detector_inference_sec = shared_detector_timing["detector_inference_sec"]
 
-            t_loss_prep = _start_timing(device)
             raw_flat = _flatten_raw_prediction_layers(pred_layers)
-            shared_loss_timing = {"loss_compute_sec": 0.0}
-            _add_elapsed_timing(
-                shared_loss_timing, "loss_compute_sec", t_loss_prep, device
-            )
-            loss_prep_sec = shared_loss_timing["loss_compute_sec"]
 
             stage_by_key = {
                 key: _empty_stage_seconds(
-                    combo["target"], detector_inference_sec, loss_prep_sec
+                    combo["target"], detector_inference_sec, 0.0
                 )
                 for key, (combo, _run_dir, _csv_file, _writer) in handles.items()
             }
