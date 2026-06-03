@@ -1663,6 +1663,7 @@ def build_faster_rcnn_roi_candidate_losses(
             proposal_offset=proposal_offset,
         )
         if candidate_deltas is None or pseudo_delta is None:
+            _add_elapsed_timing(timing_accumulator, "loss_compute_sec", t_loss, timing_device)
             return None
         if proposals_xyxy is None:
             pseudo_delta = pseudo_delta.detach().expand(candidate_deltas.shape[0], -1)
@@ -1670,6 +1671,7 @@ def build_faster_rcnn_roi_candidate_losses(
             proposal_idx = proposal_indices_img[candidate_indices].to(device=proposals_xyxy.device, dtype=torch.long)
             valid = (proposal_idx >= 0) & (proposal_idx < proposals_xyxy.shape[0])
             if not bool(valid.all()):
+                _add_elapsed_timing(timing_accumulator, "loss_compute_sec", t_loss, timing_device)
                 return None
             candidate_proposals = proposals_xyxy[proposal_idx].detach()
             pseudo_box_target = _xywh_to_xyxy_tensor(pred_img[raw_idx, :4].view(1, 4)).detach()
@@ -2214,13 +2216,13 @@ def collect_faster_rcnn_candidate_layer_grads_per_target(
     was_training = model.training
     model.eval()
 
-    t_detector = _start_timing(timing_device)
     image_list = [
         img.to(detector.device, non_blocking=True) if img.device != detector.device else img
         for img in input_images
     ]
     original_image_sizes = [(int(img.shape[-2]), int(img.shape[-1])) for img in image_list]
     transformed_images, _targets = model.transform(image_list, None)
+    t_detector = _start_timing(timing_device)
     features = model.backbone(transformed_images.tensors)
     if isinstance(features, torch.Tensor):
         features = {"0": features}

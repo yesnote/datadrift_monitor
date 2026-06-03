@@ -270,6 +270,53 @@ class FasterRCNNTorchObjectDetector(nn.Module):
         detections = self.detector_model.transform.postprocess(detections, images.image_sizes, original_image_sizes)
         return detections
 
+    def preprocess_images(self, images):
+        if isinstance(images, torch.Tensor):
+            image_list = [img for img in images]
+        else:
+            image_list = list(images)
+
+        image_list = [
+            img.to(self.device, non_blocking=True) if img.device != self.device else img
+            for img in image_list
+        ]
+        original_image_sizes = [(int(img.shape[-2]), int(img.shape[-1])) for img in image_list]
+        transformed_images, _targets = self.detector_model.transform(image_list, None)
+        return {
+            "transformed_images": transformed_images,
+            "original_image_sizes": original_image_sizes,
+        }
+
+    def forward_preprocessed(self, preprocessed):
+        was_training = self.detector_model.training
+        self.detector_model.eval()
+        with torch.inference_mode():
+            images = preprocessed["transformed_images"]
+            original_image_sizes = preprocessed["original_image_sizes"]
+            features = self.detector_model.backbone(images.tensors)
+            if isinstance(features, torch.Tensor):
+                features = {"0": features}
+
+            proposals, _proposal_losses = self.detector_model.rpn(images, features, None)
+            roi_heads = self.detector_model.roi_heads
+            box_features = roi_heads.box_roi_pool(features, proposals, images.image_sizes)
+            box_features = roi_heads.box_head(box_features)
+            class_logits, box_regression = roi_heads.box_predictor(box_features)
+            detections = self._pre_nms_detections_with_logits(
+                class_logits=class_logits,
+                box_regression=box_regression,
+                proposals=proposals,
+                image_shapes=images.image_sizes,
+            )
+            detections = self.detector_model.transform.postprocess(
+                detections,
+                images.image_sizes,
+                original_image_sizes,
+            )
+        if was_training:
+            self.detector_model.train()
+        return self._detections_to_contract(detections, self.device, include_class_features=True)
+
     @contextmanager
     def temporary_roi_score_threshold(self, threshold=None):
         roi_heads = getattr(self.detector_model, "roi_heads", None)
