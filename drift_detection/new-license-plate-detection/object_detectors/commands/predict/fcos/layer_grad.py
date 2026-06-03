@@ -302,40 +302,61 @@ def _build_fcos_losses(
         )
 
     t_loss = timing.start()
+    requested = set(target_values)
+    need_bbox = "bbox_loss" in requested
+    need_cls = "cls_loss" in requested
+    need_cnt = "cnt_loss" in requested
+    need_ltrb_target = need_bbox or need_cnt
     bbox_terms = []
     cls_terms = []
     cnt_terms = []
     num_classes = int(box_cls[0].shape[1])
     final_cls = int(final_cls)
     for level, loc_idx in candidate_sources:
-        if target_mode == "cand_target":
-            target_box = final_box.detach()
-            cls_target = torch.zeros((num_classes,), dtype=box_cls[level].dtype, device=device)
-            if 0 <= final_cls < num_classes:
-                cls_target[final_cls] = 1.0
+        if need_bbox or need_ltrb_target:
+            pred_ltrb_all = _flatten_level_output(box_regression[level], image_idx)
+            pred_ltrb = pred_ltrb_all[loc_idx].view(1, 4)
         else:
-            target_box = None
-            cls_target_value = 0.5 if str(cls_loss).strip().lower() == "bcewithlogits" else 1.0 / float(max(num_classes, 1))
-            cls_target = torch.full((num_classes,), cls_target_value, dtype=box_cls[level].dtype, device=device)
+            pred_ltrb = None
 
-        pred_ltrb_all = _flatten_level_output(box_regression[level], image_idx)
-        cls_logits_all = _flatten_level_output(box_cls[level], image_idx)
-        cnt_logits_all = _flatten_centerness(centerness[level], image_idx)
-        pred_ltrb = pred_ltrb_all[loc_idx].view(1, 4)
-        cls_logits = cls_logits_all[loc_idx].view(-1)
-        cnt_logit = cnt_logits_all[loc_idx].view(())
+        if need_cls:
+            cls_logits_all = _flatten_level_output(box_cls[level], image_idx)
+            cls_logits = cls_logits_all[loc_idx].view(-1)
+            if target_mode == "cand_target":
+                cls_target = torch.zeros((num_classes,), dtype=box_cls[level].dtype, device=device)
+                if 0 <= final_cls < num_classes:
+                    cls_target[final_cls] = 1.0
+            else:
+                cls_target_value = (
+                    0.5
+                    if str(cls_loss).strip().lower() == "bcewithlogits"
+                    else 1.0 / float(max(num_classes, 1))
+                )
+                cls_target = torch.full((num_classes,), cls_target_value, dtype=box_cls[level].dtype, device=device)
 
-        if target_mode == "cand_target":
-            loc_xy = locations[level][loc_idx].to(device=device, dtype=pred_ltrb.dtype).view(1, 2)
-            target_ltrb = _ltrb_target_from_box(loc_xy, target_box.to(device=device, dtype=pred_ltrb.dtype))
-            cnt_target = _centerness_from_ltrb(target_ltrb).view(())
-        else:
-            target_ltrb = torch.zeros_like(pred_ltrb)
-            cnt_target = torch.full_like(cnt_logit, 0.5)
+        if need_cnt:
+            cnt_logits_all = _flatten_centerness(centerness[level], image_idx)
+            cnt_logit = cnt_logits_all[loc_idx].view(())
 
-        if "bbox_loss" in target_values:
+        if need_ltrb_target:
+            if target_mode == "cand_target":
+                loc_xy = locations[level][loc_idx].to(device=device, dtype=pred_ltrb.dtype).view(1, 2)
+                target_ltrb = _ltrb_target_from_box(
+                    loc_xy,
+                    final_box.detach().to(device=device, dtype=pred_ltrb.dtype),
+                )
+            else:
+                target_ltrb = torch.zeros_like(pred_ltrb)
+
+        if need_cnt:
+            if target_mode == "cand_target":
+                cnt_target = _centerness_from_ltrb(target_ltrb).view(())
+            else:
+                cnt_target = torch.full_like(cnt_logit, 0.5)
+
+        if need_bbox:
             bbox_terms.append(_bbox_ltrb_loss(pred_ltrb, target_ltrb, mode=bbox_loss, direction=bbox_direction, reduction="sum"))
-        if "cls_loss" in target_values:
+        if need_cls:
             cls_terms.append(
                 _class_loss_tensor(
                     cls_logits,
@@ -346,7 +367,7 @@ def _build_fcos_losses(
                     reduction="sum",
                 )
             )
-        if "cnt_loss" in target_values:
+        if need_cnt:
             cnt_terms.append(
                 _objectness_loss_tensor(
                     cnt_logit.view(1),
