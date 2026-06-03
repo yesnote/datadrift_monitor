@@ -85,11 +85,13 @@ def run_meta_detect_csv(config, run_dir):
         ):
             image_list = _as_image_list(images)
             infer_batch, ratios, pads, _resized_chws = _prepare_infer_batch(detector, image_list, device, auto=False)
-            t_detector = timing.start()
             with torch.no_grad():
+                t_detector = timing.start()
                 model_output = detector.model(infer_batch, augment=False)
                 raw_prediction = model_output[0] if isinstance(model_output, (tuple, list)) else model_output
                 raw_logits = model_output[1] if isinstance(model_output, (tuple, list)) and len(model_output) > 1 else None
+                detector_inference_sec = timing.elapsed(t_detector)
+
                 pre_nms_prediction = None
                 if bool(getattr(detector, "is_fcos", False)):
                     pre_nms_prediction, _pre_nms_logits = detector.get_last_pre_nms_predictions()
@@ -98,6 +100,7 @@ def run_meta_detect_csv(config, run_dir):
                 # own meta_detect.score_threshold, so run NMS on detached copies.
                 nms_prediction = raw_prediction.detach().clone()
                 nms_logits = raw_logits.detach().clone() if raw_logits is not None else None
+                t_detector = timing.start()
                 selected_preds, _selected_logits, _selected_objectness, selected_indices = detector.non_max_suppression(
                     prediction=nms_prediction,
                     logits=nms_logits,
@@ -108,7 +111,7 @@ def run_meta_detect_csv(config, run_dir):
                     max_det=nms_kwargs["max_det"],
                     return_indices=True,
                 )
-            detector_inference_sec = timing.elapsed(t_detector)
+                detector_inference_sec += timing.elapsed(t_detector)
 
             candidate_search_sec = 0.0
             feature_compute_sec = 0.0
