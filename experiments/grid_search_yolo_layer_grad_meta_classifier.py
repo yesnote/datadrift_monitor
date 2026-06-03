@@ -610,7 +610,12 @@ def _run_yolo_layer_grad_terms_once(
                     )
                     cand_keys = [
                         key
-                        for key, (combo, _run_dir, _csv_file, _writer) in handles.items()
+                        for key, (
+                            combo,
+                            _run_dir,
+                            _csv_file,
+                            _writer,
+                        ) in handles.items()
                         if combo["target"] == "cand_target"
                     ]
                     cand_candidate_mask = None
@@ -630,9 +635,9 @@ def _run_yolo_layer_grad_terms_once(
                             device,
                         )
                         for cand_key in cand_keys:
-                            stage_by_key[cand_key]["candidate_search_sec"] += (
-                                candidate_timing["candidate_search_sec"]
-                            )
+                            stage_by_key[cand_key][
+                                "candidate_search_sec"
+                            ] += candidate_timing["candidate_search_sec"]
 
                     for key, (combo, _run_dir, _csv_file, _writer) in handles.items():
                         detector.zero_grad(set_to_none=True)
