@@ -26,6 +26,7 @@ from commands.utils.predict_utils import (  # noqa: E402
     _start_timing,
     build_detector,
     build_layer_target_scalar_bbox,
+    build_yolo_candidate_mask_for_pseudo,
     expand_layer_names,
     format_gradient_output,
     parse_output_config,
@@ -607,6 +608,31 @@ def _run_yolo_layer_grad_terms_once(
                         if (anchor_img is not None and raw_idx < anchor_img.shape[0])
                         else None
                     )
+                    cand_keys = [
+                        key
+                        for key, (combo, _run_dir, _csv_file, _writer) in handles.items()
+                        if combo["target"] == "cand_target"
+                    ]
+                    cand_candidate_mask = None
+                    if cand_keys:
+                        t_candidate = _start_timing(device)
+                        cand_candidate_mask = build_yolo_candidate_mask_for_pseudo(
+                            pred_img=pred_img,
+                            raw_idx=raw_idx,
+                            iou_threshold=iou_threshold,
+                            score_threshold=cand_score_threshold,
+                        )
+                        candidate_timing = {"candidate_search_sec": 0.0}
+                        _add_elapsed_timing(
+                            candidate_timing,
+                            "candidate_search_sec",
+                            t_candidate,
+                            device,
+                        )
+                        for cand_key in cand_keys:
+                            stage_by_key[cand_key]["candidate_search_sec"] += (
+                                candidate_timing["candidate_search_sec"]
+                            )
 
                     for key, (combo, _run_dir, _csv_file, _writer) in handles.items():
                         detector.zero_grad(set_to_none=True)
@@ -630,6 +656,11 @@ def _run_yolo_layer_grad_terms_once(
                             bbox_direction=combo["bbox_direction"],
                             cls_direction=combo["cls_direction"],
                             obj_direction=combo["obj_direction"],
+                            candidate_mask=(
+                                cand_candidate_mask
+                                if combo["target"] == "cand_target"
+                                else None
+                            ),
                             timing_accumulator=stage_by_key[key],
                             timing_device=device,
                         )
