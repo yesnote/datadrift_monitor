@@ -354,10 +354,20 @@ def _empty_stage_seconds(target: str, detector_inference_sec: float) -> dict:
     return stages
 
 
-def _layer_grad_fieldnames(combo: dict, target_layers: list[str], reductions: list[str]) -> list[str]:
+def _layer_grad_fieldnames(
+    combo: dict, target_layers: list[str], reductions: list[str]
+) -> list[str]:
     fieldnames = [
-        "image_id", "image_path", "pred_idx", "raw_pred_idx",
-        "xmin", "ymin", "xmax", "ymax", "score", "pred_class",
+        "image_id",
+        "image_path",
+        "pred_idx",
+        "raw_pred_idx",
+        "xmin",
+        "ymin",
+        "xmax",
+        "ymax",
+        "score",
+        "pred_class",
     ]
     save_raw_gradients = not reductions
     for layer_name in target_layers:
@@ -369,7 +379,9 @@ def _layer_grad_fieldnames(combo: dict, target_layers: list[str], reductions: li
     return fieldnames
 
 
-def _run_fcos_layer_grad_terms_once(od_base_config: dict, combo_run_dirs: dict[tuple, Path]) -> None:
+def _run_fcos_layer_grad_terms_once(
+    od_base_config: dict, combo_run_dirs: dict[tuple, Path]
+) -> None:
     if not RUN_LAYER_GRAD:
         return
 
@@ -391,11 +403,15 @@ def _run_fcos_layer_grad_terms_once(od_base_config: dict, combo_run_dirs: dict[t
 
     dataloader = create_dataloader(first_config, split=split)
     if len(dataloader.dataset) == 0:
-        raise ValueError("Loaded 0 images. Check dataset root/image_dir/split configuration in YAML.")
+        raise ValueError(
+            "Loaded 0 images. Check dataset root/image_dir/split configuration in YAML."
+        )
 
     detector, device = build_detector(first_config)
     if not bool(getattr(detector, "is_fcos", False)):
-        raise ValueError("grid_search_fcos_layer_grad_meta_classifier.py requires model.type=fcos.")
+        raise ValueError(
+            "grid_search_fcos_layer_grad_meta_classifier.py requires model.type=fcos."
+        )
 
     reductions = common_layer_cfg["reduction"]
     save_raw_gradients = not reductions
@@ -416,12 +432,18 @@ def _run_fcos_layer_grad_terms_once(od_base_config: dict, combo_run_dirs: dict[t
                 detector,
                 layer_cfg["target_layer_map"].get(combo["term"], []),
             )
-            layer_params = [resolve_layer_parameter(detector, name) for name in target_layers]
+            layer_params = [
+                resolve_layer_parameter(detector, name) for name in target_layers
+            ]
             for param in layer_params:
-                original_requires_grad.setdefault(id(param), (param, bool(param.requires_grad)))
+                original_requires_grad.setdefault(
+                    id(param), (param, bool(param.requires_grad))
+                )
                 param.requires_grad_(True)
 
-            csv_file = open(run_dir / "layer_grad.csv", "w", newline="", encoding="utf-8")
+            csv_file = open(
+                run_dir / "layer_grad.csv", "w", newline="", encoding="utf-8"
+            )
             writer = csv.DictWriter(
                 csv_file,
                 fieldnames=_layer_grad_fieldnames(combo, target_layers, reductions),
@@ -442,11 +464,13 @@ def _run_fcos_layer_grad_terms_once(od_base_config: dict, combo_run_dirs: dict[t
                 raw_dir.mkdir(parents=True, exist_ok=True)
                 raw_gradient_dirs[key] = raw_dir
 
-        for batch_idx, (images, targets) in enumerate(tqdm(
-            dataloader,
-            desc="Object Detector (predict - layer_grad grid)",
-            total=len(dataloader),
-        )):
+        for batch_idx, (images, targets) in enumerate(
+            tqdm(
+                dataloader,
+                desc="Object Detector (predict - layer_grad grid)",
+                total=len(dataloader),
+            )
+        ):
             image_list = _as_image_list(images)
             infer_batch, _ratios, _pads, _resized_chws = _prepare_infer_batch(
                 detector, image_list, device, auto=False
@@ -463,29 +487,47 @@ def _run_fcos_layer_grad_terms_once(od_base_config: dict, combo_run_dirs: dict[t
                 )
             with detector.temporary_pre_nms_threshold(pre_nms_threshold):
                 model_output = detector.forward_layer_grad(fcos_preprocessed)
-            selected_preds, _selected_logits, _selected_objectness, selected_indices = select_fcos_post_nms(
-                detector,
-                model_output["post_prediction"],
-                model_output["post_logits"],
-                model_output["post_indices"],
-                conf_thres=float(getattr(detector, "confidence", getattr(detector, "conf_thresh", 0.05))),
+            selected_preds, _selected_logits, _selected_objectness, selected_indices = (
+                select_fcos_post_nms(
+                    detector,
+                    model_output["post_prediction"],
+                    model_output["post_logits"],
+                    model_output["post_indices"],
+                    conf_thres=float(
+                        getattr(
+                            detector,
+                            "confidence",
+                            getattr(detector, "conf_thresh", 0.05),
+                        )
+                    ),
+                )
             )
-            detector_inference_sec = profilers[next(iter(profilers))].elapsed(t_detector)
+            detector_inference_sec = profilers[next(iter(profilers))].elapsed(
+                t_detector
+            )
 
             stage_by_key = {
                 key: _empty_stage_seconds(combo["target"], detector_inference_sec)
-                for key, (combo, _run_dir, _csv_file, _writer, _layer_cfg) in handles.items()
+                for key, (
+                    combo,
+                    _run_dir,
+                    _csv_file,
+                    _writer,
+                    _layer_cfg,
+                ) in handles.items()
             }
             rows_by_key = {key: [] for key in handles}
             grad_arrays_by_key = {key: {} for key in handles}
             batch_items = 0
 
             cand_keys = [
-                key for key, (combo, *_rest) in handles.items()
+                key
+                for key, (combo, *_rest) in handles.items()
                 if combo["target"] == "cand_target"
             ]
             null_keys = [
-                key for key, (combo, *_rest) in handles.items()
+                key
+                for key, (combo, *_rest) in handles.items()
                 if combo["target"] == "null_target"
             ]
 
@@ -506,9 +548,17 @@ def _run_fcos_layer_grad_terms_once(od_base_config: dict, combo_run_dirs: dict[t
                 batch_items += int(det.shape[0])
 
                 for pred_idx in range(int(det.shape[0])):
-                    raw_idx = int(raw_keep[pred_idx].detach().cpu().item()) if pred_idx < int(raw_keep.shape[0]) else pred_idx
+                    raw_idx = (
+                        int(raw_keep[pred_idx].detach().cpu().item())
+                        if pred_idx < int(raw_keep.shape[0])
+                        else pred_idx
+                    )
                     final_box = det[pred_idx, :4]
-                    final_cls = int(det[pred_idx, 5].detach().cpu().item()) if det.shape[1] > 5 else 0
+                    final_cls = (
+                        int(det[pred_idx, 5].detach().cpu().item())
+                        if det.shape[1] > 5
+                        else 0
+                    )
                     base_row = {
                         "image_id": image_id,
                         "image_path": image_path,
@@ -533,12 +583,16 @@ def _run_fcos_layer_grad_terms_once(od_base_config: dict, combo_run_dirs: dict[t
                             final_box=final_box,
                             final_cls=final_cls,
                             raw_idx=raw_idx,
-                            cand_score_threshold=common_layer_cfg["cand_score_threshold"],
+                            cand_score_threshold=common_layer_cfg[
+                                "cand_score_threshold"
+                            ],
                             timing=profilers[cand_keys[0]],
                             timing_accumulator=candidate_timing,
                         )
                         for cand_key in cand_keys:
-                            stage_by_key[cand_key]["candidate_search_sec"] += candidate_timing["candidate_search_sec"]
+                            stage_by_key[cand_key][
+                                "candidate_search_sec"
+                            ] += candidate_timing["candidate_search_sec"]
 
                     null_sources = None
                     if null_keys:
@@ -550,14 +604,26 @@ def _run_fcos_layer_grad_terms_once(od_base_config: dict, combo_run_dirs: dict[t
                             final_box=final_box,
                             final_cls=final_cls,
                             raw_idx=raw_idx,
-                            cand_score_threshold=common_layer_cfg["cand_score_threshold"],
+                            cand_score_threshold=common_layer_cfg[
+                                "cand_score_threshold"
+                            ],
                             timing=profilers[null_keys[0]],
                             timing_accumulator={"candidate_search_sec": 0.0},
                         )
 
-                    for key, (combo, _run_dir, _csv_file, _writer, layer_cfg) in handles.items():
+                    for key, (
+                        combo,
+                        _run_dir,
+                        _csv_file,
+                        _writer,
+                        layer_cfg,
+                    ) in handles.items():
                         detector.zero_grad(set_to_none=True)
-                        sources = cand_sources if combo["target"] == "cand_target" else null_sources
+                        sources = (
+                            cand_sources
+                            if combo["target"] == "cand_target"
+                            else null_sources
+                        )
                         losses = _build_fcos_losses(
                             target_mode=combo["target"],
                             target_values=[combo["term"]],
@@ -600,7 +666,9 @@ def _run_fcos_layer_grad_terms_once(od_base_config: dict, combo_run_dirs: dict[t
                             retain_graph=True,
                             allow_unused=True,
                         )
-                        stage_by_key[key]["backpropagation_sec"] += profilers[key].elapsed(t_backprop)
+                        stage_by_key[key]["backpropagation_sec"] += profilers[
+                            key
+                        ].elapsed(t_backprop)
 
                         t_feature = profilers[key].start()
                         for layer_idx, layer_name in enumerate(target_layers):
@@ -612,24 +680,35 @@ def _run_fcos_layer_grad_terms_once(od_base_config: dict, combo_run_dirs: dict[t
                             )
                             if save_raw_gradients:
                                 array_key = f"r{len(grad_arrays_by_key[key]):06d}_{_safe_npz_key(grad_key)}"
-                                grad_arrays_by_key[key][array_key] = _gradient_to_np_array(grad_value)
-                                row[grad_key] = f"gradients/layer_grad_batch_{batch_idx:06d}.npz::{array_key}"
+                                grad_arrays_by_key[key][array_key] = (
+                                    _gradient_to_np_array(grad_value)
+                                )
+                                row[grad_key] = (
+                                    f"gradients/layer_grad_batch_{batch_idx:06d}.npz::{array_key}"
+                                )
                             else:
                                 for metric in reductions:
-                                    value = grad_value.get(metric, 0.0) if isinstance(grad_value, dict) else 0.0
+                                    value = (
+                                        grad_value.get(metric, 0.0)
+                                        if isinstance(grad_value, dict)
+                                        else 0.0
+                                    )
                                     row[f"{grad_key}_{metric}"] = (
                                         float(value.detach().cpu().item())
                                         if isinstance(value, torch.Tensor)
                                         else float(value)
                                     )
-                        stage_by_key[key]["feature_compute_sec"] += profilers[key].elapsed(t_feature)
+                        stage_by_key[key]["feature_compute_sec"] += profilers[
+                            key
+                        ].elapsed(t_feature)
                         rows_by_key[key].append(row)
                         del scalar, grads
 
             for key, (combo, run_dir, csv_file, writer, _layer_cfg) in handles.items():
                 if save_raw_gradients and grad_arrays_by_key[key]:
                     np.savez(
-                        raw_gradient_dirs[key] / f"layer_grad_batch_{batch_idx:06d}.npz",
+                        raw_gradient_dirs[key]
+                        / f"layer_grad_batch_{batch_idx:06d}.npz",
                         **grad_arrays_by_key[key],
                     )
                 writer.writerows(rows_by_key[key])
@@ -640,7 +719,13 @@ def _run_fcos_layer_grad_terms_once(od_base_config: dict, combo_run_dirs: dict[t
                     stage_seconds=stage_by_key[key],
                 )
 
-            del infer_batch, fcos_preprocessed, model_output, selected_preds, selected_indices
+            del (
+                infer_batch,
+                fcos_preprocessed,
+                model_output,
+                selected_preds,
+                selected_indices,
+            )
             detector.zero_grad(set_to_none=True)
     finally:
         for param, req_grad in original_requires_grad.values():
