@@ -207,6 +207,58 @@ def _prediction_class_name(detector, cls_idx):
     return str(cls_idx)
 
 
+def _resolve_fcos_candidate_sources(
+    *,
+    target_mode,
+    model_output,
+    image_idx,
+    pred_idx,
+    final_box,
+    final_cls,
+    raw_idx,
+    cand_score_threshold,
+    timing,
+    timing_accumulator,
+):
+    detections = model_output["detections"]
+    pre_nms_boxlists = model_output["pre_nms_boxlists"]
+    candidate_sources = []
+    if target_mode == "cand_target":
+        t_candidate = timing.start()
+        if pre_nms_boxlists is None or image_idx >= len(pre_nms_boxlists):
+            timing_accumulator["candidate_search_sec"] += timing.elapsed(t_candidate)
+            return candidate_sources
+        pre_boxlist = pre_nms_boxlists[image_idx]
+        pre_pred = model_output["pre_prediction"][image_idx]
+        if pre_pred.numel() == 0:
+            timing_accumulator["candidate_search_sec"] += timing.elapsed(t_candidate)
+            return candidate_sources
+        pre_boxes = _xywh_to_xyxy_tensor(pre_pred[:, :4].detach())
+        pre_scores = pre_pred[:, 4].detach()
+        pre_cls = pre_pred[:, 5].detach().long()
+        score_class_mask = (pre_scores >= float(cand_score_threshold)) & (pre_cls == int(final_cls))
+        cand_mask = torch.zeros_like(score_class_mask, dtype=torch.bool)
+        if bool(score_class_mask.any()):
+            score_indices = torch.where(score_class_mask)[0]
+            ious = _box_iou_1vN_tensor(final_box.detach().view(1, 4), pre_boxes[score_indices])
+            cand_mask[score_indices] = ious > float(0.45)
+        if not bool(cand_mask.any()) and 0 <= raw_idx < cand_mask.shape[0]:
+            cand_mask[raw_idx] = True
+        candidate_indices = torch.where(cand_mask)[0]
+        source_boxlist = pre_nms_boxlists[image_idx]
+        for candidate_idx in candidate_indices.detach().cpu().tolist():
+            level, loc_idx, _raw, _cls_one_based = _source_indices_from_boxlist(source_boxlist, int(candidate_idx))
+            candidate_sources.append((level, loc_idx))
+        timing_accumulator["candidate_search_sec"] += timing.elapsed(t_candidate)
+    else:
+        if image_idx >= len(detections) or pred_idx >= len(detections[image_idx]):
+            return candidate_sources
+        source_boxlist = detections[image_idx]
+        level, loc_idx, _raw, _cls_one_based = _source_indices_from_boxlist(source_boxlist, pred_idx)
+        candidate_sources.append((level, loc_idx))
+    return candidate_sources
+
+
 def _build_fcos_losses(
     *,
     target_mode,
@@ -226,56 +278,30 @@ def _build_fcos_losses(
     cnt_direction,
     timing,
     timing_accumulator,
+    candidate_sources=None,
 ):
     box_cls = model_output["box_cls"]
     box_regression = model_output["box_regression"]
     centerness = model_output["centerness"]
     locations = model_output["locations"]
-    detections = model_output["detections"]
-    pre_nms_boxlists = model_output["pre_nms_boxlists"]
     device = final_box.device
     losses = {}
 
-    candidate_sources = []
-    t_loss = None
-    if target_mode == "cand_target":
-        t_candidate = timing.start()
-        if pre_nms_boxlists is None or image_idx >= len(pre_nms_boxlists):
-            timing_accumulator["candidate_search_sec"] += timing.elapsed(t_candidate)
-            return losses
-        pre_boxlist = pre_nms_boxlists[image_idx]
-        pre_pred = model_output["pre_prediction"][image_idx]
-        if pre_pred.numel() == 0:
-            timing_accumulator["candidate_search_sec"] += timing.elapsed(t_candidate)
-            return losses
-        pre_boxes = _xywh_to_xyxy_tensor(pre_pred[:, :4].detach())
-        pre_scores = pre_pred[:, 4].detach()
-        pre_cls = pre_pred[:, 5].detach().long()
-        score_class_mask = (pre_scores >= float(cand_score_threshold)) & (pre_cls == int(final_cls))
-        cand_mask = torch.zeros_like(score_class_mask, dtype=torch.bool)
-        if bool(score_class_mask.any()):
-            score_indices = torch.where(score_class_mask)[0]
-            ious = _box_iou_1vN_tensor(final_box.detach().view(1, 4), pre_boxes[score_indices])
-            cand_mask[score_indices] = ious > float(0.45)
-        if not bool(cand_mask.any()) and 0 <= raw_idx < cand_mask.shape[0]:
-            cand_mask[raw_idx] = True
-        candidate_indices = torch.where(cand_mask)[0]
-        source_boxlist = pre_nms_boxlists[image_idx]
-        for candidate_idx in candidate_indices.detach().cpu().tolist():
-            level, loc_idx, _raw, _cls_one_based = _source_indices_from_boxlist(source_boxlist, int(candidate_idx))
-            candidate_sources.append((level, loc_idx))
-        timing_accumulator["candidate_search_sec"] += timing.elapsed(t_candidate)
-    else:
-        t_loss = timing.start()
-        if image_idx >= len(detections) or pred_idx >= len(detections[image_idx]):
-            timing_accumulator["loss_compute_sec"] += timing.elapsed(t_loss)
-            return losses
-        source_boxlist = detections[image_idx]
-        level, loc_idx, _raw, _cls_one_based = _source_indices_from_boxlist(source_boxlist, pred_idx)
-        candidate_sources.append((level, loc_idx))
+    if candidate_sources is None:
+        candidate_sources = _resolve_fcos_candidate_sources(
+            target_mode=target_mode,
+            model_output=model_output,
+            image_idx=image_idx,
+            pred_idx=pred_idx,
+            final_box=final_box,
+            final_cls=final_cls,
+            raw_idx=raw_idx,
+            cand_score_threshold=cand_score_threshold,
+            timing=timing,
+            timing_accumulator=timing_accumulator,
+        )
 
-    if t_loss is None:
-        t_loss = timing.start()
+    t_loss = timing.start()
     bbox_terms = []
     cls_terms = []
     cnt_terms = []
