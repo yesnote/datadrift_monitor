@@ -326,7 +326,7 @@ class FCOSTorchObjectDetector(nn.Module):
         self._clear_last_pre_nms_predictions()
         return output
 
-    def forward_layer_grad(self, processed_images):
+    def forward_layer_grad(self, processed_images, include_post_logits=True):
         from fcos_core.structures.image_list import to_image_list
 
         was_training = self.detector_model.training
@@ -347,11 +347,12 @@ class FCOSTorchObjectDetector(nn.Module):
         post_keep_fields = {
             "scores",
             "labels",
-            "class_logits",
             "pre_nms_level",
             "pre_nms_location_idx",
             "pre_nms_candidate_idx",
         }
+        if include_post_logits:
+            post_keep_fields.add("class_logits")
         pre_keep_fields = {
             "scores",
             "labels",
@@ -362,12 +363,13 @@ class FCOSTorchObjectDetector(nn.Module):
         detached_detections = self._detach_boxlists(detections, keep_fields=post_keep_fields)
         post_prediction, post_logits, post_indices = self._boxlists_to_contract(
             detached_detections,
-            include_logits=True,
+            include_logits=include_post_logits,
             include_indices=True,
             include_probs=False,
         )
         pre_nms_boxlists = getattr(rpn.box_selector_test, "last_pre_nms_boxlists", None)
         detached_pre_nms_boxlists = self._detach_boxlists(pre_nms_boxlists, keep_fields=pre_keep_fields)
+        self._clear_last_pre_nms_predictions()
         pre_prediction = (
             self._boxlists_to_contract(
                 detached_pre_nms_boxlists,
