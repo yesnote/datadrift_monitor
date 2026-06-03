@@ -1491,26 +1491,15 @@ def _class_loss_tensor(
     return loss.mean()
 
 
-def build_pseudo_label_losses_for_candidates(
+def build_yolo_candidate_mask_for_pseudo(
     pred_img: torch.Tensor,
     raw_idx: int,
     iou_threshold: float,
     score_threshold: float = 0.01,
-    bbox_loss: str = "offset_l1",
-    cls_loss: str = "bcewithlogits",
-    obj_loss: str = "bcewithlogits",
-    bbox_direction: str = "pred_to_target",
-    cls_direction: str = "pred_to_target",
-    obj_direction: str = "pred_to_target",
-    raw_img: torch.Tensor = None,
-    requested_losses=None,
-    timing_accumulator=None,
-    timing_device=None,
 ):
     if raw_idx >= pred_img.shape[0]:
         return None
 
-    t_candidate = _start_timing(timing_device)
     with torch.no_grad():
         pseudo_row = pred_img[raw_idx].detach()
         pseudo_cls = int(torch.argmax(pseudo_row[5:]).item())
@@ -1533,7 +1522,42 @@ def build_pseudo_label_losses_for_candidates(
         if not bool(candidate_mask.any()):
             candidate_mask = torch.zeros_like(pred_cls, dtype=torch.bool)
             candidate_mask[raw_idx] = True
-    _add_elapsed_timing(timing_accumulator, "candidate_search_sec", t_candidate, timing_device)
+    return candidate_mask
+
+
+def build_pseudo_label_losses_for_candidates(
+    pred_img: torch.Tensor,
+    raw_idx: int,
+    iou_threshold: float,
+    score_threshold: float = 0.01,
+    bbox_loss: str = "offset_l1",
+    cls_loss: str = "bcewithlogits",
+    obj_loss: str = "bcewithlogits",
+    bbox_direction: str = "pred_to_target",
+    cls_direction: str = "pred_to_target",
+    obj_direction: str = "pred_to_target",
+    raw_img: torch.Tensor = None,
+    requested_losses=None,
+    candidate_mask: torch.Tensor = None,
+    timing_accumulator=None,
+    timing_device=None,
+):
+    if raw_idx >= pred_img.shape[0]:
+        return None
+
+    pseudo_row = pred_img[raw_idx].detach()
+    pseudo_cls = int(torch.argmax(pseudo_row[5:]).item())
+    if candidate_mask is None:
+        t_candidate = _start_timing(timing_device)
+        candidate_mask = build_yolo_candidate_mask_for_pseudo(
+            pred_img=pred_img,
+            raw_idx=raw_idx,
+            iou_threshold=iou_threshold,
+            score_threshold=score_threshold,
+        )
+        _add_elapsed_timing(timing_accumulator, "candidate_search_sec", t_candidate, timing_device)
+    if candidate_mask is None:
+        return None
 
     t_loss = _start_timing(timing_device)
     requested_losses = set(requested_losses or ["bbox_loss", "obj_loss", "cls_loss"])
@@ -2032,6 +2056,7 @@ def build_layer_target_scalar_bbox(
     bbox_direction: str = "pred_to_target",
     cls_direction: str = "pred_to_target",
     obj_direction: str = "pred_to_target",
+    candidate_mask: torch.Tensor = None,
     timing_accumulator=None,
     timing_device=None,
 ):
@@ -2125,6 +2150,7 @@ def build_layer_target_scalar_bbox(
         obj_direction=obj_direction,
         raw_img=raw_img,
         requested_losses=[target_value],
+        candidate_mask=candidate_mask,
         timing_accumulator=timing_accumulator,
         timing_device=timing_device,
     )
