@@ -1,6 +1,7 @@
 from pathlib import Path
 from urllib.parse import urlparse
 import shutil
+from contextlib import contextmanager
 
 import torch
 import torch.nn as nn
@@ -268,6 +269,19 @@ class FasterRCNNTorchObjectDetector(nn.Module):
         )
         detections = self.detector_model.transform.postprocess(detections, images.image_sizes, original_image_sizes)
         return detections
+
+    @contextmanager
+    def temporary_roi_score_threshold(self, threshold=None):
+        roi_heads = getattr(self.detector_model, "roi_heads", None)
+        if roi_heads is None or threshold is None or not hasattr(roi_heads, "score_thresh"):
+            yield
+            return
+        old_threshold = float(roi_heads.score_thresh)
+        roi_heads.score_thresh = float(threshold)
+        try:
+            yield
+        finally:
+            roi_heads.score_thresh = old_threshold
 
     def prepare_roi_cache(self, images):
         """Cache deterministic Faster R-CNN stages before ROI prediction.

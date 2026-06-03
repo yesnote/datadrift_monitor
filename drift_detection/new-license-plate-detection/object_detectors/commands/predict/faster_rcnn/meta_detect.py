@@ -87,7 +87,12 @@ def run_meta_detect_csv(config, run_dir):
             infer_batch, ratios, pads, _resized_chws = _prepare_infer_batch(detector, image_list, device, auto=False)
             t_detector = timing.start()
             with torch.no_grad():
-                model_output = detector.model(infer_batch, augment=False)
+                pre_nms_threshold = min(
+                    float(getattr(detector, "confidence", getattr(detector, "conf_thresh", 0.25))),
+                    float(score_threshold),
+                )
+                with detector.temporary_roi_score_threshold(pre_nms_threshold):
+                    model_output = detector.model(infer_batch, augment=False)
                 raw_prediction = model_output[0] if isinstance(model_output, (tuple, list)) else model_output
                 raw_logits = model_output[1] if isinstance(model_output, (tuple, list)) and len(model_output) > 1 else None
                 pre_nms_prediction = None
