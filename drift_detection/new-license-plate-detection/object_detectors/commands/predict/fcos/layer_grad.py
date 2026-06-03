@@ -584,9 +584,14 @@ def run_layer_grad_csv(config, run_dir):
                                     for metric in layer_cfg["reduction"]:
                                         value = grad_value.get(metric, 0.0) if isinstance(grad_value, dict) else 0.0
                                         row[f"{key}_{metric}"] = float(value.detach().cpu().item()) if isinstance(value, torch.Tensor) else float(value)
+                                    if layer_cfg["reduction"]:
+                                        del value
+                                del grad_value
                             stage_seconds["feature_compute_sec"] += timing.elapsed(t_feature)
                             del grads
+                            del scalar
                         batch_rows.append(row)
+                        del losses, final_box
 
                 for row in batch_rows:
                     writer.writerow(row)
@@ -598,8 +603,11 @@ def run_layer_grad_csv(config, run_dir):
                     num_predictions=batch_items,
                     stage_seconds=stage_seconds,
                 )
+                del batch_rows, batch_grad_arrays
                 del infer_batch, fcos_preprocessed, model_output, selected_preds, selected_indices
                 detector.zero_grad(set_to_none=True)
+                if device.type == "cuda":
+                    torch.cuda.empty_cache()
     finally:
         for params in layer_params.values():
             for param in params:
