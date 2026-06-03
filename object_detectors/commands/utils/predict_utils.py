@@ -1513,14 +1513,22 @@ def build_pseudo_label_losses_for_candidates(
     with torch.no_grad():
         pseudo_row = pred_img[raw_idx].detach()
         pseudo_cls = int(torch.argmax(pseudo_row[5:]).item())
-        pred_boxes_xyxy = _xywh_to_xyxy_tensor(pred_img[:, :4].detach())
         pseudo_box_xyxy = _xywh_to_xyxy_tensor(pseudo_row[:4].view(1, 4))
-        ious = _box_iou_1vN_tensor(pseudo_box_xyxy, pred_boxes_xyxy)
         pred_cls = torch.argmax(pred_img[:, 5:].detach(), dim=1)
         obj = pred_img[:, 4].detach()
         cls_max = pred_img[:, 5:].detach().max(dim=1).values if pred_img.shape[1] > 5 else torch.ones_like(obj)
         score = obj * cls_max
-        candidate_mask = (ious >= float(iou_threshold)) & (pred_cls == pseudo_cls) & (score >= float(score_threshold))
+        score_mask = score >= float(score_threshold)
+        class_mask = pred_cls == pseudo_cls
+        pre_iou_mask = score_mask & class_mask
+        candidate_mask = torch.zeros_like(pred_cls, dtype=torch.bool)
+        if bool(pre_iou_mask.any()):
+            pre_iou_indices = torch.nonzero(pre_iou_mask, as_tuple=False).flatten()
+            pred_boxes_xyxy = _xywh_to_xyxy_tensor(pred_img[pre_iou_indices, :4].detach())
+            ious = _box_iou_1vN_tensor(pseudo_box_xyxy, pred_boxes_xyxy)
+            keep_indices = pre_iou_indices[ious > float(iou_threshold)]
+            if keep_indices.numel() > 0:
+                candidate_mask[keep_indices] = True
         if not bool(candidate_mask.any()):
             candidate_mask = torch.zeros_like(pred_cls, dtype=torch.bool)
             candidate_mask[raw_idx] = True
