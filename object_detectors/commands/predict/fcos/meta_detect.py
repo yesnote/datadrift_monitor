@@ -86,22 +86,28 @@ def run_meta_detect_csv(config, run_dir):
         ):
             image_list = _as_image_list(images)
             infer_batch, ratios, pads, _resized_chws = _prepare_infer_batch(detector, image_list, device, auto=False)
-            t_detector = timing.start()
+            fcos_preprocessed = detector.preprocess_images(infer_batch)
             with torch.no_grad():
-                model_output = detector.model(
-                    infer_batch,
-                    augment=False,
-                    keep_pre_nms=True,
-                    keep_class_outputs=True,
-                )
+                pre_nms_threshold = min(float(getattr(detector, "confidence", 0.05)), float(score_threshold))
+                t_detector = timing.start()
+                with detector.temporary_pre_nms_threshold(pre_nms_threshold):
+                    model_output = detector.forward_preprocessed(
+                        fcos_preprocessed,
+                        keep_pre_nms=True,
+                        keep_class_outputs=True,
+                    )
                 raw_prediction, raw_logits, raw_indices = unpack_fcos_model_output(model_output)
                 pre_nms_prediction = None
                 if bool(getattr(detector, "is_fcos", False)):
                     pre_nms_prediction, _pre_nms_logits, _pre_nms_indices = detector.get_last_pre_nms_predictions()
                 selected_preds, _selected_logits, _selected_objectness, selected_indices = select_fcos_post_nms(
-                    detector, raw_prediction, raw_logits, raw_indices
+                    detector,
+                    raw_prediction,
+                    raw_logits,
+                    raw_indices,
+                    conf_thres=float(getattr(detector, "confidence", getattr(detector, "conf_thresh", 0.05))),
                 )
-            detector_inference_sec = timing.elapsed(t_detector)
+                detector_inference_sec = timing.elapsed(t_detector)
 
             candidate_search_sec = 0.0
             feature_compute_sec = 0.0
@@ -284,7 +290,7 @@ def run_meta_detect_csv(config, run_dir):
             )
             if hasattr(detector, "_clear_last_pre_nms_predictions"):
                 detector._clear_last_pre_nms_predictions()
-            del infer_batch, model_output, raw_prediction, raw_logits, raw_indices, selected_preds, selected_indices
+            del infer_batch, fcos_preprocessed, model_output, raw_prediction, raw_logits, raw_indices, selected_preds, selected_indices
 
     del detector
     if device.type == "cuda":
