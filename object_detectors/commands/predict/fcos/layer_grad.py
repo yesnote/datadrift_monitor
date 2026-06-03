@@ -287,10 +287,7 @@ def _build_fcos_losses(
     device = final_box.device
     losses = {}
 
-    t_loss = None
     if candidate_sources is None:
-        if target_mode != "cand_target":
-            t_loss = timing.start()
         candidate_sources = _resolve_fcos_candidate_sources(
             target_mode=target_mode,
             model_output=model_output,
@@ -304,8 +301,7 @@ def _build_fcos_losses(
             timing_accumulator=timing_accumulator,
         )
 
-    if t_loss is None:
-        t_loss = timing.start()
+    t_loss = timing.start()
     requested = set(target_values)
     need_bbox = "bbox_loss" in requested
     need_cls = "cls_loss" in requested
