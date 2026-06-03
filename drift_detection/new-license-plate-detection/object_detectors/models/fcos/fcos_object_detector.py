@@ -1,5 +1,6 @@
 from pathlib import Path
 import sys
+from contextlib import contextmanager
 
 import numpy as np
 import torch
@@ -246,8 +247,24 @@ class FCOSTorchObjectDetector(nn.Module):
         if box_selector is not None and hasattr(box_selector, "store_class_outputs"):
             box_selector.store_class_outputs = bool(keep_class_outputs)
 
+    def _box_selector_test(self):
+        return getattr(getattr(self.detector_model, "rpn", None), "box_selector_test", None)
+
+    @contextmanager
+    def temporary_pre_nms_threshold(self, threshold=None):
+        box_selector = self._box_selector_test()
+        if box_selector is None or threshold is None or not hasattr(box_selector, "pre_nms_thresh"):
+            yield
+            return
+        old_threshold = float(box_selector.pre_nms_thresh)
+        box_selector.pre_nms_thresh = float(threshold)
+        try:
+            yield
+        finally:
+            box_selector.pre_nms_thresh = old_threshold
+
     def _clear_last_pre_nms_predictions(self):
-        box_selector = getattr(getattr(self.detector_model, "rpn", None), "box_selector_test", None)
+        box_selector = self._box_selector_test()
         if box_selector is not None and hasattr(box_selector, "last_pre_nms_boxlists"):
             box_selector.last_pre_nms_boxlists = None
 
@@ -414,6 +431,7 @@ class FCOSTorchObjectDetector(nn.Module):
         raw_indices=None,
         classes=None,
         max_det=None,
+        conf_thres=None,
     ):
         outputs = []
         logits_outputs = []
@@ -432,10 +450,12 @@ class FCOSTorchObjectDetector(nn.Module):
                 continue
 
             keep_idx = torch.arange(pred.shape[0], dtype=torch.long, device=pred.device)
+            if conf_thres is not None:
+                keep_idx = keep_idx[pred[keep_idx, 4] >= float(conf_thres)]
             if classes is not None:
                 labels = pred[:, 5].long()
                 class_tensor = torch.as_tensor(classes, device=pred.device, dtype=torch.long)
-                keep_mask = (labels[:, None] == class_tensor[None]).any(dim=1)
+                keep_mask = (labels[keep_idx, None] == class_tensor[None]).any(dim=1)
                 keep_idx = keep_idx[keep_mask]
             if max_det is not None and keep_idx.numel() > int(max_det):
                 keep_idx = keep_idx[: int(max_det)]

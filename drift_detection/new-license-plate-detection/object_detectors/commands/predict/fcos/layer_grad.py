@@ -236,9 +236,10 @@ def _build_fcos_losses(
     device = final_box.device
     losses = {}
 
-    t_candidate = timing.start()
     candidate_sources = []
+    t_loss = None
     if target_mode == "cand_target":
+        t_candidate = timing.start()
         if pre_nms_boxlists is None or image_idx >= len(pre_nms_boxlists):
             timing_accumulator["candidate_search_sec"] += timing.elapsed(t_candidate)
             return losses
@@ -263,16 +264,18 @@ def _build_fcos_losses(
         for candidate_idx in candidate_indices.detach().cpu().tolist():
             level, loc_idx, _raw, _cls_one_based = _source_indices_from_boxlist(source_boxlist, int(candidate_idx))
             candidate_sources.append((level, loc_idx))
+        timing_accumulator["candidate_search_sec"] += timing.elapsed(t_candidate)
     else:
+        t_loss = timing.start()
         if image_idx >= len(detections) or pred_idx >= len(detections[image_idx]):
-            timing_accumulator["candidate_search_sec"] += timing.elapsed(t_candidate)
+            timing_accumulator["loss_compute_sec"] += timing.elapsed(t_loss)
             return losses
         source_boxlist = detections[image_idx]
         level, loc_idx, _raw, _cls_one_based = _source_indices_from_boxlist(source_boxlist, pred_idx)
         candidate_sources.append((level, loc_idx))
-    timing_accumulator["candidate_search_sec"] += timing.elapsed(t_candidate)
 
-    t_loss = timing.start()
+    if t_loss is None:
+        t_loss = timing.start()
     bbox_terms = []
     cls_terms = []
     cnt_terms = []
@@ -426,14 +429,19 @@ def run_layer_grad_csv(config, run_dir):
                     "feature_compute_sec": 0.0,
                 }
 
-                t_detector = timing.start()
                 detector.zero_grad(set_to_none=True)
-                model_output = detector.forward_layer_grad(fcos_preprocessed)
+                t_detector = timing.start()
+                pre_nms_threshold = float(getattr(detector, "confidence", 0.05))
+                if layer_cfg["target"] == "cand_target":
+                    pre_nms_threshold = min(pre_nms_threshold, float(layer_cfg["cand_score_threshold"]))
+                with detector.temporary_pre_nms_threshold(pre_nms_threshold):
+                    model_output = detector.forward_layer_grad(fcos_preprocessed)
                 selected_preds, _selected_logits, _selected_objectness, selected_indices = select_fcos_post_nms(
                     detector,
                     model_output["post_prediction"],
                     model_output["post_logits"],
                     model_output["post_indices"],
+                    conf_thres=float(getattr(detector, "confidence", getattr(detector, "conf_thresh", 0.05))),
                 )
                 stage_seconds["detector_inference_sec"] += timing.elapsed(t_detector)
 
