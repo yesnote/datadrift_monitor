@@ -2523,12 +2523,14 @@ def collect_bbox_layer_grads_per_target(
     raw_logits = model_output[1] if isinstance(model_output, (tuple, list)) and len(model_output) > 1 else None
     pred_layers = model_output[2] if isinstance(model_output, (tuple, list)) and len(model_output) > 2 and isinstance(model_output[2], list) else None
     raw_anchor_priors = model_output[3] if isinstance(model_output, (tuple, list)) and len(model_output) > 3 else None
+    _add_elapsed_timing(timing_accumulator, "detector_inference_sec", t_detector, timing_device)
     with torch.no_grad():
         # Final detections use the model confidence threshold. Candidate search for
         # cand_target later uses the unfiltered raw_prediction and cand_score_threshold.
         nms_prediction = raw_prediction.detach().clone()
         nms_logits = raw_logits.detach().clone() if raw_logits is not None else None
         max_det = getattr(detector, "max_det", 300)
+        t_detector = _start_timing(timing_device)
         selected_preds, _selected_logits, _selected_objectness, selected_indices = detector.non_max_suppression(
             prediction=nms_prediction,
             logits=nms_logits,
@@ -2539,9 +2541,11 @@ def collect_bbox_layer_grads_per_target(
             max_det=int(max_det) if max_det is not None else None,
             return_indices=True,
         )
-    _add_elapsed_timing(timing_accumulator, "detector_inference_sec", t_detector, timing_device)
+        _add_elapsed_timing(timing_accumulator, "detector_inference_sec", t_detector, timing_device)
 
+    t_loss_prep = _start_timing(timing_device)
     raw_flat = _flatten_raw_prediction_layers(pred_layers)
+    _add_elapsed_timing(timing_accumulator, "loss_compute_sec", t_loss_prep, timing_device)
 
     rows = []
     batch_size = int(raw_prediction.shape[0]) if raw_prediction.ndim >= 3 else 1
