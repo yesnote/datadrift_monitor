@@ -344,20 +344,43 @@ class FCOSTorchObjectDetector(nn.Module):
             centerness,
             image_list.image_sizes,
         )
-        detached_detections = self._detach_boxlists(detections)
-        post_prediction, post_logits, post_indices = self._boxlists_to_contract(detached_detections)
+        post_keep_fields = {
+            "scores",
+            "labels",
+            "class_logits",
+            "pre_nms_level",
+            "pre_nms_location_idx",
+            "pre_nms_candidate_idx",
+        }
+        pre_keep_fields = {
+            "scores",
+            "labels",
+            "pre_nms_level",
+            "pre_nms_location_idx",
+            "pre_nms_candidate_idx",
+        }
+        detached_detections = self._detach_boxlists(detections, keep_fields=post_keep_fields)
+        post_prediction, post_logits, post_indices = self._boxlists_to_contract(
+            detached_detections,
+            include_logits=True,
+            include_indices=True,
+            include_probs=False,
+        )
         pre_nms_boxlists = getattr(rpn.box_selector_test, "last_pre_nms_boxlists", None)
-        detached_pre_nms_boxlists = self._detach_boxlists(pre_nms_boxlists)
-        pre_prediction, pre_logits, pre_indices = (
-            self._boxlists_to_contract(detached_pre_nms_boxlists)
+        detached_pre_nms_boxlists = self._detach_boxlists(pre_nms_boxlists, keep_fields=pre_keep_fields)
+        pre_prediction = (
+            self._boxlists_to_contract(
+                detached_pre_nms_boxlists,
+                include_logits=False,
+                include_indices=False,
+                include_probs=False,
+            )[0]
             if detached_pre_nms_boxlists is not None
-            else (None, None, None)
+            else None
         )
         if was_training and self.mode == "train":
             self.detector_model.train()
         return {
-            "image_list": image_list,
-            "features": features,
             "locations": locations,
             "box_cls": box_cls,
             "box_regression": box_regression,
@@ -368,17 +391,18 @@ class FCOSTorchObjectDetector(nn.Module):
             "post_logits": post_logits,
             "post_indices": post_indices,
             "pre_prediction": pre_prediction,
-            "pre_logits": pre_logits,
-            "pre_indices": pre_indices,
         }
 
-    def _detach_boxlists(self, detections):
+    def _detach_boxlists(self, detections, keep_fields=None):
         if detections is None:
             return None
+        keep_fields = set(keep_fields) if keep_fields is not None else None
         detached = []
         for det in detections:
             new_det = det.__class__(det.bbox.detach(), det.size, det.mode)
             for field in det.fields():
+                if keep_fields is not None and field not in keep_fields:
+                    continue
                 value = det.get_field(field)
                 if isinstance(value, torch.Tensor):
                     value = value.detach()
@@ -386,7 +410,7 @@ class FCOSTorchObjectDetector(nn.Module):
             detached.append(new_det)
         return detached
 
-    def _boxlists_to_contract(self, detections):
+    def _boxlists_to_contract(self, detections, include_logits=True, include_indices=True, include_probs=True):
         rows_by_image = []
         logits_by_image = []
         indices_by_image = []
@@ -405,29 +429,35 @@ class FCOSTorchObjectDetector(nn.Module):
                 xywh[:, 2] = (boxes[:, 2] - boxes[:, 0]).clamp(min=0.0)
                 xywh[:, 3] = (boxes[:, 3] - boxes[:, 1]).clamp(min=0.0)
 
-            if det.has_field("class_probs"):
+            if include_probs and det.has_field("class_probs"):
                 probs = det.get_field("class_probs").to(self.device, dtype=scores.dtype)
                 if probs.shape[-1] != num_classes:
                     probs = probs[:, :num_classes] if probs.shape[-1] > num_classes else F.pad(probs, (0, num_classes - probs.shape[-1]))
             else:
-                probs = torch.zeros((boxes.shape[0], num_classes), dtype=scores.dtype, device=self.device)
-            if boxes.shape[0] > 0 and num_classes > 0 and not det.has_field("class_probs"):
+                prob_dim = num_classes if include_probs else 0
+                probs = torch.zeros((boxes.shape[0], prob_dim), dtype=scores.dtype, device=self.device)
+            if include_probs and boxes.shape[0] > 0 and num_classes > 0 and not det.has_field("class_probs"):
                 row_idx = torch.arange(boxes.shape[0], device=self.device)
                 probs[row_idx, labels] = scores.clamp(min=0.0, max=1.0)
-            if det.has_field("class_logits"):
-                logits = det.get_field("class_logits").to(self.device, dtype=scores.dtype)
-                if logits.shape[-1] != num_classes:
-                    logits = logits[:, :num_classes] if logits.shape[-1] > num_classes else F.pad(logits, (0, num_classes - logits.shape[-1]))
-                has_logits = True
-            else:
-                logits = torch.empty((boxes.shape[0], 0), dtype=scores.dtype, device=self.device)
-            if det.has_field("pre_nms_candidate_idx"):
+            if include_logits:
+                if det.has_field("class_logits"):
+                    logits = det.get_field("class_logits").to(self.device, dtype=scores.dtype)
+                    if logits.shape[-1] != num_classes:
+                        logits = logits[:, :num_classes] if logits.shape[-1] > num_classes else F.pad(logits, (0, num_classes - logits.shape[-1]))
+                    has_logits = True
+                else:
+                    logits = torch.empty((boxes.shape[0], 0), dtype=scores.dtype, device=self.device)
+            if include_indices and det.has_field("pre_nms_candidate_idx"):
                 raw_indices = det.get_field("pre_nms_candidate_idx").to(self.device).long()
-            else:
+            elif include_indices:
                 raw_indices = torch.arange(boxes.shape[0], dtype=torch.long, device=self.device)
+            else:
+                raw_indices = None
             rows_by_image.append(torch.cat([xywh, scores[:, None], labels.to(scores.dtype)[:, None], probs], dim=1))
-            logits_by_image.append(logits)
-            indices_by_image.append(raw_indices)
+            if include_logits:
+                logits_by_image.append(logits)
+            if include_indices:
+                indices_by_image.append(raw_indices)
         return rows_by_image, logits_by_image if has_logits else None, indices_by_image
 
     def _detections_to_contract(self, detections):
