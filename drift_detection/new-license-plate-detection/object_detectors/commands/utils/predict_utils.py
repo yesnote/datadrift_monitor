@@ -2206,11 +2206,15 @@ def collect_faster_rcnn_candidate_layer_grads_per_target(
         for layer_name in ordered_layer_names
     }
     layer_params = list(layer_params_by_name.values())
-    original_requires_grad = [bool(p.requires_grad) for p in layer_params]
+
+    model = detector.detector_model
+    model_params = list(model.parameters())
+    original_model_requires_grad = [bool(p.requires_grad) for p in model_params]
+    for param in model_params:
+        param.requires_grad_(False)
     for param in layer_params:
         param.requires_grad_(True)
 
-    model = detector.detector_model
     was_training = model.training
     model.eval()
 
@@ -2496,7 +2500,7 @@ def collect_faster_rcnn_candidate_layer_grads_per_target(
                     }
                 )
     finally:
-        for param, req_grad in zip(layer_params, original_requires_grad):
+        for param, req_grad in zip(model_params, original_model_requires_grad):
             param.requires_grad_(req_grad)
         detector.zero_grad(set_to_none=True)
         if was_training:
