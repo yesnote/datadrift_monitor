@@ -655,8 +655,9 @@ def _run_fcos_layer_grad_terms_once(
                                     row[grad_key] = ""
                                 else:
                                     for metric in reductions:
-                                        row[f"{grad_key}_{metric}"] = 0.0
+                                            row[f"{grad_key}_{metric}"] = 0.0
                             rows_by_key[key].append(row)
+                            del losses
                             continue
 
                         t_backprop = profilers[key].start()
@@ -671,6 +672,7 @@ def _run_fcos_layer_grad_terms_once(
                         ].elapsed(t_backprop)
 
                         t_feature = profilers[key].start()
+                        grad_value = None
                         for layer_idx, layer_name in enumerate(target_layers):
                             grad_key = f"{combo['term']}_{layer_name}"
                             grad_value = format_gradient_output(
@@ -702,7 +704,7 @@ def _run_fcos_layer_grad_terms_once(
                             key
                         ].elapsed(t_feature)
                         rows_by_key[key].append(row)
-                        del scalar, grads
+                        del losses, scalar, grads, grad_value
 
             for key, (combo, run_dir, csv_file, writer, _layer_cfg) in handles.items():
                 if save_raw_gradients and grad_arrays_by_key[key]:
@@ -725,8 +727,13 @@ def _run_fcos_layer_grad_terms_once(
                 model_output,
                 selected_preds,
                 selected_indices,
+                stage_by_key,
+                rows_by_key,
+                grad_arrays_by_key,
             )
             detector.zero_grad(set_to_none=True)
+            if device.type == "cuda":
+                torch.cuda.empty_cache()
     finally:
         for param, req_grad in original_requires_grad.values():
             param.requires_grad_(req_grad)
