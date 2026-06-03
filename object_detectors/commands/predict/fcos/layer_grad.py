@@ -306,7 +306,7 @@ def _build_fcos_losses(
     need_bbox = "bbox_loss" in requested
     need_cls = "cls_loss" in requested
     need_cnt = "cnt_loss" in requested
-    need_ltrb_target = need_bbox or need_cnt
+    need_ltrb_target = need_bbox or (need_cnt and target_mode == "cand_target")
     bbox_terms = []
     cls_terms = []
     cnt_terms = []
