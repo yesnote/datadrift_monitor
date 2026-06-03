@@ -275,7 +275,14 @@ def _safe_npz_key(value):
 
 def _gradient_to_np_array(value):
     if isinstance(value, torch.Tensor):
-        return value.detach().float().cpu().numpy().reshape(-1).astype(np.float32, copy=False)
+        return (
+            value.detach()
+            .float()
+            .cpu()
+            .numpy()
+            .reshape(-1)
+            .astype(np.float32, copy=False)
+        )
     return np.asarray(value, dtype=np.float32).reshape(-1)
 
 
@@ -308,7 +315,9 @@ def _prepare_layer_grad_config(base_config: dict, combo: dict) -> dict:
     return config
 
 
-def _layer_grad_fieldnames(combo: dict, target_layers: list[str], reductions: list[str]) -> list[str]:
+def _layer_grad_fieldnames(
+    combo: dict, target_layers: list[str], reductions: list[str]
+) -> list[str]:
     fieldnames = [
         "image_id",
         "image_path",
@@ -342,7 +351,9 @@ def _timing_stages_for_target(target: str) -> list[str]:
     return stages
 
 
-def _empty_stage_seconds(target: str, detector_inference_sec: float, loss_prep_sec: float) -> dict:
+def _empty_stage_seconds(
+    target: str, detector_inference_sec: float, loss_prep_sec: float
+) -> dict:
     stages = {
         "detector_inference_sec": float(detector_inference_sec),
         "loss_compute_sec": float(loss_prep_sec),
@@ -354,11 +365,14 @@ def _empty_stage_seconds(target: str, detector_inference_sec: float, loss_prep_s
     return stages
 
 
-def _run_yolo_layer_grad_terms_once(base_config: dict, combo_dirs: list[tuple[dict, Path]]) -> None:
+def _run_yolo_layer_grad_terms_once(
+    base_config: dict, combo_dirs: list[tuple[dict, Path]]
+) -> None:
     active = [
         (combo, run_dir)
         for combo, run_dir in combo_dirs
-        if RUN_LAYER_GRAD and not (REUSE_EXISTING and (run_dir / "layer_grad.csv").is_file())
+        if RUN_LAYER_GRAD
+        and not (REUSE_EXISTING and (run_dir / "layer_grad.csv").is_file())
     ]
     if not active:
         return
@@ -373,14 +387,23 @@ def _run_yolo_layer_grad_terms_once(base_config: dict, combo_dirs: list[tuple[di
 
     dataloader = create_dataloader(config, split=split)
     if len(dataloader.dataset) == 0:
-        raise ValueError("Loaded 0 images. Check dataset root/image_dir/split configuration in YAML.")
+        raise ValueError(
+            "Loaded 0 images. Check dataset root/image_dir/split configuration in YAML."
+        )
 
     detector, device = build_detector(config)
-    if bool(getattr(detector, "is_faster_rcnn", False)) or bool(getattr(detector, "is_fcos", False)):
-        raise ValueError("grid_search_yolo_layer_grad_meta_classifier.py only supports YOLO layer_grad runs.")
+    if bool(getattr(detector, "is_faster_rcnn", False)) or bool(
+        getattr(detector, "is_fcos", False)
+    ):
+        raise ValueError(
+            "grid_search_yolo_layer_grad_meta_classifier.py only supports YOLO layer_grad runs."
+        )
 
     target_layers = expand_layer_names(detector.model, target_layers)
-    layer_params = [resolve_layer_parameter(detector.model, layer_name) for layer_name in target_layers]
+    layer_params = [
+        resolve_layer_parameter(detector.model, layer_name)
+        for layer_name in target_layers
+    ]
     original_requires_grad = [bool(param.requires_grad) for param in layer_params]
     for param in layer_params:
         param.requires_grad_(True)
@@ -392,11 +415,18 @@ def _run_yolo_layer_grad_terms_once(base_config: dict, combo_dirs: list[tuple[di
     try:
         for combo, run_dir in active:
             run_dir.mkdir(parents=True, exist_ok=True)
-            _save_yaml(_prepare_layer_grad_config(base_config, combo), run_dir / "grid_object_detector_config.yaml")
-            csv_file = open(run_dir / "layer_grad.csv", "w", newline="", encoding="utf-8")
+            _save_yaml(
+                _prepare_layer_grad_config(base_config, combo),
+                run_dir / "grid_object_detector_config.yaml",
+            )
+            csv_file = open(
+                run_dir / "layer_grad.csv", "w", newline="", encoding="utf-8"
+            )
             writer = csv.DictWriter(
                 csv_file,
-                fieldnames=_layer_grad_fieldnames(combo, target_layers, layer_gradient_reduction),
+                fieldnames=_layer_grad_fieldnames(
+                    combo, target_layers, layer_gradient_reduction
+                ),
             )
             writer.writeheader()
             handles[_term_combo_key(combo)] = (combo, run_dir, csv_file, writer)
@@ -413,49 +443,100 @@ def _run_yolo_layer_grad_terms_once(base_config: dict, combo_dirs: list[tuple[di
                 raw_gradient_dirs[_term_combo_key(combo)] = gradients_dir
 
         for batch_idx, (images, targets) in enumerate(
-            tqdm(dataloader, desc="Object Detector (predict - layer_grad multi)", total=len(dataloader))
+            tqdm(
+                dataloader,
+                desc="Object Detector (predict - layer_grad multi)",
+                total=len(dataloader),
+            )
         ):
             image_list = _as_image_list(images)
-            infer_batch, _ratios, _pads, _resized_chws = _prepare_infer_batch(detector, image_list, device, auto=False)
+            infer_batch, _ratios, _pads, _resized_chws = _prepare_infer_batch(
+                detector, image_list, device, auto=False
+            )
 
             t_detector = _start_timing(device)
             model_output = detector.model(infer_batch.detach(), augment=False)
-            raw_prediction = model_output[0] if isinstance(model_output, (tuple, list)) else model_output
-            raw_logits = model_output[1] if isinstance(model_output, (tuple, list)) and len(model_output) > 1 else None
-            pred_layers = (
-                model_output[2]
-                if isinstance(model_output, (tuple, list)) and len(model_output) > 2 and isinstance(model_output[2], list)
+            raw_prediction = (
+                model_output[0]
+                if isinstance(model_output, (tuple, list))
+                else model_output
+            )
+            raw_logits = (
+                model_output[1]
+                if isinstance(model_output, (tuple, list)) and len(model_output) > 1
                 else None
             )
-            raw_anchor_priors = model_output[3] if isinstance(model_output, (tuple, list)) and len(model_output) > 3 else None
+            pred_layers = (
+                model_output[2]
+                if isinstance(model_output, (tuple, list))
+                and len(model_output) > 2
+                and isinstance(model_output[2], list)
+                else None
+            )
+            raw_anchor_priors = (
+                model_output[3]
+                if isinstance(model_output, (tuple, list)) and len(model_output) > 3
+                else None
+            )
             shared_detector_timing = {"detector_inference_sec": 0.0}
-            _add_elapsed_timing(shared_detector_timing, "detector_inference_sec", t_detector, device)
+            _add_elapsed_timing(
+                shared_detector_timing, "detector_inference_sec", t_detector, device
+            )
 
             with torch.no_grad():
                 nms_prediction = raw_prediction.detach().clone()
-                nms_logits = raw_logits.detach().clone() if raw_logits is not None else None
+                nms_logits = (
+                    raw_logits.detach().clone() if raw_logits is not None else None
+                )
                 t_nms = _start_timing(device)
-                selected_preds, _selected_logits, _selected_objectness, selected_indices = detector.non_max_suppression(
+                (
+                    selected_preds,
+                    _selected_logits,
+                    _selected_objectness,
+                    selected_indices,
+                ) = detector.non_max_suppression(
                     prediction=nms_prediction,
                     logits=nms_logits,
-                    conf_thres=float(getattr(detector, "conf_thresh", getattr(detector, "confidence", 0.25))),
+                    conf_thres=float(
+                        getattr(
+                            detector,
+                            "conf_thresh",
+                            getattr(detector, "confidence", 0.25),
+                        )
+                    ),
                     iou_thres=float(getattr(detector, "iou_thresh", 0.45)),
                     classes=getattr(detector, "filter_classes", None),
-                    agnostic=bool(getattr(detector, "agnostic_nms", getattr(detector, "agnostic", False))),
-                    max_det=int(getattr(detector, "max_det", 300)) if getattr(detector, "max_det", 300) is not None else None,
+                    agnostic=bool(
+                        getattr(
+                            detector,
+                            "agnostic_nms",
+                            getattr(detector, "agnostic", False),
+                        )
+                    ),
+                    max_det=(
+                        int(getattr(detector, "max_det", 300))
+                        if getattr(detector, "max_det", 300) is not None
+                        else None
+                    ),
                     return_indices=True,
                 )
-                _add_elapsed_timing(shared_detector_timing, "detector_inference_sec", t_nms, device)
+                _add_elapsed_timing(
+                    shared_detector_timing, "detector_inference_sec", t_nms, device
+                )
             detector_inference_sec = shared_detector_timing["detector_inference_sec"]
 
             t_loss_prep = _start_timing(device)
             raw_flat = _flatten_raw_prediction_layers(pred_layers)
             shared_loss_timing = {"loss_compute_sec": 0.0}
-            _add_elapsed_timing(shared_loss_timing, "loss_compute_sec", t_loss_prep, device)
+            _add_elapsed_timing(
+                shared_loss_timing, "loss_compute_sec", t_loss_prep, device
+            )
             loss_prep_sec = shared_loss_timing["loss_compute_sec"]
 
             stage_by_key = {
-                key: _empty_stage_seconds(combo["target"], detector_inference_sec, loss_prep_sec)
+                key: _empty_stage_seconds(
+                    combo["target"], detector_inference_sec, loss_prep_sec
+                )
                 for key, (combo, _run_dir, _csv_file, _writer) in handles.items()
             }
             rows_by_key = {key: [] for key in handles}
@@ -479,14 +560,26 @@ def _run_yolo_layer_grad_terms_once(base_config: dict, combo_dirs: list[tuple[di
                     else torch.zeros((0,), dtype=torch.long, device=device)
                 )
                 pred_img = raw_prediction[sample_idx]
-                logit_img = raw_logits[sample_idx] if raw_logits is not None else pred_img[:, 5:]
-                raw_img = raw_flat[sample_idx] if raw_flat is not None and raw_flat.ndim == 3 else None
+                logit_img = (
+                    raw_logits[sample_idx]
+                    if raw_logits is not None
+                    else pred_img[:, 5:]
+                )
+                raw_img = (
+                    raw_flat[sample_idx]
+                    if raw_flat is not None and raw_flat.ndim == 3
+                    else None
+                )
                 anchor_img = (
                     raw_anchor_priors[sample_idx]
                     if raw_anchor_priors is not None and raw_anchor_priors.ndim >= 3
-                    else raw_anchor_priors
-                    if raw_anchor_priors is not None and raw_anchor_priors.ndim == 2 and batch_size == 1
-                    else None
+                    else (
+                        raw_anchor_priors
+                        if raw_anchor_priors is not None
+                        and raw_anchor_priors.ndim == 2
+                        and batch_size == 1
+                        else None
+                    )
                 )
 
                 batch_items += int(det.shape[0])
@@ -503,9 +596,17 @@ def _run_yolo_layer_grad_terms_once(base_config: dict, combo_dirs: list[tuple[di
                         "xmax": float(det[bbox_idx, 2].detach().cpu().item()),
                         "ymax": float(det[bbox_idx, 3].detach().cpu().item()),
                         "score": float(det[bbox_idx, 4].detach().cpu().item()),
-                        "pred_class": detector.names[cls_idx] if detector.names is not None else cls_idx,
+                        "pred_class": (
+                            detector.names[cls_idx]
+                            if detector.names is not None
+                            else cls_idx
+                        ),
                     }
-                    anchor_row = anchor_img[raw_idx] if (anchor_img is not None and raw_idx < anchor_img.shape[0]) else None
+                    anchor_row = (
+                        anchor_img[raw_idx]
+                        if (anchor_img is not None and raw_idx < anchor_img.shape[0])
+                        else None
+                    )
 
                     for key, (combo, _run_dir, _csv_file, _writer) in handles.items():
                         detector.zero_grad(set_to_none=True)
@@ -516,7 +617,11 @@ def _run_yolo_layer_grad_terms_once(base_config: dict, combo_dirs: list[tuple[di
                             raw_img=raw_img,
                             raw_idx=raw_idx,
                             iou_threshold=iou_threshold,
-                            pseudo_gt="uniform" if combo["target"] == "null_target" else "cand",
+                            pseudo_gt=(
+                                "uniform"
+                                if combo["target"] == "null_target"
+                                else "cand"
+                            ),
                             anchor_xywh=anchor_row,
                             cand_score_threshold=cand_score_threshold,
                             bbox_loss=combo["bbox_loss"],
@@ -548,7 +653,9 @@ def _run_yolo_layer_grad_terms_once(base_config: dict, combo_dirs: list[tuple[di
                             retain_graph=True,
                             allow_unused=True,
                         )
-                        _add_elapsed_timing(stage_by_key[key], "backpropagation_sec", t_backprop, device)
+                        _add_elapsed_timing(
+                            stage_by_key[key], "backpropagation_sec", t_backprop, device
+                        )
 
                         t_feature = _start_timing(device)
                         for layer_idx, layer_name in enumerate(target_layers):
@@ -563,19 +670,35 @@ def _run_yolo_layer_grad_terms_once(base_config: dict, combo_dirs: list[tuple[di
                                     f"s{sample_idx:03d}_p{int(bbox_idx):06d}_"
                                     f"r{int(raw_idx):06d}_{_safe_npz_key(grad_name)}"
                                 )
-                                grad_arrays_by_key[key][array_key] = _gradient_to_np_array(grad_value)
-                                row[grad_name] = f"gradients/layer_grad_batch_{batch_idx:06d}.npz::{array_key}"
+                                grad_arrays_by_key[key][array_key] = (
+                                    _gradient_to_np_array(grad_value)
+                                )
+                                row[grad_name] = (
+                                    f"gradients/layer_grad_batch_{batch_idx:06d}.npz::{array_key}"
+                                )
                             else:
                                 for metric in layer_gradient_reduction:
-                                    value = grad_value.get(metric, 0.0) if isinstance(grad_value, dict) else 0.0
-                                    row[f"{grad_name}_{metric}"] = _scalar_to_float(value)
-                        _add_elapsed_timing(stage_by_key[key], "feature_compute_sec", t_feature, device)
+                                    value = (
+                                        grad_value.get(metric, 0.0)
+                                        if isinstance(grad_value, dict)
+                                        else 0.0
+                                    )
+                                    row[f"{grad_name}_{metric}"] = _scalar_to_float(
+                                        value
+                                    )
+                        _add_elapsed_timing(
+                            stage_by_key[key], "feature_compute_sec", t_feature, device
+                        )
                         rows_by_key[key].append(row)
                         del target_scalar, grads
 
             for key, (_combo, run_dir, csv_file, writer) in handles.items():
                 if save_raw_gradients and grad_arrays_by_key[key]:
-                    np.savez(raw_gradient_dirs[key] / f"layer_grad_batch_{batch_idx:06d}.npz", **grad_arrays_by_key[key])
+                    np.savez(
+                        raw_gradient_dirs[key]
+                        / f"layer_grad_batch_{batch_idx:06d}.npz",
+                        **grad_arrays_by_key[key],
+                    )
                 writer.writerows(rows_by_key[key])
                 csv_file.flush()
                 profilers[key].record(
