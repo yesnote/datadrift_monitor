@@ -85,6 +85,11 @@ def run_meta_detect_csv(config, run_dir):
         ):
             image_list = _as_image_list(images)
             infer_batch, ratios, pads, _resized_chws = _prepare_infer_batch(detector, image_list, device, auto=False)
+            preprocessed = (
+                detector.preprocess_images(infer_batch)
+                if bool(getattr(detector, "is_faster_rcnn", False)) and hasattr(detector, "preprocess_images")
+                else None
+            )
             t_detector = timing.start()
             with torch.no_grad():
                 pre_nms_threshold = min(
@@ -92,7 +97,10 @@ def run_meta_detect_csv(config, run_dir):
                     float(score_threshold),
                 )
                 with detector.temporary_roi_score_threshold(pre_nms_threshold):
-                    model_output = detector.model(infer_batch, augment=False)
+                    if preprocessed is not None and hasattr(detector, "forward_preprocessed"):
+                        model_output = detector.forward_preprocessed(preprocessed)
+                    else:
+                        model_output = detector.model(infer_batch, augment=False)
                 raw_prediction = model_output[0] if isinstance(model_output, (tuple, list)) else model_output
                 raw_logits = model_output[1] if isinstance(model_output, (tuple, list)) and len(model_output) > 1 else None
                 pre_nms_prediction = None
@@ -289,6 +297,8 @@ def run_meta_detect_csv(config, run_dir):
                 },
             )
             del infer_batch, model_output, raw_prediction, raw_logits, selected_preds, selected_indices
+            if preprocessed is not None:
+                del preprocessed
 
     del detector
     if device.type == "cuda":
