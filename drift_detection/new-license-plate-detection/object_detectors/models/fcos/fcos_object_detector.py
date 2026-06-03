@@ -344,11 +344,13 @@ class FCOSTorchObjectDetector(nn.Module):
             centerness,
             image_list.image_sizes,
         )
-        post_prediction, post_logits, post_indices = self._boxlists_to_contract(detections)
+        detached_detections = self._detach_boxlists(detections)
+        post_prediction, post_logits, post_indices = self._boxlists_to_contract(detached_detections)
         pre_nms_boxlists = getattr(rpn.box_selector_test, "last_pre_nms_boxlists", None)
+        detached_pre_nms_boxlists = self._detach_boxlists(pre_nms_boxlists)
         pre_prediction, pre_logits, pre_indices = (
-            self._boxlists_to_contract(pre_nms_boxlists)
-            if pre_nms_boxlists is not None
+            self._boxlists_to_contract(detached_pre_nms_boxlists)
+            if detached_pre_nms_boxlists is not None
             else (None, None, None)
         )
         if was_training and self.mode == "train":
@@ -360,8 +362,8 @@ class FCOSTorchObjectDetector(nn.Module):
             "box_cls": box_cls,
             "box_regression": box_regression,
             "centerness": centerness,
-            "detections": detections,
-            "pre_nms_boxlists": pre_nms_boxlists,
+            "detections": detached_detections,
+            "pre_nms_boxlists": detached_pre_nms_boxlists,
             "post_prediction": post_prediction,
             "post_logits": post_logits,
             "post_indices": post_indices,
@@ -369,6 +371,20 @@ class FCOSTorchObjectDetector(nn.Module):
             "pre_logits": pre_logits,
             "pre_indices": pre_indices,
         }
+
+    def _detach_boxlists(self, detections):
+        if detections is None:
+            return None
+        detached = []
+        for det in detections:
+            new_det = det.__class__(det.bbox.detach(), det.size, det.mode)
+            for field in det.fields():
+                value = det.get_field(field)
+                if isinstance(value, torch.Tensor):
+                    value = value.detach()
+                new_det.add_field(field, value)
+            detached.append(new_det)
+        return detached
 
     def _boxlists_to_contract(self, detections):
         rows_by_image = []
