@@ -91,7 +91,6 @@ def run_null_detect_csv(config, run_dir):
             image_list = _as_image_list(images)
             infer_batch, _ratios, _pads, _resized_chws = _prepare_infer_batch(detector, image_list, device, auto=False)
 
-            t_detector = timing.start()
             was_training = model.training
             model.eval()
             with torch.no_grad():
@@ -101,6 +100,7 @@ def run_null_detect_csv(config, run_dir):
                 ]
                 original_image_sizes = [(int(img.shape[-2]), int(img.shape[-1])) for img in image_list]
                 transformed_images, _targets = model.transform(image_list, None)
+                t_detector = timing.start()
                 features = model.backbone(transformed_images.tensors)
                 if isinstance(features, torch.Tensor):
                     features = {"0": features}
