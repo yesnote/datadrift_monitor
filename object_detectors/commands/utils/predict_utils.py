@@ -1503,6 +1503,7 @@ def build_pseudo_label_losses_for_candidates(
     cls_direction: str = "pred_to_target",
     obj_direction: str = "pred_to_target",
     raw_img: torch.Tensor = None,
+    requested_losses=None,
     timing_accumulator=None,
     timing_device=None,
 ):
@@ -1535,6 +1536,7 @@ def build_pseudo_label_losses_for_candidates(
     _add_elapsed_timing(timing_accumulator, "candidate_search_sec", t_candidate, timing_device)
 
     t_loss = _start_timing(timing_device)
+    requested_losses = set(requested_losses or ["bbox_loss", "obj_loss", "cls_loss"])
     candidate_pred = pred_img[candidate_mask]
     if raw_img is not None and raw_img.shape[0] == pred_img.shape[0]:
         raw_bbox = raw_img[:, :4]
@@ -1545,57 +1547,55 @@ def build_pseudo_label_losses_for_candidates(
         eps = 1e-6
         raw_obj = torch.logit(pred_img[:, 4].clamp(eps, 1.0 - eps))
         raw_cls = torch.logit(pred_img[:, 5:].clamp(eps, 1.0 - eps))
-    candidate_raw_cls = raw_cls[candidate_mask]
 
-    if str(bbox_loss).strip().lower().startswith("offset_"):
-        if raw_bbox is None:
-            raise ValueError("YOLO cand_target offset bbox_loss requires raw YOLO head outputs.")
-        candidate_raw_bbox = raw_bbox[candidate_mask]
-        pseudo_raw_bbox_target = raw_bbox[raw_idx].detach().view(1, 4).expand(candidate_raw_bbox.shape[0], -1)
-        bbox_loss_value = _yolo_offset_loss_tensor(
-            candidate_raw_bbox,
-            target_raw_xywh=pseudo_raw_bbox_target,
-            mode=bbox_loss,
+    losses = {}
+    if "bbox_loss" in requested_losses:
+        if str(bbox_loss).strip().lower().startswith("offset_"):
+            if raw_bbox is None:
+                raise ValueError("YOLO cand_target offset bbox_loss requires raw YOLO head outputs.")
+            candidate_raw_bbox = raw_bbox[candidate_mask]
+            pseudo_raw_bbox_target = raw_bbox[raw_idx].detach().view(1, 4).expand(candidate_raw_bbox.shape[0], -1)
+            losses["bbox_loss"] = _yolo_offset_loss_tensor(
+                candidate_raw_bbox,
+                target_raw_xywh=pseudo_raw_bbox_target,
+                mode=bbox_loss,
+                reduction="sum",
+                direction=bbox_direction,
+            )
+        else:
+            pseudo_box_target = pseudo_row[:4].view(1, 4).expand(candidate_pred.shape[0], -1)
+            losses["bbox_loss"] = _bbox_loss_xywh_tensor(
+                candidate_pred[:, :4],
+                pseudo_box_target,
+                mode=bbox_loss,
+                reduction="sum",
+                direction=bbox_direction,
+            )
+
+    if "obj_loss" in requested_losses:
+        candidate_raw_obj = raw_obj[candidate_mask]
+        obj_target = pseudo_row[4].detach().to(dtype=candidate_raw_obj.dtype, device=candidate_raw_obj.device)
+        obj_target = obj_target.clamp(min=0.0, max=1.0).expand_as(candidate_raw_obj)
+        losses["obj_loss"] = _objectness_loss_tensor(
+            candidate_raw_obj,
+            obj_target,
+            mode=obj_loss,
+            direction=obj_direction,
             reduction="sum",
-            direction=bbox_direction,
         )
-    else:
-        pseudo_box_target = pseudo_row[:4].view(1, 4).expand(candidate_pred.shape[0], -1)
-        bbox_loss_value = _bbox_loss_xywh_tensor(
-            candidate_pred[:, :4],
-            pseudo_box_target,
-            mode=bbox_loss,
+
+    if "cls_loss" in requested_losses:
+        candidate_raw_cls = raw_cls[candidate_mask]
+        cls_target = torch.zeros_like(candidate_raw_cls)
+        cls_target[:, pseudo_cls] = 1.0
+        losses["cls_loss"] = _class_loss_tensor(
+            candidate_raw_cls,
+            cls_target,
+            class_idx=pseudo_cls,
+            mode=cls_loss,
+            direction=cls_direction,
             reduction="sum",
-            direction=bbox_direction,
         )
-
-    candidate_raw_obj = raw_obj[candidate_mask]
-    obj_target = pseudo_row[4].detach().to(dtype=candidate_raw_obj.dtype, device=candidate_raw_obj.device)
-    obj_target = obj_target.clamp(min=0.0, max=1.0).expand_as(candidate_raw_obj)
-    obj_loss_value = _objectness_loss_tensor(
-        candidate_raw_obj,
-        obj_target,
-        mode=obj_loss,
-        direction=obj_direction,
-        reduction="sum",
-    )
-
-    cls_target = torch.zeros_like(candidate_raw_cls)
-    cls_target[:, pseudo_cls] = 1.0
-    cls_loss_value = _class_loss_tensor(
-        candidate_raw_cls,
-        cls_target,
-        class_idx=pseudo_cls,
-        mode=cls_loss,
-        direction=cls_direction,
-        reduction="sum",
-    )
-
-    losses = {
-        "bbox_loss": bbox_loss_value,
-        "obj_loss": obj_loss_value,
-        "cls_loss": cls_loss_value,
-    }
     _add_elapsed_timing(timing_accumulator, "loss_compute_sec", t_loss, timing_device)
     return losses
 
@@ -2124,6 +2124,7 @@ def build_layer_target_scalar_bbox(
         cls_direction=cls_direction,
         obj_direction=obj_direction,
         raw_img=raw_img,
+        requested_losses=[target_value],
         timing_accumulator=timing_accumulator,
         timing_device=timing_device,
     )
