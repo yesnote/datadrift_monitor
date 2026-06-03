@@ -2065,6 +2065,7 @@ def build_layer_target_scalar_bbox(
             else:
                 cls_logits = logit_img[raw_idx] if (logit_img is not None and raw_idx < logit_img.shape[0]) else pred_row[5:]
             if cls_logits.numel() == 0:
+                _add_elapsed_timing(timing_accumulator, "loss_compute_sec", t_loss, timing_device)
                 return None
             cls_target_value = (
                 0.5
@@ -2084,9 +2085,11 @@ def build_layer_target_scalar_bbox(
             return loss
         if target_value == "bbox_loss":
             if anchor_xywh is None:
+                _add_elapsed_timing(timing_accumulator, "loss_compute_sec", t_loss, timing_device)
                 return None
             if str(bbox_loss).strip().lower().startswith("offset_"):
                 if raw_row is None:
+                    _add_elapsed_timing(timing_accumulator, "loss_compute_sec", t_loss, timing_device)
                     return None
                 loss = _yolo_offset_loss_tensor(
                     raw_row[:4],
