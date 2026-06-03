@@ -287,7 +287,10 @@ def _build_fcos_losses(
     device = final_box.device
     losses = {}
 
+    t_loss = None
     if candidate_sources is None:
+        if target_mode != "cand_target":
+            t_loss = timing.start()
         candidate_sources = _resolve_fcos_candidate_sources(
             target_mode=target_mode,
             model_output=model_output,
@@ -301,7 +304,8 @@ def _build_fcos_losses(
             timing_accumulator=timing_accumulator,
         )
 
-    t_loss = timing.start()
+    if t_loss is None:
+        t_loss = timing.start()
     requested = set(target_values)
     need_bbox = "bbox_loss" in requested
     need_cls = "cls_loss" in requested
@@ -482,11 +486,11 @@ def run_layer_grad_csv(config, run_dir):
                 if layer_cfg["target"] == "cand_target":
                     pre_nms_threshold = min(pre_nms_threshold, float(layer_cfg["cand_score_threshold"]))
                 with detector.temporary_pre_nms_threshold(pre_nms_threshold):
-                    model_output = detector.forward_layer_grad(fcos_preprocessed)
-                selected_preds, _selected_logits, _selected_objectness, selected_indices = select_fcos_post_nms(
+                    model_output = detector.forward_layer_grad(fcos_preprocessed, include_post_logits=False)
+                selected_preds, selected_logits, selected_objectness, selected_indices = select_fcos_post_nms(
                     detector,
                     model_output["post_prediction"],
-                    model_output["post_logits"],
+                    None,
                     model_output["post_indices"],
                     conf_thres=float(getattr(detector, "confidence", getattr(detector, "conf_thresh", 0.05))),
                 )
@@ -495,6 +499,8 @@ def run_layer_grad_csv(config, run_dir):
                 batch_rows = []
                 batch_items = 0
                 batch_grad_arrays = {}
+                grad_call_index = 0
+                expected_grad_calls = int(batch_items) * len(target_values)
                 if save_raw_gradients:
                     npz_name = f"layer_grad_batch_{batch_idx:06d}.npz"
                     npz_rel_path = (Path("gradients") / npz_name).as_posix()
@@ -507,7 +513,14 @@ def run_layer_grad_csv(config, run_dir):
                     det = selected_preds[sample_idx] if selected_preds and sample_idx < len(selected_preds) else torch.zeros((0, 6), device=device)
                     raw_keep = selected_indices[sample_idx] if selected_indices and sample_idx < len(selected_indices) else torch.zeros((0,), dtype=torch.long, device=device)
                     batch_items += int(det.shape[0])
+                expected_grad_calls = int(batch_items) * len(target_values)
 
+                for sample_idx in range(len(image_list)):
+                    target = targets[sample_idx]
+                    image_id = int(target["image_id"][0].item())
+                    image_path = target["path"]
+                    det = selected_preds[sample_idx] if selected_preds and sample_idx < len(selected_preds) else torch.zeros((0, 6), device=device)
+                    raw_keep = selected_indices[sample_idx] if selected_indices and sample_idx < len(selected_indices) else torch.zeros((0,), dtype=torch.long, device=device)
                     for pred_idx in range(int(det.shape[0])):
                         raw_idx = int(raw_keep[pred_idx].detach().cpu().item()) if pred_idx < int(raw_keep.shape[0]) else pred_idx
                         final_box = det[pred_idx, :4]
@@ -560,10 +573,11 @@ def run_layer_grad_csv(config, run_dir):
                                 continue
 
                             t_backprop = timing.start()
+                            grad_call_index += 1
                             grads = torch.autograd.grad(
                                 scalar,
                                 params,
-                                retain_graph=True,
+                                retain_graph=(grad_call_index < expected_grad_calls),
                                 allow_unused=True,
                             )
                             stage_seconds["backpropagation_sec"] += timing.elapsed(t_backprop)
@@ -603,8 +617,14 @@ def run_layer_grad_csv(config, run_dir):
                     num_predictions=batch_items,
                     stage_seconds=stage_seconds,
                 )
+                if batch_items:
+                    del det, raw_keep
+                if batch_rows:
+                    del row
                 del batch_rows, batch_grad_arrays
-                del infer_batch, fcos_preprocessed, model_output, selected_preds, selected_indices
+                del infer_batch, fcos_preprocessed, model_output
+                del selected_preds, selected_logits, selected_objectness, selected_indices
+                del image_list
                 detector.zero_grad(set_to_none=True)
                 if device.type == "cuda":
                     torch.cuda.empty_cache()
