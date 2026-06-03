@@ -1545,8 +1545,13 @@ def build_pseudo_label_losses_for_candidates(
     if raw_idx >= pred_img.shape[0]:
         return None
 
+    requested_losses = set(requested_losses or ["bbox_loss", "obj_loss", "cls_loss"])
+    need_bbox = "bbox_loss" in requested_losses
+    need_obj = "obj_loss" in requested_losses
+    need_cls = "cls_loss" in requested_losses
+
     pseudo_row = pred_img[raw_idx].detach()
-    pseudo_cls = int(torch.argmax(pseudo_row[5:]).item())
+    pseudo_cls = None
     if candidate_mask is None:
         t_candidate = _start_timing(timing_device)
         candidate_mask = build_yolo_candidate_mask_for_pseudo(
@@ -1560,21 +1565,20 @@ def build_pseudo_label_losses_for_candidates(
         return None
 
     t_loss = _start_timing(timing_device)
-    requested_losses = set(requested_losses or ["bbox_loss", "obj_loss", "cls_loss"])
-    candidate_pred = pred_img[candidate_mask]
+    use_offset_bbox = need_bbox and str(bbox_loss).strip().lower().startswith("offset_")
     if raw_img is not None and raw_img.shape[0] == pred_img.shape[0]:
-        raw_bbox = raw_img[:, :4]
-        raw_obj = raw_img[:, 4]
-        raw_cls = raw_img[:, 5:]
+        raw_bbox = raw_img[:, :4] if use_offset_bbox else None
+        raw_obj = raw_img[:, 4] if need_obj else None
+        raw_cls = raw_img[:, 5:] if need_cls else None
     else:
         raw_bbox = None
         eps = 1e-6
-        raw_obj = torch.logit(pred_img[:, 4].clamp(eps, 1.0 - eps))
-        raw_cls = torch.logit(pred_img[:, 5:].clamp(eps, 1.0 - eps))
+        raw_obj = torch.logit(pred_img[:, 4].clamp(eps, 1.0 - eps)) if need_obj else None
+        raw_cls = torch.logit(pred_img[:, 5:].clamp(eps, 1.0 - eps)) if need_cls else None
 
     losses = {}
-    if "bbox_loss" in requested_losses:
-        if str(bbox_loss).strip().lower().startswith("offset_"):
+    if need_bbox:
+        if use_offset_bbox:
             if raw_bbox is None:
                 raise ValueError("YOLO cand_target offset bbox_loss requires raw YOLO head outputs.")
             candidate_raw_bbox = raw_bbox[candidate_mask]
@@ -1587,16 +1591,17 @@ def build_pseudo_label_losses_for_candidates(
                 direction=bbox_direction,
             )
         else:
-            pseudo_box_target = pseudo_row[:4].view(1, 4).expand(candidate_pred.shape[0], -1)
+            candidate_boxes = pred_img[candidate_mask, :4]
+            pseudo_box_target = pseudo_row[:4].view(1, 4).expand(candidate_boxes.shape[0], -1)
             losses["bbox_loss"] = _bbox_loss_xywh_tensor(
-                candidate_pred[:, :4],
+                candidate_boxes,
                 pseudo_box_target,
                 mode=bbox_loss,
                 reduction="sum",
                 direction=bbox_direction,
             )
 
-    if "obj_loss" in requested_losses:
+    if need_obj:
         candidate_raw_obj = raw_obj[candidate_mask]
         obj_target = pseudo_row[4].detach().to(dtype=candidate_raw_obj.dtype, device=candidate_raw_obj.device)
         obj_target = obj_target.clamp(min=0.0, max=1.0).expand_as(candidate_raw_obj)
@@ -1608,7 +1613,8 @@ def build_pseudo_label_losses_for_candidates(
             reduction="sum",
         )
 
-    if "cls_loss" in requested_losses:
+    if need_cls:
+        pseudo_cls = int(torch.argmax(pseudo_row[5:]).item())
         candidate_raw_cls = raw_cls[candidate_mask]
         cls_target = torch.zeros_like(candidate_raw_cls)
         cls_target[:, pseudo_cls] = 1.0
