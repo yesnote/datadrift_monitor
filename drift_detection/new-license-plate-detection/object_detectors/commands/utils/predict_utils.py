@@ -1917,26 +1917,23 @@ def build_faster_rcnn_null_losses_by_stage(
     if rpn_obj_direction == "target_to_pred" and rpn_obj_loss != "signed_diff":
         raise ValueError("Faster R-CNN null_target rpn.obj_direction=target_to_pred is only supported when obj_loss=signed_diff.")
 
-    t_candidate = _start_timing(timing_device)
+    t_loss = _start_timing(timing_device)
     proposal_idx = int(proposal_indices_img[raw_idx].detach().cpu().item())
     if proposal_idx < 0 or proposal_idx >= proposals_xyxy.shape[0] or proposal_idx >= proposal_to_rpn_raw_idx.shape[0]:
-        _add_elapsed_timing(timing_accumulator, "candidate_search_sec", t_candidate, timing_device)
+        _add_elapsed_timing(timing_accumulator, "loss_compute_sec", t_loss, timing_device)
         return None
     rpn_raw_idx = int(proposal_to_rpn_raw_idx[proposal_idx].detach().cpu().item())
     if rpn_raw_idx < 0 or rpn_raw_idx >= rpn_objectness_logits.reshape(-1).shape[0]:
-        _add_elapsed_timing(timing_accumulator, "candidate_search_sec", t_candidate, timing_device)
+        _add_elapsed_timing(timing_accumulator, "loss_compute_sec", t_loss, timing_device)
         return None
     if rpn_raw_idx >= rpn_bbox_deltas.shape[0] or rpn_raw_idx >= rpn_anchors.shape[0]:
-        _add_elapsed_timing(timing_accumulator, "candidate_search_sec", t_candidate, timing_device)
+        _add_elapsed_timing(timing_accumulator, "loss_compute_sec", t_loss, timing_device)
         return None
     label_internal = int(labels_internal_img[raw_idx].detach().cpu().item())
     num_classes = int(box_regression.shape[-1] // 4)
     if label_internal < 0 or label_internal >= num_classes:
-        _add_elapsed_timing(timing_accumulator, "candidate_search_sec", t_candidate, timing_device)
+        _add_elapsed_timing(timing_accumulator, "loss_compute_sec", t_loss, timing_device)
         return None
-    _add_elapsed_timing(timing_accumulator, "candidate_search_sec", t_candidate, timing_device)
-
-    t_loss = _start_timing(timing_device)
     final_box_target = final_box_xyxy.detach().to(device=pred_img.device).view(1, 4)
     final_box_target_in_rpn_scale = _resize_boxes_xyxy_tensor(final_box_target, to_size, from_size)
     selected_deltas = rpn_bbox_deltas[rpn_raw_idx].view(1, 4)
@@ -1976,6 +1973,7 @@ def build_faster_rcnn_null_losses_by_stage(
             proposal_offset=proposal_offset,
         )
         if roi_delta is None:
+            _add_elapsed_timing(timing_accumulator, "loss_compute_sec", t_loss, timing_device)
             return None
         roi_bbox_loss_value = _delta_loss_tensor(
             roi_delta,

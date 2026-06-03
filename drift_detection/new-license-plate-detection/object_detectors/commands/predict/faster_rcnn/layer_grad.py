@@ -173,17 +173,20 @@ def run_layer_grad_csv(config, run_dir):
             )
         layer_roi_cand_enabled = layer_roi_null_enabled = any(v.startswith("roi_") for v in target_values)
         layer_rpn_cand_enabled = layer_rpn_null_enabled = any(v.startswith("rpn_") for v in target_values)
+    timing_stages = [
+        "detector_inference_sec",
+        "loss_compute_sec",
+        "backpropagation_sec",
+        "feature_compute_sec",
+    ]
+    if (not is_faster_rcnn) or target_mode == "cand":
+        timing_stages.insert(1, "candidate_search_sec")
+
     timing = StageTimingProfiler(
         run_dir=run_dir,
         uncertainty=uncertainty,
         unit=unit,
-        stages=[
-            "detector_inference_sec",
-            "candidate_search_sec",
-            "loss_compute_sec",
-            "backpropagation_sec",
-            "feature_compute_sec",
-        ],
+        stages=timing_stages,
         device=device,
     )
     target_layers = expand_layer_names(detector.model, target_layers)
@@ -225,11 +228,12 @@ def run_layer_grad_csv(config, run_dir):
             infer_batch, _ratios, _pads, _resized_chws = _prepare_infer_batch(detector, image_list, device, auto=False)
             stage_seconds = {
                 "detector_inference_sec": 0.0,
-                "candidate_search_sec": 0.0,
                 "loss_compute_sec": 0.0,
                 "backpropagation_sec": 0.0,
                 "feature_compute_sec": 0.0,
             }
+            if "candidate_search_sec" in timing_stages:
+                stage_seconds["candidate_search_sec"] = 0.0
             batch_items = 0
             batch_csv_rows = []
             batch_grad_arrays = {}
