@@ -93,9 +93,14 @@ def run_meta_detect_csv(config, run_dir):
                 pre_nms_prediction = None
                 if bool(getattr(detector, "is_fcos", False)):
                     pre_nms_prediction, _pre_nms_logits = detector.get_last_pre_nms_predictions()
+                # Final detections are controlled by model.confidence_threshold via nms_kwargs.
+                # Candidate search below must still use the full raw prediction tensor and its
+                # own meta_detect.score_threshold, so run NMS on detached copies.
+                nms_prediction = raw_prediction.detach().clone()
+                nms_logits = raw_logits.detach().clone() if raw_logits is not None else None
                 selected_preds, _selected_logits, _selected_objectness, selected_indices = detector.non_max_suppression(
-                    prediction=raw_prediction,
-                    logits=raw_logits,
+                    prediction=nms_prediction,
+                    logits=nms_logits,
                     conf_thres=nms_kwargs["conf_thres"],
                     iou_thres=nms_kwargs["iou_thres"],
                     classes=nms_kwargs["classes"],
@@ -123,6 +128,8 @@ def run_meta_detect_csv(config, run_dir):
                     for cls_id in pred_class_ids
                 ]
 
+                # YOLOv5 MetaDetect candidates are searched from all raw pre-NMS anchors.
+                # They are not restricted to boxes surviving model.confidence_threshold.
                 pred_img = raw_prediction[sample_idx].float()
                 if pred_img.numel() == 0:
                     continue

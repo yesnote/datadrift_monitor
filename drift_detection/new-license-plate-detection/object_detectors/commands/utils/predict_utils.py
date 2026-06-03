@@ -2524,6 +2524,8 @@ def collect_bbox_layer_grads_per_target(
     pred_layers = model_output[2] if isinstance(model_output, (tuple, list)) and len(model_output) > 2 and isinstance(model_output[2], list) else None
     raw_anchor_priors = model_output[3] if isinstance(model_output, (tuple, list)) and len(model_output) > 3 else None
     with torch.no_grad():
+        # Final detections use the model confidence threshold. Candidate search for
+        # cand_target later uses the unfiltered raw_prediction and cand_score_threshold.
         nms_prediction = raw_prediction.detach().clone()
         nms_logits = raw_logits.detach().clone() if raw_logits is not None else None
         max_det = getattr(detector, "max_det", 300)
