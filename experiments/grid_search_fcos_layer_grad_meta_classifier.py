@@ -32,7 +32,7 @@ MAX_COMBINATIONS = None
 TARGETS = ["cand_target", "null_target"]
 BBOX_LOSSES = ["l1", "l2"]
 CLS_LOSSES = ["bcewithlogits", "kl"]
-CNT_LOSSES = ["bcewithlogits", "abs_diff", "signed_diff"]
+CNT_LOSSES = ["bcewithlogits", "abs_diff"]
 
 
 def _load_yaml(path: Path) -> dict:
