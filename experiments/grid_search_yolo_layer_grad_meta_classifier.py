@@ -529,9 +529,7 @@ def _run_yolo_layer_grad_terms_once(
             raw_flat = _flatten_raw_prediction_layers(pred_layers)
 
             stage_by_key = {
-                key: _empty_stage_seconds(
-                    combo["target"], detector_inference_sec, 0.0
-                )
+                key: _empty_stage_seconds(combo["target"], detector_inference_sec, 0.0)
                 for key, (combo, _run_dir, _csv_file, _writer) in handles.items()
             }
             rows_by_key = {key: [] for key in handles}
