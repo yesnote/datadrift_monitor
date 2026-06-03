@@ -5,9 +5,33 @@ from copy import deepcopy
 from datetime import datetime
 from pathlib import Path
 
+import numpy as np
+import torch
 import yaml
+from tqdm import tqdm
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
+OBJECT_DETECTORS_ROOT = REPO_ROOT / "object_detectors"
+if str(OBJECT_DETECTORS_ROOT) not in sys.path:
+    sys.path.insert(0, str(OBJECT_DETECTORS_ROOT))
+
+from commands.predict.common import (  # noqa: E402
+    StageTimingProfiler,
+    _as_image_list,
+    _prepare_infer_batch,
+)
+from commands.utils.predict_utils import (  # noqa: E402
+    _add_elapsed_timing,
+    _flatten_raw_prediction_layers,
+    _start_timing,
+    build_detector,
+    build_layer_target_scalar_bbox,
+    expand_layer_names,
+    format_gradient_output,
+    parse_output_config,
+    resolve_layer_parameter,
+)
+from dataloaders.dataloader_yolo import create_dataloader  # noqa: E402
 
 # Edit these paths before running.
 OBJECT_DETECTOR_CONFIG = r"object_detectors/configs/yolov5/predict_coco_yolov5.yaml"
@@ -26,7 +50,7 @@ RUN_META_CLASSIFIER = True
 REUSE_EXISTING = False
 
 # Use None for all meta-classifier combinations, or set a small int for a smoke test.
-# Object detector term CSVs are still generated once for all 22 single-term settings.
+# Object detector term CSVs are still generated once for all single-term settings.
 MAX_COMBINATIONS = None
 
 
@@ -244,6 +268,23 @@ def _run(cmd: list[str]) -> None:
     subprocess.run(cmd, cwd=REPO_ROOT, check=True)
 
 
+def _safe_npz_key(value):
+    text = str(value)
+    return "".join(ch if ch.isalnum() or ch in {"_", "-"} else "_" for ch in text)
+
+
+def _gradient_to_np_array(value):
+    if isinstance(value, torch.Tensor):
+        return value.detach().float().cpu().numpy().reshape(-1).astype(np.float32, copy=False)
+    return np.asarray(value, dtype=np.float32).reshape(-1)
+
+
+def _scalar_to_float(value):
+    if isinstance(value, torch.Tensor):
+        return float(value.detach().cpu().item())
+    return float(value)
+
+
 def _prepare_layer_grad_config(base_config: dict, combo: dict) -> dict:
     config = deepcopy(base_config)
     config["mode"] = "predict"
@@ -265,6 +306,297 @@ def _prepare_layer_grad_config(base_config: dict, combo: dict) -> dict:
         }
     )
     return config
+
+
+def _layer_grad_fieldnames(combo: dict, target_layers: list[str], reductions: list[str]) -> list[str]:
+    fieldnames = [
+        "image_id",
+        "image_path",
+        "pred_idx",
+        "raw_pred_idx",
+        "xmin",
+        "ymin",
+        "xmax",
+        "ymax",
+        "score",
+        "pred_class",
+    ]
+    for layer_name in target_layers:
+        grad_key = f"{combo['term']}_{layer_name}"
+        if reductions:
+            fieldnames.extend(f"{grad_key}_{metric}" for metric in reductions)
+        else:
+            fieldnames.append(grad_key)
+    return fieldnames
+
+
+def _timing_stages_for_target(target: str) -> list[str]:
+    stages = [
+        "detector_inference_sec",
+        "loss_compute_sec",
+        "backpropagation_sec",
+        "feature_compute_sec",
+    ]
+    if target == "cand_target":
+        stages.insert(1, "candidate_search_sec")
+    return stages
+
+
+def _empty_stage_seconds(target: str, detector_inference_sec: float, loss_prep_sec: float) -> dict:
+    stages = {
+        "detector_inference_sec": float(detector_inference_sec),
+        "loss_compute_sec": float(loss_prep_sec),
+        "backpropagation_sec": 0.0,
+        "feature_compute_sec": 0.0,
+    }
+    if target == "cand_target":
+        stages["candidate_search_sec"] = 0.0
+    return stages
+
+
+def _run_yolo_layer_grad_terms_once(base_config: dict, combo_dirs: list[tuple[dict, Path]]) -> None:
+    active = [
+        (combo, run_dir)
+        for combo, run_dir in combo_dirs
+        if RUN_LAYER_GRAD and not (REUSE_EXISTING and (run_dir / "layer_grad.csv").is_file())
+    ]
+    if not active:
+        return
+
+    config = _prepare_layer_grad_config(base_config, active[0][0])
+    split = config.get("dataset", {}).get("split", "val")
+    parsed = parse_output_config(config.get("output", {}))
+    target_layers = parsed["layer_target_layers"]
+    layer_map_reduction = parsed["layer_map_reduction"]
+    layer_gradient_reduction = parsed["layer_gradient_reduction"]
+    cand_score_threshold = float(parsed.get("layer_cand_score_threshold", 0.01))
+
+    dataloader = create_dataloader(config, split=split)
+    if len(dataloader.dataset) == 0:
+        raise ValueError("Loaded 0 images. Check dataset root/image_dir/split configuration in YAML.")
+
+    detector, device = build_detector(config)
+    if bool(getattr(detector, "is_faster_rcnn", False)) or bool(getattr(detector, "is_fcos", False)):
+        raise ValueError("grid_search_yolo_layer_grad_meta_classifier.py only supports YOLO layer_grad runs.")
+
+    target_layers = expand_layer_names(detector.model, target_layers)
+    layer_params = [resolve_layer_parameter(detector.model, layer_name) for layer_name in target_layers]
+    original_requires_grad = [bool(param.requires_grad) for param in layer_params]
+    for param in layer_params:
+        param.requires_grad_(True)
+
+    handles = {}
+    profilers = {}
+    raw_gradient_dirs = {}
+    save_raw_gradients = not layer_gradient_reduction
+    try:
+        for combo, run_dir in active:
+            run_dir.mkdir(parents=True, exist_ok=True)
+            _save_yaml(_prepare_layer_grad_config(base_config, combo), run_dir / "grid_object_detector_config.yaml")
+            csv_file = open(run_dir / "layer_grad.csv", "w", newline="", encoding="utf-8")
+            writer = csv.DictWriter(
+                csv_file,
+                fieldnames=_layer_grad_fieldnames(combo, target_layers, layer_gradient_reduction),
+            )
+            writer.writeheader()
+            handles[_term_combo_key(combo)] = (combo, run_dir, csv_file, writer)
+            profilers[_term_combo_key(combo)] = StageTimingProfiler(
+                run_dir=run_dir,
+                uncertainty="layer_grad",
+                unit="bbox",
+                stages=_timing_stages_for_target(combo["target"]),
+                device=device,
+            )
+            if save_raw_gradients:
+                gradients_dir = run_dir / "gradients"
+                gradients_dir.mkdir(parents=True, exist_ok=True)
+                raw_gradient_dirs[_term_combo_key(combo)] = gradients_dir
+
+        for batch_idx, (images, targets) in enumerate(
+            tqdm(dataloader, desc="Object Detector (predict - layer_grad multi)", total=len(dataloader))
+        ):
+            image_list = _as_image_list(images)
+            infer_batch, _ratios, _pads, _resized_chws = _prepare_infer_batch(detector, image_list, device, auto=False)
+
+            t_detector = _start_timing(device)
+            model_output = detector.model(infer_batch.detach(), augment=False)
+            raw_prediction = model_output[0] if isinstance(model_output, (tuple, list)) else model_output
+            raw_logits = model_output[1] if isinstance(model_output, (tuple, list)) and len(model_output) > 1 else None
+            pred_layers = (
+                model_output[2]
+                if isinstance(model_output, (tuple, list)) and len(model_output) > 2 and isinstance(model_output[2], list)
+                else None
+            )
+            raw_anchor_priors = model_output[3] if isinstance(model_output, (tuple, list)) and len(model_output) > 3 else None
+            shared_detector_timing = {"detector_inference_sec": 0.0}
+            _add_elapsed_timing(shared_detector_timing, "detector_inference_sec", t_detector, device)
+
+            with torch.no_grad():
+                nms_prediction = raw_prediction.detach().clone()
+                nms_logits = raw_logits.detach().clone() if raw_logits is not None else None
+                t_nms = _start_timing(device)
+                selected_preds, _selected_logits, _selected_objectness, selected_indices = detector.non_max_suppression(
+                    prediction=nms_prediction,
+                    logits=nms_logits,
+                    conf_thres=float(getattr(detector, "conf_thresh", getattr(detector, "confidence", 0.25))),
+                    iou_thres=float(getattr(detector, "iou_thresh", 0.45)),
+                    classes=getattr(detector, "filter_classes", None),
+                    agnostic=bool(getattr(detector, "agnostic_nms", getattr(detector, "agnostic", False))),
+                    max_det=int(getattr(detector, "max_det", 300)) if getattr(detector, "max_det", 300) is not None else None,
+                    return_indices=True,
+                )
+                _add_elapsed_timing(shared_detector_timing, "detector_inference_sec", t_nms, device)
+            detector_inference_sec = shared_detector_timing["detector_inference_sec"]
+
+            t_loss_prep = _start_timing(device)
+            raw_flat = _flatten_raw_prediction_layers(pred_layers)
+            shared_loss_timing = {"loss_compute_sec": 0.0}
+            _add_elapsed_timing(shared_loss_timing, "loss_compute_sec", t_loss_prep, device)
+            loss_prep_sec = shared_loss_timing["loss_compute_sec"]
+
+            stage_by_key = {
+                key: _empty_stage_seconds(combo["target"], detector_inference_sec, loss_prep_sec)
+                for key, (combo, _run_dir, _csv_file, _writer) in handles.items()
+            }
+            rows_by_key = {key: [] for key in handles}
+            grad_arrays_by_key = {key: {} for key in handles}
+            batch_items = 0
+
+            batch_size = int(raw_prediction.shape[0]) if raw_prediction.ndim >= 3 else 1
+            iou_threshold = float(getattr(detector, "iou_thresh", 0.45))
+            for sample_idx in range(batch_size):
+                target = targets[sample_idx]
+                image_id = int(target["image_id"][0].item())
+                image_path = target["path"]
+                det = (
+                    selected_preds[sample_idx]
+                    if selected_preds and sample_idx < len(selected_preds)
+                    else torch.zeros((0, 6), device=device)
+                )
+                raw_keep_indices = (
+                    selected_indices[sample_idx]
+                    if selected_indices and sample_idx < len(selected_indices)
+                    else torch.zeros((0,), dtype=torch.long, device=device)
+                )
+                pred_img = raw_prediction[sample_idx]
+                logit_img = raw_logits[sample_idx] if raw_logits is not None else pred_img[:, 5:]
+                raw_img = raw_flat[sample_idx] if raw_flat is not None and raw_flat.ndim == 3 else None
+                anchor_img = (
+                    raw_anchor_priors[sample_idx]
+                    if raw_anchor_priors is not None and raw_anchor_priors.ndim >= 3
+                    else raw_anchor_priors
+                    if raw_anchor_priors is not None and raw_anchor_priors.ndim == 2 and batch_size == 1
+                    else None
+                )
+
+                batch_items += int(det.shape[0])
+                for bbox_idx in range(int(det.shape[0])):
+                    raw_idx = int(raw_keep_indices[bbox_idx].detach().cpu().item())
+                    cls_idx = int(det[bbox_idx, 5].detach().cpu().item())
+                    base_row = {
+                        "image_id": image_id,
+                        "image_path": image_path,
+                        "pred_idx": bbox_idx,
+                        "raw_pred_idx": raw_idx,
+                        "xmin": float(det[bbox_idx, 0].detach().cpu().item()),
+                        "ymin": float(det[bbox_idx, 1].detach().cpu().item()),
+                        "xmax": float(det[bbox_idx, 2].detach().cpu().item()),
+                        "ymax": float(det[bbox_idx, 3].detach().cpu().item()),
+                        "score": float(det[bbox_idx, 4].detach().cpu().item()),
+                        "pred_class": detector.names[cls_idx] if detector.names is not None else cls_idx,
+                    }
+                    anchor_row = anchor_img[raw_idx] if (anchor_img is not None and raw_idx < anchor_img.shape[0]) else None
+
+                    for key, (combo, _run_dir, _csv_file, _writer) in handles.items():
+                        detector.zero_grad(set_to_none=True)
+                        target_scalar = build_layer_target_scalar_bbox(
+                            target_value=combo["term"],
+                            pred_img=pred_img,
+                            logit_img=logit_img,
+                            raw_img=raw_img,
+                            raw_idx=raw_idx,
+                            iou_threshold=iou_threshold,
+                            pseudo_gt="uniform" if combo["target"] == "null_target" else "cand",
+                            anchor_xywh=anchor_row,
+                            cand_score_threshold=cand_score_threshold,
+                            bbox_loss=combo["bbox_loss"],
+                            cls_loss=combo["cls_loss"],
+                            obj_loss=combo["obj_loss"],
+                            bbox_direction=combo["bbox_direction"],
+                            cls_direction=combo["cls_direction"],
+                            obj_direction=combo["obj_direction"],
+                            timing_accumulator=stage_by_key[key],
+                            timing_device=device,
+                        )
+
+                        row = dict(base_row)
+                        if target_scalar is None:
+                            for layer_name in target_layers:
+                                grad_name = f"{combo['term']}_{layer_name}"
+                                if save_raw_gradients:
+                                    row[grad_name] = ""
+                                else:
+                                    for metric in layer_gradient_reduction:
+                                        row[f"{grad_name}_{metric}"] = 0.0
+                            rows_by_key[key].append(row)
+                            continue
+
+                        t_backprop = _start_timing(device)
+                        grads = torch.autograd.grad(
+                            target_scalar,
+                            layer_params,
+                            retain_graph=True,
+                            allow_unused=True,
+                        )
+                        _add_elapsed_timing(stage_by_key[key], "backpropagation_sec", t_backprop, device)
+
+                        t_feature = _start_timing(device)
+                        for layer_idx, layer_name in enumerate(target_layers):
+                            grad_name = f"{combo['term']}_{layer_name}"
+                            grad_value = format_gradient_output(
+                                grads[layer_idx],
+                                vector_reduction=layer_gradient_reduction,
+                                map_reduction=layer_map_reduction,
+                            )
+                            if save_raw_gradients:
+                                array_key = (
+                                    f"s{sample_idx:03d}_p{int(bbox_idx):06d}_"
+                                    f"r{int(raw_idx):06d}_{_safe_npz_key(grad_name)}"
+                                )
+                                grad_arrays_by_key[key][array_key] = _gradient_to_np_array(grad_value)
+                                row[grad_name] = f"gradients/layer_grad_batch_{batch_idx:06d}.npz::{array_key}"
+                            else:
+                                for metric in layer_gradient_reduction:
+                                    value = grad_value.get(metric, 0.0) if isinstance(grad_value, dict) else 0.0
+                                    row[f"{grad_name}_{metric}"] = _scalar_to_float(value)
+                        _add_elapsed_timing(stage_by_key[key], "feature_compute_sec", t_feature, device)
+                        rows_by_key[key].append(row)
+                        del target_scalar, grads
+
+            for key, (_combo, run_dir, csv_file, writer) in handles.items():
+                if save_raw_gradients and grad_arrays_by_key[key]:
+                    np.savez(raw_gradient_dirs[key] / f"layer_grad_batch_{batch_idx:06d}.npz", **grad_arrays_by_key[key])
+                writer.writerows(rows_by_key[key])
+                csv_file.flush()
+                profilers[key].record(
+                    num_images=len(image_list),
+                    num_predictions=batch_items,
+                    stage_seconds=stage_by_key[key],
+                )
+
+            del infer_batch, model_output, raw_prediction, raw_logits, raw_anchor_priors
+            del raw_flat, selected_preds, selected_indices
+    finally:
+        for param, req_grad in zip(layer_params, original_requires_grad):
+            param.requires_grad_(req_grad)
+        detector.zero_grad(set_to_none=True)
+        for _combo, _run_dir, csv_file, _writer in handles.values():
+            csv_file.close()
+        for profiler in profilers.values():
+            profiler.save()
+        del detector
+        if device.type == "cuda":
+            torch.cuda.empty_cache()
 
 
 def _prepare_meta_config(
@@ -367,28 +699,16 @@ def main() -> None:
     term_run_dirs: dict[tuple, Path] = {}
     term_combo_list = list(iter_term_combinations())
     print(f"Layer-grad term runs: {len(term_combo_list)}", flush=True)
+    combo_dirs = []
     for idx, combo in enumerate(term_combo_list, start=1):
         slug = _combo_slug(combo)
         print(f"[OD {idx}/{len(term_combo_list)}] {slug}", flush=True)
 
         layer_dir = _timestamped_combo_dir(od_grid_root, slug)
-        layer_csv = layer_dir / "layer_grad.csv"
         term_run_dirs[_term_combo_key(combo)] = layer_dir
+        combo_dirs.append((combo, layer_dir))
 
-        if RUN_LAYER_GRAD and not (REUSE_EXISTING and layer_csv.is_file()):
-            od_config = _prepare_layer_grad_config(od_base_config, combo)
-            od_config_path_i = layer_dir / "grid_object_detector_config.yaml"
-            _save_yaml(od_config, od_config_path_i)
-            _run(
-                [
-                    sys.executable,
-                    "object_detectors/main.py",
-                    "--config",
-                    str(od_config_path_i),
-                    "--run-dir",
-                    str(layer_dir),
-                ]
-            )
+    _run_yolo_layer_grad_terms_once(od_base_config, combo_dirs)
 
     rows = []
     meta_combo_list = list(iter_meta_combinations(term_run_dirs))
