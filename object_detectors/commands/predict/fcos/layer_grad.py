@@ -478,17 +478,30 @@ def run_layer_grad_csv(config, run_dir):
 
                 detector.zero_grad(set_to_none=True)
                 t_detector = timing.start()
-                pre_nms_threshold = float(getattr(detector, "confidence", 0.05))
+                normal_pre_nms_threshold = float(getattr(detector, "confidence", 0.05))
+                pre_nms_threshold = normal_pre_nms_threshold
                 if layer_cfg["target"] == "cand_target":
                     pre_nms_threshold = min(pre_nms_threshold, float(layer_cfg["cand_score_threshold"]))
+
+                row_model_output = None
+                use_separate_row_output = layer_cfg["target"] == "cand_target" and pre_nms_threshold < normal_pre_nms_threshold
+                if use_separate_row_output:
+                    with detector.temporary_pre_nms_threshold(normal_pre_nms_threshold):
+                        row_model_output = detector.forward_preprocessed(
+                            fcos_preprocessed,
+                            keep_pre_nms=False,
+                            keep_class_outputs=False,
+                        )
                 with detector.temporary_pre_nms_threshold(pre_nms_threshold):
                     model_output = detector.forward_layer_grad(fcos_preprocessed, include_post_logits=False)
+
+                row_prediction = row_model_output[0] if row_model_output is not None else model_output["post_prediction"]
+                row_indices = row_model_output[2] if row_model_output is not None else model_output["post_indices"]
                 selected_preds, selected_logits, selected_objectness, selected_indices = select_fcos_post_nms(
                     detector,
-                    model_output["post_prediction"],
+                    row_prediction,
                     None,
-                    model_output["post_indices"],
-                    conf_thres=float(getattr(detector, "confidence", getattr(detector, "conf_thresh", 0.05))),
+                    row_indices,
                 )
                 stage_seconds["detector_inference_sec"] += timing.elapsed(t_detector)
 
@@ -542,7 +555,7 @@ def run_layer_grad_csv(config, run_dir):
                             pred_idx=pred_idx,
                             final_box=final_box,
                             final_cls=final_cls,
-                            raw_idx=raw_idx,
+                            raw_idx=-1 if use_separate_row_output and layer_cfg["target"] == "cand_target" else raw_idx,
                             cand_score_threshold=layer_cfg["cand_score_threshold"],
                             bbox_loss=layer_cfg["bbox_loss"],
                             cls_loss=layer_cfg["cls_loss"],
@@ -619,6 +632,9 @@ def run_layer_grad_csv(config, run_dir):
                     del row
                 del batch_rows, batch_grad_arrays
                 del infer_batch, fcos_preprocessed, model_output
+                if row_model_output is not None:
+                    del row_model_output
+                del row_prediction, row_indices
                 del selected_preds, selected_logits, selected_objectness, selected_indices
                 del image_list
                 detector.zero_grad(set_to_none=True)
