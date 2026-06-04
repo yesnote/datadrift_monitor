@@ -120,6 +120,12 @@ class FCOSPostProcessor(torch.nn.Module):
             boxlist.add_field("pre_nms_level", torch.full_like(per_class, int(level_idx)))
             boxlist.add_field("pre_nms_location_idx", per_box_loc)
             boxlist.add_field("pre_nms_class", per_class)
+            stable_candidate_idx = (
+                torch.full_like(per_box_loc, int(level_idx), dtype=torch.long) * 1_000_000_000_000
+                + (per_class.to(dtype=torch.long) - 1) * 100_000_000
+                + per_box_loc.to(dtype=torch.long)
+            )
+            boxlist.add_field("pre_nms_candidate_idx", stable_candidate_idx)
             boxlist = boxlist.clip_to_image(remove_empty=False)
             boxlist = remove_small_boxes(boxlist, self.min_size)
             results.append(boxlist)
@@ -148,10 +154,11 @@ class FCOSPostProcessor(torch.nn.Module):
         boxlists = list(zip(*sampled_boxes))
         boxlists = [cat_boxlist(boxlist) for boxlist in boxlists]
         for boxlist in boxlists:
-            boxlist.add_field(
-                "pre_nms_candidate_idx",
-                torch.arange(len(boxlist), dtype=torch.long, device=boxlist.bbox.device),
-            )
+            if not boxlist.has_field("pre_nms_candidate_idx"):
+                boxlist.add_field(
+                    "pre_nms_candidate_idx",
+                    torch.arange(len(boxlist), dtype=torch.long, device=boxlist.bbox.device),
+                )
         self.last_pre_nms_boxlists = boxlists
         if not self.bbox_aug_enabled:
             boxlists = self.select_over_all_levels(boxlists)
