@@ -31,20 +31,6 @@ def run_null_detect_csv(config, run_dir):
             return float(value.detach().cpu().item())
         return float(value)
 
-    def _boxes_to_original_xyxy(boxes: torch.Tensor, ratio, pad, image_tensor: torch.Tensor):
-        if boxes.numel() == 0:
-            return boxes.clone()
-        out = boxes.clone()
-        ratio_w, ratio_h = float(ratio[0]), float(ratio[1])
-        pad_w, pad_h = float(pad[0]), float(pad[1])
-        img_h = int(image_tensor.shape[-2])
-        img_w = int(image_tensor.shape[-1])
-        out[..., [0, 2]] = (out[..., [0, 2]] - pad_w) / max(ratio_w, 1e-12)
-        out[..., [1, 3]] = (out[..., [1, 3]] - pad_h) / max(ratio_h, 1e-12)
-        out[..., [0, 2]] = out[..., [0, 2]].clamp(0, img_w)
-        out[..., [1, 3]] = out[..., [1, 3]].clamp(0, img_h)
-        return out
-
     def _xyxy_shape_features(final_xyxy: torch.Tensor, reference_xyxy: torch.Tensor):
         final_x = 0.5 * (final_xyxy[0] + final_xyxy[2])
         final_y = 0.5 * (final_xyxy[1] + final_xyxy[3])
@@ -124,7 +110,8 @@ def run_null_detect_csv(config, run_dir):
             dataloader, desc=f"Object Detector ({mode} - {uncertainty})", total=len(dataloader)
         ):
             image_list = _as_image_list(images)
-            infer_batch, ratios, pads, _resized_chws = _prepare_infer_batch(detector, image_list, device, auto=False)
+            detector.zero_grad(set_to_none=True)
+            infer_batch, _ratios, _pads, _resized_chws = _prepare_infer_batch(detector, image_list, device, auto=False)
             with torch.no_grad():
                 t_detector = timing.start()
                 model_output = detector.model(infer_batch, augment=False)
@@ -132,7 +119,6 @@ def run_null_detect_csv(config, run_dir):
                 raw_logits = model_output[1] if isinstance(model_output, (tuple, list)) and len(model_output) > 1 else None
                 raw_layers = model_output[2] if isinstance(model_output, (tuple, list)) and len(model_output) > 2 else None
                 raw_anchor_priors = model_output[3] if isinstance(model_output, (tuple, list)) and len(model_output) > 3 else None
-                feature_prediction = raw_prediction.detach().clone()
                 detector_inference_sec = timing.elapsed(t_detector)
 
                 if raw_anchor_priors is None:
@@ -162,7 +148,7 @@ def run_null_detect_csv(config, run_dir):
                 image_path = target["path"]
                 det_b = selected_preds[sample_idx] if selected_preds and sample_idx < len(selected_preds) else torch.zeros((0, 6), device=device)
                 raw_keep_b = selected_indices[sample_idx] if selected_indices and sample_idx < len(selected_indices) else torch.zeros((0,), dtype=torch.long, device=device)
-                pred_img = feature_prediction[sample_idx].float()
+                pred_img = raw_prediction[sample_idx].float()
                 raw_img = raw_flat[sample_idx]
                 anchor_img = (
                     raw_anchor_priors[sample_idx]
@@ -199,11 +185,10 @@ def run_null_detect_csv(config, run_dir):
                                 else torch.zeros((), dtype=torch.float32, device=device)
                             )
 
-                    fbox_orig = _boxes_to_original_xyxy(box[:4].view(1, 4), ratios[sample_idx], pads[sample_idx], image_list[sample_idx]).view(4)
-                    fx1_t, fy1_t, fx2_t, fy2_t = fbox_orig.unbind()
+                    final_xyxy = box[:4].detach().float()
+                    fx1_t, fy1_t, fx2_t, fy2_t = final_xyxy.unbind()
                     anchor_xyxy = _xywh_to_xyxy_tensor(anchor_xywh.view(1, 4))
-                    anchor_xyxy_orig = _boxes_to_original_xyxy(anchor_xyxy, ratios[sample_idx], pads[sample_idx], image_list[sample_idx]).view(4)
-                    box_diff_values = _xyxy_shape_features(fbox_orig, anchor_xyxy_orig)
+                    box_diff_values = _xyxy_shape_features(final_xyxy, anchor_xyxy.view(4))
                     shape_values = {}
                     if feature_set != "losses_only":
                         shape_values = {
@@ -283,7 +268,7 @@ def run_null_detect_csv(config, run_dir):
                 },
             )
             output_file.flush()
-            del infer_batch, model_output, raw_prediction, raw_logits, feature_prediction, raw_flat, raw_anchor_priors, selected_preds, selected_indices
+            del infer_batch, model_output, raw_prediction, raw_logits, raw_flat, raw_anchor_priors, selected_preds, selected_indices
 
     del detector
     if device.type == "cuda":
