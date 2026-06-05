@@ -1,4 +1,15 @@
 from commands.predict.common import *
+from commands.utils.predict_utils import resolve_project_path
+
+
+def _normalize_weight_path_for_compare(value, key):
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError(f"{key} must be a non-empty string for YOLOv5 ensemble row alignment.")
+    return Path(resolve_project_path(value.strip())).resolve()
+
+
+def _same_weight_path(left, right):
+    return str(left).lower() == str(right).lower()
 
 
 def run_ensemble_csv(config, run_dir):
@@ -25,6 +36,20 @@ def run_ensemble_csv(config, run_dir):
         weight_paths = []
     if not weight_paths:
         raise ValueError("output.uncertainty='ensemble' requires output.ensemble.weights to be a non-empty string/list.")
+
+    model_weights = config.get("model", {}).get("weights", "")
+    if isinstance(model_weights, (list, tuple)):
+        raise ValueError("model.weights must be a single weight path when running YOLOv5 ensemble.")
+    model_weight_path = _normalize_weight_path_for_compare(model_weights, "model.weights")
+    first_ensemble_weight_path = _normalize_weight_path_for_compare(
+        weight_paths[0], "output.ensemble.weights[0]"
+    )
+    if not _same_weight_path(model_weight_path, first_ensemble_weight_path):
+        raise ValueError(
+            "YOLOv5 ensemble requires output.ensemble.weights[0] to match model.weights so ensemble.csv "
+            "uses the same deterministic row basis as gt.csv. "
+            f"model.weights={model_weight_path}; output.ensemble.weights[0]={first_ensemble_weight_path}"
+        )
 
     dataset = build_dataset(config, split=split)
     dl_cfg = config["dataloader"]
