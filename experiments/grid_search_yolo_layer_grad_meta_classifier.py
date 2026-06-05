@@ -59,7 +59,7 @@ BBOX_LOSSES_BY_TARGET = {
     "null_target": ["box_l1", "box_l2"],
 }
 CLS_LOSSES = ["bcewithlogits", "kl"]
-OBJ_LOSSES = ["bcewithlogits", "abs_diff", "signed_diff"]
+OBJ_LOSSES = ["bcewithlogits", "abs_diff"]
 
 
 def _load_yaml(path: Path) -> dict:
