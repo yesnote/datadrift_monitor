@@ -5,21 +5,30 @@ from pathlib import Path
 import numpy as np
 
 RUN_PATHS = [
-    r"object_detectors/runs/yolov5/predict/coco/05-27-2026_12;12_score",
-    r"object_detectors/runs/yolov5/predict/coco/05-27-2026_12;12_class_probability",
-    r"object_detectors/runs/yolov5/predict/coco/05-27-2026_12;12_entropy",
-    r"object_detectors/runs/yolov5/predict/coco/05-27-2026_12;12_energy",
-    r"object_detectors/runs/yolov5/predict/coco/05-27-2026_12;41_mc_dropout",
-    r"object_detectors/runs/yolov5/predict/coco/05-27-2026_12;54_meta_detect",
+    r"object_detectors/runs/yolov5/predict/coco/06-05-2026_17;09_score",
+    r"object_detectors/runs/yolov5/predict/coco/06-05-2026_17;09_class_probability",
+    r"object_detectors/runs/yolov5/predict/coco/06-05-2026_17;09_entropy",
+    r"object_detectors/runs/yolov5/predict/coco/06-05-2026_17;09_energy",
+    r"object_detectors/runs/yolov5/predict/coco/06-05-2026_17;22_mc_dropout",
+    r"object_detectors/runs/yolov5/predict/coco/06-05-2026_17;33_meta_detect",
+    r"object_detectors/runs/yolov5/predict/coco/06-05-2026_17;51_null_detect"
 ]
 
 COMBINED_LAYER_GRAD_TERM_RUNS = [
     {
         "label": "layer_grad cand/box_l1+kl+bce",
         "term_paths": [
-            r"object_detectors/runs/yolov5/predict/coco/05-27-2026_13;17_layer_grad_grid/05-27-2026_13;17_layer_grad_t-cand__term-bbox__b-box_l1-pred",
-            r"object_detectors/runs/yolov5/predict/coco/05-27-2026_13;17_layer_grad_grid/05-27-2026_14;32_layer_grad_t-cand__term-cls__c-kl-pred",
-            r"object_detectors/runs/yolov5/predict/coco/05-27-2026_13;17_layer_grad_grid/05-27-2026_15;15_layer_grad_t-cand__term-obj__o-bce-pred",
+            r"object_detectors/runs/yolov5/predict/coco/06-05-2026_19;12_layer_grad_grid/06-05-2026_19;12_layer_grad_t-cand__term-bbox__b-box_l1-pred",
+            r"object_detectors/runs/yolov5/predict/coco/06-05-2026_19;12_layer_grad_grid/06-05-2026_19;12_layer_grad_t-cand__term-cls__c-kl-pred",
+            r"object_detectors/runs/yolov5/predict/coco/06-05-2026_19;12_layer_grad_grid/06-05-2026_19;12_layer_grad_t-cand__term-obj__o-bce-pred",
+        ],
+    },
+        {
+        "label": "layer_grad null/box_l1+kl+bce",
+        "term_paths": [
+            r"object_detectors/runs/yolov5/predict/coco/06-05-2026_19;12_layer_grad_grid/06-05-2026_19;12_layer_grad_t-null__term-bbox__b-box_l1-pred",
+            r"object_detectors/runs/yolov5/predict/coco/06-05-2026_19;12_layer_grad_grid/06-05-2026_19;12_layer_grad_t-null__term-cls__c-kl-pred",
+            r"object_detectors/runs/yolov5/predict/coco/06-05-2026_19;12_layer_grad_grid/06-05-2026_19;12_layer_grad_t-null__term-obj__o-bce-pred",
         ],
     },
 ]
