@@ -1,5 +1,6 @@
 from commands.predict.common import *
 
+
 def run_ensemble_csv(config, run_dir):
     run_dir = Path(run_dir)
     mode = str(config.get("mode", "predict"))
@@ -25,7 +26,6 @@ def run_ensemble_csv(config, run_dir):
     if not weight_paths:
         raise ValueError("output.uncertainty='ensemble' requires output.ensemble.weights to be a non-empty string/list.")
 
-    # Keep loading deterministic and stable across repeated passes.
     dataset = build_dataset(config, split=split)
     dl_cfg = config["dataloader"]
     shuffle = dl_cfg["shuffle_train"] if split == "train" else dl_cfg["shuffle_eval"]
@@ -89,29 +89,21 @@ def run_ensemble_csv(config, run_dir):
                 infer_batch, _ratios, _pads, _resized_chws = _prepare_infer_batch(
                     base_detector, images, device, auto=False
                 )
-                fcos_preprocessed = (
-                    base_detector.preprocess_images(infer_batch)
-                    if bool(getattr(base_detector, "is_fcos", False)) and hasattr(base_detector, "preprocess_images")
-                    else None
-                )
-                batch_size = len(infer_batch) if isinstance(infer_batch, list) else int(infer_batch.shape[0])
+                batch_size = int(infer_batch.shape[0])
                 image_ids = [int(targets[i]["image_id"][0].item()) for i in range(batch_size)]
                 image_paths = [targets[i]["path"] for i in range(batch_size)]
 
                 feature_runs = []
-                variable_candidate_runs = False
                 det_boxes = None
                 raw_keep_indices = None
                 detector_inference_total_sec = 0.0
                 prediction_matching_sec = 0.0
                 feature_compute_sec = 0.0
+
                 for det_idx, detector in enumerate(detectors):
                     t_detector = timing.start()
                     with torch.no_grad():
-                        if fcos_preprocessed is not None and bool(getattr(detector, "is_fcos", False)) and hasattr(detector, "forward_preprocessed"):
-                            det_output = detector.forward_preprocessed(fcos_preprocessed)
-                        else:
-                            det_output = detector.model(infer_batch, augment=False)
+                        det_output = detector.model(infer_batch, augment=False)
                         det_raw_pred = det_output[0] if isinstance(det_output, (tuple, list)) else det_output
                         det_raw_logits = det_output[1] if isinstance(det_output, (tuple, list)) and len(det_output) > 1 else None
                         nms_logits = _resolve_nms_logits(det_raw_pred, det_raw_logits, num_classes_hint=n_classes_hint)
@@ -129,29 +121,14 @@ def run_ensemble_csv(config, run_dir):
                     detector_inference_total_sec += timing.elapsed(t_detector)
 
                     t_feature = timing.start()
-                    if isinstance(det_raw_pred, list):
-                        variable_candidate_runs = True
-                        run_features = []
-                        class_count = None
-                        for pred_img in det_raw_pred:
-                            pred_img = pred_img.detach().float()
-                            bbox_xyxy = _xywh_to_xyxy_tensor(pred_img[:, :4])
-                            score_vec = pred_img[:, 4:5]
-                            prob_mat = get_prediction_class_probs(detector, pred_img).detach().float()
-                            run_features.append(torch.cat([bbox_xyxy, score_vec, prob_mat], dim=1).detach())
-                            if class_count is None:
-                                class_count = int(prob_mat.shape[-1])
-                        if class_count is None:
-                            class_count = 0
-                    else:
-                        pred_batch = det_raw_pred.detach().float()
-                        bbox_xyxy = _xywh_to_xyxy_tensor(pred_batch[..., :4])
-                        score_vec = pred_batch[..., 4].unsqueeze(-1)
-                        prob_mat = get_prediction_class_probs(detector, pred_batch).detach().float()
-                        if prob_mat.numel() == 0 and det_raw_logits is not None:
-                            prob_mat = torch.sigmoid(det_raw_logits.detach().float())
-                        run_features = torch.cat([bbox_xyxy, score_vec, prob_mat], dim=2).detach()
-                        class_count = int(run_features.shape[2] - 5)
+                    pred_batch = det_raw_pred.detach().float()
+                    bbox_xyxy = _xywh_to_xyxy_tensor(pred_batch[..., :4])
+                    score_vec = pred_batch[..., 4].unsqueeze(-1)
+                    prob_mat = get_prediction_class_probs(detector, pred_batch).detach().float()
+                    if prob_mat.numel() == 0 and det_raw_logits is not None:
+                        prob_mat = torch.sigmoid(det_raw_logits.detach().float())
+                    run_features = torch.cat([bbox_xyxy, score_vec, prob_mat], dim=2).detach()
+                    class_count = int(run_features.shape[2] - 5)
                     if n_classes_actual is None:
                         n_classes_actual = class_count
                     elif n_classes_actual != class_count:
@@ -177,52 +154,39 @@ def run_ensemble_csv(config, run_dir):
                         prediction_matching_sec += timing.elapsed(t_matching)
 
                 t_feature = timing.start()
-                mean = None
-                std = None
-                if not variable_candidate_runs:
-                    runs_tensor = torch.stack(feature_runs, dim=0)  # [M, B, N, F]
-                    mean = runs_tensor.mean(dim=0)
-                    std = runs_tensor.std(dim=0, unbiased=False)
-                    del runs_tensor
+                runs_tensor = torch.stack(feature_runs, dim=0)
+                mean = runs_tensor.mean(dim=0)
+                std = runs_tensor.std(dim=0, unbiased=False)
                 feature_compute_sec += timing.elapsed(t_feature)
-                del infer_batch
-                if fcos_preprocessed is not None:
-                    del fcos_preprocessed
+                del runs_tensor, infer_batch
 
                 batch_items = 0
                 t_matching = timing.start()
-                mean_cpu = mean.detach().float().cpu() if mean is not None else None
-                std_cpu = std.detach().float().cpu() if std is not None else None
+                mean_cpu = mean.detach().float().cpu()
+                std_cpu = std.detach().float().cpu()
                 for b in range(len(image_ids)):
                     image_id = int(image_ids[b])
                     image_path = str(image_paths[b])
-                    if not variable_candidate_runs:
-                        mean_b = mean_cpu[b]
-                        std_b = std_cpu[b]
-                        n_candidates = int(mean_b.shape[0])
-
+                    mean_b = mean_cpu[b]
+                    std_b = std_cpu[b]
+                    n_candidates = int(mean_b.shape[0])
                     det_b = det_boxes[b]
                     raw_keep_b = [int(v) for v in raw_keep_indices[b]]
                     num_final = int(det_b.shape[0])
                     for pred_idx in range(num_final):
                         if pred_idx >= len(raw_keep_b):
-                            continue
+                            raise RuntimeError(
+                                "YOLOv5 ensemble selected_indices is shorter than selected predictions. "
+                                f"pred_idx={pred_idx}, selected_indices={len(raw_keep_b)}"
+                            )
                         raw_idx = int(raw_keep_b[pred_idx])
-                        if variable_candidate_runs:
-                            per_model_values = []
-                            for run_features in feature_runs:
-                                if b < len(run_features) and 0 <= raw_idx < int(run_features[b].shape[0]):
-                                    per_model_values.append(run_features[b][raw_idx])
-                            if not per_model_values:
-                                continue
-                            values = torch.stack(per_model_values, dim=0)
-                            mean_vec = values.mean(dim=0).detach().float().cpu()
-                            std_vec = values.std(dim=0, unbiased=False).detach().float().cpu()
-                        else:
-                            if raw_idx < 0 or raw_idx >= n_candidates:
-                                continue
-                            mean_vec = mean_b[raw_idx]
-                            std_vec = std_b[raw_idx]
+                        if raw_idx < 0 or raw_idx >= n_candidates:
+                            raise RuntimeError(
+                                "YOLOv5 ensemble raw_pred_idx is out of range for ensemble feature tensor. "
+                                f"raw_pred_idx={raw_idx}, candidates={n_candidates}"
+                            )
+                        mean_vec = mean_b[raw_idx]
+                        std_vec = std_b[raw_idx]
                         cls_idx = int(det_b[pred_idx, 5].item()) if det_b.shape[1] > 5 else -1
                         row = {
                             "image_id": image_id,
@@ -269,11 +233,7 @@ def run_ensemble_csv(config, run_dir):
                         "feature_compute_sec": feature_compute_sec,
                     },
                 )
-                del feature_runs
-                if mean is not None:
-                    del mean, std, mean_cpu, std_cpu
-    except Exception:
-        raise
+                del feature_runs, mean, std, mean_cpu, std_cpu
     finally:
         for detector in detectors:
             del detector
@@ -286,5 +246,6 @@ def run_ensemble_csv(config, run_dir):
     print(f"Saved results CSV: {output_csv}")
     print(f"Saved timing: {timing_csv}")
     print(f"Saved timing summary: {timing_json}")
+
 
 __all__ = ["run_ensemble_csv"]
