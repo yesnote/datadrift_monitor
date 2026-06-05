@@ -1519,9 +1519,6 @@ def build_yolo_candidate_mask_for_pseudo(
             keep_indices = pre_iou_indices[ious > float(iou_threshold)]
             if keep_indices.numel() > 0:
                 candidate_mask[keep_indices] = True
-        if not bool(candidate_mask.any()):
-            candidate_mask = torch.zeros_like(pred_cls, dtype=torch.bool)
-            candidate_mask[raw_idx] = True
     return candidate_mask
 
 
@@ -1670,9 +1667,6 @@ def build_faster_rcnn_roi_candidate_losses(
             keep_indices = pre_indices[ious > float(iou_threshold)]
             if keep_indices.numel() > 0:
                 candidate_mask[keep_indices] = True
-        if not bool(candidate_mask.any()):
-            candidate_mask = torch.zeros_like(pred_cls, dtype=torch.bool)
-            candidate_mask[raw_idx] = True
     _add_elapsed_timing(timing_accumulator, "candidate_search_sec", t_candidate, timing_device)
 
     t_loss = _start_timing(timing_device)

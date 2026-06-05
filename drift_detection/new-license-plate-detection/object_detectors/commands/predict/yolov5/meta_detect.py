@@ -185,20 +185,6 @@ def run_meta_detect_csv(config, run_dir):
                             candidate_ious = _box_iou_1vN_tensor(pseudo_box_xyxy, raw_xyxy[candidate_indices])
                             ious[candidate_indices] = candidate_ious
                             cand_mask[candidate_indices] = candidate_ious > float(iou_threshold)
-                        if not bool(cand_mask.any()):
-                            cand_mask = torch.zeros_like(pred_cls, dtype=torch.bool)
-                            if is_fcos:
-                                fallback_mask = pred_cls == pseudo_cls
-                                fallback_indices = torch.nonzero(fallback_mask, as_tuple=False).flatten()
-                                if fallback_indices.numel() == 0:
-                                    fallback_indices = torch.arange(candidate_img.shape[0], device=device)
-                                fallback_ious = _box_iou_1vN_tensor(pseudo_box_xyxy, raw_xyxy[fallback_indices])
-                                best_idx = fallback_indices[int(torch.argmax(fallback_ious).detach().cpu().item())]
-                                cand_mask[best_idx] = True
-                                ious[best_idx] = fallback_ious.max()
-                            elif 0 <= raw_pred_idx < int(cand_mask.shape[0]):
-                                cand_mask[raw_pred_idx] = True
-                                ious[raw_pred_idx] = 1.0
                     candidate_search_sec += timing.elapsed(t_candidate)
 
                     t_feature = timing.start()
