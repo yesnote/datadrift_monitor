@@ -1,5 +1,3 @@
-from copy import deepcopy
-
 from commands.predict.common import *
 from commands.predict.fcos.common import select_fcos_post_nms
 from commands.predict.fcos.utils import iter_fcos_detection_rows
@@ -152,10 +150,7 @@ def run_mc_dropout_csv(config, run_dir):
     if num_runs <= 0:
         raise ValueError("mc_dropout.num_runs must be positive.")
 
-    dataloader_config = deepcopy(config)
-    dataloader_config.setdefault("dataloader", {})
-    dataloader_config["dataloader"]["num_workers"] = 0
-    dataloader = create_dataloader(dataloader_config, split=split)
+    dataloader = create_dataloader(config, split=split)
     if len(dataloader.dataset) == 0:
         raise ValueError("Loaded 0 images. Check dataset root/image_dir/split configuration in YAML.")
 
