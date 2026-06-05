@@ -1,5 +1,5 @@
 from commands.predict.common import *
-from commands.predict.fcos.common import select_fcos_post_nms, unpack_fcos_model_output
+from commands.predict.fcos.utils import iter_fcos_detection_rows, run_fcos_forward_nms, selected_fcos_class_logits
 
 def run_energy_csv(config, run_dir):
     run_dir = Path(run_dir)
@@ -20,7 +20,6 @@ def run_energy_csv(config, run_dir):
         raise ValueError("Loaded 0 images. Check dataset root/image_dir/split configuration in YAML.")
 
     detector, device = build_detector(config)
-    nms_kwargs = _resolve_detector_nms_kwargs(detector)
     timing = StageTimingProfiler(
         run_dir=run_dir,
         uncertainty=uncertainty,
@@ -44,84 +43,41 @@ def run_energy_csv(config, run_dir):
         ):
             image_list = _as_image_list(images)
             detector.zero_grad(set_to_none=True)
-            infer_batch, _ratios, _pads, _resized_chws = _prepare_infer_batch(detector, image_list, device, auto=False)
-            raw_prediction = None
-            raw_logits = None
-            raw_indices = None
-            selected_preds = None
-            selected_indices = None
-            t_detector = timing.start()
-            with torch.no_grad():
-                model_output = detector.model(infer_batch, augment=False)
-                raw_prediction, raw_logits, raw_indices = unpack_fcos_model_output(model_output)
-                selected_preds, _selected_logits, _selected_objectness, selected_indices = select_fcos_post_nms(
-                    detector, raw_prediction, raw_logits, raw_indices
-                )
-            detector_inference_sec = timing.elapsed(t_detector)
+            result = run_fcos_forward_nms(
+                detector=detector,
+                image_list=image_list,
+                device=device,
+                timing=timing,
+                keep_pre_nms=False,
+                keep_class_outputs=True,
+            )
 
             t_feature = timing.start()
             batch_items = 0
+            energy_by_sample = {}
             for sample_idx in range(len(image_list)):
-                target = targets[sample_idx]
-                image_id = int(target["image_id"][0].item())
-                image_path = target["path"]
-
-                det = selected_preds[sample_idx]
-                batch_items += int(det.shape[0])
-                raw_keep_b = selected_indices[sample_idx]
-                if bool(getattr(detector, "is_fcos", False)):
-                    if raw_logits is not None:
-                        selected_logits = raw_logits[sample_idx] if int(det.shape[0]) > 0 else torch.zeros((0, num_classes), dtype=torch.float32, device=device)
-                    else:
-                        selected_probs = get_selected_prediction_class_probs(
-                            detector,
-                            raw_prediction[sample_idx],
-                            torch.arange(int(det.shape[0]), dtype=torch.long, device=device),
-                        ) if int(det.shape[0]) > 0 and raw_prediction[sample_idx].shape[1] > 6 else torch.zeros((0, num_classes), dtype=torch.float32, device=device)
-                        selected_logits = torch.logit(selected_probs.clamp(min=1e-8, max=1.0 - 1e-8)) if selected_probs.numel() else selected_probs
-                elif raw_logits is not None:
-                    selected_logits = raw_logits[sample_idx][raw_keep_b] if int(raw_keep_b.shape[0]) > 0 else torch.zeros((0, num_classes), dtype=torch.float32, device=device)
-                else:
-                    selected_logits = get_selected_prediction_class_probs(detector, raw_prediction[sample_idx], raw_keep_b) if int(raw_keep_b.shape[0]) > 0 and raw_prediction[sample_idx].shape[1] > 5 else torch.zeros((0, num_classes), dtype=torch.float32, device=device)
+                selected_logits = selected_fcos_class_logits(result, sample_idx, num_classes, device)
                 if selected_logits.numel():
                     pred_energy = -100.0 * torch.log(torch.clamp(torch.sum(torch.exp(selected_logits / 100.0), dim=-1), min=1e-8))
                 else:
                     pred_energy = torch.zeros((0,), device=device)
-                for pred_idx, box in enumerate(det):
-                    raw_pred_idx = int(raw_keep_b[pred_idx].detach().cpu().item()) if pred_idx < int(raw_keep_b.shape[0]) else pred_idx
-                    cls_idx = int(box[5].detach().cpu().item()) if box.shape[0] > 5 else 0
-                    if isinstance(detector.names, dict):
-                        pred_class = detector.names.get(cls_idx, str(cls_idx))
-                    elif isinstance(detector.names, list) and 0 <= cls_idx < len(detector.names):
-                        pred_class = detector.names[cls_idx]
-                    else:
-                        pred_class = str(cls_idx)
-                    energy_val = float(pred_energy[pred_idx].detach().cpu().item()) if pred_idx < pred_energy.shape[0] else 0.0
-                    writer.writerow(
-                        {
-                            "image_id": image_id,
-                            "image_path": image_path,
-                            "pred_idx": pred_idx,
-                            "raw_pred_idx": raw_pred_idx,
-                            "xmin": float(box[0]),
-                            "ymin": float(box[1]),
-                            "xmax": float(box[2]),
-                            "ymax": float(box[3]),
-                            "score": float(box[4]),
-                            "pred_class": pred_class,
-                            "energy": energy_val,
-                        }
-                    )
+                energy_by_sample[sample_idx] = pred_energy
+            for det_row in iter_fcos_detection_rows(detector, targets, result.selected_preds, result.selected_indices, device):
+                pred_energy = energy_by_sample[det_row.sample_idx]
+                row = dict(det_row.base)
+                row["energy"] = float(pred_energy[det_row.pred_idx].detach().cpu().item()) if det_row.pred_idx < int(pred_energy.shape[0]) else 0.0
+                writer.writerow(row)
+                batch_items += 1
             feature_compute_sec = timing.elapsed(t_feature)
             timing.record(
                 num_images=len(image_list),
                 num_predictions=batch_items,
                 stage_seconds={
-                    "detector_inference_sec": detector_inference_sec,
+                    "detector_inference_sec": result.detector_inference_sec,
                     "feature_compute_sec": feature_compute_sec,
                 },
             )
-            del infer_batch, raw_prediction, raw_logits, raw_indices, selected_preds, selected_indices
+            del result, energy_by_sample
 
     del detector
     if device.type == "cuda":

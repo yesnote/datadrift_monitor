@@ -1,5 +1,11 @@
 from commands.predict.common import *
 from commands.predict.fcos.common import select_fcos_post_nms
+from commands.predict.fcos.utils import (
+    build_fcos_candidate_cache,
+    ensure_fcos_selected_indices,
+    fcos_candidate_mask_from_cache,
+    fcos_class_name,
+)
 from commands.utils.predict_utils import (
     _apply_direction,
     _class_loss_tensor,
@@ -201,11 +207,7 @@ def _source_indices_from_boxlist(boxlist, row_idx):
 
 
 def _prediction_class_name(detector, cls_idx):
-    if isinstance(detector.names, dict):
-        return detector.names.get(cls_idx, str(cls_idx))
-    if isinstance(detector.names, list) and 0 <= cls_idx < len(detector.names):
-        return detector.names[cls_idx]
-    return str(cls_idx)
+    return fcos_class_name(detector, cls_idx)
 
 
 def _resolve_fcos_candidate_sources(
@@ -221,6 +223,7 @@ def _resolve_fcos_candidate_sources(
     cand_iou_threshold,
     timing,
     timing_accumulator,
+    candidate_cache=None,
 ):
     detections = model_output["detections"]
     pre_nms_boxlists = model_output["pre_nms_boxlists"]
@@ -230,20 +233,18 @@ def _resolve_fcos_candidate_sources(
         if pre_nms_boxlists is None or image_idx >= len(pre_nms_boxlists):
             timing_accumulator["candidate_search_sec"] += timing.elapsed(t_candidate)
             return candidate_sources
-        pre_boxlist = pre_nms_boxlists[image_idx]
-        pre_pred = model_output["pre_prediction"][image_idx]
-        if pre_pred.numel() == 0:
+        if candidate_cache is None:
+            pre_pred = model_output["pre_prediction"][image_idx]
+            candidate_cache = build_fcos_candidate_cache(pre_pred, cand_score_threshold)
+        if candidate_cache.prediction.numel() == 0:
             timing_accumulator["candidate_search_sec"] += timing.elapsed(t_candidate)
             return candidate_sources
-        pre_boxes = _xywh_to_xyxy_tensor(pre_pred[:, :4].detach())
-        pre_scores = pre_pred[:, 4].detach()
-        pre_cls = pre_pred[:, 5].detach().long()
-        score_class_mask = (pre_scores >= float(cand_score_threshold)) & (pre_cls == int(final_cls))
-        cand_mask = torch.zeros_like(score_class_mask, dtype=torch.bool)
-        if bool(score_class_mask.any()):
-            score_indices = torch.where(score_class_mask)[0]
-            ious = _box_iou_1vN_tensor(final_box.detach().view(1, 4), pre_boxes[score_indices])
-            cand_mask[score_indices] = ious > float(cand_iou_threshold)
+        cand_mask, _ious = fcos_candidate_mask_from_cache(
+            candidate_cache,
+            final_box.detach().float(),
+            final_cls,
+            cand_iou_threshold,
+        )
         candidate_indices = torch.where(cand_mask)[0]
         source_boxlist = pre_nms_boxlists[image_idx]
         for candidate_idx in candidate_indices.detach().cpu().tolist():
@@ -280,6 +281,7 @@ def _build_fcos_losses(
     timing,
     timing_accumulator,
     candidate_sources=None,
+    candidate_cache=None,
 ):
     box_cls = model_output["box_cls"]
     box_regression = model_output["box_regression"]
@@ -301,6 +303,7 @@ def _build_fcos_losses(
             cand_iou_threshold=cand_iou_threshold,
             timing=timing,
             timing_accumulator=timing_accumulator,
+            candidate_cache=candidate_cache,
         )
 
     t_loss = timing.start()
@@ -507,6 +510,21 @@ def run_layer_grad_csv(config, run_dir):
                 )
                 stage_seconds["detector_inference_sec"] += timing.elapsed(t_detector)
 
+                candidate_caches = {}
+                if layer_cfg["target"] == "cand_target":
+                    for sample_idx in range(len(image_list)):
+                        t_candidate = timing.start()
+                        pre_pred = (
+                            model_output["pre_prediction"][sample_idx]
+                            if model_output.get("pre_prediction") is not None and sample_idx < len(model_output["pre_prediction"])
+                            else torch.zeros((0, 6), dtype=torch.float32, device=device)
+                        )
+                        candidate_caches[sample_idx] = build_fcos_candidate_cache(
+                            pre_pred,
+                            layer_cfg["cand_score_threshold"],
+                        )
+                        stage_seconds["candidate_search_sec"] += timing.elapsed(t_candidate)
+
                 batch_rows = []
                 batch_items = 0
                 batch_grad_arrays = {}
@@ -522,7 +540,7 @@ def run_layer_grad_csv(config, run_dir):
                     image_id = int(target["image_id"][0].item())
                     image_path = target["path"]
                     det = selected_preds[sample_idx] if selected_preds and sample_idx < len(selected_preds) else torch.zeros((0, 6), device=device)
-                    raw_keep = selected_indices[sample_idx] if selected_indices and sample_idx < len(selected_indices) else torch.zeros((0,), dtype=torch.long, device=device)
+                    raw_keep = ensure_fcos_selected_indices(selected_indices, selected_preds, sample_idx).to(device=device)
                     batch_items += int(det.shape[0])
                 expected_grad_calls = int(batch_items) * len(target_values)
 
@@ -531,9 +549,9 @@ def run_layer_grad_csv(config, run_dir):
                     image_id = int(target["image_id"][0].item())
                     image_path = target["path"]
                     det = selected_preds[sample_idx] if selected_preds and sample_idx < len(selected_preds) else torch.zeros((0, 6), device=device)
-                    raw_keep = selected_indices[sample_idx] if selected_indices and sample_idx < len(selected_indices) else torch.zeros((0,), dtype=torch.long, device=device)
+                    raw_keep = ensure_fcos_selected_indices(selected_indices, selected_preds, sample_idx).to(device=device)
                     for pred_idx in range(int(det.shape[0])):
-                        raw_idx = int(raw_keep[pred_idx].detach().cpu().item()) if pred_idx < int(raw_keep.shape[0]) else pred_idx
+                        raw_idx = int(raw_keep[pred_idx].detach().cpu().item())
                         final_box = det[pred_idx, :4]
                         final_cls = int(det[pred_idx, 5].detach().cpu().item()) if det.shape[1] > 5 else 0
                         row = {
@@ -568,6 +586,7 @@ def run_layer_grad_csv(config, run_dir):
                             cnt_direction=layer_cfg["cnt_direction"],
                             timing=timing,
                             timing_accumulator=stage_seconds,
+                            candidate_cache=candidate_caches.get(sample_idx),
                         )
 
                         for target_value in target_values:
@@ -633,7 +652,7 @@ def run_layer_grad_csv(config, run_dir):
                     del det, raw_keep
                 if batch_rows:
                     del row
-                del batch_rows, batch_grad_arrays
+                del batch_rows, batch_grad_arrays, candidate_caches
                 del infer_batch, fcos_preprocessed, model_output
                 if row_model_output is not None:
                     del row_model_output

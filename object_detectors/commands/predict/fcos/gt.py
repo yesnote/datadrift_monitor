@@ -1,5 +1,5 @@
 from commands.predict.common import *
-from commands.predict.fcos.common import select_fcos_post_nms, unpack_fcos_model_output
+from commands.predict.fcos.utils import iter_fcos_detection_rows, run_fcos_forward_nms
 
 def run_fn_csv(config, run_dir):
     run_dir = Path(run_dir)
@@ -166,7 +166,6 @@ def run_tp_csv(config, run_dir):
         raise ValueError("Loaded 0 images. Check dataset root/image_dir/split configuration in YAML.")
 
     detector, device = build_detector(config)
-    nms_kwargs = _resolve_detector_nms_kwargs(detector)
 
     output_file = open(output_csv, "w", newline="", encoding="utf-8") if save_csv else None
     writer = csv.DictWriter(output_file, fieldnames=fieldnames) if output_file is not None else None
@@ -179,31 +178,22 @@ def run_tp_csv(config, run_dir):
         )):
             image_list = _as_image_list(images)
             detector.zero_grad(set_to_none=True)
-            if bool(getattr(detector, "is_faster_rcnn", False)):
-                infer_batch = image_list
-                ratios = [(1.0, 1.0) for _ in image_list]
-                pads = [(0.0, 0.0) for _ in image_list]
-                resized_chws = None
-            else:
-                infer_batch, ratios, pads, resized_chws = _prepare_infer_batch(detector, image_list, device, auto=False)
-            with torch.no_grad():
-                model_output = detector.model(
-                    infer_batch,
-                    augment=False,
-                    keep_class_outputs=False,
-                )
-                raw_prediction, raw_logits, raw_indices = unpack_fcos_model_output(model_output)
-                selected_preds, _selected_logits, _selected_objectness, selected_indices = select_fcos_post_nms(
-                    detector, raw_prediction, raw_logits, raw_indices
-                )
+            dummy_timing = type("_DummyTiming", (), {"start": staticmethod(time.perf_counter), "elapsed": staticmethod(lambda t: time.perf_counter() - t)})()
+            result = run_fcos_forward_nms(
+                detector=detector,
+                image_list=image_list,
+                device=device,
+                timing=dummy_timing,
+                keep_pre_nms=False,
+                keep_class_outputs=False,
+            )
 
             for sample_idx in range(len(image_list)):
                 target = targets[sample_idx]
                 image_id = int(target["image_id"][0].item())
                 image_path = target["path"]
 
-                det_b = selected_preds[sample_idx] if selected_preds and sample_idx < len(selected_preds) else torch.zeros((0, 6), device=device)
-                raw_keep_b = selected_indices[sample_idx] if selected_indices and sample_idx < len(selected_indices) else torch.zeros((0,), dtype=torch.long, device=device)
+                det_b = result.selected_preds[sample_idx] if result.selected_preds and sample_idx < len(result.selected_preds) else torch.zeros((0, 6), device=device)
                 pred_boxes_t = det_b[:, :4]
                 pred_scores_t = det_b[:, 4] if det_b.shape[1] > 4 else torch.zeros((det_b.shape[0],), device=device)
                 pred_cls_ids = det_b[:, 5].long() if det_b.shape[1] > 5 else torch.zeros((det_b.shape[0],), dtype=torch.long, device=device)
@@ -214,7 +204,7 @@ def run_tp_csv(config, run_dir):
                     for c in pred_cls_ids
                 ]
                 gt_boxes_tensor = target["boxes"]
-                gt_boxes = map_boxes_to_letterbox(gt_boxes_tensor, ratios[sample_idx], pads[sample_idx])
+                gt_boxes = map_boxes_to_letterbox(gt_boxes_tensor, result.ratios[sample_idx], result.pads[sample_idx])
                 gt_class_names = _resolve_gt_class_names(target, catid_to_name)
 
                 error_rows = analyze_prediction_error_types(
@@ -236,14 +226,14 @@ def run_tp_csv(config, run_dir):
                 if should_save_image:
                     step_dir = run_dir / "images" / f"0_{step_idx}"
                     step_dir.mkdir(parents=True, exist_ok=True)
-                    if resized_chws is None and bool(getattr(detector, "is_fcos", False)):
+                    if result.resized_chws is None and bool(getattr(detector, "is_fcos", False)):
                         image_chw = detector.resize_image_for_display(image_list[sample_idx])
-                    elif resized_chws is None:
+                    elif result.resized_chws is None:
                         image_chw = np.ascontiguousarray(
                             np.clip(image_list[sample_idx].detach().cpu().numpy() * 255.0, 0, 255).astype(np.uint8)
                         )
                     else:
-                        image_chw = resized_chws[sample_idx]
+                        image_chw = result.resized_chws[sample_idx]
                     vis_image = np.transpose(image_chw, (1, 2, 0)).copy()
                     for gt_box, gt_name in zip(gt_boxes, gt_class_names):
                         x1, y1, x2, y2 = [int(v) for v in gt_box]
@@ -277,31 +267,20 @@ def run_tp_csv(config, run_dir):
                     out_path = step_dir / f"{image_id}.jpg"
                     cv2.imwrite(str(out_path), cv2.cvtColor(vis_image, cv2.COLOR_RGB2BGR))
 
-                for pred_idx, (box, score, pred_class) in enumerate(
-                    zip(pred_boxes, pred_scores, pred_class_names)
-                ):
-                    raw_pred_idx = int(raw_keep_b[pred_idx].detach().cpu().item()) if pred_idx < int(raw_keep_b.shape[0]) else pred_idx
+                for det_row in iter_fcos_detection_rows(detector, [target], [det_b], [result.selected_indices[sample_idx]], device):
+                    pred_idx = det_row.pred_idx
                     if writer is not None:
                         error_row = error_rows[pred_idx]
                         writer.writerow(
                             {
-                                "image_id": image_id,
-                                "image_path": image_path,
-                                "pred_idx": pred_idx,
-                                "raw_pred_idx": raw_pred_idx,
-                                "xmin": float(box[0]),
-                                "ymin": float(box[1]),
-                                "xmax": float(box[2]),
-                                "ymax": float(box[3]),
-                                "score": float(score),
-                                "pred_class": pred_class,
+                                **det_row.base,
                                 "max_iou": float(error_row["max_iou"]),
                                 "gt_iou": float(error_row["gt_iou"]),
                                 "tp": int(error_row["tp"]),
                                 "error_type": error_row["error_type"],
                             }
                         )
-            del infer_batch, model_output, raw_prediction, raw_logits, raw_indices, selected_preds, selected_indices
+            del result
     finally:
         if output_file is not None:
             output_file.close()
