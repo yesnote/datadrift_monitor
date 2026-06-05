@@ -996,8 +996,8 @@ def collect_gradients_per_target(
                 with torch.no_grad():
                     max_det = getattr(detector, "max_det", 300)
                     _selected_preds, _selected_logits, _selected_objectness, selected_indices = detector.non_max_suppression(
-                        prediction=raw_prediction.detach(),
-                        logits=raw_logits.detach() if raw_logits is not None else raw_logits,
+                        prediction=raw_prediction,
+                        logits=raw_logits,
                         conf_thres=float(getattr(detector, "conf_thresh", getattr(detector, "confidence", 0.25))),
                         iou_thres=float(getattr(detector, "iou_thresh", 0.45)),
                         classes=getattr(detector, "filter_classes", None),
@@ -1023,8 +1023,8 @@ def collect_gradients_per_target(
             with torch.no_grad():
                 max_det = getattr(detector, "max_det", 300)
                 _selected_preds, _selected_logits, _selected_objectness, selected_indices = detector.non_max_suppression(
-                    prediction=raw_prediction.detach(),
-                    logits=raw_logits.detach() if raw_logits is not None else raw_logits,
+                    prediction=raw_prediction,
+                    logits=raw_logits,
                     conf_thres=float(getattr(detector, "conf_thresh", getattr(detector, "confidence", 0.25))),
                     iou_thres=float(getattr(detector, "iou_thresh", 0.45)),
                     classes=getattr(detector, "filter_classes", None),
@@ -2573,13 +2573,11 @@ def collect_bbox_layer_grads_per_target(
     with torch.no_grad():
         # Final detections use the model confidence threshold. Candidate search for
         # cand_target later uses the unfiltered raw_prediction and cand_score_threshold.
-        nms_prediction = raw_prediction.detach().clone()
-        nms_logits = raw_logits.detach().clone() if raw_logits is not None else None
         max_det = getattr(detector, "max_det", 300)
         t_detector = _start_timing(timing_device)
         selected_preds, _selected_logits, _selected_objectness, selected_indices = detector.non_max_suppression(
-            prediction=nms_prediction,
-            logits=nms_logits,
+            prediction=raw_prediction,
+            logits=raw_logits,
             conf_thres=float(getattr(detector, "conf_thresh", getattr(detector, "confidence", 0.25))),
             iou_thres=float(getattr(detector, "iou_thresh", 0.45)),
             classes=getattr(detector, "filter_classes", None),
