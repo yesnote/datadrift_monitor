@@ -95,15 +95,10 @@ def run_meta_detect_csv(config, run_dir):
                 pre_nms_prediction = None
                 if bool(getattr(detector, "is_fcos", False)):
                     pre_nms_prediction, _pre_nms_logits = detector.get_last_pre_nms_predictions()
-                # Final detections are controlled by model.confidence_threshold via nms_kwargs.
-                # Candidate search below must still use the full raw prediction tensor and its
-                # own meta_detect.score_threshold, so run NMS on detached copies.
-                nms_prediction = raw_prediction.detach().clone()
-                nms_logits = raw_logits.detach().clone() if raw_logits is not None else None
                 t_detector = timing.start()
                 selected_preds, _selected_logits, _selected_objectness, selected_indices = detector.non_max_suppression(
-                    prediction=nms_prediction,
-                    logits=nms_logits,
+                    prediction=raw_prediction,
+                    logits=raw_logits,
                     conf_thres=nms_kwargs["conf_thres"],
                     iou_thres=nms_kwargs["iou_thres"],
                     classes=nms_kwargs["classes"],
@@ -149,7 +144,10 @@ def run_meta_detect_csv(config, run_dir):
                 for pred_idx, (box, pred_score, pred_class_name) in enumerate(zip(pred_boxes, pred_scores, pred_class_names)):
                     raw_pred_idx = int(raw_keep_b[pred_idx].detach().cpu().item()) if pred_idx < int(raw_keep_b.shape[0]) else pred_idx
                     if not is_fcos and raw_pred_idx >= int(pred_img.shape[0]):
-                        continue
+                        raise RuntimeError(
+                            "YOLO meta_detect raw_pred_idx is out of range for raw prediction tensor. "
+                            f"raw_pred_idx={raw_pred_idx}, pred={int(pred_img.shape[0])}"
+                        )
 
                     t_candidate = timing.start()
                     fbox = torch.tensor(box, dtype=torch.float32, device=device)
