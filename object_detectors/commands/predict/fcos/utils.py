@@ -16,7 +16,6 @@ class FcosForwardNMSResult:
     raw_indices: object
     selected_preds: list
     selected_logits: list
-    selected_objectness: list
     selected_indices: list
     pre_nms_prediction: object
     detector_inference_sec: float
@@ -76,13 +75,16 @@ def run_fcos_forward_nms(
         pre_nms_prediction = None
         if keep_pre_nms:
             pre_nms_prediction, _pre_nms_logits, _pre_nms_indices = detector.get_last_pre_nms_predictions()
-        selected_preds, selected_logits, selected_objectness, selected_indices = select_fcos_post_nms(
+        selected = select_fcos_post_nms(
             detector,
             raw_prediction,
             raw_logits,
             raw_indices,
             conf_thres=conf_thres,
         )
+        selected_preds = selected[0]
+        selected_logits = selected[1]
+        selected_indices = selected[3]
     detector_inference_sec = timing.elapsed(t_detector)
     return FcosForwardNMSResult(
         infer_batch=infer_batch,
@@ -95,7 +97,6 @@ def run_fcos_forward_nms(
         raw_indices=raw_indices,
         selected_preds=selected_preds,
         selected_logits=selected_logits,
-        selected_objectness=selected_objectness,
         selected_indices=selected_indices,
         pre_nms_prediction=pre_nms_prediction,
         detector_inference_sec=detector_inference_sec,

@@ -33,13 +33,13 @@ def _run_fcos_head_post_nms_from_cache(detector, cache):
         include_indices=True,
         include_probs=True,
     )
-    selected_preds, _selected_logits, _selected_objectness, selected_indices = select_fcos_post_nms(
+    selected = select_fcos_post_nms(
         detector,
         raw_prediction,
         raw_logits,
         raw_indices,
     )
-    return detections, selected_preds, _selected_logits, _selected_objectness, selected_indices
+    return detections, selected[0], selected[3]
 
 
 def _run_fcos_head_dense_from_cache(detector, cache):
@@ -201,9 +201,7 @@ def run_mc_dropout_csv(config, run_dir):
             dataloader, desc=f"Object Detector ({mode} - {uncertainty})", total=len(dataloader)
         ):
             image_list = _as_image_list(images)
-            infer_batch, _ratios, _pads, _resized_chws = _prepare_infer_batch(
-                detector, image_list, device, auto=False
-            )
+            infer_batch = _prepare_infer_batch(detector, image_list, device, auto=False)[0]
 
             detector_inference_sec = 0.0
             prediction_matching_sec = 0.0
@@ -215,9 +213,7 @@ def run_mc_dropout_csv(config, run_dir):
                 feature_cache = detector.prepare_feature_cache(fcos_preprocessed)
                 locations = _compute_fcos_locations(detector, feature_cache)
                 detector.set_dropout_rate(0.0)
-                detections, selected_preds, _selected_logits, _selected_objectness, selected_indices = (
-                    _run_fcos_head_post_nms_from_cache(detector, feature_cache)
-                )
+                detections, selected_preds, selected_indices = _run_fcos_head_post_nms_from_cache(detector, feature_cache)
             detector_inference_sec += timing.elapsed(t_detector)
 
             t_matching = timing.start()
