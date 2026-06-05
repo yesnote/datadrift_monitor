@@ -132,6 +132,7 @@ def run_null_detect_csv(config, run_dir):
                 raw_logits = model_output[1] if isinstance(model_output, (tuple, list)) and len(model_output) > 1 else None
                 raw_layers = model_output[2] if isinstance(model_output, (tuple, list)) and len(model_output) > 2 else None
                 raw_anchor_priors = model_output[3] if isinstance(model_output, (tuple, list)) and len(model_output) > 3 else None
+                feature_prediction = raw_prediction.detach().clone()
                 detector_inference_sec = timing.elapsed(t_detector)
 
                 if raw_anchor_priors is None:
@@ -141,12 +142,10 @@ def run_null_detect_csv(config, run_dir):
                 if raw_flat is None:
                     raise RuntimeError("null_detect requires raw YOLO prediction layers, but detector.model() did not return them.")
                 feature_compute_sec = timing.elapsed(t_feature)
-                nms_prediction = raw_prediction.detach().clone()
-                nms_logits = raw_logits.detach().clone() if raw_logits is not None else None
                 t_detector = timing.start()
                 selected_preds, _selected_logits, _selected_objectness, selected_indices = detector.non_max_suppression(
-                    prediction=nms_prediction,
-                    logits=nms_logits,
+                    prediction=raw_prediction,
+                    logits=raw_logits,
                     conf_thres=nms_kwargs["conf_thres"],
                     iou_thres=nms_kwargs["iou_thres"],
                     classes=nms_kwargs["classes"],
@@ -163,15 +162,27 @@ def run_null_detect_csv(config, run_dir):
                 image_path = target["path"]
                 det_b = selected_preds[sample_idx] if selected_preds and sample_idx < len(selected_preds) else torch.zeros((0, 6), device=device)
                 raw_keep_b = selected_indices[sample_idx] if selected_indices and sample_idx < len(selected_indices) else torch.zeros((0,), dtype=torch.long, device=device)
-                pred_img = raw_prediction[sample_idx].float()
+                pred_img = feature_prediction[sample_idx].float()
                 raw_img = raw_flat[sample_idx]
-                anchor_img = raw_anchor_priors[sample_idx]
+                anchor_img = (
+                    raw_anchor_priors[sample_idx]
+                    if raw_anchor_priors.ndim >= 3
+                    else raw_anchor_priors
+                    if raw_anchor_priors.ndim == 2 and len(image_list) == 1
+                    else None
+                )
+                if anchor_img is None:
+                    raise RuntimeError("YOLO null_detect could not align anchor priors with the current batch.")
                 batch_items += int(det_b.shape[0])
 
                 for pred_idx, box in enumerate(det_b):
                     raw_pred_idx = int(raw_keep_b[pred_idx].detach().cpu().item()) if pred_idx < int(raw_keep_b.shape[0]) else pred_idx
                     if raw_pred_idx >= int(pred_img.shape[0]) or raw_pred_idx >= int(raw_img.shape[0]) or raw_pred_idx >= int(anchor_img.shape[0]):
-                        continue
+                        raise RuntimeError(
+                            "YOLO null_detect raw_pred_idx is out of range for raw prediction/raw layer/anchor tensors. "
+                            f"raw_pred_idx={raw_pred_idx}, pred={int(pred_img.shape[0])}, "
+                            f"raw={int(raw_img.shape[0])}, anchors={int(anchor_img.shape[0])}"
+                        )
 
                     t_feature = timing.start()
                     pred_row = pred_img[raw_pred_idx]
@@ -272,7 +283,7 @@ def run_null_detect_csv(config, run_dir):
                 },
             )
             output_file.flush()
-            del infer_batch, model_output, raw_prediction, raw_logits, raw_flat, raw_anchor_priors, selected_preds, selected_indices
+            del infer_batch, model_output, raw_prediction, raw_logits, feature_prediction, raw_flat, raw_anchor_priors, selected_preds, selected_indices
 
     del detector
     if device.type == "cuda":
