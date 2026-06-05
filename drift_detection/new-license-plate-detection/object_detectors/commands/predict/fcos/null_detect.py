@@ -1,5 +1,6 @@
 from commands.predict.common import *
 from commands.predict.fcos.common import select_fcos_post_nms
+from commands.predict.fcos.utils import ensure_fcos_selected_indices, fcos_class_name
 from commands.predict.fcos.layer_grad import (
     _class_loss_tensor,
     _flatten_centerness,
@@ -238,6 +239,7 @@ def run_null_detect_csv(config, run_dir):
                     if selected_indices and sample_idx < len(selected_indices)
                     else torch.zeros((0,), dtype=torch.long, device=device)
                 )
+                ensure_fcos_selected_indices(selected_indices, selected_preds, sample_idx)
                 raw_prediction = (
                     model_output["post_prediction"][sample_idx]
                     if model_output.get("post_prediction") and sample_idx < len(model_output["post_prediction"])
@@ -246,7 +248,7 @@ def run_null_detect_csv(config, run_dir):
                 batch_items += int(det.shape[0])
 
                 for pred_idx in range(int(det.shape[0])):
-                    raw_idx = int(raw_keep[pred_idx].detach().cpu().item()) if pred_idx < int(raw_keep.shape[0]) else pred_idx
+                    raw_idx = int(raw_keep[pred_idx].detach().cpu().item())
                     final_box = det[pred_idx, :4]
                     final_cls = int(det[pred_idx, 5].detach().cpu().item()) if det.shape[1] > 5 else 0
 
@@ -304,7 +306,7 @@ def run_null_detect_csv(config, run_dir):
                             "xmax": _to_float(final_box[2]),
                             "ymax": _to_float(final_box[3]),
                             "score": _to_float(det[pred_idx, 4]),
-                            "pred_class": _prediction_class_name(detector, final_cls),
+                            "pred_class": fcos_class_name(detector, final_cls),
                             **{key: _to_float(value) for key, value in feature_values.items()},
                         }
                     )
