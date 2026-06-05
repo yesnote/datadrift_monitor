@@ -1,12 +1,15 @@
 from commands.predict.common import *
+from commands.predict.yolov5.utils import (
+    run_yolo_forward_nms,
+    selected_class_logits,
+    selected_sigmoid_class_outputs,
+    selected_softmax_class_probs,
+    yolo_pred_class_name,
+)
 
 
 def _pred_class_name(detector, cls_idx):
-    if isinstance(detector.names, dict):
-        return detector.names.get(cls_idx, str(cls_idx))
-    if isinstance(detector.names, list) and 0 <= cls_idx < len(detector.names):
-        return detector.names[cls_idx]
-    return str(cls_idx)
+    return yolo_pred_class_name(detector, cls_idx)
 
 
 def _empty_class_tensor(num_classes, device):
@@ -14,30 +17,8 @@ def _empty_class_tensor(num_classes, device):
 
 
 def _selected_class_probs_and_logits(detector, raw_prediction, raw_logits, sample_idx, raw_keep_b, num_classes, device):
-    class_start = 6 if bool(getattr(detector, "is_fcos", False)) else 5
-    probs = (
-        raw_prediction[sample_idx][raw_keep_b, class_start:].detach().float()
-        if int(raw_keep_b.shape[0]) > 0 and raw_prediction[sample_idx].shape[1] > class_start
-        else _empty_class_tensor(num_classes, device)
-    )
-    if bool(getattr(detector, "is_fcos", False)):
-        if raw_logits is not None:
-            logits = (
-                raw_logits[sample_idx][raw_keep_b]
-                if int(raw_keep_b.shape[0]) > 0
-                else _empty_class_tensor(num_classes, device)
-            )
-        else:
-            logits = torch.logit(probs.clamp(min=1e-8, max=1.0 - 1e-8)) if probs.numel() else probs
-        return probs, logits
-    if raw_logits is not None:
-        logits = (
-            raw_logits[sample_idx][raw_keep_b]
-            if int(raw_keep_b.shape[0]) > 0
-            else _empty_class_tensor(num_classes, device)
-        )
-        return probs, logits
-    logits = torch.logit(probs.clamp(min=1e-8, max=1.0 - 1e-8)) if probs.numel() else probs
+    probs = selected_sigmoid_class_outputs(raw_prediction, sample_idx, raw_keep_b, num_classes, device)
+    logits = selected_class_logits(raw_logits, raw_prediction, sample_idx, raw_keep_b, num_classes, device)
     return probs, logits
 
 
@@ -183,27 +164,15 @@ def run_deterministic_uncertainties_csv(config, run_dir, uncertainties=None):
                 del warmup_output, warmup_prediction, warmup_logits, warmup_nms_logits
                 needs_warmup = False
 
-            t_detector = next(iter(profilers.values())).start()
             with torch.no_grad():
-                model_output = detector.model(infer_batch, augment=False)
-                raw_prediction = model_output[0] if isinstance(model_output, (tuple, list)) else model_output
-                raw_logits = (
-                    model_output[1]
-                    if isinstance(model_output, (tuple, list)) and len(model_output) > 1
-                    else None
+                forward = run_yolo_forward_nms(
+                    detector,
+                    infer_batch,
+                    nms_kwargs,
+                    timing=next(iter(profilers.values())),
+                    num_classes_hint=num_classes,
                 )
-                nms_logits = _resolve_nms_logits(raw_prediction, raw_logits)
-                selected_preds, _selected_logits, _selected_objectness, selected_indices = detector.non_max_suppression(
-                    prediction=raw_prediction,
-                    logits=nms_logits,
-                    conf_thres=nms_kwargs["conf_thres"],
-                    iou_thres=nms_kwargs["iou_thres"],
-                    classes=nms_kwargs["classes"],
-                    agnostic=nms_kwargs["agnostic"],
-                    max_det=nms_kwargs["max_det"],
-                    return_indices=True,
-                )
-            detector_inference_sec = next(iter(profilers.values())).elapsed(t_detector)
+            detector_inference_sec = forward.detector_inference_sec
 
             batch_items = 0
             entropy_feature_sec = 0.0
@@ -212,12 +181,23 @@ def run_deterministic_uncertainties_csv(config, run_dir, uncertainties=None):
                 target = targets[sample_idx]
                 image_id = int(target["image_id"][0].item())
                 image_path = target["path"]
-                det = selected_preds[sample_idx]
-                raw_keep_b = selected_indices[sample_idx]
+                det = (
+                    forward.selected_preds[sample_idx]
+                    if forward.selected_preds and sample_idx < len(forward.selected_preds)
+                    else torch.zeros((0, 6), device=device)
+                )
+                raw_keep_b = (
+                    forward.selected_indices[sample_idx]
+                    if forward.selected_indices and sample_idx < len(forward.selected_indices)
+                    else torch.zeros((0,), dtype=torch.long, device=device)
+                )
                 batch_items += int(det.shape[0])
 
                 selected_probs, selected_logits = _selected_class_probs_and_logits(
-                    detector, raw_prediction, raw_logits, sample_idx, raw_keep_b, num_classes, device
+                    detector, forward.raw_prediction, forward.raw_logits, sample_idx, raw_keep_b, num_classes, device
+                )
+                entropy_probs = selected_softmax_class_probs(
+                    forward.raw_logits, forward.raw_prediction, sample_idx, raw_keep_b, num_classes, device
                 )
 
                 pred_entropy = None
@@ -225,8 +205,8 @@ def run_deterministic_uncertainties_csv(config, run_dir, uncertainties=None):
                 if "entropy" in active:
                     t_feature = profilers["entropy"].start()
                     pred_entropy = (
-                        -torch.sum(selected_probs * torch.log(selected_probs.clamp(min=1e-12)), dim=-1)
-                        if selected_probs.numel()
+                        -torch.sum(entropy_probs * torch.log(entropy_probs.clamp(min=1e-12)), dim=-1)
+                        if entropy_probs.numel()
                         else torch.zeros((0,), device=device)
                     )
                     entropy_feature_sec += profilers["entropy"].elapsed(t_feature)
@@ -236,22 +216,23 @@ def run_deterministic_uncertainties_csv(config, run_dir, uncertainties=None):
                     energy_feature_sec += profilers["energy"].elapsed(t_feature)
 
                 for pred_idx, box in enumerate(det):
-                    raw_pred_idx = (
-                        int(raw_keep_b[pred_idx].detach().cpu().item())
-                        if pred_idx < int(raw_keep_b.shape[0])
-                        else pred_idx
-                    )
+                    if pred_idx >= int(raw_keep_b.shape[0]):
+                        raise RuntimeError(
+                            "YOLO deterministic selected_indices is shorter than selected predictions. "
+                            f"sample_idx={sample_idx}, pred_idx={pred_idx}, indices={int(raw_keep_b.shape[0])}"
+                        )
+                    raw_pred_idx = int(raw_keep_b[pred_idx].detach().cpu().item())
                     cls_idx = int(box[5].detach().cpu().item()) if box.shape[0] > 5 else 0
                     base_row = {
                         "image_id": image_id,
                         "image_path": image_path,
                         "pred_idx": pred_idx,
                         "raw_pred_idx": raw_pred_idx,
-                        "xmin": float(box[0]),
-                        "ymin": float(box[1]),
-                        "xmax": float(box[2]),
-                        "ymax": float(box[3]),
-                        "score": float(box[4]),
+                        "xmin": float(box[0].detach().cpu().item()),
+                        "ymin": float(box[1].detach().cpu().item()),
+                        "xmax": float(box[2].detach().cpu().item()),
+                        "ymax": float(box[3].detach().cpu().item()),
+                        "score": float(box[4].detach().cpu().item()),
                         "pred_class": _pred_class_name(detector, cls_idx),
                     }
                     if "score" in active:
@@ -293,7 +274,7 @@ def run_deterministic_uncertainties_csv(config, run_dir, uncertainties=None):
                     num_predictions=batch_items,
                     stage_seconds=stage_seconds,
                 )
-            del infer_batch, raw_prediction, raw_logits, selected_preds, selected_indices
+            del infer_batch, forward
     finally:
         for f in files.values():
             f.close()

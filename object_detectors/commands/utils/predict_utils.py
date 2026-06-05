@@ -1501,24 +1501,51 @@ def build_yolo_candidate_mask_for_pseudo(
         return None
 
     with torch.no_grad():
-        pseudo_row = pred_img[raw_idx].detach()
-        pseudo_cls = int(torch.argmax(pseudo_row[5:]).item())
-        pseudo_box_xyxy = _xywh_to_xyxy_tensor(pseudo_row[:4].view(1, 4))
-        pred_cls = torch.argmax(pred_img[:, 5:].detach(), dim=1)
+        cache = _build_yolo_candidate_search_cache(pred_img, score_threshold)
+        candidate_mask = _yolo_candidate_mask_from_search_cache(cache, raw_idx, iou_threshold)
+    return candidate_mask
+
+
+def _build_yolo_candidate_search_cache(pred_img: torch.Tensor, score_threshold: float):
+    with torch.no_grad():
+        raw_xyxy = _xywh_to_xyxy_tensor(pred_img[:, :4].detach())
+        cls_probs = pred_img[:, 5:].detach()
+        raw_cls = (
+            torch.argmax(cls_probs, dim=1)
+            if cls_probs.numel()
+            else torch.zeros((pred_img.shape[0],), dtype=torch.long, device=pred_img.device)
+        )
         obj = pred_img[:, 4].detach()
-        cls_max = pred_img[:, 5:].detach().max(dim=1).values if pred_img.shape[1] > 5 else torch.ones_like(obj)
-        score = obj * cls_max
-        score_mask = score >= float(score_threshold)
-        class_mask = pred_cls == pseudo_cls
-        pre_iou_mask = score_mask & class_mask
-        candidate_mask = torch.zeros_like(pred_cls, dtype=torch.bool)
-        if bool(pre_iou_mask.any()):
-            pre_iou_indices = torch.nonzero(pre_iou_mask, as_tuple=False).flatten()
-            pred_boxes_xyxy = _xywh_to_xyxy_tensor(pred_img[pre_iou_indices, :4].detach())
-            ious = _box_iou_1vN_tensor(pseudo_box_xyxy, pred_boxes_xyxy)
-            keep_indices = pre_iou_indices[ious > float(iou_threshold)]
-            if keep_indices.numel() > 0:
-                candidate_mask[keep_indices] = True
+        cls_max = cls_probs.max(dim=1).values if cls_probs.numel() else torch.ones_like(obj)
+        raw_score = obj * cls_max
+        score_mask = raw_score >= float(score_threshold)
+        class_to_indices = {}
+        if bool(score_mask.any()):
+            for cls_id in torch.unique(raw_cls[score_mask]).detach().cpu().tolist():
+                cls_id = int(cls_id)
+                class_to_indices[cls_id] = torch.nonzero(score_mask & (raw_cls == cls_id), as_tuple=False).flatten()
+        return {
+            "raw_xyxy": raw_xyxy,
+            "raw_cls": raw_cls,
+            "raw_score": raw_score,
+            "class_to_indices": class_to_indices,
+        }
+
+
+def _yolo_candidate_mask_from_search_cache(cache, raw_idx: int, iou_threshold: float):
+    raw_xyxy = cache["raw_xyxy"]
+    raw_cls = cache["raw_cls"]
+    if raw_idx >= int(raw_xyxy.shape[0]):
+        return None
+    pseudo_cls = int(raw_cls[raw_idx].detach().cpu().item())
+    candidate_indices = cache["class_to_indices"].get(pseudo_cls)
+    candidate_mask = torch.zeros((raw_xyxy.shape[0],), dtype=torch.bool, device=raw_xyxy.device)
+    if candidate_indices is None or int(candidate_indices.shape[0]) <= 0:
+        return candidate_mask
+    ious = _box_iou_1vN_tensor(raw_xyxy[raw_idx].view(1, 4), raw_xyxy[candidate_indices])
+    keep_indices = candidate_indices[ious > float(iou_threshold)]
+    if keep_indices.numel() > 0:
+        candidate_mask[keep_indices] = True
     return candidate_mask
 
 
@@ -2370,6 +2397,11 @@ def collect_faster_rcnn_candidate_layer_grads_per_target(
             labels_internal_img = labels_internal_by_img[image_idx] if image_idx < len(labels_internal_by_img) else None
 
             for bbox_idx in range(int(det.shape[0])):
+                if bbox_idx >= int(raw_keep_indices.shape[0]):
+                    raise RuntimeError(
+                        "Faster R-CNN layer_grad selected_indices is shorter than selected predictions. "
+                        f"image_idx={image_idx}, pred_idx={bbox_idx}, indices={int(raw_keep_indices.shape[0])}"
+                    )
                 raw_idx = int(raw_keep_indices[bbox_idx].detach().cpu().item())
                 grad_stats = {}
                 roi_target_scalar = None
@@ -2616,9 +2648,27 @@ def collect_bbox_layer_grads_per_target(
                 if raw_anchor_priors is not None and raw_anchor_priors.ndim == 2 and batch_size == 1
                 else None
             )
+            candidate_cache = None
+            needs_candidate_cache = pseudo_gt != "uniform" and any(
+                value in {"bbox_loss", "obj_loss", "cls_loss"} for value in target_values
+            )
+            if needs_candidate_cache:
+                t_candidate = _start_timing(timing_device)
+                candidate_cache = _build_yolo_candidate_search_cache(pred_img, cand_score_threshold)
+                _add_elapsed_timing(timing_accumulator, "candidate_search_sec", t_candidate, timing_device)
 
             for bbox_idx in range(int(det.shape[0])):
+                if bbox_idx >= int(raw_keep_indices.shape[0]):
+                    raise RuntimeError(
+                        "YOLO layer_grad selected_indices is shorter than selected predictions. "
+                        f"sample_idx={sample_idx}, pred_idx={bbox_idx}, indices={int(raw_keep_indices.shape[0])}"
+                    )
                 raw_idx = int(raw_keep_indices[bbox_idx].detach().cpu().item())
+                candidate_mask = None
+                if candidate_cache is not None:
+                    t_candidate = _start_timing(timing_device)
+                    candidate_mask = _yolo_candidate_mask_from_search_cache(candidate_cache, raw_idx, iou_threshold)
+                    _add_elapsed_timing(timing_accumulator, "candidate_search_sec", t_candidate, timing_device)
                 grad_stats = {}
                 for target_value in target_values:
                     detector.zero_grad(set_to_none=True)
@@ -2641,6 +2691,7 @@ def collect_bbox_layer_grads_per_target(
                         bbox_direction=bbox_direction,
                         cls_direction=cls_direction,
                         obj_direction=obj_direction,
+                        candidate_mask=candidate_mask,
                         timing_accumulator=timing_accumulator,
                         timing_device=timing_device,
                     )
