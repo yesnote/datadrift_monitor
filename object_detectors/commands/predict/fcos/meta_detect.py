@@ -159,21 +159,21 @@ def run_meta_detect_csv(config, run_dir):
 
                 x = 0.5 * (cand_boxes[:, 0] + cand_boxes[:, 2])
                 y = 0.5 * (cand_boxes[:, 1] + cand_boxes[:, 3])
-                w = torch.abs(0.5 * (cand_boxes[:, 0] - cand_boxes[:, 2]))
-                h = torch.abs(0.5 * (cand_boxes[:, 1] - cand_boxes[:, 3]))
-                size_vals = (0.5 * (x - w)) * (0.5 * (y - h))
-                circum_vals = (cand_boxes[:, 2] - cand_boxes[:, 0]) + (cand_boxes[:, 3] - cand_boxes[:, 1])
-                size_circum_vals = (w * h) / (torch.abs(cand_boxes[:, 2] - cand_boxes[:, 0]) + torch.abs(cand_boxes[:, 3] - cand_boxes[:, 1])).clamp(min=1e-12)
+                w = torch.abs(cand_boxes[:, 2] - cand_boxes[:, 0])
+                h = torch.abs(cand_boxes[:, 3] - cand_boxes[:, 1])
+                size_vals = w * h
+                circum_vals = w + h
+                size_circum_vals = size_vals / circum_vals.clamp(min=1e-12)
 
                 iou_pb = torch.where(cand_ious == 1.0, torch.zeros_like(cand_ious), cand_ious)
                 iou_pb_pos = iou_pb[iou_pb > 0]
 
                 fx1_t, fy1_t, fx2_t, fy2_t = det_row.box[:4].detach().float().unbind()
-                fsize = (0.5 * ((0.5 * (fx1_t + fx2_t)) - torch.abs(0.5 * (fx1_t - fx2_t)))) * (
-                    0.5 * ((0.5 * (fy1_t + fy2_t)) - torch.abs(0.5 * (fy1_t - fy2_t)))
-                )
-                fcircum = torch.abs(fx2_t - fx1_t) + torch.abs(fy2_t - fy1_t)
-                fsize_circum = ((0.5 * torch.abs(fx2_t - fx1_t)) * (0.5 * torch.abs(fy2_t - fy1_t))) / fcircum.clamp(min=1e-12)
+                fw = torch.abs(fx2_t - fx1_t)
+                fh = torch.abs(fy2_t - fy1_t)
+                fsize = fw * fh
+                fcircum = fw + fh
+                fsize_circum = fsize / fcircum.clamp(min=1e-12)
 
                 x_min, x_max, x_mean, x_std = _stats_tensor(x, device)
                 y_min, y_max, y_mean, y_std = _stats_tensor(y, device)

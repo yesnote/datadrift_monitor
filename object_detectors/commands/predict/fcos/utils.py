@@ -59,7 +59,6 @@ def run_fcos_forward_nms(
     keep_pre_nms=False,
     keep_class_outputs=True,
     pre_nms_threshold=None,
-    conf_thres=None,
 ):
     infer_batch, ratios, pads, resized_chws = _prepare_infer_batch(detector, image_list, device, auto=False)
     t_detector = timing.start()
@@ -80,7 +79,6 @@ def run_fcos_forward_nms(
             raw_prediction,
             raw_logits,
             raw_indices,
-            conf_thres=conf_thres,
         )
         selected_preds = selected[0]
         selected_logits = selected[1]
