@@ -88,14 +88,29 @@ def run_meta_detect_csv(config, run_dir):
             infer_batch, ratios, pads, _resized_chws = _prepare_infer_batch(detector, image_list, device, auto=False)
             fcos_preprocessed = detector.preprocess_images(infer_batch)
             with torch.no_grad():
-                pre_nms_threshold = min(float(getattr(detector, "confidence", 0.05)), float(score_threshold))
+                normal_pre_nms_threshold = float(getattr(detector, "confidence", 0.05))
+                pre_nms_threshold = min(normal_pre_nms_threshold, float(score_threshold))
                 t_detector = timing.start()
-                with detector.temporary_pre_nms_threshold(pre_nms_threshold):
-                    model_output = detector.forward_preprocessed(
-                        fcos_preprocessed,
-                        keep_pre_nms=True,
-                        keep_class_outputs=True,
-                    )
+                if pre_nms_threshold < normal_pre_nms_threshold:
+                    with detector.temporary_pre_nms_threshold(normal_pre_nms_threshold):
+                        model_output = detector.forward_preprocessed(
+                            fcos_preprocessed,
+                            keep_pre_nms=False,
+                            keep_class_outputs=True,
+                        )
+                    with detector.temporary_pre_nms_threshold(pre_nms_threshold):
+                        _candidate_output = detector.forward_preprocessed(
+                            fcos_preprocessed,
+                            keep_pre_nms=True,
+                            keep_class_outputs=False,
+                        )
+                else:
+                    with detector.temporary_pre_nms_threshold(normal_pre_nms_threshold):
+                        model_output = detector.forward_preprocessed(
+                            fcos_preprocessed,
+                            keep_pre_nms=True,
+                            keep_class_outputs=True,
+                        )
                 raw_prediction, raw_logits, raw_indices = unpack_fcos_model_output(model_output)
                 pre_nms_prediction = None
                 if bool(getattr(detector, "is_fcos", False)):
@@ -105,7 +120,6 @@ def run_meta_detect_csv(config, run_dir):
                     raw_prediction,
                     raw_logits,
                     raw_indices,
-                    conf_thres=float(getattr(detector, "confidence", getattr(detector, "conf_thresh", 0.05))),
                 )
                 detector_inference_sec = timing.elapsed(t_detector)
 
@@ -179,20 +193,6 @@ def run_meta_detect_csv(config, run_dir):
                             candidate_ious = _box_iou_1vN_tensor(pseudo_box_xyxy, raw_xyxy[candidate_indices])
                             ious[candidate_indices] = candidate_ious
                             cand_mask[candidate_indices] = candidate_ious > float(iou_threshold)
-                        if not bool(cand_mask.any()):
-                            cand_mask = torch.zeros_like(pred_cls, dtype=torch.bool)
-                            if is_fcos:
-                                fallback_mask = pred_cls == pseudo_cls
-                                fallback_indices = torch.nonzero(fallback_mask, as_tuple=False).flatten()
-                                if fallback_indices.numel() == 0:
-                                    fallback_indices = torch.arange(candidate_img.shape[0], device=device)
-                                fallback_ious = _box_iou_1vN_tensor(pseudo_box_xyxy, raw_xyxy[fallback_indices])
-                                best_idx = fallback_indices[int(torch.argmax(fallback_ious).detach().cpu().item())]
-                                cand_mask[best_idx] = True
-                                ious[best_idx] = fallback_ious.max()
-                            elif 0 <= raw_pred_idx < int(cand_mask.shape[0]):
-                                cand_mask[raw_pred_idx] = True
-                                ious[raw_pred_idx] = 1.0
                     candidate_search_sec += timing.elapsed(t_candidate)
 
                     t_feature = timing.start()

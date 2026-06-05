@@ -140,6 +140,7 @@ def _parse_fcos_layer_grad_config(config):
         "target_layer_map": target_layer_map,
         "reduction": reductions,
         "cand_score_threshold": float(g.get("cand_score_threshold", 0.05)),
+        "cand_iou_threshold": float(g.get("cand_iou_threshold", g.get("iou_threshold", 0.45))),
         "bbox_loss": bbox_loss,
         "cls_loss": cls_loss,
         "cnt_loss": cnt_loss,
@@ -217,6 +218,7 @@ def _resolve_fcos_candidate_sources(
     final_cls,
     raw_idx,
     cand_score_threshold,
+    cand_iou_threshold,
     timing,
     timing_accumulator,
 ):
@@ -241,9 +243,7 @@ def _resolve_fcos_candidate_sources(
         if bool(score_class_mask.any()):
             score_indices = torch.where(score_class_mask)[0]
             ious = _box_iou_1vN_tensor(final_box.detach().view(1, 4), pre_boxes[score_indices])
-            cand_mask[score_indices] = ious > float(0.45)
-        if not bool(cand_mask.any()) and 0 <= raw_idx < cand_mask.shape[0]:
-            cand_mask[raw_idx] = True
+            cand_mask[score_indices] = ious > float(cand_iou_threshold)
         candidate_indices = torch.where(cand_mask)[0]
         source_boxlist = pre_nms_boxlists[image_idx]
         for candidate_idx in candidate_indices.detach().cpu().tolist():
@@ -270,6 +270,7 @@ def _build_fcos_losses(
     final_cls,
     raw_idx,
     cand_score_threshold,
+    cand_iou_threshold,
     bbox_loss,
     cls_loss,
     cnt_loss,
@@ -297,6 +298,7 @@ def _build_fcos_losses(
             final_cls=final_cls,
             raw_idx=raw_idx,
             cand_score_threshold=cand_score_threshold,
+            cand_iou_threshold=cand_iou_threshold,
             timing=timing,
             timing_accumulator=timing_accumulator,
         )
@@ -555,8 +557,9 @@ def run_layer_grad_csv(config, run_dir):
                             pred_idx=pred_idx,
                             final_box=final_box,
                             final_cls=final_cls,
-                            raw_idx=-1 if use_separate_row_output and layer_cfg["target"] == "cand_target" else raw_idx,
+                            raw_idx=raw_idx,
                             cand_score_threshold=layer_cfg["cand_score_threshold"],
+                            cand_iou_threshold=layer_cfg["cand_iou_threshold"],
                             bbox_loss=layer_cfg["bbox_loss"],
                             cls_loss=layer_cfg["cls_loss"],
                             cnt_loss=layer_cfg["cnt_loss"],
