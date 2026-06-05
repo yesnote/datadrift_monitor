@@ -133,10 +133,8 @@ def run_mc_dropout_csv(config, run_dir):
             with torch.no_grad():
                 t_detector = timing.start()
                 cached_features = _forward_yolov5_features_to_head(detector.model, infer_batch)
-                detector_inference_sec += timing.elapsed(t_detector)
-
-                # Deterministic head+NMS defines the output rows, but is intentionally
-                # excluded from timing because it is bookkeeping for MC-dropout.
+                # Deterministic head+NMS defines the output rows and is counted as
+                # detector inference for end-to-end MC-dropout cost comparison.
                 det_output = _forward_yolov5_head_from_cache(detector, cached_features)
                 det_raw_pred = det_output[0] if isinstance(det_output, (tuple, list)) else det_output
                 det_raw_logits = det_output[1] if isinstance(det_output, (tuple, list)) and len(det_output) > 1 else None
@@ -151,6 +149,7 @@ def run_mc_dropout_csv(config, run_dir):
                     max_det=nms_kwargs["max_det"],
                     return_indices=True,
                 )
+                detector_inference_sec += timing.elapsed(t_detector)
 
             feature_runs = []
             n_candidates = None
