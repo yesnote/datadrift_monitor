@@ -207,19 +207,22 @@ def run_null_detect_csv(config, run_dir):
         ):
             image_list = _as_image_list(images)
             detector.zero_grad(set_to_none=True)
-            infer_batch, _ratios, _pads, _resized_chws = _prepare_infer_batch(detector, image_list, device, auto=False)
+            infer_batch = _prepare_infer_batch(detector, image_list, device, auto=False)[0]
             fcos_preprocessed = detector.preprocess_images(infer_batch)
 
             t_detector = timing.start()
             with torch.no_grad():
                 model_output = detector.forward_layer_grad(fcos_preprocessed)
-                selected_preds, selected_logits, _selected_objectness, selected_indices = select_fcos_post_nms(
+                selected = select_fcos_post_nms(
                     detector,
                     model_output["post_prediction"],
                     model_output["post_logits"],
                     model_output["post_indices"],
                     conf_thres=float(getattr(detector, "confidence", getattr(detector, "conf_thresh", 0.05))),
                 )
+                selected_preds = selected[0]
+                selected_logits = selected[1]
+                selected_indices = selected[3]
             detector_inference_sec = timing.elapsed(t_detector)
 
             feature_compute_sec = 0.0
@@ -322,7 +325,7 @@ def run_null_detect_csv(config, run_dir):
             output_file.flush()
             if hasattr(detector, "_clear_last_pre_nms_predictions"):
                 detector._clear_last_pre_nms_predictions()
-            del infer_batch, fcos_preprocessed, model_output, selected_preds, selected_indices
+            del infer_batch, fcos_preprocessed, model_output, selected, selected_preds, selected_logits, selected_indices
 
     del detector
     if device.type == "cuda":

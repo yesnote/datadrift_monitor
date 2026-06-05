@@ -471,7 +471,7 @@ def run_layer_grad_csv(config, run_dir):
                 dataloader, desc=f"Object Detector ({mode} - {uncertainty})", total=len(dataloader)
             )):
                 image_list = _as_image_list(images)
-                infer_batch, _ratios, _pads, _resized_chws = _prepare_infer_batch(detector, image_list, device, auto=False)
+                infer_batch = _prepare_infer_batch(detector, image_list, device, auto=False)[0]
                 fcos_preprocessed = detector.preprocess_images(infer_batch)
                 stage_seconds = {
                     "detector_inference_sec": 0.0,
@@ -502,12 +502,14 @@ def run_layer_grad_csv(config, run_dir):
 
                 row_prediction = row_model_output[0] if row_model_output is not None else model_output["post_prediction"]
                 row_indices = row_model_output[2] if row_model_output is not None else model_output["post_indices"]
-                selected_preds, selected_logits, selected_objectness, selected_indices = select_fcos_post_nms(
+                selected = select_fcos_post_nms(
                     detector,
                     row_prediction,
                     None,
                     row_indices,
                 )
+                selected_preds = selected[0]
+                selected_indices = selected[3]
                 stage_seconds["detector_inference_sec"] += timing.elapsed(t_detector)
 
                 candidate_caches = {}
@@ -657,7 +659,7 @@ def run_layer_grad_csv(config, run_dir):
                 if row_model_output is not None:
                     del row_model_output
                 del row_prediction, row_indices
-                del selected_preds, selected_logits, selected_objectness, selected_indices
+                del selected, selected_preds, selected_indices
                 del image_list
                 detector.zero_grad(set_to_none=True)
                 if device.type == "cuda":

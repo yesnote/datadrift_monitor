@@ -40,7 +40,6 @@ def run_ensemble_csv(config, run_dir):
     if not weight_paths:
         raise ValueError("output.uncertainty='ensemble' requires output.ensemble.weights to be a non-empty string/list.")
 
-    # Keep loading deterministic and stable across repeated passes.
     dataset = build_dataset(config, split=split)
     dl_cfg = config["dataloader"]
     shuffle = dl_cfg["shuffle_train"] if split == "train" else dl_cfg["shuffle_eval"]
@@ -101,9 +100,7 @@ def run_ensemble_csv(config, run_dir):
                 total=len(dataloader),
             ):
                 base_detector = detectors[0]
-                infer_batch, _ratios, _pads, _resized_chws = _prepare_infer_batch(
-                    base_detector, images, device, auto=False
-                )
+                infer_batch = _prepare_infer_batch(base_detector, images, device, auto=False)[0]
                 fcos_preprocessed = (
                     base_detector.preprocess_images(infer_batch)
                     if bool(getattr(base_detector, "is_fcos", False)) and hasattr(base_detector, "preprocess_images")
@@ -128,13 +125,14 @@ def run_ensemble_csv(config, run_dir):
                         else:
                             det_output = detector.model(infer_batch, augment=False)
                         det_raw_pred, det_raw_logits, det_raw_indices = unpack_fcos_model_output(det_output)
-                        nms_kwargs = _resolve_detector_nms_kwargs(detector)
-                        selected_preds, _selected_logits, _selected_objectness, selected_indices = select_fcos_post_nms(
+                        selected = select_fcos_post_nms(
                             detector,
                             det_raw_pred,
                             det_raw_logits,
                             det_raw_indices,
                         )
+                        selected_preds = selected[0]
+                        selected_indices = selected[3]
                     detector_inference_total_sec += timing.elapsed(t_detector)
 
                     t_feature = timing.start()
@@ -191,7 +189,7 @@ def run_ensemble_csv(config, run_dir):
                 mean = None
                 std = None
                 if not variable_candidate_runs:
-                    runs_tensor = torch.stack(feature_runs, dim=0)  # [M, B, N, F]
+                    runs_tensor = torch.stack(feature_runs, dim=0)
                     mean = runs_tensor.mean(dim=0)
                     std = runs_tensor.std(dim=0, unbiased=False)
                     del runs_tensor
