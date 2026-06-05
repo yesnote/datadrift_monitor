@@ -218,7 +218,6 @@ def run_null_detect_csv(config, run_dir):
                     model_output["post_prediction"],
                     model_output["post_logits"],
                     model_output["post_indices"],
-                    conf_thres=float(getattr(detector, "confidence", getattr(detector, "conf_thresh", 0.05))),
                 )
                 selected_preds = selected[0]
                 selected_logits = selected[1]

@@ -5,10 +5,9 @@ def unpack_fcos_model_output(model_output):
     return raw_prediction, raw_logits, raw_indices
 
 
-def select_fcos_post_nms(detector, raw_prediction, raw_logits=None, raw_indices=None, conf_thres=None):
+def select_fcos_post_nms(detector, raw_prediction, raw_logits=None, raw_indices=None):
     return detector.select_post_nms_predictions(
         raw_prediction,
         logits=raw_logits,
         raw_indices=raw_indices,
-        conf_thres=conf_thres,
     )

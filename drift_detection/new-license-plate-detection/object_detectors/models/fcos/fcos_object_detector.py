@@ -477,9 +477,6 @@ class FCOSTorchObjectDetector(nn.Module):
         prediction,
         logits=None,
         raw_indices=None,
-        classes=None,
-        max_det=None,
-        conf_thres=None,
     ):
         outputs = []
         logits_outputs = []
@@ -498,15 +495,6 @@ class FCOSTorchObjectDetector(nn.Module):
                 continue
 
             keep_idx = torch.arange(pred.shape[0], dtype=torch.long, device=pred.device)
-            if conf_thres is not None:
-                keep_idx = keep_idx[pred[keep_idx, 4] >= float(conf_thres)]
-            if classes is not None:
-                labels = pred[:, 5].long()
-                class_tensor = torch.as_tensor(classes, device=pred.device, dtype=torch.long)
-                keep_mask = (labels[keep_idx, None] == class_tensor[None]).any(dim=1)
-                keep_idx = keep_idx[keep_mask]
-            if max_det is not None and keep_idx.numel() > int(max_det):
-                keep_idx = keep_idx[: int(max_det)]
 
             xywh = pred[keep_idx, :4]
             xyxy = xywh.clone()
