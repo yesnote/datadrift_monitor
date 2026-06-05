@@ -10,7 +10,7 @@ import yaml
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
 # Edit these paths before running.
-OBJECT_DETECTOR_CONFIG = r"object_detectors/configs/fcos/predict_coco_fcos.yaml"
+OBJECT_DETECTOR_CONFIG = r"object_detectors/configs/fcos/predict_coco.yaml"
 META_CLASSIFIER_CONFIG = (
     r"meta_models/meta_classifier/configs/train_meta_classifier.yaml"
 )
@@ -26,7 +26,8 @@ RUN_META_CLASSIFIER = True
 REUSE_EXISTING = False
 
 # Use None for all meta-classifier combinations, or set a small int for a smoke test.
-# Object detector term CSVs are still generated once for all 18 single-term settings.
+# Object detector term CSVs are generated once for all 14 single-term settings.
+# Meta-classifier combinations are 24 by default.
 MAX_COMBINATIONS = None
 
 TARGETS = ["cand_target", "null_target"]
@@ -102,8 +103,6 @@ def _valid_cls_directions(cls_loss: str) -> list[str]:
 
 
 def _valid_cnt_directions(cnt_loss: str) -> list[str]:
-    if cnt_loss == "signed_diff":
-        return ["pred_to_target", "target_to_pred"]
     return ["pred_to_target"]
 
 
@@ -434,6 +433,10 @@ def main() -> None:
     meta_config_path = _resolve_path(META_CLASSIFIER_CONFIG)
     od_base_config = _load_yaml(od_config_path)
     meta_base_config = _load_yaml(meta_config_path)
+    if str(od_base_config.get("model", {}).get("type", "")).strip().lower() != "fcos":
+        raise ValueError(
+            "grid_search_fcos_layer_grad_meta_classifier.py requires an FCOS object detector config."
+        )
     dataset = _dataset_name(od_base_config)
     model = _model_name(od_base_config)
 
