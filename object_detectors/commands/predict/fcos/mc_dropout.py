@@ -1,59 +1,136 @@
 from commands.predict.common import *
-from commands.predict.fcos.common import select_fcos_post_nms, unpack_fcos_model_output
+from commands.predict.fcos.common import select_fcos_post_nms
+from commands.predict.fcos.utils import iter_fcos_detection_rows
 
 
-def _match_faster_rcnn_mc_feature(det_box, det_cls, run_features_b, run_labels_b, raw_idx):
-    if run_features_b is None or int(run_features_b.shape[0]) == 0:
-        return None
-    if run_labels_b is not None and int(run_labels_b.shape[0]) == int(run_features_b.shape[0]):
-        cls_mask = run_labels_b.to(det_box.device) == int(det_cls)
-        if bool(cls_mask.any()):
-            candidate_indices = torch.where(cls_mask)[0]
-            candidate_boxes = run_features_b[candidate_indices, :4]
-            ious = _box_iou_1vN_tensor(det_box.view(1, 4), candidate_boxes)
-            best_pos = int(torch.argmax(ious).detach().cpu().item())
-            return run_features_b[candidate_indices[best_pos]]
-    if 0 <= int(raw_idx) < int(run_features_b.shape[0]):
-        return run_features_b[int(raw_idx)]
-    return None
+def _flatten_fcos_level_output(tensor, image_idx):
+    return tensor[image_idx].permute(1, 2, 0).reshape(-1, tensor.shape[1])
 
 
-def _is_yolov5_detector(detector):
-    return not bool(getattr(detector, "is_faster_rcnn", False)) and not bool(getattr(detector, "is_fcos", False))
+def _flatten_fcos_centerness(tensor, image_idx):
+    return tensor[image_idx].permute(1, 2, 0).reshape(-1)
 
 
-def _get_yolov5_detect_module(detector):
-    model = getattr(detector, "model", None)
-    modules = getattr(model, "model", None)
-    if modules is None or len(modules) == 0:
-        raise RuntimeError("YOLOv5 MC-dropout requires detector.model.model modules.")
-    detect_module = modules[-1]
-    if not (hasattr(detect_module, "m") and hasattr(detect_module, "nc") and hasattr(detect_module, "na")):
-        raise RuntimeError("YOLOv5 MC-dropout requires a YOLO Detect head as the final module.")
-    return detect_module
+def _decode_fcos_xyxy(location_xy, ltrb):
+    return torch.stack(
+        [
+            location_xy[0] - ltrb[0],
+            location_xy[1] - ltrb[1],
+            location_xy[0] + ltrb[2],
+            location_xy[1] + ltrb[3],
+        ]
+    )
 
 
-def _forward_yolov5_features_to_head(model, img):
-    modules = model.model
-    detect_module = modules[-1]
-    if not (hasattr(detect_module, "m") and hasattr(detect_module, "nc") and hasattr(detect_module, "na")):
-        raise RuntimeError("YOLOv5 MC-dropout requires a YOLO Detect head as the final module.")
-    y = []
-    x = img
-    for module in modules[:-1]:
-        if module.f != -1:
-            x = y[module.f] if isinstance(module.f, int) else [x if j == -1 else y[j] for j in module.f]
-        x = module(x)
-        y.append(x if module.i in model.save else None)
-    head_input = y[detect_module.f] if isinstance(detect_module.f, int) else [x if j == -1 else y[j] for j in detect_module.f]
-    if isinstance(head_input, torch.Tensor):
-        return [head_input.detach()]
-    return [feature.detach() for feature in head_input]
+def _run_fcos_head_post_nms_from_cache(detector, cache):
+    rpn = detector.detector_model.rpn
+    detector.detector_model.eval()
+    detector._set_postprocessor_flags(keep_class_outputs=True)
+    detections, _losses = rpn(cache["images"], cache["features"], None)
+    raw_prediction, raw_logits, raw_indices = detector._boxlists_to_contract(
+        detections,
+        include_logits=True,
+        include_indices=True,
+        include_probs=True,
+    )
+    selected_preds, _selected_logits, _selected_objectness, selected_indices = select_fcos_post_nms(
+        detector,
+        raw_prediction,
+        raw_logits,
+        raw_indices,
+    )
+    return detections, selected_preds, _selected_logits, _selected_objectness, selected_indices
 
 
-def _forward_yolov5_head_from_cache(detector, cached_features):
-    features = [feature.clone() for feature in cached_features]
-    return detector.model.model[-1](features)
+def _run_fcos_head_dense_from_cache(detector, cache):
+    rpn = detector.detector_model.rpn
+    detector.detector_model.eval()
+    return rpn.head(cache["features"])
+
+
+def _compute_fcos_locations(detector, cache):
+    return detector.detector_model.rpn.compute_locations(cache["features"])
+
+
+def _source_specs_from_detections(detections, det_rows):
+    specs = []
+    for det_row in det_rows:
+        if det_row.sample_idx >= len(detections):
+            raise RuntimeError(f"FCOS MC-dropout missing detection BoxList for image_idx={det_row.sample_idx}.")
+        boxlist = detections[det_row.sample_idx]
+        if det_row.pred_idx >= len(boxlist):
+            raise RuntimeError(
+                f"FCOS MC-dropout source row out of range: image_idx={det_row.sample_idx}, "
+                f"pred_idx={det_row.pred_idx}, rows={len(boxlist)}"
+            )
+        required_fields = ["pre_nms_level", "pre_nms_location_idx", "pre_nms_candidate_idx"]
+        for field in required_fields:
+            if not boxlist.has_field(field):
+                raise RuntimeError(f"FCOS MC-dropout requires detection field '{field}'.")
+        source_raw_idx = int(boxlist.get_field("pre_nms_candidate_idx")[det_row.pred_idx].detach().cpu().item())
+        if source_raw_idx != int(det_row.raw_pred_idx):
+            raise RuntimeError(
+                f"FCOS MC-dropout raw_pred_idx mismatch: image_idx={det_row.sample_idx}, "
+                f"pred_idx={det_row.pred_idx}, row_raw_idx={det_row.raw_pred_idx}, source_raw_idx={source_raw_idx}"
+            )
+        specs.append(
+            {
+                "sample_idx": int(det_row.sample_idx),
+                "level": int(boxlist.get_field("pre_nms_level")[det_row.pred_idx].detach().cpu().item()),
+                "location_idx": int(boxlist.get_field("pre_nms_location_idx")[det_row.pred_idx].detach().cpu().item()),
+                "class_idx": int(det_row.cls_idx),
+            }
+        )
+    return specs
+
+
+def _features_from_fcos_dense_outputs(
+    *,
+    box_cls,
+    box_regression,
+    centerness,
+    locations,
+    source_specs,
+    num_classes,
+    device,
+):
+    flat_cache = {}
+    rows = []
+    for spec in source_specs:
+        sample_idx = spec["sample_idx"]
+        level = spec["level"]
+        loc_idx = spec["location_idx"]
+        class_idx = spec["class_idx"]
+        if level < 0 or level >= len(box_cls):
+            raise RuntimeError(f"FCOS MC-dropout source level out of range: level={level}, levels={len(box_cls)}")
+        key = (sample_idx, level)
+        if key not in flat_cache:
+            flat_cache[key] = {
+                "cls": _flatten_fcos_level_output(box_cls[level], sample_idx),
+                "bbox": _flatten_fcos_level_output(box_regression[level], sample_idx),
+                "cnt": _flatten_fcos_centerness(centerness[level], sample_idx),
+            }
+        flat = flat_cache[key]
+        if loc_idx < 0 or loc_idx >= int(flat["cls"].shape[0]):
+            raise RuntimeError(
+                f"FCOS MC-dropout source location out of range: image_idx={sample_idx}, "
+                f"level={level}, location_idx={loc_idx}, locations={int(flat['cls'].shape[0])}"
+            )
+        if class_idx < 0 or class_idx >= int(num_classes):
+            raise RuntimeError(
+                f"FCOS MC-dropout source class out of range: class_idx={class_idx}, num_classes={int(num_classes)}"
+            )
+        cls_logits = flat["cls"][loc_idx].view(-1)
+        prob_vec = torch.sigmoid(cls_logits[:num_classes])
+        ltrb = flat["bbox"][loc_idx].view(4)
+        cnt_prob = torch.sigmoid(flat["cnt"][loc_idx].view(()))
+        loc_xy = locations[level][loc_idx].to(device=device, dtype=ltrb.dtype)
+        box_xyxy = _decode_fcos_xyxy(loc_xy, ltrb)
+        score = torch.sqrt((prob_vec[class_idx] * cnt_prob).clamp(min=0.0))
+        rows.append(torch.cat([box_xyxy, score.view(1), prob_vec], dim=0))
+    if not rows:
+        return torch.zeros((0, 5 + int(num_classes)), dtype=torch.float32, device=device)
+    return torch.stack(rows, dim=0).to(device=device, dtype=torch.float32)
 
 
 def run_mc_dropout_csv(config, run_dir):
@@ -61,8 +138,7 @@ def run_mc_dropout_csv(config, run_dir):
     mode = str(config.get("mode", "predict"))
     uncertainty = "mc_dropout"
 
-    dataset_cfg = config.get("dataset", {})
-    split = dataset_cfg.get("split", "val")
+    split = config.get("dataset", {}).get("split", "val")
     parsed = parse_output_config(config.get("output", {}))
     save_csv = parsed["save_csv_enabled"]
     unit = parsed["unit"]
@@ -71,9 +147,9 @@ def run_mc_dropout_csv(config, run_dir):
 
     if not save_csv:
         return
+    if num_runs <= 0:
+        raise ValueError("mc_dropout.num_runs must be positive.")
 
-    # Windows OpenMP + subprocess workers can conflict in MC-dropout runs.
-    # Force single-process data loading here to avoid libiomp duplicate init crashes.
     dataset = build_dataset(config, split=split)
     dl_cfg = config["dataloader"]
     shuffle = dl_cfg["shuffle_train"] if split == "train" else dl_cfg["shuffle_eval"]
@@ -89,7 +165,9 @@ def run_mc_dropout_csv(config, run_dir):
         raise ValueError("Loaded 0 images. Check dataset root/image_dir/split configuration in YAML.")
 
     detector, device = build_detector(config)
-    nms_kwargs = _resolve_detector_nms_kwargs(detector)
+    if not bool(getattr(detector, "is_fcos", False)):
+        raise ValueError("commands.predict.fcos.mc_dropout requires model.type=fcos.")
+
     timing = StageTimingProfiler(
         run_dir=run_dir,
         uncertainty=uncertainty,
@@ -97,7 +175,7 @@ def run_mc_dropout_csv(config, run_dir):
         stages=["detector_inference_sec", "prediction_matching_sec", "feature_compute_sec"],
         device=device,
     )
-    n_classes_hint = len(detector.names) if detector.names is not None else 80
+    num_classes = len(detector.names) if detector.names is not None else 80
 
     output_csv = run_dir / "mc_dropout.csv"
     fieldnames = [
@@ -106,19 +184,9 @@ def run_mc_dropout_csv(config, run_dir):
         "xmin_mean", "ymin_mean", "xmax_mean", "ymax_mean", "score_mean",
         "xmin_std", "ymin_std", "xmax_std", "ymax_std", "score_std",
     ]
-    for class_idx in range(n_classes_hint):
+    for class_idx in range(num_classes):
         fieldnames.append(f"prob_{class_idx}_mean")
         fieldnames.append(f"prob_{class_idx}_std")
-
-    # Probe once to notify if forced-dropout hooks are unavailable on this model.
-    if hasattr(detector, "set_dropout_rate"):
-        probe_handles = []
-    else:
-        probe_handles = enable_forced_mc_dropout_on_yolov5_head(detector.model, dropout_rate)
-        if len(probe_handles) == 0:
-            print("[WARN] YOLOv5 detect head not found for forced MC-dropout hooks.")
-        for h in probe_handles:
-            h.remove()
 
     write_queue: queue.Queue = queue.Queue()
     writer_thread = threading.Thread(
@@ -128,236 +196,83 @@ def run_mc_dropout_csv(config, run_dir):
     )
     writer_thread.start()
 
-    had_error = False
     try:
         for images, targets in tqdm(
             dataloader, desc=f"Object Detector ({mode} - {uncertainty})", total=len(dataloader)
         ):
             image_list = _as_image_list(images)
-            batch_size = len(image_list)
-            image_ids = []
-            image_paths = []
-            for sample_idx in range(batch_size):
-                target = targets[sample_idx]
-                image_ids.append(int(target["image_id"][0].item()))
-                image_paths.append(target["path"])
             infer_batch, _ratios, _pads, _resized_chws = _prepare_infer_batch(
                 detector, image_list, device, auto=False
             )
-            fcos_preprocessed = (
-                detector.preprocess_images(infer_batch)
-                if bool(getattr(detector, "is_fcos", False)) and hasattr(detector, "preprocess_images")
-                else None
-            )
-            fcos_feature_cache = None
-            yolo_cached_features = None
-            use_yolo_head_cache = _is_yolov5_detector(detector)
 
-            # 1) Deterministic forward once: get final NMS predictions and raw pre-NMS indices.
             detector_inference_sec = 0.0
             prediction_matching_sec = 0.0
             feature_compute_sec = 0.0
 
-            # Deterministic forward once: get final NMS predictions and raw pre-NMS indices.
-            # Count this as detector inference because it is a model forward plus NMS.
             t_detector = timing.start()
             with torch.no_grad():
-                roi_cache = None
-                if bool(getattr(detector, "is_faster_rcnn", False)) and hasattr(detector, "prepare_roi_cache"):
-                    roi_cache = detector.prepare_roi_cache(infer_batch)
-                    det_output = detector.forward_from_roi_cache(roi_cache)
-                elif fcos_preprocessed is not None and hasattr(detector, "prepare_feature_cache"):
-                    fcos_feature_cache = detector.prepare_feature_cache(fcos_preprocessed)
-                    det_output = detector.forward_from_feature_cache(fcos_feature_cache)
-                elif fcos_preprocessed is not None and hasattr(detector, "forward_preprocessed"):
-                    det_output = detector.forward_preprocessed(fcos_preprocessed)
-                elif use_yolo_head_cache:
-                    _get_yolov5_detect_module(detector)
-                    yolo_cached_features = _forward_yolov5_features_to_head(detector.model, infer_batch)
-                    det_output = _forward_yolov5_head_from_cache(detector, yolo_cached_features)
-                else:
-                    det_output = detector.model(infer_batch, augment=False)
-                det_raw_pred, det_raw_logits, det_raw_indices = unpack_fcos_model_output(det_output)
-                selected_preds, _selected_logits, _selected_objectness, selected_indices = select_fcos_post_nms(
-                    detector, det_raw_pred, det_raw_logits, det_raw_indices
+                fcos_preprocessed = detector.preprocess_images(infer_batch)
+                feature_cache = detector.prepare_feature_cache(fcos_preprocessed)
+                locations = _compute_fcos_locations(detector, feature_cache)
+                detector.set_dropout_rate(0.0)
+                detections, selected_preds, _selected_logits, _selected_objectness, selected_indices = (
+                    _run_fcos_head_post_nms_from_cache(detector, feature_cache)
                 )
             detector_inference_sec += timing.elapsed(t_detector)
 
-            feature_runs = []
-            n_candidates = None
-            n_classes = None
-            variable_candidate_runs = False
-            if hasattr(detector, "set_dropout_rate"):
-                detector.set_dropout_rate(dropout_rate)
-                mc_handles = []
-            else:
-                mc_handles = enable_forced_mc_dropout_on_yolov5_head(detector.model, dropout_rate)
+            t_matching = timing.start()
+            det_rows = list(iter_fcos_detection_rows(detector, targets, selected_preds, selected_indices, device))
+            source_specs = _source_specs_from_detections(detections, det_rows)
+            prediction_matching_sec += timing.elapsed(t_matching)
 
+            run_feature_rows = []
+            detector.set_dropout_rate(dropout_rate)
             try:
                 with torch.no_grad():
                     for _ in range(num_runs):
                         detector.zero_grad(set_to_none=True)
                         t_detector = timing.start()
-                        if roi_cache is not None:
-                            model_output = detector.forward_from_roi_cache(roi_cache)
-                        elif fcos_feature_cache is not None and hasattr(detector, "forward_from_feature_cache"):
-                            model_output = detector.forward_from_feature_cache(fcos_feature_cache)
-                        elif fcos_preprocessed is not None and hasattr(detector, "forward_preprocessed"):
-                            model_output = detector.forward_preprocessed(fcos_preprocessed)
-                        elif use_yolo_head_cache:
-                            model_output = _forward_yolov5_head_from_cache(detector, yolo_cached_features)
-                        else:
-                            model_output = detector.model(infer_batch, augment=False)
-                        raw_prediction, raw_logits, _raw_indices = unpack_fcos_model_output(model_output)
+                        box_cls, box_regression, centerness = _run_fcos_head_dense_from_cache(detector, feature_cache)
                         detector_inference_sec += timing.elapsed(t_detector)
 
                         t_feature = timing.start()
-                        if isinstance(raw_prediction, list):
-                            variable_candidate_runs = True
-                            needs_iou_matching = bool(getattr(detector, "is_faster_rcnn", False)) or bool(getattr(detector, "is_fcos", False))
-                            run_features = []
-                            run_labels = []
-                            for pred_img in raw_prediction:
-                                pred_img = pred_img.detach().float()
-                                bbox_xyxy = _xywh_to_xyxy_tensor(pred_img[:, :4])
-                                score_vec = pred_img[:, 4:5]
-                                prob_mat = get_prediction_class_probs(detector, pred_img).detach().float()
-                                run_features.append(torch.cat([bbox_xyxy, score_vec, prob_mat], dim=1))
-                                if needs_iou_matching and pred_img.shape[1] > 5:
-                                    run_labels.append(pred_img[:, 5].detach().long())
-                                else:
-                                    run_labels.append(None)
-                                if n_classes is None:
-                                    n_classes = int(prob_mat.shape[-1])
-                            feature_runs.append({"features": run_features, "labels": run_labels} if needs_iou_matching else run_features)
-                        else:
-                            pred_batch = raw_prediction.detach().float()
-                            bbox_xyxy = _xywh_to_xyxy_tensor(pred_batch[..., :4])
-                            score_vec = pred_batch[..., 4].unsqueeze(-1)
-                            prob_mat = get_prediction_class_probs(detector, pred_batch).detach().float()
-                            if prob_mat.numel() == 0 and raw_logits is not None:
-                                prob_mat = torch.sigmoid(raw_logits.detach().float())
-                            run_features = torch.cat([bbox_xyxy, score_vec, prob_mat], dim=2)
-
-                            if n_candidates is None:
-                                n_candidates = int(run_features.shape[1])
-                                n_classes = int(run_features.shape[2] - 5)
-
-                            if int(run_features.shape[1]) != n_candidates:
-                                raise ValueError("Raw candidate count changed across MC runs; expected fixed pre-NMS candidates.")
-
-                            feature_runs.append(run_features.detach())
+                        run_features = _features_from_fcos_dense_outputs(
+                            box_cls=box_cls,
+                            box_regression=box_regression,
+                            centerness=centerness,
+                            locations=locations,
+                            source_specs=source_specs,
+                            num_classes=num_classes,
+                            device=device,
+                        )
+                        run_feature_rows.append(run_features.detach())
                         feature_compute_sec += timing.elapsed(t_feature)
             finally:
-                for h in mc_handles:
-                    h.remove()
-                if hasattr(detector, "set_dropout_rate"):
-                    detector.set_dropout_rate(0.0)
+                detector.set_dropout_rate(0.0)
 
-            if (not variable_candidate_runs) and n_candidates is None:
-                del infer_batch
-                if fcos_preprocessed is not None:
-                    del fcos_preprocessed
-                if fcos_feature_cache is not None:
-                    del fcos_feature_cache
-                if yolo_cached_features is not None:
-                    del yolo_cached_features
-                continue
-
-            feat_mean = None
-            feat_std = None
-            if not variable_candidate_runs:
-                t_feature = timing.start()
-                runs_tensor = torch.stack(feature_runs, dim=0)  # [R, B, N, F]
+            t_feature = timing.start()
+            if run_feature_rows:
+                runs_tensor = torch.stack(run_feature_rows, dim=0)
                 feat_mean = runs_tensor.mean(dim=0)
                 feat_std = runs_tensor.std(dim=0, unbiased=False)
-                feature_compute_sec += timing.elapsed(t_feature)
                 del runs_tensor
-            batch_rows = []
-            batch_items = 0
+            else:
+                feat_mean = torch.zeros((0, 5 + num_classes), dtype=torch.float32, device=device)
+                feat_std = torch.zeros_like(feat_mean)
+            feature_compute_sec += timing.elapsed(t_feature)
 
             t_matching = timing.start()
-            for b in range(batch_size):
-                image_id = image_ids[b]
-                image_path = image_paths[b]
-                det_b = selected_preds[b] if selected_preds and b < len(selected_preds) else torch.zeros((0, 6), device=device)
-                raw_keep_b = (
-                    selected_indices[b]
-                    if selected_indices and b < len(selected_indices)
-                    else torch.zeros((0,), dtype=torch.long, device=device)
+            batch_rows = []
+            if int(feat_mean.shape[0]) != len(det_rows):
+                raise RuntimeError(
+                    f"FCOS MC-dropout feature row mismatch: feature_rows={int(feat_mean.shape[0])}, detections={len(det_rows)}"
                 )
-                num_final = int(det_b.shape[0])
-                valid_pairs = []
-                for pred_idx in range(num_final):
-                    raw_idx = int(raw_keep_b[pred_idx].detach().cpu().item())
-                    if variable_candidate_runs:
-                        if raw_idx >= 0:
-                            valid_pairs.append((pred_idx, raw_idx))
-                    elif 0 <= raw_idx < n_candidates:
-                        valid_pairs.append((pred_idx, raw_idx))
-
-                for pred_idx, raw_idx in valid_pairs:
-                    if variable_candidate_runs:
-                        per_run_values = []
-                        for run_features in feature_runs:
-                            if isinstance(run_features, dict):
-                                features_by_image = run_features["features"]
-                                labels_by_image = run_features["labels"]
-                                if b < len(features_by_image):
-                                    det_box = det_b[pred_idx, :4].to(features_by_image[b].device)
-                                    det_cls = int(det_b[pred_idx, 5].detach().cpu().item()) if det_b.shape[1] > 5 else -1
-                                    matched = _match_faster_rcnn_mc_feature(
-                                        det_box,
-                                        det_cls,
-                                        features_by_image[b],
-                                        labels_by_image[b] if b < len(labels_by_image) else None,
-                                        -1 if bool(getattr(detector, "is_fcos", False)) else raw_idx,
-                                    )
-                                    if matched is not None:
-                                        per_run_values.append(matched)
-                            elif b < len(run_features) and 0 <= raw_idx < int(run_features[b].shape[0]):
-                                per_run_values.append(run_features[b][raw_idx])
-                        if not per_run_values:
-                            t_feature = timing.start()
-                            class_count = int(n_classes) if n_classes is not None else int(len(detector.names or []))
-                            prob_vec = torch.zeros((class_count,), dtype=det_b.dtype, device=det_b.device)
-                            if (
-                                b < len(det_raw_pred)
-                                and 0 <= pred_idx < int(det_raw_pred[b].shape[0])
-                                and det_raw_pred[b].shape[1] > 6
-                            ):
-                                det_probs = get_prediction_class_probs(
-                                    detector, det_raw_pred[b][pred_idx : pred_idx + 1]
-                                ).detach().float().view(-1)
-                                copy_count = min(class_count, int(det_probs.shape[0]))
-                                if copy_count > 0:
-                                    prob_vec[:copy_count] = det_probs[:copy_count].to(prob_vec.device, dtype=prob_vec.dtype)
-                            elif 0 <= int(det_cls) < class_count:
-                                prob_vec[int(det_cls)] = 1.0
-                            mean_vec = torch.cat([det_b[pred_idx, :5].detach().float(), prob_vec], dim=0).cpu()
-                            std_vec = torch.zeros_like(mean_vec)
-                            feature_compute_sec += timing.elapsed(t_feature)
-                        else:
-                            t_feature = timing.start()
-                            run_values = torch.stack(per_run_values, dim=0)
-                            mean_vec = run_values.mean(dim=0).detach().float().cpu()
-                            std_vec = run_values.std(dim=0, unbiased=False).detach().float().cpu()
-                            feature_compute_sec += timing.elapsed(t_feature)
-                    else:
-                        mean_vec = feat_mean[b, raw_idx].detach().float().cpu()
-                        std_vec = feat_std[b, raw_idx].detach().float().cpu()
-                    cls_idx = int(det_b[pred_idx, 5].detach().cpu().item()) if det_b.shape[1] > 5 else -1
-                    row = {
-                        "image_id": image_id,
-                        "image_path": image_path,
-                        "pred_idx": pred_idx,
-                        "raw_pred_idx": raw_idx,
-                        "xmin": float(det_b[pred_idx, 0].detach().cpu().item()),
-                        "ymin": float(det_b[pred_idx, 1].detach().cpu().item()),
-                        "xmax": float(det_b[pred_idx, 2].detach().cpu().item()),
-                        "ymax": float(det_b[pred_idx, 3].detach().cpu().item()),
-                        "score": float(det_b[pred_idx, 4].detach().cpu().item()) if det_b.shape[1] > 4 else 0.0,
-                        "pred_class": detector.names[cls_idx] if (detector.names is not None and cls_idx >= 0) else cls_idx,
+            for row_idx, det_row in enumerate(det_rows):
+                mean_vec = feat_mean[row_idx].detach().float().cpu()
+                std_vec = feat_std[row_idx].detach().float().cpu()
+                row = dict(det_row.base)
+                row.update(
+                    {
                         "xmin_mean": float(mean_vec[0].item()),
                         "ymin_mean": float(mean_vec[1].item()),
                         "xmax_mean": float(mean_vec[2].item()),
@@ -369,18 +284,17 @@ def run_mc_dropout_csv(config, run_dir):
                         "ymax_std": float(std_vec[3].item()),
                         "score_std": float(std_vec[4].item()),
                     }
-                    class_count = int(n_classes) if n_classes is not None else 0
-                    for class_idx in range(class_count):
-                        row[f"prob_{class_idx}_mean"] = float(mean_vec[5 + class_idx].item())
-                        row[f"prob_{class_idx}_std"] = float(std_vec[5 + class_idx].item())
-                    batch_rows.append(row)
-                batch_items += int(len(valid_pairs))
+                )
+                for class_idx in range(num_classes):
+                    row[f"prob_{class_idx}_mean"] = float(mean_vec[5 + class_idx].item())
+                    row[f"prob_{class_idx}_std"] = float(std_vec[5 + class_idx].item())
+                batch_rows.append(row)
             prediction_matching_sec += timing.elapsed(t_matching)
 
             write_queue.put(batch_rows)
             timing.record(
-                num_images=batch_size,
-                num_predictions=batch_items,
+                num_images=len(image_list),
+                num_predictions=len(batch_rows),
                 stage_seconds={
                     "detector_inference_sec": detector_inference_sec,
                     "prediction_matching_sec": prediction_matching_sec,
@@ -388,29 +302,13 @@ def run_mc_dropout_csv(config, run_dir):
                 },
             )
 
-            del selected_preds, selected_indices
-            del feature_runs
-            if feat_mean is not None:
-                del feat_mean, feat_std
-            if "roi_cache" in locals() and roi_cache is not None:
-                del roi_cache
-            del infer_batch
-            if fcos_preprocessed is not None:
-                del fcos_preprocessed
-            if fcos_feature_cache is not None:
-                del fcos_feature_cache
-            if yolo_cached_features is not None:
-                del yolo_cached_features
-    except Exception:
-        had_error = True
-        raise
+            del infer_batch, fcos_preprocessed, feature_cache, locations
+            del detections, selected_preds, selected_indices, det_rows, source_specs
+            del run_feature_rows, feat_mean, feat_std, batch_rows
     finally:
-        if had_error:
-            write_queue.put(None)
-            writer_thread.join()
-        else:
-            write_queue.put(None)
-            writer_thread.join()
+        detector.set_dropout_rate(0.0)
+        write_queue.put(None)
+        writer_thread.join()
 
     del detector
     if device.type == "cuda":
@@ -420,5 +318,6 @@ def run_mc_dropout_csv(config, run_dir):
     print(f"Saved results CSV: {output_csv}")
     print(f"Saved timing: {timing_csv}")
     print(f"Saved timing summary: {timing_json}")
+
 
 __all__ = ["run_mc_dropout_csv"]
