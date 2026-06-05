@@ -358,26 +358,17 @@ def load_training_dataframe(dataset_cfg: dict[str, Any]) -> tuple[pd.DataFrame, 
         raise FileNotFoundError(f"tp.csv not found: {gt_csv}")
     gt_df = pd.read_csv(gt_csv)
     raw_key_set = {"image_id", "image_path", "raw_pred_idx", label_col}
-    pred_key_set = {"image_id", "image_path", "pred_idx", label_col}
     bbox_key_set = {"image_id", "image_path", "xmin", "ymin", "xmax", "ymax", label_col}
     has_raw_keys = raw_key_set.issubset(gt_df.columns)
-    has_pred_keys = pred_key_set.issubset(gt_df.columns)
     has_bbox_keys = bbox_key_set.issubset(gt_df.columns)
-    if has_raw_keys:
-        base_merge_keys = ["image_id", "image_path", "raw_pred_idx"]
-    elif has_pred_keys:
-        base_merge_keys = ["image_id", "image_path", "pred_idx"]
-    elif has_bbox_keys:
-        base_merge_keys = ["image_id", "image_path", "xmin", "ymin", "xmax", "ymax"]
-    else:
-        raise ValueError("tp.csv missing required join keys.")
+    if not has_raw_keys:
+        raise ValueError("tp.csv missing required raw_pred_idx join keys: image_id, image_path, raw_pred_idx.")
+    base_merge_keys = ["image_id", "image_path", "raw_pred_idx"]
     keep_cols = list(base_merge_keys) + [label_col]
     if has_bbox_keys:
         keep_cols.extend(["image_id", "image_path", "xmin", "ymin", "xmax", "ymax"])
-    if has_raw_keys:
-        keep_cols.extend(["image_id", "image_path", "raw_pred_idx"])
-    if has_pred_keys:
-        keep_cols.extend(["image_id", "image_path", "pred_idx"])
+    if "pred_idx" in gt_df.columns:
+        keep_cols.append("pred_idx")
     gt_df = gt_df[list(dict.fromkeys(keep_cols))]
 
     merged = gt_df.copy()
@@ -398,32 +389,14 @@ def load_training_dataframe(dataset_cfg: dict[str, Any]) -> tuple[pd.DataFrame, 
         feature_df = pd.read_csv(input_csv)
 
         raw_merge_keys = ["image_id", "image_path", "raw_pred_idx"]
-        pred_merge_keys = ["image_id", "image_path", "pred_idx"]
-        bbox_merge_keys = ["image_id", "image_path", "xmin", "ymin", "xmax", "ymax"]
         has_feature_raw = set(raw_merge_keys).issubset(feature_df.columns)
-        has_feature_pred = set(pred_merge_keys).issubset(feature_df.columns)
-        has_feature_bbox = set(bbox_merge_keys).issubset(feature_df.columns)
         has_merged_raw = set(raw_merge_keys).issubset(merged.columns)
-        has_merged_bbox = set(bbox_merge_keys).issubset(merged.columns)
-        has_merged_pred = set(pred_merge_keys).issubset(merged.columns)
-        prefer_raw = set(base_merge_keys) == set(raw_merge_keys)
-        prefer_pred = set(base_merge_keys) == set(pred_merge_keys)
-
-        if prefer_raw and has_feature_raw and has_merged_raw:
-            merge_keys = raw_merge_keys
-        elif prefer_pred and has_feature_pred and has_merged_pred:
-            merge_keys = pred_merge_keys
-        elif has_feature_raw and has_merged_raw:
-            merge_keys = raw_merge_keys
-        elif has_feature_bbox and has_merged_bbox:
-            merge_keys = bbox_merge_keys
-        elif has_feature_pred and has_merged_pred:
-            merge_keys = pred_merge_keys
-        else:
+        if not (has_feature_raw and has_merged_raw):
             raise ValueError(
-                f"Cannot match {input_csv_name} to tp.csv using keys available in current merged dataframe. "
-                f"base={base_merge_keys}, feature_has_raw={has_feature_raw}, feature_has_pred={has_feature_pred}, feature_has_bbox={has_feature_bbox}."
+                f"Cannot match {input_csv_name} to tp.csv. "
+                "Both files must contain raw_pred_idx join keys: image_id, image_path, raw_pred_idx."
             )
+        merge_keys = raw_merge_keys
         meta_columns = {
             "image_id",
             "image_path",
@@ -477,17 +450,6 @@ def load_training_dataframe(dataset_cfg: dict[str, Any]) -> tuple[pd.DataFrame, 
             feature_df = feature_df.drop(columns=overlapping_context)
 
         merged_next = merged.merge(feature_df, on=merge_keys, how="inner")
-        if (
-            merged_next.empty
-            and merge_keys in (
-                ["image_id", "image_path", "raw_pred_idx"],
-                ["image_id", "image_path", "pred_idx"],
-            )
-            and set(["image_id", "image_path", "xmin", "ymin", "xmax", "ymax"]).issubset(feature_df.columns)
-            and set(["image_id", "image_path", "xmin", "ymin", "xmax", "ymax"]).issubset(merged.columns)
-        ):
-            fallback_keys = ["image_id", "image_path", "xmin", "ymin", "xmax", "ymax"]
-            merged_next = merged.merge(feature_df, on=fallback_keys, how="inner")
         merged = merged_next
         prefixed_feature_columns.extend(rename_map.values())
         input_uncertainties.append(input_cue)
