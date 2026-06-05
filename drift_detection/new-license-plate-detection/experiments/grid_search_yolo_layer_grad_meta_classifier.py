@@ -26,32 +26,30 @@ from commands.utils.predict_utils import (  # noqa: E402
     _start_timing,
     build_detector,
     build_layer_target_scalar_bbox,
-    build_yolo_candidate_mask_for_pseudo,
     expand_layer_names,
     format_gradient_output,
     parse_output_config,
     resolve_layer_parameter,
 )
+from commands.predict.yolov5.utils import (  # noqa: E402
+    build_yolo_candidate_cache,
+    yolo_candidate_mask_from_cache,
+)
 from dataloaders.dataloader_yolo import create_dataloader  # noqa: E402
 
-# Edit these paths before running.
-OBJECT_DETECTOR_CONFIG = r"object_detectors/configs/yolov5/predict_coco_yolov5.yaml"
+OBJECT_DETECTOR_CONFIG = r"object_detectors/configs/yolov5/predict_coco.yaml"
 META_CLASSIFIER_CONFIG = (
     r"meta_models/meta_classifier/configs/train_meta_classifier.yaml"
 )
 
-# If empty, dataset.gt_root is read from META_CLASSIFIER_CONFIG.
 GT_ROOT = ""
 
-# Set to a fixed name to resume a previous grid root. Empty string creates a new timestamped root.
 GRID_NAME = ""
 
 RUN_LAYER_GRAD = True
 RUN_META_CLASSIFIER = True
 REUSE_EXISTING = False
 
-# Use None for all meta-classifier combinations, or set a small int for a smoke test.
-# Object detector term CSVs are still generated once for all single-term settings.
 MAX_COMBINATIONS = None
 
 
@@ -485,10 +483,6 @@ def _run_yolo_layer_grad_terms_once(
             )
 
             with torch.no_grad():
-                nms_prediction = raw_prediction.detach().clone()
-                nms_logits = (
-                    raw_logits.detach().clone() if raw_logits is not None else None
-                )
                 t_nms = _start_timing(device)
                 (
                     selected_preds,
@@ -496,8 +490,8 @@ def _run_yolo_layer_grad_terms_once(
                     _selected_objectness,
                     selected_indices,
                 ) = detector.non_max_suppression(
-                    prediction=nms_prediction,
-                    logits=nms_logits,
+                    prediction=raw_prediction,
+                    logits=raw_logits,
                     conf_thres=float(
                         getattr(
                             detector,
@@ -538,6 +532,16 @@ def _run_yolo_layer_grad_terms_once(
 
             batch_size = int(raw_prediction.shape[0]) if raw_prediction.ndim >= 3 else 1
             iou_threshold = float(getattr(detector, "iou_thresh", 0.45))
+            cand_keys = [
+                key
+                for key, (
+                    combo,
+                    _run_dir,
+                    _csv_file,
+                    _writer,
+                ) in handles.items()
+                if combo["target"] == "cand_target"
+            ]
             for sample_idx in range(batch_size):
                 target = targets[sample_idx]
                 image_id = int(target["image_id"][0].item())
@@ -574,9 +578,30 @@ def _run_yolo_layer_grad_terms_once(
                         else None
                     )
                 )
+                candidate_cache = None
+                if cand_keys:
+                    t_candidate = _start_timing(device)
+                    candidate_cache = build_yolo_candidate_cache(
+                        pred_img,
+                        cand_score_threshold,
+                    )
+                    cache_timing = {"candidate_search_sec": 0.0}
+                    _add_elapsed_timing(
+                        cache_timing,
+                        "candidate_search_sec",
+                        t_candidate,
+                        device,
+                    )
+                    for cand_key in cand_keys:
+                        stage_by_key[cand_key]["candidate_search_sec"] += cache_timing["candidate_search_sec"]
 
                 batch_items += int(det.shape[0])
                 for bbox_idx in range(int(det.shape[0])):
+                    if bbox_idx >= int(raw_keep_indices.shape[0]):
+                        raise RuntimeError(
+                            "YOLO grid layer_grad selected_indices is shorter than selected predictions. "
+                            f"sample_idx={sample_idx}, pred_idx={bbox_idx}, indices={int(raw_keep_indices.shape[0])}"
+                        )
                     raw_idx = int(raw_keep_indices[bbox_idx].detach().cpu().item())
                     cls_idx = int(det[bbox_idx, 5].detach().cpu().item())
                     base_row = {
@@ -600,24 +625,13 @@ def _run_yolo_layer_grad_terms_once(
                         if (anchor_img is not None and raw_idx < anchor_img.shape[0])
                         else None
                     )
-                    cand_keys = [
-                        key
-                        for key, (
-                            combo,
-                            _run_dir,
-                            _csv_file,
-                            _writer,
-                        ) in handles.items()
-                        if combo["target"] == "cand_target"
-                    ]
                     cand_candidate_mask = None
-                    if cand_keys:
+                    if candidate_cache is not None:
                         t_candidate = _start_timing(device)
-                        cand_candidate_mask = build_yolo_candidate_mask_for_pseudo(
-                            pred_img=pred_img,
-                            raw_idx=raw_idx,
-                            iou_threshold=iou_threshold,
-                            score_threshold=cand_score_threshold,
+                        cand_candidate_mask, _candidate_ious = yolo_candidate_mask_from_cache(
+                            candidate_cache,
+                            raw_idx,
+                            iou_threshold,
                         )
                         candidate_timing = {"candidate_search_sec": 0.0}
                         _add_elapsed_timing(
