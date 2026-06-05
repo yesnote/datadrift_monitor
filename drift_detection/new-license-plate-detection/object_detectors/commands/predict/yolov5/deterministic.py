@@ -14,12 +14,13 @@ def _empty_class_tensor(num_classes, device):
 
 
 def _selected_class_probs_and_logits(detector, raw_prediction, raw_logits, sample_idx, raw_keep_b, num_classes, device):
+    class_start = 6 if bool(getattr(detector, "is_fcos", False)) else 5
+    probs = (
+        raw_prediction[sample_idx][raw_keep_b, class_start:].detach().float()
+        if int(raw_keep_b.shape[0]) > 0 and raw_prediction[sample_idx].shape[1] > class_start
+        else _empty_class_tensor(num_classes, device)
+    )
     if bool(getattr(detector, "is_fcos", False)):
-        probs = (
-            get_selected_prediction_class_probs(detector, raw_prediction[sample_idx], raw_keep_b)
-            if int(raw_keep_b.shape[0]) > 0 and raw_prediction[sample_idx].shape[1] > 6
-            else _empty_class_tensor(num_classes, device)
-        )
         if raw_logits is not None:
             logits = (
                 raw_logits[sample_idx][raw_keep_b]
@@ -35,14 +36,8 @@ def _selected_class_probs_and_logits(detector, raw_prediction, raw_logits, sampl
             if int(raw_keep_b.shape[0]) > 0
             else _empty_class_tensor(num_classes, device)
         )
-        probs = torch.softmax(logits, dim=-1) if logits.numel() else logits
         return probs, logits
-    logits = (
-        get_selected_prediction_class_probs(detector, raw_prediction[sample_idx], raw_keep_b)
-        if int(raw_keep_b.shape[0]) > 0 and raw_prediction[sample_idx].shape[1] > 5
-        else _empty_class_tensor(num_classes, device)
-    )
-    probs = torch.softmax(logits, dim=-1) if logits.numel() else logits
+    logits = torch.logit(probs.clamp(min=1e-8, max=1.0 - 1e-8)) if probs.numel() else probs
     return probs, logits
 
 
