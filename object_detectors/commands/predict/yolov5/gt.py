@@ -76,10 +76,7 @@ def run_fn_csv(config, run_dir):
                     csv_writer.writerow(row)
 
                 if should_save_step and sample_idx < image_max_num:
-                    if resized_chws is None and bool(getattr(detector, "is_fcos", False)):
-                        image_chw = detector.resize_image_for_display(image_list[sample_idx])
-                    else:
-                        image_chw = resized_chws[sample_idx]
+                    image_chw = resized_chws[sample_idx]
                     vis_image = draw_predictions(image_chw, pred_boxes, pred_class_names, pred_scores)
                     fn_gt_indices = get_fn_gt_indices(
                         gt_boxes=gt_boxes,
@@ -178,13 +175,7 @@ def run_tp_csv(config, run_dir):
         )):
             image_list = _as_image_list(images)
             detector.zero_grad(set_to_none=True)
-            if bool(getattr(detector, "is_faster_rcnn", False)):
-                infer_batch = image_list
-                ratios = [(1.0, 1.0) for _ in image_list]
-                pads = [(0.0, 0.0) for _ in image_list]
-                resized_chws = None
-            else:
-                infer_batch, ratios, pads, resized_chws = _prepare_infer_batch(detector, image_list, device, auto=False)
+            infer_batch, ratios, pads, resized_chws = _prepare_infer_batch(detector, image_list, device, auto=False)
             with torch.no_grad():
                 model_output = detector.model(infer_batch, augment=False)
                 raw_prediction = model_output[0] if isinstance(model_output, (tuple, list)) else model_output
@@ -239,14 +230,7 @@ def run_tp_csv(config, run_dir):
                 if should_save_image:
                     step_dir = run_dir / "images" / f"0_{step_idx}"
                     step_dir.mkdir(parents=True, exist_ok=True)
-                    if resized_chws is None and bool(getattr(detector, "is_fcos", False)):
-                        image_chw = detector.resize_image_for_display(image_list[sample_idx])
-                    elif resized_chws is None:
-                        image_chw = np.ascontiguousarray(
-                            np.clip(image_list[sample_idx].detach().cpu().numpy() * 255.0, 0, 255).astype(np.uint8)
-                        )
-                    else:
-                        image_chw = resized_chws[sample_idx]
+                    image_chw = resized_chws[sample_idx]
                     vis_image = np.transpose(image_chw, (1, 2, 0)).copy()
                     for gt_box, gt_name in zip(gt_boxes, gt_class_names):
                         x1, y1, x2, y2 = [int(v) for v in gt_box]
@@ -283,7 +267,12 @@ def run_tp_csv(config, run_dir):
                 for pred_idx, (box, score, pred_class) in enumerate(
                     zip(pred_boxes, pred_scores, pred_class_names)
                 ):
-                    raw_pred_idx = int(raw_keep_b[pred_idx].detach().cpu().item()) if pred_idx < int(raw_keep_b.shape[0]) else pred_idx
+                    if pred_idx >= int(raw_keep_b.shape[0]):
+                        raise RuntimeError(
+                            "YOLOv5 gt selected_indices is shorter than selected predictions. "
+                            f"pred_idx={pred_idx}, selected_indices={int(raw_keep_b.shape[0])}"
+                        )
+                    raw_pred_idx = int(raw_keep_b[pred_idx].detach().cpu().item())
                     if writer is not None:
                         error_row = error_rows[pred_idx]
                         writer.writerow(

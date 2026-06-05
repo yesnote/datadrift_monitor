@@ -62,8 +62,6 @@ def run_mc_dropout_csv(config, run_dir):
     if num_runs <= 0:
         raise ValueError("mc_dropout.num_runs must be positive.")
 
-    # Windows OpenMP + subprocess workers can conflict in MC-dropout runs.
-    # Force single-process data loading here to avoid libiomp duplicate init crashes.
     dataset = build_dataset(config, split=split)
     dl_cfg = config["dataloader"]
     shuffle = dl_cfg["shuffle_train"] if split == "train" else dl_cfg["shuffle_eval"]
@@ -79,9 +77,6 @@ def run_mc_dropout_csv(config, run_dir):
         raise ValueError("Loaded 0 images. Check dataset root/image_dir/split configuration in YAML.")
 
     detector, device = build_detector(config)
-    if bool(getattr(detector, "is_faster_rcnn", False)) or bool(getattr(detector, "is_fcos", False)):
-        raise RuntimeError("This runner is YOLOv5-only. Use the model-specific mc_dropout runner.")
-
     _get_yolov5_detect_module(detector)
     nms_kwargs = _resolve_detector_nms_kwargs(detector)
     timing = StageTimingProfiler(
@@ -133,8 +128,6 @@ def run_mc_dropout_csv(config, run_dir):
             with torch.no_grad():
                 t_detector = timing.start()
                 cached_features = _forward_yolov5_features_to_head(detector.model, infer_batch)
-                # Deterministic head+NMS defines the output rows and is counted as
-                # detector inference for end-to-end MC-dropout cost comparison.
                 det_output = _forward_yolov5_head_from_cache(detector, cached_features)
                 det_raw_pred = det_output[0] if isinstance(det_output, (tuple, list)) else det_output
                 det_raw_logits = det_output[1] if isinstance(det_output, (tuple, list)) and len(det_output) > 1 else None
@@ -184,7 +177,7 @@ def run_mc_dropout_csv(config, run_dir):
                 continue
 
             t_feature = timing.start()
-            runs_tensor = torch.stack(feature_runs, dim=0)  # [R, B, N, F]
+            runs_tensor = torch.stack(feature_runs, dim=0)
             feat_mean = runs_tensor.mean(dim=0)
             feat_std = runs_tensor.std(dim=0, unbiased=False)
             feature_compute_sec += timing.elapsed(t_feature)
