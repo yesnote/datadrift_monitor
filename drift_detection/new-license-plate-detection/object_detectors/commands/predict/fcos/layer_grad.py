@@ -223,44 +223,21 @@ def _resolve_fcos_candidate_sources(
     cand_iou_threshold,
     timing,
     timing_accumulator,
-    candidate_cache=None,
+    candidate_sources=None,
 ):
     detections = model_output["detections"]
-    candidate_sources = []
+    if candidate_sources is not None:
+        return candidate_sources
+    resolved_sources = []
     if target_mode == "cand_target":
-        t_candidate = timing.start()
-        if candidate_cache is None:
-            candidate_cache = build_fcos_dense_candidate_cache(
-                model_output,
-                image_idx,
-                cand_score_threshold,
-                detach=True,
-            )
-        if candidate_cache.prediction.numel() == 0:
-            timing_accumulator["candidate_search_sec"] += timing.elapsed(t_candidate)
-            return candidate_sources
-        cand_mask, _ious = fcos_candidate_mask_from_cache(
-            candidate_cache,
-            final_box.detach().float(),
-            final_cls,
-            cand_iou_threshold,
-        )
-        timing_accumulator["candidate_search_sec"] += timing.elapsed(t_candidate)
-
-        candidate_indices = torch.where(cand_mask)[0]
-        for candidate_idx in candidate_indices.detach().cpu().tolist():
-            if candidate_cache.levels is None or candidate_cache.location_indices is None:
-                continue
-            level = int(candidate_cache.levels[int(candidate_idx)].detach().cpu().item())
-            loc_idx = int(candidate_cache.location_indices[int(candidate_idx)].detach().cpu().item())
-            candidate_sources.append((level, loc_idx))
+        return resolved_sources
     else:
         if image_idx >= len(detections) or pred_idx >= len(detections[image_idx]):
-            return candidate_sources
+            return resolved_sources
         source_boxlist = detections[image_idx]
         level, loc_idx, _raw, _cls_one_based = _source_indices_from_boxlist(source_boxlist, pred_idx)
-        candidate_sources.append((level, loc_idx))
-    return candidate_sources
+        resolved_sources.append((level, loc_idx))
+    return resolved_sources
 
 
 def _build_fcos_losses(
@@ -284,7 +261,6 @@ def _build_fcos_losses(
     timing,
     timing_accumulator,
     candidate_sources=None,
-    candidate_cache=None,
 ):
     box_cls = model_output["box_cls"]
     box_regression = model_output["box_regression"]
@@ -306,7 +282,7 @@ def _build_fcos_losses(
             cand_iou_threshold=cand_iou_threshold,
             timing=timing,
             timing_accumulator=timing_accumulator,
-            candidate_cache=candidate_cache,
+            candidate_sources=candidate_sources,
         )
 
     t_loss = timing.start()
@@ -541,6 +517,24 @@ def run_layer_grad_csv(config, run_dir):
                         raw_idx = int(raw_keep[pred_idx].detach().cpu().item())
                         final_box = det[pred_idx, :4]
                         final_cls = int(det[pred_idx, 5].detach().cpu().item()) if det.shape[1] > 5 else 0
+                        candidate_sources = None
+                        if layer_cfg["target"] == "cand_target":
+                            t_candidate = timing.start()
+                            cache = candidate_caches.get(sample_idx)
+                            cand_mask, _ious = fcos_candidate_mask_from_cache(
+                                cache,
+                                final_box.detach().float(),
+                                final_cls,
+                                layer_cfg["cand_iou_threshold"],
+                            )
+                            stage_seconds["candidate_search_sec"] += timing.elapsed(t_candidate)
+                            candidate_sources = []
+                            if cache is not None and cache.levels is not None and cache.location_indices is not None:
+                                candidate_indices = torch.where(cand_mask)[0]
+                                for candidate_idx in candidate_indices.detach().cpu().tolist():
+                                    level = int(cache.levels[int(candidate_idx)].detach().cpu().item())
+                                    loc_idx = int(cache.location_indices[int(candidate_idx)].detach().cpu().item())
+                                    candidate_sources.append((level, loc_idx))
                         row = {
                             "image_id": image_id,
                             "image_path": image_path,
@@ -573,7 +567,7 @@ def run_layer_grad_csv(config, run_dir):
                             cnt_direction=layer_cfg["cnt_direction"],
                             timing=timing,
                             timing_accumulator=stage_seconds,
-                            candidate_cache=candidate_caches.get(sample_idx),
+                            candidate_sources=candidate_sources,
                         )
 
                         for target_value in target_values:
