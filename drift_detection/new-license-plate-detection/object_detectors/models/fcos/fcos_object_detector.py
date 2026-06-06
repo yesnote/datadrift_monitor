@@ -326,7 +326,7 @@ class FCOSTorchObjectDetector(nn.Module):
         self._clear_last_pre_nms_predictions()
         return output
 
-    def forward_layer_grad(self, processed_images, include_post_logits=True):
+    def forward_layer_grad(self, processed_images, include_post_logits=True, include_pre_nms=False):
         from fcos_core.structures.image_list import to_image_list
 
         was_training = self.detector_model.training
@@ -353,13 +353,6 @@ class FCOSTorchObjectDetector(nn.Module):
         }
         if include_post_logits:
             post_keep_fields.add("class_logits")
-        pre_keep_fields = {
-            "scores",
-            "labels",
-            "pre_nms_level",
-            "pre_nms_location_idx",
-            "pre_nms_candidate_idx",
-        }
         detached_detections = self._detach_boxlists(detections, keep_fields=post_keep_fields)
         post_prediction, post_logits, post_indices = self._boxlists_to_contract(
             detached_detections,
@@ -367,19 +360,29 @@ class FCOSTorchObjectDetector(nn.Module):
             include_indices=True,
             include_probs=False,
         )
-        pre_nms_boxlists = getattr(rpn.box_selector_test, "last_pre_nms_boxlists", None)
-        detached_pre_nms_boxlists = self._detach_boxlists(pre_nms_boxlists, keep_fields=pre_keep_fields)
+        detached_pre_nms_boxlists = None
+        pre_prediction = None
+        if include_pre_nms:
+            pre_keep_fields = {
+                "scores",
+                "labels",
+                "pre_nms_level",
+                "pre_nms_location_idx",
+                "pre_nms_candidate_idx",
+            }
+            pre_nms_boxlists = getattr(rpn.box_selector_test, "last_pre_nms_boxlists", None)
+            detached_pre_nms_boxlists = self._detach_boxlists(pre_nms_boxlists, keep_fields=pre_keep_fields)
+            pre_prediction = (
+                self._boxlists_to_contract(
+                    detached_pre_nms_boxlists,
+                    include_logits=False,
+                    include_indices=False,
+                    include_probs=False,
+                )[0]
+                if detached_pre_nms_boxlists is not None
+                else None
+            )
         self._clear_last_pre_nms_predictions()
-        pre_prediction = (
-            self._boxlists_to_contract(
-                detached_pre_nms_boxlists,
-                include_logits=False,
-                include_indices=False,
-                include_probs=False,
-            )[0]
-            if detached_pre_nms_boxlists is not None
-            else None
-        )
         if was_training and self.mode == "train":
             self.detector_model.train()
         return {
