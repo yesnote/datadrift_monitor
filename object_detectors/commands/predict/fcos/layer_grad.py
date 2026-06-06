@@ -246,11 +246,14 @@ def _resolve_fcos_candidate_sources(
             cand_iou_threshold,
         )
         candidate_indices = torch.where(cand_mask)[0]
+        timing_accumulator["candidate_search_sec"] += timing.elapsed(t_candidate)
+
+        t_loss = timing.start()
         source_boxlist = pre_nms_boxlists[image_idx]
         for candidate_idx in candidate_indices.detach().cpu().tolist():
             level, loc_idx, _raw, _cls_one_based = _source_indices_from_boxlist(source_boxlist, int(candidate_idx))
             candidate_sources.append((level, loc_idx))
-        timing_accumulator["candidate_search_sec"] += timing.elapsed(t_candidate)
+        timing_accumulator["loss_compute_sec"] += timing.elapsed(t_loss)
     else:
         if image_idx >= len(detections) or pred_idx >= len(detections[image_idx]):
             return candidate_sources
