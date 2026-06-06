@@ -265,6 +265,11 @@ def build_fcos_dense_candidate_cache(model_output, image_idx, score_threshold, d
         reg = _flatten_fcos_level_output(reg_level, image_idx)
         cnt_logits = _flatten_fcos_centerness(cnt_level, image_idx)
         loc = loc_level.to(device=reg.device, dtype=reg.dtype)
+        if detach:
+            cls_logits = cls_logits.detach()
+            reg = reg.detach()
+            cnt_logits = cnt_logits.detach()
+            loc = loc.detach()
         num_locations = int(loc.shape[0])
         num_classes = int(cls_logits.shape[1]) if cls_logits.ndim == 2 else 0
         if num_locations == 0 or num_classes == 0:

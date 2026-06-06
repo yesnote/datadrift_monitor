@@ -245,10 +245,10 @@ def _resolve_fcos_candidate_sources(
             final_cls,
             cand_iou_threshold,
         )
-        candidate_indices = torch.where(cand_mask)[0]
         timing_accumulator["candidate_search_sec"] += timing.elapsed(t_candidate)
 
         t_loss = timing.start()
+        candidate_indices = torch.where(cand_mask)[0]
         for candidate_idx in candidate_indices.detach().cpu().tolist():
             if candidate_cache.levels is None or candidate_cache.location_indices is None:
                 continue
