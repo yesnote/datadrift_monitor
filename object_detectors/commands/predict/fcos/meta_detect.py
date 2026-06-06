@@ -1,10 +1,10 @@
 from commands.predict.common import *
+from commands.predict.fcos.common import select_fcos_post_nms
 from commands.predict.fcos.utils import (
-    build_fcos_candidate_cache,
+    FcosForwardNMSResult,
+    build_fcos_dense_candidate_cache,
     fcos_candidate_mask_from_cache,
     iter_fcos_detection_rows,
-    run_fcos_forward_nms,
-    selected_fcos_class_probs,
 )
 
 
@@ -22,40 +22,35 @@ def _to_float(value):
     return float(value)
 
 
-def _run_fcos_meta_forward(detector, image_list, device, timing, score_threshold):
-    normal_threshold = float(getattr(detector, "confidence", 0.05))
-    candidate_threshold = min(normal_threshold, float(score_threshold))
-    if candidate_threshold < normal_threshold:
-        result = run_fcos_forward_nms(
-            detector=detector,
-            image_list=image_list,
-            device=device,
-            timing=timing,
-            keep_pre_nms=False,
-            keep_class_outputs=True,
-            pre_nms_threshold=normal_threshold,
+def _run_fcos_meta_forward(detector, image_list, device, timing):
+    infer_batch, ratios, pads, resized_chws = _prepare_infer_batch(detector, image_list, device, auto=False)
+    t_detector = timing.start()
+    with torch.no_grad():
+        processed_images = detector.preprocess_images(infer_batch)
+        model_output = detector.forward_layer_grad(processed_images, include_post_logits=True)
+        selected = select_fcos_post_nms(
+            detector,
+            model_output["post_prediction"],
+            model_output["post_logits"],
+            model_output["post_indices"],
         )
-        t_detector = timing.start()
-        with torch.no_grad():
-            with detector.temporary_pre_nms_threshold(candidate_threshold):
-                detector.forward_preprocessed(
-                    result.processed_images,
-                    keep_pre_nms=True,
-                    keep_class_outputs=False,
-                )
-            pre_nms_prediction, _pre_logits, _pre_indices = detector.get_last_pre_nms_predictions()
-        result.pre_nms_prediction = pre_nms_prediction
-        result.detector_inference_sec += timing.elapsed(t_detector)
-        return result
-    return run_fcos_forward_nms(
-        detector=detector,
-        image_list=image_list,
-        device=device,
-        timing=timing,
-        keep_pre_nms=True,
-        keep_class_outputs=True,
-        pre_nms_threshold=normal_threshold,
+    detector_inference_sec = timing.elapsed(t_detector)
+    result = FcosForwardNMSResult(
+        infer_batch=infer_batch,
+        ratios=ratios,
+        pads=pads,
+        resized_chws=resized_chws,
+        processed_images=processed_images,
+        raw_prediction=model_output["post_prediction"],
+        raw_logits=model_output["post_logits"],
+        raw_indices=model_output["post_indices"],
+        selected_preds=selected[0],
+        selected_logits=selected[1],
+        selected_indices=selected[3],
+        pre_nms_prediction=None,
+        detector_inference_sec=detector_inference_sec,
     )
+    return result, model_output
 
 
 def run_meta_detect_csv(config, run_dir):
@@ -115,25 +110,32 @@ def run_meta_detect_csv(config, run_dir):
         ):
             image_list = _as_image_list(images)
             detector.zero_grad(set_to_none=True)
-            result = _run_fcos_meta_forward(detector, image_list, device, timing, score_threshold)
-            pre_nms_prediction = result.pre_nms_prediction if result.pre_nms_prediction is not None else result.raw_prediction
+            result, model_output = _run_fcos_meta_forward(detector, image_list, device, timing)
 
             candidate_search_sec = 0.0
             feature_compute_sec = 0.0
             batch_items = 0
             candidate_caches = {}
-            probs_by_sample = {
-                sample_idx: selected_fcos_class_probs(result, sample_idx, num_classes, device)
-                for sample_idx in range(len(image_list))
-            }
+            probs_by_sample = {}
             for sample_idx in range(len(image_list)):
-                candidate_img = (
-                    pre_nms_prediction[sample_idx].float()
-                    if pre_nms_prediction is not None and sample_idx < len(pre_nms_prediction)
-                    else torch.zeros((0, 6 + num_classes), dtype=torch.float32, device=device)
-                )
+                det = result.selected_preds[sample_idx] if result.selected_preds and sample_idx < len(result.selected_preds) else torch.zeros((0, 6), dtype=torch.float32, device=device)
+                logits = result.selected_logits[sample_idx] if result.selected_logits and sample_idx < len(result.selected_logits) else torch.zeros((0, num_classes), dtype=torch.float32, device=device)
+                if logits is not None and int(logits.shape[0]) == int(det.shape[0]) and int(logits.shape[-1]) > 0:
+                    if int(logits.shape[-1]) > int(num_classes):
+                        logits = logits[:, :num_classes]
+                    elif int(logits.shape[-1]) < int(num_classes):
+                        logits = torch.nn.functional.pad(logits, (0, int(num_classes) - int(logits.shape[-1])))
+                    probs_by_sample[sample_idx] = torch.sigmoid(logits.to(device=device, dtype=torch.float32))
+                else:
+                    probs_by_sample[sample_idx] = torch.zeros((int(det.shape[0]), num_classes), dtype=torch.float32, device=device)
+            for sample_idx in range(len(image_list)):
                 t_candidate = timing.start()
-                candidate_caches[sample_idx] = build_fcos_candidate_cache(candidate_img, score_threshold)
+                candidate_caches[sample_idx] = build_fcos_dense_candidate_cache(
+                    model_output,
+                    sample_idx,
+                    score_threshold,
+                    detach=True,
+                )
                 candidate_search_sec += timing.elapsed(t_candidate)
 
             for det_row in iter_fcos_detection_rows(detector, targets, result.selected_preds, result.selected_indices, device):
@@ -219,7 +221,7 @@ def run_meta_detect_csv(config, run_dir):
             )
             if hasattr(detector, "_clear_last_pre_nms_predictions"):
                 detector._clear_last_pre_nms_predictions()
-            del result, candidate_caches, probs_by_sample
+            del result, model_output, candidate_caches, probs_by_sample
 
     del detector
     if device.type == "cuda":

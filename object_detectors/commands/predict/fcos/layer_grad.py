@@ -1,7 +1,7 @@
 from commands.predict.common import *
 from commands.predict.fcos.common import select_fcos_post_nms
 from commands.predict.fcos.utils import (
-    build_fcos_candidate_cache,
+    build_fcos_dense_candidate_cache,
     ensure_fcos_selected_indices,
     fcos_candidate_mask_from_cache,
     fcos_class_name,
@@ -226,16 +226,16 @@ def _resolve_fcos_candidate_sources(
     candidate_cache=None,
 ):
     detections = model_output["detections"]
-    pre_nms_boxlists = model_output["pre_nms_boxlists"]
     candidate_sources = []
     if target_mode == "cand_target":
         t_candidate = timing.start()
-        if pre_nms_boxlists is None or image_idx >= len(pre_nms_boxlists):
-            timing_accumulator["candidate_search_sec"] += timing.elapsed(t_candidate)
-            return candidate_sources
         if candidate_cache is None:
-            pre_pred = model_output["pre_prediction"][image_idx]
-            candidate_cache = build_fcos_candidate_cache(pre_pred, cand_score_threshold)
+            candidate_cache = build_fcos_dense_candidate_cache(
+                model_output,
+                image_idx,
+                cand_score_threshold,
+                detach=True,
+            )
         if candidate_cache.prediction.numel() == 0:
             timing_accumulator["candidate_search_sec"] += timing.elapsed(t_candidate)
             return candidate_sources
@@ -249,9 +249,11 @@ def _resolve_fcos_candidate_sources(
         timing_accumulator["candidate_search_sec"] += timing.elapsed(t_candidate)
 
         t_loss = timing.start()
-        source_boxlist = pre_nms_boxlists[image_idx]
         for candidate_idx in candidate_indices.detach().cpu().tolist():
-            level, loc_idx, _raw, _cls_one_based = _source_indices_from_boxlist(source_boxlist, int(candidate_idx))
+            if candidate_cache.levels is None or candidate_cache.location_indices is None:
+                continue
+            level = int(candidate_cache.levels[int(candidate_idx)].detach().cpu().item())
+            loc_idx = int(candidate_cache.location_indices[int(candidate_idx)].detach().cpu().item())
             candidate_sources.append((level, loc_idx))
         timing_accumulator["loss_compute_sec"] += timing.elapsed(t_loss)
     else:
@@ -475,7 +477,6 @@ def run_layer_grad_csv(config, run_dir):
             )):
                 image_list = _as_image_list(images)
                 infer_batch = _prepare_infer_batch(detector, image_list, device, auto=False)[0]
-                fcos_preprocessed = detector.preprocess_images(infer_batch)
                 stage_seconds = {
                     "detector_inference_sec": 0.0,
                     "candidate_search_sec": 0.0,
@@ -486,25 +487,11 @@ def run_layer_grad_csv(config, run_dir):
 
                 detector.zero_grad(set_to_none=True)
                 t_detector = timing.start()
-                normal_pre_nms_threshold = float(getattr(detector, "confidence", 0.05))
-                pre_nms_threshold = normal_pre_nms_threshold
-                if layer_cfg["target"] == "cand_target":
-                    pre_nms_threshold = min(pre_nms_threshold, float(layer_cfg["cand_score_threshold"]))
+                fcos_preprocessed = detector.preprocess_images(infer_batch)
+                model_output = detector.forward_layer_grad(fcos_preprocessed, include_post_logits=False)
 
-                row_model_output = None
-                use_separate_row_output = layer_cfg["target"] == "cand_target" and pre_nms_threshold < normal_pre_nms_threshold
-                if use_separate_row_output:
-                    with detector.temporary_pre_nms_threshold(normal_pre_nms_threshold):
-                        row_model_output = detector.forward_preprocessed(
-                            fcos_preprocessed,
-                            keep_pre_nms=False,
-                            keep_class_outputs=False,
-                        )
-                with detector.temporary_pre_nms_threshold(pre_nms_threshold):
-                    model_output = detector.forward_layer_grad(fcos_preprocessed, include_post_logits=False)
-
-                row_prediction = row_model_output[0] if row_model_output is not None else model_output["post_prediction"]
-                row_indices = row_model_output[2] if row_model_output is not None else model_output["post_indices"]
+                row_prediction = model_output["post_prediction"]
+                row_indices = model_output["post_indices"]
                 selected = select_fcos_post_nms(
                     detector,
                     row_prediction,
@@ -519,14 +506,11 @@ def run_layer_grad_csv(config, run_dir):
                 if layer_cfg["target"] == "cand_target":
                     for sample_idx in range(len(image_list)):
                         t_candidate = timing.start()
-                        pre_pred = (
-                            model_output["pre_prediction"][sample_idx]
-                            if model_output.get("pre_prediction") is not None and sample_idx < len(model_output["pre_prediction"])
-                            else torch.zeros((0, 6), dtype=torch.float32, device=device)
-                        )
-                        candidate_caches[sample_idx] = build_fcos_candidate_cache(
-                            pre_pred,
+                        candidate_caches[sample_idx] = build_fcos_dense_candidate_cache(
+                            model_output,
+                            sample_idx,
                             layer_cfg["cand_score_threshold"],
+                            detach=True,
                         )
                         stage_seconds["candidate_search_sec"] += timing.elapsed(t_candidate)
 
@@ -659,8 +643,6 @@ def run_layer_grad_csv(config, run_dir):
                     del row
                 del batch_rows, batch_grad_arrays, candidate_caches
                 del infer_batch, fcos_preprocessed, model_output
-                if row_model_output is not None:
-                    del row_model_output
                 del row_prediction, row_indices
                 del selected, selected_preds, selected_indices
                 del image_list
