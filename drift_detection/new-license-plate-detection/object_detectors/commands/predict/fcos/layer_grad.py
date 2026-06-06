@@ -247,7 +247,6 @@ def _resolve_fcos_candidate_sources(
         )
         timing_accumulator["candidate_search_sec"] += timing.elapsed(t_candidate)
 
-        t_loss = timing.start()
         candidate_indices = torch.where(cand_mask)[0]
         for candidate_idx in candidate_indices.detach().cpu().tolist():
             if candidate_cache.levels is None or candidate_cache.location_indices is None:
@@ -255,7 +254,6 @@ def _resolve_fcos_candidate_sources(
             level = int(candidate_cache.levels[int(candidate_idx)].detach().cpu().item())
             loc_idx = int(candidate_cache.location_indices[int(candidate_idx)].detach().cpu().item())
             candidate_sources.append((level, loc_idx))
-        timing_accumulator["loss_compute_sec"] += timing.elapsed(t_loss)
     else:
         if image_idx >= len(detections) or pred_idx >= len(detections[image_idx]):
             return candidate_sources
