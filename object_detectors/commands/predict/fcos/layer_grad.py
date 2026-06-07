@@ -168,6 +168,41 @@ def _flatten_centerness(tensor, image_idx):
     return tensor.reshape(-1)
 
 
+class _FcosLossFlattenCache:
+    def __init__(self, model_output, image_idx, device):
+        self.box_cls = model_output["box_cls"]
+        self.box_regression = model_output["box_regression"]
+        self.centerness = model_output["centerness"]
+        self.locations = model_output["locations"]
+        self.image_idx = image_idx
+        self.device = device
+        self.flat_ltrb_by_level = {}
+        self.flat_cls_by_level = {}
+        self.flat_cnt_by_level = {}
+        self.loc_by_level = {}
+
+    def flat_ltrb(self, level):
+        if level not in self.flat_ltrb_by_level:
+            self.flat_ltrb_by_level[level] = _flatten_level_output(self.box_regression[level], self.image_idx)
+        return self.flat_ltrb_by_level[level]
+
+    def flat_cls(self, level):
+        if level not in self.flat_cls_by_level:
+            self.flat_cls_by_level[level] = _flatten_level_output(self.box_cls[level], self.image_idx)
+        return self.flat_cls_by_level[level]
+
+    def flat_cnt(self, level):
+        if level not in self.flat_cnt_by_level:
+            self.flat_cnt_by_level[level] = _flatten_centerness(self.centerness[level], self.image_idx)
+        return self.flat_cnt_by_level[level]
+
+    def locations_for(self, level, dtype):
+        key = (level, dtype)
+        if key not in self.loc_by_level:
+            self.loc_by_level[key] = self.locations[level].to(device=self.device, dtype=dtype)
+        return self.loc_by_level[key]
+
+
 def _centerness_from_ltrb(ltrb):
     eps = 1e-6
     lr = ltrb[:, [0, 2]].clamp(min=eps)
@@ -261,6 +296,7 @@ def _build_fcos_losses(
     timing,
     timing_accumulator,
     candidate_sources=None,
+    flat_cache=None,
 ):
     box_cls = model_output["box_cls"]
     box_regression = model_output["box_regression"]
@@ -296,40 +332,17 @@ def _build_fcos_losses(
     cnt_terms = []
     num_classes = int(box_cls[0].shape[1])
     final_cls = int(final_cls)
-    flat_ltrb_by_level = {}
-    flat_cls_by_level = {}
-    flat_cnt_by_level = {}
-    loc_by_level = {}
-
-    def _flat_ltrb(level):
-        if level not in flat_ltrb_by_level:
-            flat_ltrb_by_level[level] = _flatten_level_output(box_regression[level], image_idx)
-        return flat_ltrb_by_level[level]
-
-    def _flat_cls(level):
-        if level not in flat_cls_by_level:
-            flat_cls_by_level[level] = _flatten_level_output(box_cls[level], image_idx)
-        return flat_cls_by_level[level]
-
-    def _flat_cnt(level):
-        if level not in flat_cnt_by_level:
-            flat_cnt_by_level[level] = _flatten_centerness(centerness[level], image_idx)
-        return flat_cnt_by_level[level]
-
-    def _locations(level, dtype):
-        key = (level, dtype)
-        if key not in loc_by_level:
-            loc_by_level[key] = locations[level].to(device=device, dtype=dtype)
-        return loc_by_level[key]
+    if flat_cache is None:
+        flat_cache = _FcosLossFlattenCache(model_output, image_idx, device)
 
     for level, loc_idx in candidate_sources:
         if need_bbox or need_ltrb_target:
-            pred_ltrb = _flat_ltrb(level)[loc_idx].view(1, 4)
+            pred_ltrb = flat_cache.flat_ltrb(level)[loc_idx].view(1, 4)
         else:
             pred_ltrb = None
 
         if need_cls:
-            cls_logits = _flat_cls(level)[loc_idx].view(-1)
+            cls_logits = flat_cache.flat_cls(level)[loc_idx].view(-1)
             if target_mode == "cand_target":
                 cls_target = torch.zeros((num_classes,), dtype=box_cls[level].dtype, device=device)
                 if 0 <= final_cls < num_classes:
@@ -343,11 +356,11 @@ def _build_fcos_losses(
                 cls_target = torch.full((num_classes,), cls_target_value, dtype=box_cls[level].dtype, device=device)
 
         if need_cnt:
-            cnt_logit = _flat_cnt(level)[loc_idx].view(())
+            cnt_logit = flat_cache.flat_cnt(level)[loc_idx].view(())
 
         if need_ltrb_target:
             if target_mode == "cand_target":
-                loc_xy = _locations(level, pred_ltrb.dtype)[loc_idx].view(1, 2)
+                loc_xy = flat_cache.locations_for(level, pred_ltrb.dtype)[loc_idx].view(1, 2)
                 target_ltrb = _ltrb_target_from_box(
                     loc_xy,
                     final_box.detach().to(device=device, dtype=pred_ltrb.dtype),
@@ -510,6 +523,10 @@ def run_layer_grad_csv(config, run_dir):
                             detach=True,
                         )
                         stage_seconds["candidate_search_sec"] += timing.elapsed(t_candidate)
+                flat_caches = {
+                    sample_idx: _FcosLossFlattenCache(model_output, sample_idx, device)
+                    for sample_idx in range(len(image_list))
+                }
 
                 batch_rows = []
                 batch_items = 0
@@ -554,10 +571,10 @@ def run_layer_grad_csv(config, run_dir):
                             candidate_sources = []
                             if cache is not None and cache.levels is not None and cache.location_indices is not None:
                                 candidate_indices = torch.where(cand_mask)[0]
-                                for candidate_idx in candidate_indices.detach().cpu().tolist():
-                                    level = int(cache.levels[int(candidate_idx)].detach().cpu().item())
-                                    loc_idx = int(cache.location_indices[int(candidate_idx)].detach().cpu().item())
-                                    candidate_sources.append((level, loc_idx))
+                                if int(candidate_indices.numel()) > 0:
+                                    levels = cache.levels[candidate_indices].detach().cpu().tolist()
+                                    loc_indices = cache.location_indices[candidate_indices].detach().cpu().tolist()
+                                    candidate_sources = [(int(level), int(loc_idx)) for level, loc_idx in zip(levels, loc_indices)]
                         row = {
                             "image_id": image_id,
                             "image_path": image_path,
@@ -591,6 +608,7 @@ def run_layer_grad_csv(config, run_dir):
                             timing=timing,
                             timing_accumulator=stage_seconds,
                             candidate_sources=candidate_sources,
+                            flat_cache=flat_caches[sample_idx],
                         )
 
                         for target_value in target_values:

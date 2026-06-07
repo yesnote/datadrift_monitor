@@ -234,7 +234,7 @@ def _flatten_fcos_centerness(tensor, image_idx):
     return tensor.reshape(-1)
 
 
-def build_fcos_dense_candidate_cache(model_output, image_idx, score_threshold, detach=True):
+def _build_fcos_dense_candidate_cache_impl(model_output, image_idx, score_threshold, detach=True):
     box_cls = model_output.get("box_cls")
     box_regression = model_output.get("box_regression")
     centerness = model_output.get("centerness")
@@ -261,6 +261,11 @@ def build_fcos_dense_candidate_cache(model_output, image_idx, score_threshold, d
     class_indices_by_level = []
     predictions_by_level = []
     for level, (cls_level, reg_level, cnt_level, loc_level) in enumerate(zip(box_cls, box_regression, centerness, locations)):
+        if detach:
+            cls_level = cls_level.detach()
+            reg_level = reg_level.detach()
+            cnt_level = cnt_level.detach()
+            loc_level = loc_level.detach()
         cls_logits = _flatten_fcos_level_output(cls_level, image_idx)
         reg = _flatten_fcos_level_output(reg_level, image_idx)
         cnt_logits = _flatten_fcos_centerness(cnt_level, image_idx)
@@ -347,6 +352,23 @@ def build_fcos_dense_candidate_cache(model_output, image_idx, score_threshold, d
         levels=levels.long(),
         location_indices=location_indices.long(),
         class_indices=class_indices.long(),
+    )
+
+
+def build_fcos_dense_candidate_cache(model_output, image_idx, score_threshold, detach=True):
+    if detach:
+        with torch.no_grad():
+            return _build_fcos_dense_candidate_cache_impl(
+                model_output,
+                image_idx,
+                score_threshold,
+                detach=True,
+            )
+    return _build_fcos_dense_candidate_cache_impl(
+        model_output,
+        image_idx,
+        score_threshold,
+        detach=False,
     )
 
 
