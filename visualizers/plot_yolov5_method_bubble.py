@@ -111,8 +111,8 @@ PLOT_LEFT = 90
 PLOT_TOP = 42
 PLOT_RIGHT = 935
 PLOT_BOTTOM = 538
-DEFAULT_Y_MIN = 0.58
-DEFAULT_Y_MAX = 1.0
+Y_MIN = 0.54
+Y_MAX = 1.0
 Y_TICK_STEP = 0.02
 X_TICK_STEP = 2.0
 SIZE_LEGEND_DIMS = [1, 54, 88, 121]
@@ -255,16 +255,8 @@ def x_map(value, x_max):
     return PLOT_LEFT + (float(value) / x_max) * (PLOT_RIGHT - PLOT_LEFT)
 
 
-def y_axis_limits(points):
-    min_auroc = min(float(point["auroc"]) for point in points)
-    max_auroc = max(float(point["auroc"]) for point in points)
-    y_min = min(DEFAULT_Y_MIN, math.floor((min_auroc - Y_TICK_STEP) / Y_TICK_STEP) * Y_TICK_STEP)
-    y_max = max(DEFAULT_Y_MAX, math.ceil((max_auroc + Y_TICK_STEP) / Y_TICK_STEP) * Y_TICK_STEP)
-    return y_min, y_max
-
-
-def y_map(value, y_min, y_max):
-    return PLOT_BOTTOM - ((float(value) - y_min) / (y_max - y_min)) * (PLOT_BOTTOM - PLOT_TOP)
+def y_map(value):
+    return PLOT_BOTTOM - ((float(value) - Y_MIN) / (Y_MAX - Y_MIN)) * (PLOT_BOTTOM - PLOT_TOP)
 
 
 def radius_for_dim(dim):
@@ -284,18 +276,17 @@ def svg_text(x, y, text, size=12, fill="#374151", anchor="start", extra=""):
 
 def draw_svg(points, output_path, with_labels):
     x_max = nice_x_max([point["time_ms_per_prediction"] for point in points])
-    y_min, y_max = y_axis_limits(points)
     lines = [
         f'<svg xmlns="http://www.w3.org/2000/svg" width="{WIDTH}" height="{HEIGHT}" viewBox="0 0 {WIDTH} {HEIGHT}">',
         '<rect width="100%" height="100%" fill="white"/>',
     ]
 
-    y_tick = y_min
-    while y_tick <= y_max + 1e-9:
-        y = y_map(y_tick, y_min, y_max)
+    y_tick = Y_MIN
+    while y_tick <= Y_MAX + 1e-9:
+        y = y_map(y_tick)
         lines.append(f'<line x1="{PLOT_LEFT}" y1="{y:.1f}" x2="{PLOT_RIGHT}" y2="{y:.1f}" stroke="#e5e7eb"/>')
         lines.append(svg_text(78, y + 4, f"{y_tick:.2f}", fill="#6b7280", anchor="end"))
-        y_tick += 0.02
+        y_tick += Y_TICK_STEP
 
     tick = X_TICK_STEP
     while tick <= x_max + 1e-9:
@@ -311,7 +302,7 @@ def draw_svg(points, output_path, with_labels):
 
     for point in points:
         x = x_map(point["time_ms_per_prediction"], x_max)
-        y = y_map(point["auroc"], y_min, y_max)
+        y = y_map(point["auroc"])
         r = radius_for_dim(point["input_dim"])
         color = METHOD_COLORS.get(point["method_type"], "#64748b")
         lines.append(
@@ -322,7 +313,7 @@ def draw_svg(points, output_path, with_labels):
     if with_labels:
         for point in points:
             x = x_map(point["time_ms_per_prediction"], x_max)
-            y = y_map(point["auroc"], y_min, y_max)
+            y = y_map(point["auroc"])
             r = radius_for_dim(point["input_dim"])
             dy = -10 if point["label"] in {"Class Prob.", "MetaDetect", "LayerGrad-null"} else 16
             lines.append(svg_text(f"{x + r * 0.35:.1f}", f"{y + dy:.1f}", point["label"], size=12, fill="#111827"))
