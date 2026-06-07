@@ -296,16 +296,40 @@ def _build_fcos_losses(
     cnt_terms = []
     num_classes = int(box_cls[0].shape[1])
     final_cls = int(final_cls)
+    flat_ltrb_by_level = {}
+    flat_cls_by_level = {}
+    flat_cnt_by_level = {}
+    loc_by_level = {}
+
+    def _flat_ltrb(level):
+        if level not in flat_ltrb_by_level:
+            flat_ltrb_by_level[level] = _flatten_level_output(box_regression[level], image_idx)
+        return flat_ltrb_by_level[level]
+
+    def _flat_cls(level):
+        if level not in flat_cls_by_level:
+            flat_cls_by_level[level] = _flatten_level_output(box_cls[level], image_idx)
+        return flat_cls_by_level[level]
+
+    def _flat_cnt(level):
+        if level not in flat_cnt_by_level:
+            flat_cnt_by_level[level] = _flatten_centerness(centerness[level], image_idx)
+        return flat_cnt_by_level[level]
+
+    def _locations(level, dtype):
+        key = (level, dtype)
+        if key not in loc_by_level:
+            loc_by_level[key] = locations[level].to(device=device, dtype=dtype)
+        return loc_by_level[key]
+
     for level, loc_idx in candidate_sources:
         if need_bbox or need_ltrb_target:
-            pred_ltrb_all = _flatten_level_output(box_regression[level], image_idx)
-            pred_ltrb = pred_ltrb_all[loc_idx].view(1, 4)
+            pred_ltrb = _flat_ltrb(level)[loc_idx].view(1, 4)
         else:
             pred_ltrb = None
 
         if need_cls:
-            cls_logits_all = _flatten_level_output(box_cls[level], image_idx)
-            cls_logits = cls_logits_all[loc_idx].view(-1)
+            cls_logits = _flat_cls(level)[loc_idx].view(-1)
             if target_mode == "cand_target":
                 cls_target = torch.zeros((num_classes,), dtype=box_cls[level].dtype, device=device)
                 if 0 <= final_cls < num_classes:
@@ -319,12 +343,11 @@ def _build_fcos_losses(
                 cls_target = torch.full((num_classes,), cls_target_value, dtype=box_cls[level].dtype, device=device)
 
         if need_cnt:
-            cnt_logits_all = _flatten_centerness(centerness[level], image_idx)
-            cnt_logit = cnt_logits_all[loc_idx].view(())
+            cnt_logit = _flat_cnt(level)[loc_idx].view(())
 
         if need_ltrb_target:
             if target_mode == "cand_target":
-                loc_xy = locations[level][loc_idx].to(device=device, dtype=pred_ltrb.dtype).view(1, 2)
+                loc_xy = _locations(level, pred_ltrb.dtype)[loc_idx].view(1, 2)
                 target_ltrb = _ltrb_target_from_box(
                     loc_xy,
                     final_box.detach().to(device=device, dtype=pred_ltrb.dtype),
