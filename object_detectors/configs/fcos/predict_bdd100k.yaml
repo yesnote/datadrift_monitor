@@ -1,4 +1,4 @@
-﻿mode: predict
+mode: predict
 
 model:
   type: fcos
@@ -89,7 +89,7 @@ output:
       # cand_target:
       #   bbox_loss: sum over candidates of loss(candidate l,t,r,b, final detection box encoded as l,t,r,b at each candidate location)
       #   cls_loss: sum over candidates of loss(candidate class logits, final detection class target)
-      #   cnt_loss: sum over candidates of loss(candidate centerness logit, FCOS centerness target from final detection box)
+      #   cnt_loss: sum over candidates of loss(candidate centerness logit, target 1)
       # null_target:
       #   bbox_loss: loss(final/source l,t,r,b, zero l,t,r,b)
       #   cls_loss: loss(final/source class logits, uniform class target)

@@ -203,14 +203,6 @@ class _FcosLossFlattenCache:
         return self.loc_by_level[key]
 
 
-def _centerness_from_ltrb(ltrb):
-    eps = 1e-6
-    lr = ltrb[:, [0, 2]].clamp(min=eps)
-    tb = ltrb[:, [1, 3]].clamp(min=eps)
-    value = (lr.min(dim=-1).values / lr.max(dim=-1).values) * (tb.min(dim=-1).values / tb.max(dim=-1).values)
-    return torch.sqrt(value.clamp(min=eps, max=1.0))
-
-
 def _ltrb_target_from_box(locations_xy, box_xyxy):
     x = locations_xy[:, 0]
     y = locations_xy[:, 1]
@@ -326,7 +318,7 @@ def _build_fcos_losses(
     need_bbox = "bbox_loss" in requested
     need_cls = "cls_loss" in requested
     need_cnt = "cnt_loss" in requested
-    need_ltrb_target = need_bbox or (need_cnt and target_mode == "cand_target")
+    need_ltrb_target = need_bbox
     bbox_terms = []
     cls_terms = []
     cnt_terms = []
@@ -370,7 +362,7 @@ def _build_fcos_losses(
 
         if need_cnt:
             if target_mode == "cand_target":
-                cnt_target = _centerness_from_ltrb(target_ltrb).view(())
+                cnt_target = torch.ones_like(cnt_logit)
             else:
                 cnt_target = torch.full_like(cnt_logit, 0.5)
 
