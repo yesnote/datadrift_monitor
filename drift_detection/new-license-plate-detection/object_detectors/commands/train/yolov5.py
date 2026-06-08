@@ -10,7 +10,6 @@ import torch.nn.functional as F
 from tqdm import tqdm
 
 from commands.train.common import (
-    amp_enabled,
     autocast_context,
     count_total_params,
     count_trainable_params,
@@ -34,6 +33,14 @@ def _prepare_batch(images, img_size, device):
         out_h = out_w = int(img_size)
     else:
         out_h, out_w = int(img_size[0]), int(img_size[1])
+
+    if images and all(
+        int(img.shape[0]) == 3 and int(img.shape[1]) == out_h and int(img.shape[2]) == out_w for img in images
+    ):
+        infer_batch = torch.stack(images, dim=0).to(device=device, non_blocking=True)
+        ratios = [(1.0, 1.0)] * len(images)
+        pads = [(0.0, 0.0)] * len(images)
+        return infer_batch, ratios, pads
 
     infer_tensors = []
     ratios = []
@@ -79,11 +86,11 @@ def _to_yolo_targets(targets, ratios, pads, img_h, img_w, device):
 
         ratio_w, ratio_h = ratios[batch_idx]
         pad_w, pad_h = pads[batch_idx]
-        b = boxes.clone().float()
+        b = boxes.to(device=device, dtype=torch.float32, non_blocking=True).clone()
         b[:, [0, 2]] = b[:, [0, 2]] * ratio_w + pad_w
         b[:, [1, 3]] = b[:, [1, 3]] * ratio_h + pad_h
 
-        cls = labels.clone().long()
+        cls = labels.to(device=device, dtype=torch.long, non_blocking=True).clone()
         if str(target.get("dataset_name", "")).lower() == "coco":
             mapped, keep = map_coco91_to_80(cls, offset=0)
             if not keep.any():
@@ -103,12 +110,12 @@ def _to_yolo_targets(targets, ratios, pads, img_h, img_w, device):
         yc = (y1 + h * 0.5) / float(img_h)
         wn = w / float(img_w)
         hn = h / float(img_h)
-        batch_col = torch.full((xc.shape[0],), int(batch_idx), dtype=torch.float32)
+        batch_col = torch.full((xc.shape[0],), int(batch_idx), dtype=torch.float32, device=device)
         rows.append(torch.stack([batch_col, cls.float(), xc.float(), yc.float(), wn.float(), hn.float()], dim=1))
 
     if not rows:
         return torch.zeros((0, 6), dtype=torch.float32, device=device)
-    return torch.cat(rows, dim=0).to(device=device, dtype=torch.float32)
+    return torch.cat(rows, dim=0).to(dtype=torch.float32)
 
 
 def _rebuild_detect_head_for_class_count(model, class_names, device):
@@ -330,7 +337,7 @@ def run_train(config, run_dir, device, epochs, lr, weight_decay):
     )
     loss_fn = build_loss(config.get("model", {}).get("type", "yolov5"), model, config)
     optimizer = torch.optim.AdamW(trainable_params, lr=lr, weight_decay=weight_decay)
-    scaler = make_grad_scaler(device, amp_enabled(config, device))
+    scaler = make_grad_scaler(device, options["amp"])
 
     best_metric = float("inf")
     history = []
