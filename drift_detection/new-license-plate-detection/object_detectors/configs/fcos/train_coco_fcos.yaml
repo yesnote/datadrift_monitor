@@ -41,3 +41,6 @@ training:
   save_best: true
   save_optimizer: true
   freeze_feature_extractor: false
+  log_timing: false
+
+
