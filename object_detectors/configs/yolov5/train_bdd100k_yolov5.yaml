@@ -27,6 +27,8 @@ dataloader:
   pin_memory: true
   shuffle_train: true
   shuffle_eval: false
+  persistent_workers: true
+  prefetch_factor: 2
 
 loss:
   box: 0.05
@@ -38,3 +40,9 @@ training:
   lr: 0.0001
   weight_decay: 0.0001
   seed: 42
+  amp: true
+  val_interval: 1
+  save_last_interval: 1
+  save_best: true
+  save_optimizer: true
+  freeze_feature_extractor: false
