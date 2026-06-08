@@ -36,8 +36,17 @@ def _resolve_class_names(config):
 def _target_to_fcos(target, image, device):
     from fcos_core.structures.bounding_box import BoxList
 
-    boxes = target.get("boxes", torch.zeros((0, 4), dtype=torch.float32)).to(device=device, dtype=torch.float32)
-    labels = target.get("labels", torch.zeros((0,), dtype=torch.int64)).to(device=device, dtype=torch.int64)
+    boxes = target.get("boxes")
+    labels = target.get("labels")
+    if boxes is None:
+        boxes = torch.zeros((0, 4), dtype=torch.float32, device=device)
+    else:
+        boxes = boxes.to(device=device, dtype=torch.float32, non_blocking=True)
+    if labels is None:
+        labels = torch.zeros((0,), dtype=torch.int64, device=device)
+    else:
+        labels = labels.to(device=device, dtype=torch.int64, non_blocking=True)
+
     dataset_name = str(target.get("dataset_name", "")).lower()
     if dataset_name == "coco":
         mapped, keep = map_coco91_to_80(labels, offset=1)
