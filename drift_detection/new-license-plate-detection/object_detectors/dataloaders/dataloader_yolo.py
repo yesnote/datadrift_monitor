@@ -273,11 +273,20 @@ def create_dataloader(config, split="train"):
         aspect_grouping = model_type in {"faster_rcnn", "faster-rcnn", "frcnn"} and not bool(shuffle)
     if bool(aspect_grouping) and not bool(shuffle):
         dataset = _sort_dataset_by_aspect_ratio(dataset)
+    num_workers = int(dl_cfg["num_workers"])
+    loader_kwargs = {
+        "batch_size": dl_cfg["batch_size"],
+        "shuffle": shuffle,
+        "num_workers": num_workers,
+        "pin_memory": dl_cfg["pin_memory"],
+        "collate_fn": yolo_collate_fn,
+    }
+    if num_workers > 0:
+        if "persistent_workers" in dl_cfg:
+            loader_kwargs["persistent_workers"] = bool(dl_cfg.get("persistent_workers", False))
+        if "prefetch_factor" in dl_cfg and dl_cfg.get("prefetch_factor") is not None:
+            loader_kwargs["prefetch_factor"] = int(dl_cfg["prefetch_factor"])
     return DataLoader(
         dataset,
-        batch_size=dl_cfg["batch_size"],
-        shuffle=shuffle,
-        num_workers=dl_cfg["num_workers"],
-        pin_memory=dl_cfg["pin_memory"],
-        collate_fn=yolo_collate_fn,
+        **loader_kwargs,
     )

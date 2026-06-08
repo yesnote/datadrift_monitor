@@ -2,6 +2,8 @@ import json
 import random
 from copy import deepcopy
 from datetime import datetime
+from functools import lru_cache
+from contextlib import nullcontext
 from pathlib import Path
 
 import numpy as np
@@ -24,6 +26,59 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_FASTER_RCNN_COCO_WEIGHT = (
     PROJECT_ROOT / "models" / "faster_rcnn" / "weights" / "coco" / "fasterrcnn_resnet50_fpn_coco.pth"
 )
+
+
+@lru_cache(maxsize=1)
+def _coco91_to_80_pairs():
+    return tuple((int(cat_id), int(i)) for i, cat_id in enumerate(coco80_to_coco91_class()))
+
+
+_COCO91_TO_80_TENSOR_CACHE = {}
+
+
+def _coco91_to_80_lookup(device):
+    device = torch.device(device)
+    key = str(device)
+    if key not in _COCO91_TO_80_TENSOR_CACHE:
+        max_cat_id = max(cat_id for cat_id, _idx in _coco91_to_80_pairs())
+        lookup = torch.full((max_cat_id + 1,), -1, dtype=torch.long, device=device)
+        for cat_id, idx in _coco91_to_80_pairs():
+            lookup[cat_id] = idx
+        _COCO91_TO_80_TENSOR_CACHE[key] = lookup
+    return _COCO91_TO_80_TENSOR_CACHE[key]
+
+
+def _map_coco91_to_80(labels, offset=0):
+    lookup = _coco91_to_80_lookup(labels.device)
+    valid_id = (labels >= 0) & (labels < int(lookup.numel()))
+    mapped = torch.full_like(labels, -1)
+    if valid_id.any():
+        mapped[valid_id] = lookup[labels[valid_id]]
+    keep = mapped >= 0
+    return mapped[keep] + int(offset), keep
+
+
+def _amp_enabled(config, device):
+    return bool(config.get("training", {}).get("amp", True)) and torch.device(device).type == "cuda"
+
+
+def _autocast_context(device, enabled):
+    if not enabled:
+        return nullcontext()
+    device_type = torch.device(device).type
+    if hasattr(torch, "amp") and hasattr(torch.amp, "autocast"):
+        return torch.amp.autocast(device_type=device_type, enabled=True)
+    return torch.cuda.amp.autocast(enabled=True)
+
+
+def _make_grad_scaler(device, enabled):
+    enabled = bool(enabled) and torch.device(device).type == "cuda"
+    if hasattr(torch, "amp") and hasattr(torch.amp, "GradScaler"):
+        try:
+            return torch.amp.GradScaler(torch.device(device).type, enabled=enabled)
+        except TypeError:
+            return torch.amp.GradScaler(enabled=enabled)
+    return torch.cuda.amp.GradScaler(enabled=enabled)
 
 
 def _torch_load(path, map_location):
@@ -121,7 +176,6 @@ def _prepare_batch(images, img_size, device):
 
 def _to_yolo_targets(targets, ratios, pads, img_h, img_w, device):
     rows = []
-    coco91_to_80 = {int(cat_id): int(i) for i, cat_id in enumerate(coco80_to_coco91_class())}
     for batch_idx, target in enumerate(targets):
         boxes = target.get("boxes")
         labels = target.get("labels")
@@ -136,16 +190,11 @@ def _to_yolo_targets(targets, ratios, pads, img_h, img_w, device):
 
         cls = labels.clone().long()
         if str(target.get("dataset_name", "")).lower() == "coco":
-            mapped = []
-            keep = []
-            for i, v in enumerate(cls.tolist()):
-                if v in coco91_to_80:
-                    mapped.append(coco91_to_80[v])
-                    keep.append(i)
-            if not keep:
+            mapped, keep = _map_coco91_to_80(cls, offset=0)
+            if not keep.any():
                 continue
             b = b[keep]
-            cls = torch.tensor(mapped, dtype=torch.long)
+            cls = mapped.to(dtype=torch.long)
 
         x1, y1, x2, y2 = b[:, 0], b[:, 1], b[:, 2], b[:, 3]
         w = (x2 - x1).clamp(min=0.0)
@@ -303,9 +352,68 @@ def _build_model_for_train(config, device):
     return model, use_finetune
 
 
-def _run_one_epoch(model, dataloader, loss_fn, optimizer, img_size, device, train_mode=True):
+def _freeze_yolo_feature_extractor(model):
+    for module in model.model[:-1]:
+        module.requires_grad_(False)
+        module.eval()
+    model.model[-1].requires_grad_(True)
+    model.model[-1].train()
+
+
+def _freeze_fcos_feature_extractor(model):
+    model.backbone.requires_grad_(False)
+    model.backbone.eval()
+    model.rpn.head.requires_grad_(True)
+    model.rpn.head.train()
+
+
+def _apply_frozen_module_modes(model, model_type, freeze_feature_extractor):
+    if not freeze_feature_extractor:
+        return
+    if model_type == "yolov5":
+        for module in model.model[:-1]:
+            module.eval()
+        model.model[-1].train()
+    elif model_type == "fcos":
+        model.backbone.eval()
+        model.rpn.head.train()
+
+
+def _trainable_parameters(model):
+    return [p for p in model.parameters() if p.requires_grad]
+
+
+def _count_trainable_params(model):
+    return int(sum(p.numel() for p in model.parameters() if p.requires_grad))
+
+
+def _training_options_summary(config, device):
+    training_cfg = config.get("training", {})
+    return {
+        "amp": bool(_amp_enabled(config, device)),
+        "freeze_feature_extractor": bool(training_cfg.get("freeze_feature_extractor", False)),
+        "val_interval": max(1, int(training_cfg.get("val_interval", 1))),
+        "save_last_interval": max(1, int(training_cfg.get("save_last_interval", 1))),
+        "save_best": bool(training_cfg.get("save_best", True)),
+        "save_optimizer": bool(training_cfg.get("save_optimizer", True)),
+    }
+
+
+def _run_one_epoch(
+    model,
+    dataloader,
+    loss_fn,
+    optimizer,
+    img_size,
+    device,
+    train_mode=True,
+    amp_enabled=False,
+    scaler=None,
+    freeze_feature_extractor=False,
+):
     if train_mode:
         model.train()
+        _apply_frozen_module_modes(model, "yolov5", freeze_feature_extractor)
     else:
         model.eval()
 
@@ -336,14 +444,21 @@ def _run_one_epoch(model, dataloader, loss_fn, optimizer, img_size, device, trai
 
         if train_mode:
             optimizer.zero_grad(set_to_none=True)
-            preds = _normalize_preds_for_yolo_loss(model(infer_batch))
-            loss, _loss_items = loss_fn(preds, yolo_targets)
-            loss.backward()
-            optimizer.step()
-        else:
-            with torch.no_grad():
+            with _autocast_context(device, amp_enabled):
                 preds = _normalize_preds_for_yolo_loss(model(infer_batch))
                 loss, _loss_items = loss_fn(preds, yolo_targets)
+            if scaler is not None and scaler.is_enabled():
+                scaler.scale(loss).backward()
+                scaler.step(optimizer)
+                scaler.update()
+            else:
+                loss.backward()
+                optimizer.step()
+        else:
+            with torch.no_grad():
+                with _autocast_context(device, amp_enabled):
+                    preds = _normalize_preds_for_yolo_loss(model(infer_batch))
+                    loss, _loss_items = loss_fn(preds, yolo_targets)
 
         loss_value = float(loss.detach().cpu().item())
         total_loss += loss_value
@@ -356,11 +471,11 @@ def _run_one_epoch(model, dataloader, loss_fn, optimizer, img_size, device, trai
     return mean_loss
 
 
-def _save_ckpt(path, epoch, model, optimizer, train_loss, val_loss):
+def _save_ckpt(path, epoch, model, optimizer, train_loss, val_loss, save_optimizer=True):
     ckpt = {
         "epoch": int(epoch),
         "model": deepcopy(model).half().cpu(),
-        "optimizer": optimizer.state_dict(),
+        "optimizer": optimizer.state_dict() if save_optimizer else None,
         "train_loss": float(train_loss),
         "val_loss": None if val_loss is None else float(val_loss),
         "date": datetime.now().isoformat(),
@@ -398,16 +513,10 @@ def _target_to_fcos(target, image, device):
     labels = target.get("labels", torch.zeros((0,), dtype=torch.int64)).to(device=device, dtype=torch.int64)
     dataset_name = str(target.get("dataset_name", "")).lower()
     if dataset_name == "coco":
-        coco91_to_80 = {int(cat_id): int(i) for i, cat_id in enumerate(coco80_to_coco91_class())}
-        mapped = []
-        keep = []
-        for idx, value in enumerate(labels.tolist()):
-            if int(value) in coco91_to_80:
-                mapped.append(coco91_to_80[int(value)] + 1)
-                keep.append(idx)
-        if keep:
+        mapped, keep = _map_coco91_to_80(labels, offset=1)
+        if keep.any():
             boxes = boxes[keep]
-            labels = torch.tensor(mapped, dtype=torch.int64, device=device)
+            labels = mapped.to(dtype=torch.int64, device=device)
         else:
             boxes = boxes[:0]
             labels = labels[:0]
@@ -447,8 +556,19 @@ def _build_fcos_for_train(config, device):
     return detector, model, use_finetune, class_names, detector.cfg
 
 
-def _run_fcos_one_epoch(detector, model, dataloader, optimizer, device, train_mode=True):
+def _run_fcos_one_epoch(
+    detector,
+    model,
+    dataloader,
+    optimizer,
+    device,
+    train_mode=True,
+    amp_enabled=False,
+    scaler=None,
+    freeze_feature_extractor=False,
+):
     model.train()
+    _apply_frozen_module_modes(model, "fcos", freeze_feature_extractor)
     total_loss = 0.0
     total_steps = 0
     pbar = tqdm(dataloader, total=len(dataloader), desc="train" if train_mode else "val")
@@ -457,14 +577,21 @@ def _run_fcos_one_epoch(detector, model, dataloader, optimizer, device, train_mo
         target_list = [_target_to_fcos(t, img, device) for img, t in zip(image_list, targets)]
         if train_mode:
             optimizer.zero_grad(set_to_none=True)
-            loss_dict = model(image_list, target_list)
-            loss = sum(v for v in loss_dict.values())
-            loss.backward()
-            optimizer.step()
-        else:
-            with torch.no_grad():
+            with _autocast_context(device, amp_enabled):
                 loss_dict = model(image_list, target_list)
                 loss = sum(v for v in loss_dict.values())
+            if scaler is not None and scaler.is_enabled():
+                scaler.scale(loss).backward()
+                scaler.step(optimizer)
+                scaler.update()
+            else:
+                loss.backward()
+                optimizer.step()
+        else:
+            with torch.no_grad():
+                with _autocast_context(device, amp_enabled):
+                    loss_dict = model(image_list, target_list)
+                    loss = sum(v for v in loss_dict.values())
         loss_value = float(loss.detach().cpu().item())
         total_loss += loss_value
         total_steps += 1
@@ -473,12 +600,12 @@ def _run_fcos_one_epoch(detector, model, dataloader, optimizer, device, train_mo
     return (total_loss / total_steps) if total_steps else 0.0
 
 
-def _save_fcos_ckpt(path, epoch, model, optimizer, train_loss, val_loss, class_names, cfg):
+def _save_fcos_ckpt(path, epoch, model, optimizer, train_loss, val_loss, class_names, cfg, save_optimizer=True):
     torch.save(
         {
             "epoch": int(epoch),
             "model_state_dict": model.state_dict(),
-            "optimizer_state_dict": optimizer.state_dict(),
+            "optimizer_state_dict": optimizer.state_dict() if save_optimizer else None,
             "train_loss": float(train_loss),
             "val_loss": None if val_loss is None else float(val_loss),
             "class_names": list(class_names),
@@ -491,6 +618,13 @@ def _save_fcos_ckpt(path, epoch, model, optimizer, train_loss, val_loss, class_n
 
 
 def _run_fcos_train(config, run_dir, device, epochs, lr, weight_decay):
+    training_cfg = config.get("training", {})
+    amp_enabled = _amp_enabled(config, device)
+    freeze_feature_extractor = bool(training_cfg.get("freeze_feature_extractor", False))
+    val_interval = max(1, int(training_cfg.get("val_interval", 1)))
+    save_last_interval = max(1, int(training_cfg.get("save_last_interval", 1)))
+    save_best = bool(training_cfg.get("save_best", True))
+    save_optimizer = bool(training_cfg.get("save_optimizer", True))
     train_loader = create_dataloader(config, split="train")
     val_loader = None
     try:
@@ -498,24 +632,76 @@ def _run_fcos_train(config, run_dir, device, epochs, lr, weight_decay):
     except Exception:
         val_loader = None
     detector, model, use_finetune, class_names, cfg = _build_fcos_for_train(config, device)
+    if freeze_feature_extractor:
+        _freeze_fcos_feature_extractor(model)
+    trainable_params = _trainable_parameters(model)
+    if not trainable_params:
+        raise ValueError("No trainable FCOS parameters remain after applying freeze settings.")
+    print(f"[train] trainable_params={_count_trainable_params(model)} amp={amp_enabled} freeze_feature_extractor={freeze_feature_extractor}")
     optimizer = torch.optim.AdamW(
-        [p for p in model.parameters() if p.requires_grad],
+        trainable_params,
         lr=lr,
         weight_decay=weight_decay,
     )
+    scaler = _make_grad_scaler(device, amp_enabled)
     weights_dir = Path(run_dir) / "weights"
     best_metric = float("inf")
     history = []
     for epoch in range(1, epochs + 1):
-        train_loss = _run_fcos_one_epoch(detector, model, train_loader, optimizer, device, train_mode=True)
+        train_loss = _run_fcos_one_epoch(
+            detector,
+            model,
+            train_loader,
+            optimizer,
+            device,
+            train_mode=True,
+            amp_enabled=amp_enabled,
+            scaler=scaler,
+            freeze_feature_extractor=freeze_feature_extractor,
+        )
         val_loss = None
-        if val_loader is not None:
-            val_loss = _run_fcos_one_epoch(detector, model, val_loader, optimizer, device, train_mode=False)
+        do_val = val_loader is not None and (epoch % val_interval == 0 or epoch == epochs)
+        if do_val:
+            val_loss = _run_fcos_one_epoch(
+                detector,
+                model,
+                val_loader,
+                optimizer,
+                device,
+                train_mode=False,
+                amp_enabled=amp_enabled,
+                scaler=None,
+                freeze_feature_extractor=freeze_feature_extractor,
+            )
         metric = val_loss if val_loss is not None else train_loss
-        _save_fcos_ckpt(weights_dir / "last.pt", epoch, model, optimizer, train_loss, val_loss, class_names, cfg)
-        if metric <= best_metric:
+        can_update_best = val_loss is not None or val_loader is None
+        if epoch % save_last_interval == 0 or epoch == epochs:
+            _save_fcos_ckpt(
+                weights_dir / "last.pt",
+                epoch,
+                model,
+                optimizer,
+                train_loss,
+                val_loss,
+                class_names,
+                cfg,
+                save_optimizer=save_optimizer,
+            )
+        is_best = can_update_best and metric <= best_metric
+        if is_best:
             best_metric = metric
-            _save_fcos_ckpt(weights_dir / "best.pt", epoch, model, optimizer, train_loss, val_loss, class_names, cfg)
+        if save_best and is_best:
+            _save_fcos_ckpt(
+                weights_dir / "best.pt",
+                epoch,
+                model,
+                optimizer,
+                train_loss,
+                val_loss,
+                class_names,
+                cfg,
+                save_optimizer=save_optimizer,
+            )
         history.append(
             {
                 "epoch": int(epoch),
@@ -704,9 +890,10 @@ def run_train(config, run_dir):
             "class_names": list(class_names),
             "history": history,
             "best_metric": float(best_metric),
+            "training_options": _training_options_summary(config, device),
             "weights": {
                 "last": str((weights_dir / "last.pt").resolve()),
-                "best": str((weights_dir / "best.pt").resolve()),
+                "best": str((weights_dir / "best.pt").resolve()) if bool(training_cfg.get("save_best", True)) else None,
             },
         }
         with open(run_dir / "train_summary.json", "w", encoding="utf-8") as f:
@@ -750,12 +937,25 @@ def run_train(config, run_dir):
         val_loader = None
 
     model, use_finetune = _build_model_for_train(config, device)
+    amp_enabled = _amp_enabled(config, device)
+    freeze_feature_extractor = bool(training_cfg.get("freeze_feature_extractor", False))
+    val_interval = max(1, int(training_cfg.get("val_interval", 1)))
+    save_last_interval = max(1, int(training_cfg.get("save_last_interval", 1)))
+    save_best = bool(training_cfg.get("save_best", True))
+    save_optimizer = bool(training_cfg.get("save_optimizer", True))
+    if freeze_feature_extractor:
+        _freeze_yolo_feature_extractor(model)
+    trainable_params = _trainable_parameters(model)
+    if not trainable_params:
+        raise ValueError("No trainable YOLOv5 parameters remain after applying freeze settings.")
+    print(f"[train] trainable_params={_count_trainable_params(model)} amp={amp_enabled} freeze_feature_extractor={freeze_feature_extractor}")
     loss_fn = build_loss(config.get("model", {}).get("type", "yolov5"), model, config)
     optimizer = torch.optim.AdamW(
-        [p for p in model.parameters() if p.requires_grad],
+        trainable_params,
         lr=lr,
         weight_decay=weight_decay,
     )
+    scaler = _make_grad_scaler(device, amp_enabled)
 
     best_metric = float("inf")
     history = []
@@ -770,9 +970,13 @@ def run_train(config, run_dir):
             img_size=img_size,
             device=device,
             train_mode=True,
+            amp_enabled=amp_enabled,
+            scaler=scaler,
+            freeze_feature_extractor=freeze_feature_extractor,
         )
         val_loss = None
-        if val_loader is not None:
+        do_val = val_loader is not None and (epoch % val_interval == 0 or epoch == epochs)
+        if do_val:
             val_loss = _run_one_epoch(
                 model=model,
                 dataloader=val_loader,
@@ -781,13 +985,36 @@ def run_train(config, run_dir):
                 img_size=img_size,
                 device=device,
                 train_mode=False,
+                amp_enabled=amp_enabled,
+                scaler=None,
+                freeze_feature_extractor=freeze_feature_extractor,
             )
 
         metric = val_loss if val_loss is not None else train_loss
-        _save_ckpt(weights_dir / "last.pt", epoch, model, optimizer, train_loss, val_loss)
-        if metric <= best_metric:
+        can_update_best = val_loss is not None or val_loader is None
+        if epoch % save_last_interval == 0 or epoch == epochs:
+            _save_ckpt(
+                weights_dir / "last.pt",
+                epoch,
+                model,
+                optimizer,
+                train_loss,
+                val_loss,
+                save_optimizer=save_optimizer,
+            )
+        is_best = can_update_best and metric <= best_metric
+        if is_best:
             best_metric = metric
-            _save_ckpt(weights_dir / "best.pt", epoch, model, optimizer, train_loss, val_loss)
+        if save_best and is_best:
+            _save_ckpt(
+                weights_dir / "best.pt",
+                epoch,
+                model,
+                optimizer,
+                train_loss,
+                val_loss,
+                save_optimizer=save_optimizer,
+            )
 
         history.append(
             {
@@ -812,9 +1039,10 @@ def run_train(config, run_dir):
         "class_names": list(getattr(model, "names", [])),
         "history": history,
         "best_metric": float(best_metric),
+        "training_options": _training_options_summary(config, device),
         "weights": {
             "last": str((weights_dir / "last.pt").resolve()),
-            "best": str((weights_dir / "best.pt").resolve()),
+            "best": str((weights_dir / "best.pt").resolve()) if bool(training_cfg.get("save_best", True)) else None,
         },
     }
     with open(run_dir / "train_summary.json", "w", encoding="utf-8") as f:
