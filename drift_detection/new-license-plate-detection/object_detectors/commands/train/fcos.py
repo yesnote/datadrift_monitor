@@ -70,6 +70,11 @@ def _target_to_fcos(target, image, device):
     return boxlist
 
 
+def _has_valid_target(boxlist):
+    labels = boxlist.get_field("labels")
+    return bool(boxlist.bbox.numel() and labels.numel())
+
+
 def _build_model(config, device):
     model_cfg = config.get("model", {})
     class_names = _resolve_class_names(config)
@@ -131,8 +136,19 @@ def _run_one_epoch(
             timing["data_sec"] += time.perf_counter() - next_data_start
 
         t_target = time.perf_counter()
-        image_list = detector.preprocess_images(images)
-        target_list = [_target_to_fcos(t, img, device) for img, t in zip(image_list, targets)]
+        candidate_image_list = detector.preprocess_images(images)
+        candidate_target_list = [_target_to_fcos(t, img, device) for img, t in zip(candidate_image_list, targets)]
+        keep_indices = [idx for idx, target in enumerate(candidate_target_list) if _has_valid_target(target)]
+        if not keep_indices:
+            next_data_start = time.perf_counter()
+            continue
+        if len(keep_indices) == len(images):
+            image_list = candidate_image_list
+            target_list = candidate_target_list
+        else:
+            filtered_images = [images[idx] for idx in keep_indices]
+            image_list = detector.preprocess_images(filtered_images)
+            target_list = [candidate_target_list[idx] for idx in keep_indices]
         if log_timing:
             timing["target_sec"] += time.perf_counter() - t_target
 
