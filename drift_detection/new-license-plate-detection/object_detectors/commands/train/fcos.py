@@ -33,7 +33,7 @@ def _resolve_class_names(config):
     return None
 
 
-def _target_to_fcos(target, image, device):
+def _target_to_fcos(target, source_image, processed_image, device):
     from fcos_core.structures.bounding_box import BoxList
 
     boxes = target.get("boxes")
@@ -60,11 +60,19 @@ def _target_to_fcos(target, image, device):
         labels = labels + 1
 
     if boxes.numel():
+        src_h, src_w = int(source_image.shape[-2]), int(source_image.shape[-1])
+        dst_h, dst_w = int(processed_image.shape[-2]), int(processed_image.shape[-1])
+        ratio_w = float(dst_w) / float(max(src_w, 1))
+        ratio_h = float(dst_h) / float(max(src_h, 1))
+        boxes[:, [0, 2]] = boxes[:, [0, 2]] * ratio_w
+        boxes[:, [1, 3]] = boxes[:, [1, 3]] * ratio_h
+        boxes[:, [0, 2]] = boxes[:, [0, 2]].clamp(min=0.0, max=float(dst_w))
+        boxes[:, [1, 3]] = boxes[:, [1, 3]].clamp(min=0.0, max=float(dst_h))
         valid = (boxes[:, 2] > boxes[:, 0]) & (boxes[:, 3] > boxes[:, 1]) & (labels > 0)
         boxes = boxes[valid]
         labels = labels[valid]
-    width = int(image.shape[-1])
-    height = int(image.shape[-2])
+    width = int(processed_image.shape[-1])
+    height = int(processed_image.shape[-2])
     boxlist = BoxList(boxes, (width, height), mode="xyxy")
     boxlist.add_field("labels", labels)
     return boxlist
@@ -73,6 +81,13 @@ def _target_to_fcos(target, image, device):
 def _has_valid_target(boxlist):
     labels = boxlist.get_field("labels")
     return bool(boxlist.bbox.numel() and labels.numel())
+
+
+def _raise_if_nonfinite_loss(loss, loss_dict):
+    if torch.isfinite(loss).all():
+        return
+    values = {key: float(value.detach().cpu()) for key, value in loss_dict.items()}
+    raise FloatingPointError(f"Non-finite FCOS loss encountered: {values}")
 
 
 def _build_model(config, device):
@@ -137,7 +152,10 @@ def _run_one_epoch(
 
         t_target = time.perf_counter()
         candidate_image_list = detector.preprocess_images(images)
-        candidate_target_list = [_target_to_fcos(t, img, device) for img, t in zip(candidate_image_list, targets)]
+        candidate_target_list = [
+            _target_to_fcos(t, src_img, proc_img, device)
+            for src_img, proc_img, t in zip(images, candidate_image_list, targets)
+        ]
         keep_indices = [idx for idx, target in enumerate(candidate_target_list) if _has_valid_target(target)]
         if not keep_indices:
             next_data_start = time.perf_counter()
@@ -158,6 +176,7 @@ def _run_one_epoch(
             with autocast_context(device, amp):
                 loss_dict = model(image_list, target_list)
                 loss = sum(v for v in loss_dict.values())
+            _raise_if_nonfinite_loss(loss, loss_dict)
             if log_timing:
                 timing["forward_loss_sec"] += time.perf_counter() - t_forward
 
@@ -177,6 +196,7 @@ def _run_one_epoch(
                 with autocast_context(device, amp):
                     loss_dict = model(image_list, target_list)
                     loss = sum(v for v in loss_dict.values())
+                _raise_if_nonfinite_loss(loss, loss_dict)
                 if log_timing:
                     timing["forward_loss_sec"] += time.perf_counter() - t_forward
 
