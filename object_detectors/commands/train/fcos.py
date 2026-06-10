@@ -137,10 +137,14 @@ def _run_one_epoch(
     scaler=None,
     freeze_feature_extractor=False,
     log_timing=False,
+    grad_clip_norm=0.0,
+    grad_params=None,
 ):
     model.train()
     _apply_frozen_module_modes(model, freeze_feature_extractor)
     timing = {"data_sec": 0.0, "target_sec": 0.0, "forward_loss_sec": 0.0, "backward_step_sec": 0.0}
+    skipped_images = 0
+    skipped_batches = 0
     total_loss = 0.0
     total_steps = 0
     pbar = tqdm(dataloader, total=len(dataloader), desc="train" if train_mode else "val")
@@ -158,14 +162,16 @@ def _run_one_epoch(
         ]
         keep_indices = [idx for idx, target in enumerate(candidate_target_list) if _has_valid_target(target)]
         if not keep_indices:
+            skipped_images += len(images)
+            skipped_batches += 1
             next_data_start = time.perf_counter()
             continue
+        skipped_images += len(images) - len(keep_indices)
         if len(keep_indices) == len(images):
             image_list = candidate_image_list
             target_list = candidate_target_list
         else:
-            filtered_images = [images[idx] for idx in keep_indices]
-            image_list = detector.preprocess_images(filtered_images)
+            image_list = [candidate_image_list[idx] for idx in keep_indices]
             target_list = [candidate_target_list[idx] for idx in keep_indices]
         if log_timing:
             timing["target_sec"] += time.perf_counter() - t_target
@@ -183,10 +189,15 @@ def _run_one_epoch(
             t_backward = time.perf_counter()
             if scaler is not None and scaler.is_enabled():
                 scaler.scale(loss).backward()
+                if grad_clip_norm > 0.0:
+                    scaler.unscale_(optimizer)
+                    torch.nn.utils.clip_grad_norm_(grad_params, grad_clip_norm)
                 scaler.step(optimizer)
                 scaler.update()
             else:
                 loss.backward()
+                if grad_clip_norm > 0.0:
+                    torch.nn.utils.clip_grad_norm_(grad_params, grad_clip_norm)
                 optimizer.step()
             if log_timing:
                 timing["backward_step_sec"] += time.perf_counter() - t_backward
@@ -209,7 +220,10 @@ def _run_one_epoch(
 
     mean_loss = (total_loss / total_steps) if total_steps else 0.0
     if log_timing:
-        return mean_loss, {key: value / max(total_steps, 1) for key, value in timing.items()}
+        result = {key: value / max(total_steps, 1) for key, value in timing.items()}
+        result["skipped_images"] = float(skipped_images)
+        result["skipped_batches"] = float(skipped_batches)
+        return mean_loss, result
     return mean_loss, {}
 
 
@@ -270,6 +284,8 @@ def run_train(config, run_dir, device, epochs, lr, weight_decay):
             scaler=scaler,
             freeze_feature_extractor=options["freeze_feature_extractor"],
             log_timing=options["log_timing"],
+            grad_clip_norm=options["grad_clip_norm"],
+            grad_params=trainable_params,
         )
         val_loss = None
         val_timing = {}
@@ -286,6 +302,8 @@ def run_train(config, run_dir, device, epochs, lr, weight_decay):
                 scaler=None,
                 freeze_feature_extractor=options["freeze_feature_extractor"],
                 log_timing=options["log_timing"],
+                grad_clip_norm=0.0,
+                grad_params=trainable_params,
             )
 
         metric = val_loss if val_loss is not None else train_loss
