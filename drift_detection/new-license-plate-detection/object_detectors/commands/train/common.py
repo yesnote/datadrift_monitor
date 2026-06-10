@@ -153,6 +153,7 @@ def training_options(config, device):
         "save_best": bool(training_cfg.get("save_best", True)),
         "save_optimizer": bool(training_cfg.get("save_optimizer", True)),
         "log_timing": bool(training_cfg.get("log_timing", False)),
+        "grad_clip_norm": max(0.0, float(training_cfg.get("grad_clip_norm", 0.0))),
     }
 
 
@@ -175,4 +176,3 @@ def merge_epoch_timing(history_row, timing):
         return history_row
     history_row.update({key: float(value) for key, value in timing.items()})
     return history_row
-
