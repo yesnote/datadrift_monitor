@@ -1,5 +1,6 @@
 import json
 import time
+from collections import OrderedDict
 from copy import deepcopy
 from datetime import datetime
 from pathlib import Path
@@ -28,7 +29,32 @@ from models.yolo.models.experimental import attempt_load
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 
-def _prepare_batch(images, img_size, device):
+def _preprocess_cache_key(target, out_h, out_w):
+    path = target.get("path") if isinstance(target, dict) else None
+    if not path:
+        return None
+    return (str(path), int(out_h), int(out_w))
+
+
+def _get_preprocess_cache(preprocess_cache, key):
+    if preprocess_cache is None or key is None:
+        return None
+    cached = preprocess_cache.get(key)
+    if cached is not None:
+        preprocess_cache.move_to_end(key)
+    return cached
+
+
+def _put_preprocess_cache(preprocess_cache, preprocess_cache_size, key, tensor, ratio, pad):
+    if preprocess_cache is None or key is None or preprocess_cache_size <= 0:
+        return
+    preprocess_cache[key] = (tensor.detach().cpu(), ratio, pad)
+    preprocess_cache.move_to_end(key)
+    while len(preprocess_cache) > preprocess_cache_size:
+        preprocess_cache.popitem(last=False)
+
+
+def _prepare_batch(images, targets, img_size, device, preprocess_cache=None, preprocess_cache_size=0):
     if isinstance(img_size, int):
         out_h = out_w = int(img_size)
     else:
@@ -46,7 +72,16 @@ def _prepare_batch(images, img_size, device):
     ratios = []
     pads = []
     pad_value = float(114.0 / 255.0)
-    for img in images:
+    for img, target in zip(images, targets):
+        key = _preprocess_cache_key(target, out_h, out_w)
+        cached = _get_preprocess_cache(preprocess_cache, key)
+        if cached is not None:
+            cached_tensor, cached_ratio, cached_pad = cached
+            infer_tensors.append(cached_tensor)
+            ratios.append(cached_ratio)
+            pads.append(cached_pad)
+            continue
+
         c, h, w = int(img.shape[0]), int(img.shape[1]), int(img.shape[2])
         if c != 3:
             raise ValueError(f"Expected 3-channel image tensor, got shape={tuple(img.shape)}")
@@ -69,8 +104,11 @@ def _prepare_batch(images, img_size, device):
         right = int(pad_w - left)
         resized = F.pad(resized, (left, right, top, bottom), value=pad_value)
         infer_tensors.append(resized)
-        ratios.append((scale, scale))
-        pads.append((float(left), float(top)))
+        ratio = (scale, scale)
+        pad = (float(left), float(top))
+        ratios.append(ratio)
+        pads.append(pad)
+        _put_preprocess_cache(preprocess_cache, preprocess_cache_size, key, resized, ratio, pad)
 
     infer_batch = torch.stack(infer_tensors, dim=0).to(device=device, non_blocking=True)
     return infer_batch, ratios, pads
@@ -233,6 +271,8 @@ def _run_one_epoch(
     scaler=None,
     freeze_feature_extractor=False,
     log_timing=False,
+    preprocess_cache=None,
+    preprocess_cache_size=0,
 ):
     if train_mode:
         model.train()
@@ -251,7 +291,14 @@ def _run_one_epoch(
             timing["data_sec"] += time.perf_counter() - next_data_start
 
         t_target = time.perf_counter()
-        infer_batch, ratios, pads = _prepare_batch(images, img_size=img_size, device=device)
+        infer_batch, ratios, pads = _prepare_batch(
+            images,
+            targets,
+            img_size=img_size,
+            device=device,
+            preprocess_cache=preprocess_cache,
+            preprocess_cache_size=preprocess_cache_size,
+        )
         img_h, img_w = int(infer_batch.shape[2]), int(infer_batch.shape[3])
         yolo_targets = _to_yolo_targets(targets, ratios, pads, img_h=img_h, img_w=img_w, device=device)
         if log_timing:
@@ -342,6 +389,8 @@ def run_train(config, run_dir, device, epochs, lr, weight_decay):
     best_metric = float("inf")
     history = []
     img_size = config.get("model", {}).get("img_size", 640)
+    preprocess_cache_size = int(options["preprocess_cache_size"])
+    preprocess_cache = OrderedDict() if preprocess_cache_size > 0 else None
 
     for epoch in range(1, epochs + 1):
         train_loss, train_timing = _run_one_epoch(
@@ -356,6 +405,8 @@ def run_train(config, run_dir, device, epochs, lr, weight_decay):
             scaler=scaler,
             freeze_feature_extractor=options["freeze_feature_extractor"],
             log_timing=options["log_timing"],
+            preprocess_cache=preprocess_cache,
+            preprocess_cache_size=preprocess_cache_size,
         )
         val_loss = None
         val_timing = {}
@@ -373,6 +424,8 @@ def run_train(config, run_dir, device, epochs, lr, weight_decay):
                 scaler=None,
                 freeze_feature_extractor=options["freeze_feature_extractor"],
                 log_timing=options["log_timing"],
+                preprocess_cache=preprocess_cache,
+                preprocess_cache_size=preprocess_cache_size,
             )
 
         metric = val_loss if val_loss is not None else train_loss

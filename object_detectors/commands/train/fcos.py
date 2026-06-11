@@ -21,6 +21,7 @@ from commands.train.common import (
 from dataloaders.dataloader_yolo import create_dataloader
 from dataloaders.utils.data_utils import DATASET_CLASS_NAMES
 from models.fcos import FCOSTorchObjectDetector
+from fcos_core.structures.bounding_box import BoxList
 
 
 def _resolve_class_names(config):
@@ -34,8 +35,6 @@ def _resolve_class_names(config):
 
 
 def _target_to_fcos(target, source_image, processed_image, device):
-    from fcos_core.structures.bounding_box import BoxList
-
     boxes = target.get("boxes")
     labels = target.get("labels")
     if boxes is None:
