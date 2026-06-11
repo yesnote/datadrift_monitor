@@ -154,6 +154,7 @@ def training_options(config, device):
         "save_optimizer": bool(training_cfg.get("save_optimizer", True)),
         "log_timing": bool(training_cfg.get("log_timing", False)),
         "grad_clip_norm": max(0.0, float(training_cfg.get("grad_clip_norm", 0.0))),
+        "preprocess_cache_size": max(0, int(training_cfg.get("preprocess_cache_size", 0))),
     }
 
 
