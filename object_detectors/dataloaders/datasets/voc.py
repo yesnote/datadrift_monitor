@@ -26,6 +26,7 @@ class VOCDataset(Dataset):
         self.class_names = pascal_voc_names[1:]
         self.class_to_idx = {name: idx for idx, name in enumerate(self.class_names)}
         self.images = self._resolve_images()
+        self.annotations = self._load_annotations()
 
     def _resolve_images(self):
         if os.path.isfile(self.split_file):
@@ -37,6 +38,47 @@ class VOCDataset(Dataset):
             return [p for p in image_paths if os.path.isfile(p)]
         return list_image_files(self.image_dir)
 
+    def _annotation_path(self, image_path):
+        stem = os.path.splitext(os.path.basename(image_path))[0]
+        return os.path.join(self.annotation_dir, f"{stem}.xml")
+
+    def _empty_annotation(self):
+        return {"boxes": [], "labels": [], "gt_class_names": []}
+
+    def _parse_annotation(self, ann_path):
+        if not os.path.isfile(ann_path):
+            return self._empty_annotation()
+
+        try:
+            root = ET.parse(ann_path).getroot()
+        except ET.ParseError:
+            return self._empty_annotation()
+
+        boxes = []
+        labels = []
+        gt_class_names = []
+        for obj in root.findall("object"):
+            label_name = obj.findtext("name", default="").strip()
+            if label_name not in self.class_to_idx:
+                continue
+            bbox = obj.find("bndbox")
+            if bbox is None:
+                continue
+            try:
+                xmin = float(bbox.findtext("xmin", default="0"))
+                ymin = float(bbox.findtext("ymin", default="0"))
+                xmax = float(bbox.findtext("xmax", default="0"))
+                ymax = float(bbox.findtext("ymax", default="0"))
+            except (TypeError, ValueError):
+                continue
+            boxes.append([xmin, ymin, xmax, ymax])
+            labels.append(self.class_to_idx[label_name])
+            gt_class_names.append(label_name)
+        return {"boxes": boxes, "labels": labels, "gt_class_names": gt_class_names}
+
+    def _load_annotations(self):
+        return [self._parse_annotation(self._annotation_path(image_path)) for image_path in self.images]
+
     def __len__(self):
         return len(self.images)
 
@@ -45,29 +87,10 @@ class VOCDataset(Dataset):
         image = read_image_as_rgb(image_path)
         image = torch.from_numpy(image).permute(2, 0, 1).float() / 255.0
 
-        ann_path = os.path.join(
-            self.annotation_dir,
-            f"{os.path.splitext(os.path.basename(image_path))[0]}.xml",
-        )
-        boxes = []
-        labels = []
-        gt_class_names = []
-        if os.path.isfile(ann_path):
-            root = ET.parse(ann_path).getroot()
-            for obj in root.findall("object"):
-                label_name = obj.findtext("name", default="").strip()
-                if label_name not in self.class_to_idx:
-                    continue
-                bbox = obj.find("bndbox")
-                if bbox is None:
-                    continue
-                xmin = float(bbox.findtext("xmin", default="0"))
-                ymin = float(bbox.findtext("ymin", default="0"))
-                xmax = float(bbox.findtext("xmax", default="0"))
-                ymax = float(bbox.findtext("ymax", default="0"))
-                boxes.append([xmin, ymin, xmax, ymax])
-                labels.append(self.class_to_idx[label_name])
-                gt_class_names.append(label_name)
+        annotation = self.annotations[index]
+        boxes = annotation["boxes"]
+        labels = annotation["labels"]
+        gt_class_names = list(annotation["gt_class_names"])
 
         target = {
             "boxes": torch.tensor(boxes, dtype=torch.float32) if boxes else torch.zeros((0, 4), dtype=torch.float32),
