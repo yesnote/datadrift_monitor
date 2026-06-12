@@ -131,6 +131,7 @@ output:
       obj_loss: bcewithlogits  # bcewithlogits | abs_diff | signed_diff
       bbox_direction: pred_to_target  # fixed; reverse is redundant for box_l1/box_l2/offset_l1/offset_l2
       cls_direction: pred_to_target  # pred_to_target | target_to_pred, only for cls_loss: kl
+      # kl pred_to_target: KL(target || pred)
       obj_direction: pred_to_target  # pred_to_target | target_to_pred, only for obj_loss: signed_diff
     save_csv:
       enabled: true
