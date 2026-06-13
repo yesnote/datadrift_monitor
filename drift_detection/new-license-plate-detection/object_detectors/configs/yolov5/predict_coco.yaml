@@ -84,11 +84,11 @@ output:
 
   ensemble:
     weights:
+      - object_detectors/models/yolo/weights/coco/yolov5x.pt
       - object_detectors/runs/yolov5/train/coco/06-08-2026_15;09_yolov5_seed42/weights/last.pt
       - object_detectors/runs/yolov5/train/coco/06-08-2026_15;09_yolov5_seed43/weights/last.pt
       - object_detectors/runs/yolov5/train/coco/06-08-2026_15;09_yolov5_seed44/weights/last.pt
       - object_detectors/runs/yolov5/train/coco/06-08-2026_15;09_yolov5_seed45/weights/last.pt
-      - object_detectors/runs/yolov5/train/coco/06-08-2026_15;09_yolov5_seed46/weights/last.pt
     save_csv:
       enabled: true
 
