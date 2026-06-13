@@ -34,7 +34,7 @@ dataset:
     min_gt_boxes: 1  # keep only images with at least this many GT boxes
 
 dataloader:
-  batch_size: 12
+  batch_size: 16
   num_workers: 4
   pin_memory: true
   shuffle_train: true
@@ -48,7 +48,7 @@ loss:
   obj: 1.0
 
 training:
-  epochs: 10
+  epochs: 5
   lr: 0.0001
   weight_decay: 0.0001
   seed: [42, 43, 44, 45, 46]
