@@ -131,18 +131,19 @@ def run_ensemble_csv(config, run_dir):
                         det_output = detector.model(infer_batch, augment=False)
                         det_raw_pred = det_output[0] if isinstance(det_output, (tuple, list)) else det_output
                         det_raw_logits = det_output[1] if isinstance(det_output, (tuple, list)) and len(det_output) > 1 else None
-                        nms_logits = _resolve_nms_logits(det_raw_pred, det_raw_logits, num_classes_hint=n_classes_hint)
-                        nms_kwargs = _resolve_detector_nms_kwargs(detector)
-                        selected_preds, _selected_logits, _selected_objectness, selected_indices = detector.non_max_suppression(
-                            det_raw_pred,
-                            nms_logits,
-                            conf_thres=nms_kwargs["conf_thres"],
-                            iou_thres=nms_kwargs["iou_thres"],
-                            classes=nms_kwargs["classes"],
-                            agnostic=nms_kwargs["agnostic"],
-                            max_det=nms_kwargs["max_det"],
-                            return_indices=True,
-                        )
+                        if det_idx == 0:
+                            nms_logits = _resolve_nms_logits(det_raw_pred, det_raw_logits, num_classes_hint=n_classes_hint)
+                            nms_kwargs = _resolve_detector_nms_kwargs(detector)
+                            selected_preds, _selected_logits, _selected_objectness, selected_indices = detector.non_max_suppression(
+                                det_raw_pred,
+                                nms_logits,
+                                conf_thres=nms_kwargs["conf_thres"],
+                                iou_thres=nms_kwargs["iou_thres"],
+                                classes=nms_kwargs["classes"],
+                                agnostic=nms_kwargs["agnostic"],
+                                max_det=nms_kwargs["max_det"],
+                                return_indices=True,
+                            )
                     detector_inference_total_sec += timing.elapsed(t_detector)
 
                     t_feature = timing.start()

@@ -3,9 +3,9 @@ from commands.predict.fcos.mc_dropout import (
     _compute_fcos_locations,
     _features_from_fcos_dense_outputs,
     _run_fcos_head_dense_from_cache,
-    _run_fcos_head_post_nms_from_cache,
     _source_specs_from_detections,
 )
+from commands.predict.fcos.common import select_fcos_post_nms
 from commands.predict.fcos.utils import iter_fcos_detection_rows
 from commands.utils.predict_utils import resolve_project_path
 
@@ -18,6 +18,32 @@ def _normalize_weight_path_for_compare(value, key):
 
 def _same_weight_path(left, right):
     return str(left).lower() == str(right).lower()
+
+
+def _run_fcos_post_nms_from_dense(detector, cache, locations, box_cls, box_regression, centerness):
+    rpn = detector.detector_model.rpn
+    detector.detector_model.eval()
+    detector._set_postprocessor_flags(keep_class_outputs=True)
+    detections, _losses = rpn._forward_test(
+        locations,
+        box_cls,
+        box_regression,
+        centerness,
+        cache["images"].image_sizes,
+    )
+    raw_prediction, raw_logits, raw_indices = detector._boxlists_to_contract(
+        detections,
+        include_logits=True,
+        include_indices=True,
+        include_probs=True,
+    )
+    selected = select_fcos_post_nms(
+        detector,
+        raw_prediction,
+        raw_logits,
+        raw_indices,
+    )
+    return detections, selected[0], selected[3]
 
 
 def run_ensemble_csv(config, run_dir):
@@ -126,9 +152,17 @@ def run_ensemble_csv(config, run_dir):
                     base_preprocessed = detectors[0].preprocess_images(infer_batch)
                     base_feature_cache = detectors[0].prepare_feature_cache(base_preprocessed)
                     base_locations = _compute_fcos_locations(detectors[0], base_feature_cache)
-                    detections, selected_preds, selected_indices = _run_fcos_head_post_nms_from_cache(
+                    base_box_cls, base_box_regression, base_centerness = _run_fcos_head_dense_from_cache(
                         detectors[0],
                         base_feature_cache,
+                    )
+                    detections, selected_preds, selected_indices = _run_fcos_post_nms_from_dense(
+                        detectors[0],
+                        base_feature_cache,
+                        base_locations,
+                        base_box_cls,
+                        base_box_regression,
+                        base_centerness,
                     )
                 detector_inference_sec += timing.elapsed(t_detector)
 
@@ -142,6 +176,9 @@ def run_ensemble_csv(config, run_dir):
                     if det_idx == 0:
                         feature_cache = base_feature_cache
                         locations = base_locations
+                        box_cls = base_box_cls
+                        box_regression = base_box_regression
+                        centerness = base_centerness
                     else:
                         t_detector = timing.start()
                         with torch.no_grad():
@@ -150,10 +187,10 @@ def run_ensemble_csv(config, run_dir):
                             locations = _compute_fcos_locations(detector, feature_cache)
                         detector_inference_sec += timing.elapsed(t_detector)
 
-                    t_detector = timing.start()
-                    with torch.no_grad():
-                        box_cls, box_regression, centerness = _run_fcos_head_dense_from_cache(detector, feature_cache)
-                    detector_inference_sec += timing.elapsed(t_detector)
+                        t_detector = timing.start()
+                        with torch.no_grad():
+                            box_cls, box_regression, centerness = _run_fcos_head_dense_from_cache(detector, feature_cache)
+                        detector_inference_sec += timing.elapsed(t_detector)
 
                     t_feature = timing.start()
                     run_features = _features_from_fcos_dense_outputs(
@@ -228,6 +265,7 @@ def run_ensemble_csv(config, run_dir):
                     },
                 )
                 del infer_batch, base_preprocessed, base_feature_cache, base_locations
+                del base_box_cls, base_box_regression, base_centerness
                 del detections, selected_preds, selected_indices, det_rows, source_specs
                 del run_feature_rows, feat_mean, feat_std
     finally:
