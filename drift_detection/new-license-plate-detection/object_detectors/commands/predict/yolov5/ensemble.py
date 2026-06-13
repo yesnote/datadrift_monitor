@@ -51,17 +51,7 @@ def run_ensemble_csv(config, run_dir):
             f"model.weights={model_weight_path}; output.ensemble.weights[0]={first_ensemble_weight_path}"
         )
 
-    dataset = build_dataset(config, split=split)
-    dl_cfg = config["dataloader"]
-    shuffle = dl_cfg["shuffle_train"] if split == "train" else dl_cfg["shuffle_eval"]
-    dataloader = DataLoader(
-        dataset,
-        batch_size=dl_cfg["batch_size"],
-        shuffle=shuffle,
-        num_workers=0,
-        pin_memory=dl_cfg["pin_memory"],
-        collate_fn=yolo_collate_fn,
-    )
+    dataloader = create_dataloader(config, split=split)
     if len(dataloader.dataset) == 0:
         raise ValueError("Loaded 0 images. Check dataset root/image_dir/split configuration in YAML.")
 
@@ -118,7 +108,9 @@ def run_ensemble_csv(config, run_dir):
                 image_ids = [int(targets[i]["image_id"][0].item()) for i in range(batch_size)]
                 image_paths = [targets[i]["path"] for i in range(batch_size)]
 
-                feature_runs = []
+                feature_sum = None
+                feature_sq_sum = None
+                feature_count = 0
                 det_boxes = None
                 raw_keep_indices = None
                 detector_inference_total_sec = 0.0
@@ -161,8 +153,20 @@ def run_ensemble_csv(config, run_dir):
                         raise ValueError(
                             f"All ensemble weights must have the same class count: {n_classes_actual} vs {class_count}."
                         )
-                    feature_runs.append(run_features)
+                    if feature_sum is None:
+                        feature_sum = run_features.clone()
+                        feature_sq_sum = run_features.square()
+                    else:
+                        if tuple(feature_sum.shape) != tuple(run_features.shape):
+                            raise RuntimeError(
+                                "YOLOv5 ensemble raw prediction shape mismatch across weights: "
+                                f"{tuple(feature_sum.shape)} vs {tuple(run_features.shape)}"
+                            )
+                        feature_sum = feature_sum + run_features
+                        feature_sq_sum = feature_sq_sum + run_features.square()
+                    feature_count += 1
                     feature_compute_sec += timing.elapsed(t_feature)
+                    del run_features
 
                     if det_idx == 0:
                         t_matching = timing.start()
@@ -180,11 +184,13 @@ def run_ensemble_csv(config, run_dir):
                         prediction_matching_sec += timing.elapsed(t_matching)
 
                 t_feature = timing.start()
-                runs_tensor = torch.stack(feature_runs, dim=0)
-                mean = runs_tensor.mean(dim=0)
-                std = runs_tensor.std(dim=0, unbiased=False)
+                if feature_sum is None or feature_sq_sum is None or feature_count <= 0:
+                    raise RuntimeError("YOLOv5 ensemble did not produce any feature tensor.")
+                mean = feature_sum / float(feature_count)
+                var = feature_sq_sum / float(feature_count) - mean.square()
+                std = torch.sqrt(torch.clamp(var, min=0.0))
                 feature_compute_sec += timing.elapsed(t_feature)
-                del runs_tensor, infer_batch
+                del infer_batch, feature_sum, feature_sq_sum, var
 
                 batch_items = 0
                 t_matching = timing.start()
@@ -259,7 +265,7 @@ def run_ensemble_csv(config, run_dir):
                         "feature_compute_sec": feature_compute_sec,
                     },
                 )
-                del feature_runs, mean, std, mean_cpu, std_cpu
+                del mean, std, mean_cpu, std_cpu
     finally:
         for detector in detectors:
             del detector
