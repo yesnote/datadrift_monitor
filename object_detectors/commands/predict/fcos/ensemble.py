@@ -171,7 +171,9 @@ def run_ensemble_csv(config, run_dir):
                 source_specs = _source_specs_from_detections(detections, det_rows)
                 prediction_matching_sec += timing.elapsed(t_matching)
 
-                run_feature_rows = []
+                feature_sum = None
+                feature_sq_sum = None
+                feature_count = 0
                 for det_idx, detector in enumerate(detectors):
                     if det_idx == 0:
                         feature_cache = base_feature_cache
@@ -202,7 +204,19 @@ def run_ensemble_csv(config, run_dir):
                         num_classes=n_classes_hint,
                         device=device,
                     )
-                    run_feature_rows.append(run_features.detach())
+                    run_features = run_features.detach()
+                    if feature_sum is None:
+                        feature_sum = run_features.clone()
+                        feature_sq_sum = run_features.square()
+                    else:
+                        if tuple(feature_sum.shape) != tuple(run_features.shape):
+                            raise RuntimeError(
+                                "FCOS ensemble feature row shape mismatch across weights: "
+                                f"{tuple(feature_sum.shape)} vs {tuple(run_features.shape)}"
+                            )
+                        feature_sum = feature_sum + run_features
+                        feature_sq_sum = feature_sq_sum + run_features.square()
+                    feature_count += 1
                     feature_compute_sec += timing.elapsed(t_feature)
 
                     if det_idx != 0:
@@ -210,11 +224,11 @@ def run_ensemble_csv(config, run_dir):
                     del box_cls, box_regression, centerness, run_features
 
                 t_feature = timing.start()
-                if run_feature_rows:
-                    runs_tensor = torch.stack(run_feature_rows, dim=0)
-                    feat_mean = runs_tensor.mean(dim=0)
-                    feat_std = runs_tensor.std(dim=0, unbiased=False)
-                    del runs_tensor
+                if feature_sum is not None and feature_sq_sum is not None and feature_count > 0:
+                    feat_mean = feature_sum / float(feature_count)
+                    feat_var = feature_sq_sum / float(feature_count) - feat_mean.square()
+                    feat_std = torch.sqrt(torch.clamp(feat_var, min=0.0))
+                    del feat_var
                 else:
                     feat_mean = torch.zeros((0, 5 + int(n_classes_hint)), dtype=torch.float32, device=device)
                     feat_std = torch.zeros_like(feat_mean)
@@ -267,7 +281,7 @@ def run_ensemble_csv(config, run_dir):
                 del infer_batch, base_preprocessed, base_feature_cache, base_locations
                 del base_box_cls, base_box_regression, base_centerness
                 del detections, selected_preds, selected_indices, det_rows, source_specs
-                del run_feature_rows, feat_mean, feat_std
+                del feature_sum, feature_sq_sum, feat_mean, feat_std
     finally:
         for detector in detectors:
             del detector
