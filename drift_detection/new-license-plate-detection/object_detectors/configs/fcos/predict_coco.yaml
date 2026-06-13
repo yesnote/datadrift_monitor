@@ -68,7 +68,12 @@ output:
       enabled: true
   
   ensemble:
-    weights: []
+    weights:
+      - object_detectors/models/fcos/weights/coco/FCOS_R_50_FPN_1x.pth
+      - object_detectors/runs/fcos/train/coco/06-10-2026_20;39_fcos_seed42/weights/last.pt
+      - object_detectors/runs/fcos/train/coco/06-10-2026_20;39_fcos_seed43/weights/last.pt
+      - object_detectors/runs/fcos/train/coco/06-10-2026_20;39_fcos_seed44/weights/last.pt
+      - object_detectors/runs/fcos/train/coco/06-10-2026_20;39_fcos_seed45/weights/last.pt
     save_csv:
       enabled: true
   
