@@ -58,7 +58,7 @@ training:
   save_best: true
   save_optimizer: true
   freeze_feature_extractor: false
-  preprocess_cache_size: 64
+  preprocess_cache_size: 0
   log_timing: false
 
 
