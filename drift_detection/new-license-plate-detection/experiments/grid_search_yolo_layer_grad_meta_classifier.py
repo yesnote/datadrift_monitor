@@ -646,7 +646,6 @@ def _run_yolo_layer_grad_terms_once(
                             ] += candidate_timing["candidate_search_sec"]
 
                     for key, (combo, _run_dir, _csv_file, _writer) in handles.items():
-                        detector.zero_grad(set_to_none=True)
                         target_scalar = build_layer_target_scalar_bbox(
                             target_value=combo["term"],
                             pred_img=pred_img,
@@ -754,7 +753,6 @@ def _run_yolo_layer_grad_terms_once(
     finally:
         for param, req_grad in zip(layer_params, original_requires_grad):
             param.requires_grad_(req_grad)
-        detector.zero_grad(set_to_none=True)
         for _combo, _run_dir, csv_file, _writer in handles.values():
             csv_file.close()
         for profiler in profilers.values():

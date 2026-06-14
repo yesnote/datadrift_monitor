@@ -2671,8 +2671,6 @@ def collect_bbox_layer_grads_per_target(
                     _add_elapsed_timing(timing_accumulator, "candidate_search_sec", t_candidate, timing_device)
                 grad_stats = {}
                 for target_value in target_values:
-                    detector.zero_grad(set_to_none=True)
-
                     anchor_row = anchor_img[raw_idx] if (anchor_img is not None and raw_idx < anchor_img.shape[0]) else None
 
                     target_scalar = build_layer_target_scalar_bbox(
@@ -2742,7 +2740,6 @@ def collect_bbox_layer_grads_per_target(
     finally:
         for param, req_grad in zip(layer_params, original_requires_grad):
             param.requires_grad_(req_grad)
-        detector.zero_grad(set_to_none=True)
         del model_output, raw_prediction, raw_logits, raw_anchor_priors, raw_flat, selected_preds, selected_indices
 
     return rows
