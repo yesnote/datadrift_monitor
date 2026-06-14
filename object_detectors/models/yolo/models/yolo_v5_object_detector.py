@@ -1,7 +1,7 @@
 import numpy as np
 # from deep_utils.utils.box_utils.boxes import Box, Point
 import torch
-from models.yolo.models.experimental import attempt_load
+from models.yolo.models.experimental import attempt_load, suppress_non_leaf_grad_warning
 from models.yolo.utils.general import xywh2xyxy
 from models.yolo.utils.general import xywh2xyxy
 from dataloaders.utils.yolo_datasets import letterbox
@@ -31,18 +31,19 @@ class YOLOV5TorchObjectDetector(nn.Module):
         self.confidence = confidence
         self.iou_thresh = iou_thresh
         self.agnostic = agnostic_nms
-        self.model = attempt_load(model_weight, device=device,fuse=fuse)
-        print("[INFO] model is loaded")
-        first_param = next(self.model.parameters(), None)
-        requested_device = torch.device(device)
-        if first_param is not None and first_param.device.type != requested_device.type:
-            raise RuntimeError(
-                f"YOLOv5 model loaded on {first_param.device}, expected device type {requested_device.type}."
-            )
-        if self.mode == 'train':
-            self.model.train()
-        else:
-            self.model.eval()
+        with suppress_non_leaf_grad_warning():
+            self.model = attempt_load(model_weight, device=device,fuse=fuse)
+            print("[INFO] model is loaded")
+            first_param = next(self.model.parameters(), None)
+            requested_device = torch.device(device)
+            if first_param is not None and first_param.device.type != requested_device.type:
+                raise RuntimeError(
+                    f"YOLOv5 model loaded on {first_param.device}, expected device type {requested_device.type}."
+                )
+            if self.mode == 'train':
+                self.model.train()
+            else:
+                self.model.eval()
         # fetch the names
         if names is None:
             print('[INFO] fetching names from coco file')
@@ -68,7 +69,7 @@ class YOLOV5TorchObjectDetector(nn.Module):
 
         # preventing cold start
         img = torch.zeros((1, 3, *self.img_size), device=device)
-        with torch.no_grad():
+        with suppress_non_leaf_grad_warning(), torch.no_grad():
             self.model(img)
 
     @staticmethod
