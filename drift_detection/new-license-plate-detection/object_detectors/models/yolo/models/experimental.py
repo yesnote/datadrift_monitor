@@ -3,8 +3,6 @@
 Experimental modules
 """
 import math
-import warnings
-from contextlib import contextmanager
 
 import numpy as np
 import torch
@@ -13,19 +11,6 @@ from models.yolo.models.common import Conv
 # from common import Conv
 from models.yolo.utils.downloads import attempt_download
 
-
-NON_LEAF_GRAD_WARNING_PATTERN = r"The \.grad attribute of a Tensor that is not a leaf Tensor is being accessed\."
-
-
-@contextmanager
-def suppress_non_leaf_grad_warning():
-    with warnings.catch_warnings():
-        warnings.filterwarnings(
-            "ignore",
-            message=NON_LEAF_GRAD_WARNING_PATTERN,
-            category=UserWarning,
-        )
-        yield
 
 class Sum(nn.Module):
     # Weighted sum of 2 or more layers https://arxiv.org/abs/1911.09070
@@ -100,9 +85,8 @@ def attempt_load(weights, device=None, inplace=True, fuse=True):
         except TypeError:
             # Older torch versions do not support weights_only.
             ckpt = torch.load(ckpt_path, map_location=device)
-        with suppress_non_leaf_grad_warning():
-            ckpt = (ckpt.get('ema') or ckpt['model']).float()  # FP32 model
-            model.append(ckpt.fuse().eval() if fuse else ckpt.eval())  # fused or un-fused model in eval mode
+        ckpt = (ckpt.get('ema') or ckpt['model']).float()  # FP32 model
+        model.append(ckpt.fuse().eval() if fuse else ckpt.eval())  # fused or un-fused model in eval mode
 
     # Compatibility updates
     for m in model.modules():
