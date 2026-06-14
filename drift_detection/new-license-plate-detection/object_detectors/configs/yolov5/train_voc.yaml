@@ -2,7 +2,7 @@
 
 model:
   type: yolov5
-  weights: object_detectors/runs/yolov5/train/voc/06-14-2026_07;06_yolov5
+  weights: object_detectors/runs/yolov5/train/voc/06-14-2026_07;06_yolov5/weights/best.pt
   img_size: 640
   confidence_threshold: 0.25
   iou_threshold: 0.45
