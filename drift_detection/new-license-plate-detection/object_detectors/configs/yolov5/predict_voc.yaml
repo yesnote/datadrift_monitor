@@ -84,11 +84,11 @@ output:
 
   ensemble:
     weights:
-      - object_detectors/runs/train/voc/05-15-2026_00;02_yolov5_seed42/weights/last.pt
-      - object_detectors/runs/train/voc/05-15-2026_00;02_yolov5_seed43/weights/last.pt
-      - object_detectors/runs/train/voc/05-15-2026_00;02_yolov5_seed44/weights/last.pt
-      - object_detectors/runs/train/voc/05-15-2026_00;02_yolov5_seed45/weights/last.pt
-      - object_detectors/runs/train/voc/05-15-2026_00;02_yolov5_seed46/weights/last.pt
+      - object_detectors/runs/yolov5/train/voc/06-14-2026_07;06_yolov5/weights/best.pt
+      - object_detectors/runs/yolov5/train/voc/06-14-2026_13;51_yolov5_seed42/weights/last.pt
+      - object_detectors/runs/yolov5/train/voc/06-14-2026_13;51_yolov5_seed43/weights/last.pt
+      - object_detectors/runs/yolov5/train/voc/06-14-2026_13;51_yolov5_seed44/weights/last.pt
+      - object_detectors/runs/yolov5/train/voc/06-14-2026_13;51_yolov5_seed45/weights/last.pt
     save_csv:
       enabled: true
 
