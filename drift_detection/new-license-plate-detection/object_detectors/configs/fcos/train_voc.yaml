@@ -4,8 +4,8 @@ model:
   type: fcos
   backbone: resnet50_fpn
   weights: object_detectors/models/fcos/weights/coco/FCOS_R_50_FPN_1x.pth
-  confidence_threshold: 0.05
-  iou_threshold: 0.6
+  confidence_threshold: 0.25
+  iou_threshold: 0.45
   device: cuda
 
 dataset:
@@ -17,7 +17,7 @@ dataset:
     val_split: val
 
 dataloader:
-  batch_size: 2
+  batch_size: 4
   num_workers: 4
   pin_memory: true
   shuffle_train: true
@@ -27,7 +27,7 @@ dataloader:
   prefetch_factor: 2
 
 training:
-  epochs: 10
+  epochs: 36
   lr: 0.0001
   weight_decay: 0.0001
   seed: 42
