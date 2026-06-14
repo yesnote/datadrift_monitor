@@ -247,7 +247,10 @@ def build_detector(config, model_weight=None):
         )
     else:
         raise ValueError(f"Unsupported model.type: {model_type}")
-    detector.eval().to(device)
+    if model_type in {"yolov5", "yolo", "yolo_v5"}:
+        detector.eval()
+    else:
+        detector.eval().to(device)
     return detector, device
 
 
