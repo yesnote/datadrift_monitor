@@ -1,7 +1,7 @@
 import numpy as np
 # from deep_utils.utils.box_utils.boxes import Box, Point
 import torch
-from models.yolo.models.experimental import attempt_load
+from models.yolo.models.experimental import attempt_load, suppress_non_leaf_grad_warning
 from models.yolo.utils.general import xywh2xyxy
 from models.yolo.utils.general import xywh2xyxy
 from dataloaders.utils.yolo_datasets import letterbox
@@ -35,7 +35,8 @@ class YOLOV5TorchObjectDetector(nn.Module):
         print("[INFO] model is loaded")
         first_param = next(self.model.parameters(), None)
         if first_param is None or first_param.device != torch.device(device):
-            self.model.to(device)
+            with suppress_non_leaf_grad_warning():
+                self.model.to(device)
         if self.mode == 'train':
             self.model.train()
         else:
