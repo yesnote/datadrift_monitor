@@ -63,7 +63,12 @@ output:
       enabled: true
   
   ensemble:
-    weights: []
+    weights:
+      - object_detectors/runs/fcos/train/voc/06-14-2026_18;45_fcos/weights/best.pt
+      - object_detectors/runs/fcos/train/voc/06-15-2026_01;17_fcos_seed42/weights/last.pt
+      - object_detectors/runs/fcos/train/voc/06-15-2026_01;17_fcos_seed43/weights/last.pt
+      - object_detectors/runs/fcos/train/voc/06-15-2026_01;17_fcos_seed44/weights/last.pt
+      - object_detectors/runs/fcos/train/voc/06-15-2026_01;17_fcos_seed45/weights/last.pt
     save_csv:
       enabled: true
   
