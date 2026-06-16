@@ -147,9 +147,9 @@ def run_ensemble_csv(config, run_dir):
                 prediction_matching_sec = 0.0
                 feature_compute_sec = 0.0
 
-                t_detector = timing.start()
                 with torch.no_grad():
                     base_preprocessed = detectors[0].preprocess_images(infer_batch)
+                    t_detector = timing.start()
                     base_feature_cache = detectors[0].prepare_feature_cache(base_preprocessed)
                     base_locations = _compute_fcos_locations(detectors[0], base_feature_cache)
                     base_box_cls, base_box_regression, base_centerness = _run_fcos_head_dense_from_cache(
@@ -182,9 +182,9 @@ def run_ensemble_csv(config, run_dir):
                         box_regression = base_box_regression
                         centerness = base_centerness
                     else:
-                        t_detector = timing.start()
                         with torch.no_grad():
                             processed = detector.preprocess_images(infer_batch)
+                            t_detector = timing.start()
                             feature_cache = detector.prepare_feature_cache(processed)
                             locations = _compute_fcos_locations(detector, feature_cache)
                         detector_inference_sec += timing.elapsed(t_detector)
