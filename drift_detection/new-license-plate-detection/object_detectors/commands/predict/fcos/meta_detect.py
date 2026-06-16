@@ -24,9 +24,9 @@ def _to_float(value):
 
 def _run_fcos_meta_forward(detector, image_list, device, timing):
     infer_batch, ratios, pads, resized_chws = _prepare_infer_batch(detector, image_list, device, auto=False)
-    t_detector = timing.start()
     with torch.no_grad():
         processed_images = detector.preprocess_images(infer_batch)
+        t_detector = timing.start()
         model_output = detector.forward_layer_grad(processed_images, include_post_logits=True)
         selected = select_fcos_post_nms(
             detector,

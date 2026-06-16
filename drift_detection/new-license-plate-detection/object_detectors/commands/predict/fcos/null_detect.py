@@ -209,9 +209,9 @@ def run_null_detect_csv(config, run_dir):
             detector.zero_grad(set_to_none=True)
             infer_batch = _prepare_infer_batch(detector, image_list, device, auto=False)[0]
 
-            t_detector = timing.start()
             with torch.no_grad():
                 fcos_preprocessed = detector.preprocess_images(infer_batch)
+                t_detector = timing.start()
                 model_output = detector.forward_layer_grad(fcos_preprocessed)
                 selected = select_fcos_post_nms(
                     detector,

@@ -63,9 +63,9 @@ def run_fcos_forward_nms(
     keep_class_outputs=True,
 ):
     infer_batch, ratios, pads, resized_chws = _prepare_infer_batch(detector, image_list, device, auto=False)
-    t_detector = timing.start()
     with torch.no_grad():
         processed_images = detector.preprocess_images(infer_batch)
+        t_detector = timing.start()
         model_output = detector.forward_preprocessed(
             processed_images,
             keep_pre_nms=keep_pre_nms,

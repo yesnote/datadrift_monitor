@@ -197,9 +197,9 @@ def run_mc_dropout_csv(config, run_dir):
             prediction_matching_sec = 0.0
             feature_compute_sec = 0.0
 
-            t_detector = timing.start()
             with torch.no_grad():
                 fcos_preprocessed = detector.preprocess_images(infer_batch)
+                t_detector = timing.start()
                 feature_cache = detector.prepare_feature_cache(fcos_preprocessed)
                 locations = _compute_fcos_locations(detector, feature_cache)
                 detector.set_dropout_rate(0.0)
