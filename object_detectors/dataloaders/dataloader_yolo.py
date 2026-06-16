@@ -249,11 +249,30 @@ def _image_aspect_ratio(path):
         return 1.0
 
 
+def _dataset_aspect_ratio(dataset, index):
+    if isinstance(dataset, Subset):
+        return _dataset_aspect_ratio(dataset.dataset, int(dataset.indices[index]))
+    if isinstance(dataset, ConcatDataset):
+        dataset_idx = bisect_right(dataset.cumulative_sizes, index)
+        sample_idx = index if dataset_idx == 0 else index - dataset.cumulative_sizes[dataset_idx - 1]
+        return _dataset_aspect_ratio(dataset.datasets[dataset_idx], sample_idx)
+    getter = getattr(dataset, "get_aspect_ratio", None)
+    if callable(getter):
+        ratio = getter(index)
+        if ratio is not None:
+            try:
+                ratio = float(ratio)
+            except Exception:
+                ratio = None
+            if ratio is not None and ratio > 0:
+                return ratio
+    return _image_aspect_ratio(_dataset_image_path(dataset, index))
+
+
 def _sort_dataset_by_aspect_ratio(dataset):
     ranked = []
     for idx in range(len(dataset)):
-        path = _dataset_image_path(dataset, idx)
-        ranked.append((_image_aspect_ratio(path), idx))
+        ranked.append((_dataset_aspect_ratio(dataset, idx), idx))
     return Subset(dataset, [idx for _ratio, idx in sorted(ranked)])
 
 
