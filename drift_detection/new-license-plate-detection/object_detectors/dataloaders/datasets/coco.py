@@ -27,6 +27,7 @@ class COCODataset(Dataset):
 
         self.images = list_image_files(self.image_dir)
         self.image_id_by_name = {}
+        self.image_size_by_name = {}
         self.annotations_by_image_id = defaultdict(list)
         self.category_name_by_id = {}
 
@@ -38,7 +39,12 @@ class COCODataset(Dataset):
             payload = json.load(f)
 
         for image in payload.get("images", []):
-            self.image_id_by_name[image["file_name"]] = image["id"]
+            file_name = image["file_name"]
+            self.image_id_by_name[file_name] = image["id"]
+            width = image.get("width")
+            height = image.get("height")
+            if width is not None and height is not None:
+                self.image_size_by_name[file_name] = (float(width), float(height))
 
         for cat in payload.get("categories", []):
             self.category_name_by_id[int(cat["id"])] = str(cat.get("name", "__unknown__"))
@@ -48,6 +54,18 @@ class COCODataset(Dataset):
 
     def __len__(self):
         return len(self.images)
+
+    def get_aspect_ratio(self, index):
+        if index < 0 or index >= len(self.images):
+            return None
+        file_name = os.path.basename(self.images[index])
+        size = self.image_size_by_name.get(file_name)
+        if size is None:
+            return None
+        width, height = size
+        if height <= 0:
+            return None
+        return float(width) / float(height)
 
     def __getitem__(self, index):
         image_path = self.images[index]
