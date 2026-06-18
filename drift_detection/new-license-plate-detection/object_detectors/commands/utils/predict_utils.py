@@ -14,6 +14,7 @@ from dataloaders.utils.data_utils import DATASET_CLASS_NAMES
 from models.fcos import FCOSTorchObjectDetector
 from models.faster_rcnn import FasterRCNNTorchObjectDetector
 from models.yolo.models.yolo_v5_object_detector import YOLOV5TorchObjectDetector
+from models.yolov10 import YOLOV10TorchObjectDetector
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 REPO_ROOT = PROJECT_ROOT.parent
@@ -226,6 +227,18 @@ def build_detector(config, model_weight=None):
             confidence=confidence,
             iou_thresh=iou_thresh,
         )
+    elif model_type in {"yolov10", "yolo_v10"}:
+        detector = YOLOV10TorchObjectDetector(
+            model_weight=str(weight_path) if weight_path is not None else None,
+            device=device,
+            img_size=img_size_tuple,
+            names=_resolve_detector_class_names(config),
+            mode="eval",
+            confidence=confidence,
+            iou_thresh=iou_thresh,
+            variant=model_cfg.get("variant", "n"),
+            max_det=int(model_cfg.get("max_det", 300)),
+        )
     elif model_type in {"faster_rcnn", "faster-rcnn", "frcnn"}:
         detector = FasterRCNNTorchObjectDetector(
             model_weight=str(weight_path) if weight_path is not None else None,
@@ -247,7 +260,7 @@ def build_detector(config, model_weight=None):
         )
     else:
         raise ValueError(f"Unsupported model.type: {model_type}")
-    if model_type in {"yolov5", "yolo", "yolo_v5"}:
+    if model_type in {"yolov5", "yolo", "yolo_v5", "yolov10", "yolo_v10"}:
         detector.eval()
     else:
         detector.eval().to(device)

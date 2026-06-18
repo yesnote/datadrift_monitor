@@ -1,0 +1,151 @@
+from commands.predict.common import *
+from commands.utils.predict_utils import _class_loss_tensor, expand_layer_names, map_grad_tensor_to_numbers, resolve_layer_parameter
+from commands.predict.yolov10.utils import iter_yolov10_detection_rows, run_yolov10_forward, source_point_box
+from models.yolov10.core import xywh2xyxy
+
+
+def _parse_config(config):
+    output = config.get("output", {})
+    layer_cfg = output.get("layer_grad", {}) if isinstance(output.get("layer_grad", {}), dict) else {}
+    grad = layer_cfg.get("gradient", {}) if isinstance(layer_cfg.get("gradient", {}), dict) else {}
+    target = str(grad.get("target", "null_target")).strip().lower()
+    if target != "null_target":
+        raise NotImplementedError("YOLOv10 layer_grad supports only target=null_target.")
+    scalar = grad.get("scalar", ["bbox_loss", "cls_loss"])
+    scalar = [str(v).strip().lower() for v in (scalar if isinstance(scalar, (list, tuple)) else [scalar])]
+    if "loss" in scalar:
+        scalar = ["bbox_loss", "cls_loss"]
+    for value in scalar:
+        if value not in {"bbox_loss", "cls_loss"}:
+            raise ValueError("YOLOv10 layer_grad.gradient.scalar supports bbox_loss and cls_loss only.")
+    bbox_loss = str(grad.get("bbox_loss", "l1")).strip().lower()
+    if bbox_loss not in {"l1", "l2"}:
+        raise ValueError("YOLOv10 layer_grad.gradient.bbox_loss supports only l1 or l2.")
+    cls_loss = str(grad.get("cls_loss", "bcewithlogits")).strip().lower()
+    if cls_loss not in {"bcewithlogits", "kl"}:
+        raise ValueError("YOLOv10 layer_grad.gradient.cls_loss supports only bcewithlogits or kl.")
+    reduction = grad.get("reduction", ["l1_norm", "l2_norm", "min", "max", "mean", "std"])
+    reduction = [str(v).strip() for v in (reduction if isinstance(reduction, (list, tuple)) else [reduction]) if str(v).strip()]
+    return {
+        "scalar": scalar,
+        "layer": grad.get("layer", ["model.23.one2one_cv2.0.2", "model.23.one2one_cv3.0.2"]),
+        "reduction": reduction,
+        "bbox_loss": bbox_loss,
+        "cls_loss": cls_loss,
+        "bbox_direction": str(grad.get("bbox_direction", "pred_to_target")).strip().lower(),
+        "cls_direction": str(grad.get("cls_direction", "pred_to_target")).strip().lower(),
+    }
+
+
+def _bbox_loss(pred_xyxy, ref_xyxy, mode):
+    diff = pred_xyxy - ref_xyxy
+    if mode == "l1":
+        return diff.abs().sum()
+    if mode == "l2":
+        return diff.pow(2).sum()
+    raise ValueError("bbox_loss must be l1 or l2.")
+
+
+def run_layer_grad_csv(config, run_dir):
+    run_dir = Path(run_dir)
+    mode = str(config.get("mode", "predict"))
+    uncertainty = "layer_grad"
+    split = config.get("dataset", {}).get("split", "val")
+    parsed = parse_output_config(config.get("output", {}))
+    if not parsed["save_csv_enabled"]:
+        return
+    layer_cfg = _parse_config(config)
+    detector, device = build_detector(config)
+    layers = expand_layer_names(detector.model, layer_cfg["layer"])
+    params = [(layer_name, resolve_layer_parameter(detector.model, layer_name)) for layer_name in layers]
+    reductions = layer_cfg["reduction"]
+    fieldnames = ["image_id", "image_path", "pred_idx", "raw_pred_idx", "xmin", "ymin", "xmax", "ymax", "score", "pred_class"]
+    for layer_name, _param in params:
+        safe = layer_name.replace(".", "_")
+        for scalar_name in layer_cfg["scalar"]:
+            for metric in reductions:
+                fieldnames.append(f"{safe}_{scalar_name}_{metric}")
+    output_csv = run_dir / "layer_grad.csv"
+    dataloader = create_dataloader(config, split=split)
+    timing = StageTimingProfiler(
+        run_dir=run_dir,
+        uncertainty=uncertainty,
+        unit=parsed["unit"],
+        stages=["detector_inference_sec", "loss_compute_sec", "backpropagation_sec", "feature_compute_sec"],
+        device=device,
+    )
+    with open(output_csv, "w", newline="", encoding="utf-8") as output_file:
+        writer = csv.DictWriter(output_file, fieldnames=fieldnames)
+        writer.writeheader()
+        for images, targets in tqdm(dataloader, desc=f"Object Detector ({mode} - {uncertainty})", total=len(dataloader)):
+            image_list = _as_image_list(images)
+            detector.zero_grad(set_to_none=True)
+            infer_batch, _ratios, _pads, _resized_chws = _prepare_infer_batch(detector, image_list, device, auto=False)
+            forward = run_yolov10_forward(detector, infer_batch, timing=timing, grad=True)
+            loss_compute_sec = 0.0
+            backpropagation_sec = 0.0
+            feature_compute_sec = 0.0
+            batch_items = 0
+            for item in iter_yolov10_detection_rows(detector, targets, forward.selected_preds, forward.selected_indices, device):
+                row = dict(item["base_row"])
+                raw_pred_idx = item["raw_pred_idx"]
+                t_loss = timing.start()
+                pred_xywh = forward.decoded_prediction[item["sample_idx"], raw_pred_idx, :4]
+                pred_xyxy = xywh2xyxy(pred_xywh)
+                ref_xyxy = source_point_box(forward.source_points, raw_pred_idx, device)
+                scalar_terms = {}
+                if "bbox_loss" in layer_cfg["scalar"]:
+                    scalar_terms["bbox_loss"] = _bbox_loss(pred_xyxy, ref_xyxy, layer_cfg["bbox_loss"])
+                if "cls_loss" in layer_cfg["scalar"]:
+                    cls_logits = forward.raw_logits[item["sample_idx"], raw_pred_idx]
+                    target_value = 0.5 if layer_cfg["cls_loss"] == "bcewithlogits" else 1.0 / float(max(1, cls_logits.numel()))
+                    cls_target = torch.full_like(cls_logits, target_value)
+                    scalar_terms["cls_loss"] = _class_loss_tensor(
+                        cls_logits,
+                        cls_target,
+                        class_idx=None,
+                        mode=layer_cfg["cls_loss"],
+                        direction=layer_cfg["cls_direction"],
+                        reduction="sum",
+                    )
+                loss_compute_sec += timing.elapsed(t_loss)
+                for scalar_name, target_scalar in scalar_terms.items():
+                    t_back = timing.start()
+                    grads = torch.autograd.grad(
+                        target_scalar,
+                        [param for _layer_name, param in params],
+                        retain_graph=True,
+                        allow_unused=True,
+                    )
+                    backpropagation_sec += timing.elapsed(t_back)
+                    t_feature = timing.start()
+                    for (layer_name, _param), grad in zip(params, grads):
+                        safe = layer_name.replace(".", "_")
+                        stats = map_grad_tensor_to_numbers(grad)
+                        for metric in reductions:
+                            value = stats.get(metric, 0.0)
+                            row[f"{safe}_{scalar_name}_{metric}"] = float(value.detach().cpu().item()) if isinstance(value, torch.Tensor) else float(value)
+                    feature_compute_sec += timing.elapsed(t_feature)
+                writer.writerow(row)
+                batch_items += 1
+            timing.record(
+                len(image_list),
+                batch_items,
+                {
+                    "detector_inference_sec": forward.detector_inference_sec,
+                    "loss_compute_sec": loss_compute_sec,
+                    "backpropagation_sec": backpropagation_sec,
+                    "feature_compute_sec": feature_compute_sec,
+                },
+            )
+            del infer_batch, forward
+            if device.type == "cuda":
+                torch.cuda.empty_cache()
+    del detector
+    if device.type == "cuda":
+        torch.cuda.empty_cache()
+    timing.save()
+    print(f"Saved results CSV: {output_csv}")
+
+
+__all__ = ["run_layer_grad_csv"]
