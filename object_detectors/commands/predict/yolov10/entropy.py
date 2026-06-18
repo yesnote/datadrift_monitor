@@ -1,0 +1,46 @@
+from commands.predict.common import *
+from commands.predict.yolov10.utils import iter_yolov10_detection_rows, run_yolov10_forward, selected_yolov10_logits
+
+
+def run_entropy_csv(config, run_dir):
+    run_dir = Path(run_dir)
+    mode = str(config.get("mode", "predict"))
+    uncertainty = "entropy"
+    split = config.get("dataset", {}).get("split", "val")
+    parsed = parse_output_config(config.get("output", {}))
+    if not parsed["save_csv_enabled"]:
+        return
+    output_csv = run_dir / "entropy.csv"
+    fieldnames = ["image_id", "image_path", "pred_idx", "raw_pred_idx", "xmin", "ymin", "xmax", "ymax", "score", "pred_class", "entropy"]
+    dataloader = create_dataloader(config, split=split)
+    detector, device = build_detector(config)
+    timing = StageTimingProfiler(run_dir=run_dir, uncertainty=uncertainty, unit=parsed["unit"], stages=["detector_inference_sec"], device=device)
+    with open(output_csv, "w", newline="", encoding="utf-8") as output_file:
+        writer = csv.DictWriter(output_file, fieldnames=fieldnames)
+        writer.writeheader()
+        for images, targets in tqdm(dataloader, desc=f"Object Detector ({mode} - {uncertainty})", total=len(dataloader)):
+            image_list = _as_image_list(images)
+            detector.zero_grad(set_to_none=True)
+            infer_batch, _ratios, _pads, _resized_chws = _prepare_infer_batch(detector, image_list, device, auto=False)
+            with torch.no_grad():
+                forward = run_yolov10_forward(detector, infer_batch, timing=timing)
+            logits_by_sample = {i: selected_yolov10_logits(forward, i, device) for i in range(len(image_list))}
+            batch_items = 0
+            for item in iter_yolov10_detection_rows(detector, targets, forward.selected_preds, forward.selected_indices, device):
+                logits = logits_by_sample[item["sample_idx"]]
+                prob = torch.softmax(logits[item["pred_idx"]], dim=-1) if item["pred_idx"] < logits.shape[0] else torch.zeros((0,), device=device)
+                entropy = float((-(prob * prob.clamp(min=1e-12).log()).sum()).detach().cpu().item()) if prob.numel() else 0.0
+                row = dict(item["base_row"])
+                row["entropy"] = entropy
+                writer.writerow(row)
+                batch_items += 1
+            timing.record(len(image_list), batch_items, {"detector_inference_sec": forward.detector_inference_sec})
+            del infer_batch, forward
+    del detector
+    if device.type == "cuda":
+        torch.cuda.empty_cache()
+    timing.save()
+    print(f"Saved results CSV: {output_csv}")
+
+
+__all__ = ["run_entropy_csv"]

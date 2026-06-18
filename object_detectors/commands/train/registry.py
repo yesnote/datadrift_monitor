@@ -4,6 +4,8 @@ import importlib
 _MODEL_ALIASES = {
     "yolo": "yolov5",
     "yolov5": "yolov5",
+    "yolov10": "yolov10",
+    "yolo_v10": "yolov10",
     "faster_rcnn": "faster_rcnn",
     "faster-rcnn": "faster_rcnn",
     "frcnn": "faster_rcnn",
