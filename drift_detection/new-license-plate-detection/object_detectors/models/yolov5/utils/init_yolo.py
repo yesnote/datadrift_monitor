@@ -1,4 +1,4 @@
-# YOLOv5 🚀 by Ultralytics, AGPL-3.0 license
+# YOLOv5 ?? by Ultralytics, AGPL-3.0 license
 """
 utils/initialization
 """
@@ -56,8 +56,8 @@ def notebook_init(verbose=True):
 
     from ultralytics.yolo.utils.checks import check_requirements
 
-    from models.yolo.utils.general import check_font, is_colab
-    from models.yolo.utils.torch_utils import select_device  # imports
+    from models.yolov5.utils.general import check_font, is_colab
+    from models.yolov5.utils.torch_utils import select_device  # imports
 
     check_font()
 
@@ -82,5 +82,5 @@ def notebook_init(verbose=True):
         s = ''
 
     select_device(newline=False)
-    print(emojis(f'Setup complete ✅ {s}'))
+    print(emojis(f'Setup complete ??{s}'))
     return display

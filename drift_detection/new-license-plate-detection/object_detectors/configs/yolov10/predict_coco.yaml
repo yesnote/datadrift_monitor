@@ -1,8 +1,8 @@
-﻿mode: predict
+mode: predict
 
 model:
   type: yolov10
-  weights: 
+  weights: object_detectors/models/yolov10/weights/coco/yolov10n.pt
   img_size: 640
   variant: n
   max_det: 300
@@ -98,7 +98,7 @@ output:
   layer_grad:
     gradient:
       # null_target only:
-      #   bbox_loss l1/l2: loss(decoded source box, source point zero box)
+      #   bbox_loss l1/l2: loss(final detection box source-point offset, zero offset)
       #   cls_loss: loss(source class logits, uniform/null class target)
       scalar: [bbox_loss, cls_loss]
       layer: ["model.23.one2one_cv2.0.2", "model.23.one2one_cv3.0.2"]

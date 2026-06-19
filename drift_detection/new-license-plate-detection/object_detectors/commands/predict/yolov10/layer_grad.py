@@ -4,9 +4,7 @@ from commands.predict.yolov10.utils import (
     iter_yolov10_detection_rows,
     parse_yolov10_output_config,
     run_yolov10_forward,
-    source_point_box,
 )
-from models.yolov10.core import xywh2xyxy
 
 
 def _parse_config(config):
@@ -36,8 +34,8 @@ def _parse_config(config):
     layers = grad.get("layer", ["model.23.one2one_cv2.0.2", "model.23.one2one_cv3.0.2"])
     layer_list = [str(v).strip() for v in (layers if isinstance(layers, (list, tuple)) else [layers]) if str(v).strip()]
     for layer_name in layer_list:
-        if not layer_name.startswith("model.23."):
-            raise ValueError("YOLOv10 layer_grad supports head layers only because one-to-one head features detach backbone/neck.")
+        if not (layer_name.startswith("model.23.one2one_cv2.") or layer_name.startswith("model.23.one2one_cv3.")):
+            raise ValueError("YOLOv10 layer_grad supports only one-to-one head layers: model.23.one2one_cv2.* or model.23.one2one_cv3.*")
     return {
         "scalar": scalar,
         "layer": layer_list,
@@ -49,8 +47,10 @@ def _parse_config(config):
     }
 
 
-def _bbox_loss(pred_xyxy, ref_xyxy, mode):
-    diff = pred_xyxy - ref_xyxy
+def _bbox_offset_loss(final_xyxy, source_point, mode):
+    px, py = source_point[0], source_point[1]
+    offset = torch.stack([px - final_xyxy[0], py - final_xyxy[1], final_xyxy[2] - px, final_xyxy[3] - py])
+    diff = offset
     if mode == "l1":
         return diff.abs().sum()
     if mode == "l2":
@@ -105,12 +105,11 @@ def run_layer_grad_csv(config, run_dir):
                 row = dict(item["base_row"])
                 raw_box_idx = item["raw_box_idx"]
                 t_loss = timing.start()
-                pred_xywh = forward.decoded_prediction[item["sample_idx"], raw_box_idx, :4]
-                pred_xyxy = xywh2xyxy(pred_xywh)
-                ref_xyxy = source_point_box(forward.source_points, raw_box_idx, device)
+                source_point = forward.source_points[raw_box_idx].to(device=device, dtype=torch.float32)
+                final_xyxy = item["box"][:4].float()
                 scalar_terms = {}
                 if "bbox_loss" in layer_cfg["scalar"]:
-                    scalar_terms["bbox_loss"] = _bbox_loss(pred_xyxy, ref_xyxy, layer_cfg["bbox_loss"])
+                    scalar_terms["bbox_loss"] = _bbox_offset_loss(final_xyxy, source_point, layer_cfg["bbox_loss"])
                 if "cls_loss" in layer_cfg["scalar"]:
                     cls_logits = forward.raw_logits[item["sample_idx"], raw_box_idx]
                     target_value = 0.5 if layer_cfg["cls_loss"] == "bcewithlogits" else 1.0 / float(max(1, cls_logits.numel()))
@@ -133,6 +132,11 @@ def run_layer_grad_csv(config, run_dir):
                         retain_graph=grad_call_idx < total_grad_calls,
                         allow_unused=True,
                     )
+                    if not any(grad is not None for grad in grads):
+                        raise RuntimeError(
+                            "YOLOv10 layer_grad produced no gradient for the selected scalar. "
+                            f"scalar={scalar_name}, layers={layer_cfg['layer']}"
+                        )
                     backpropagation_sec += timing.elapsed(t_back)
                     t_feature = timing.start()
                     for (layer_name, _param), grad in zip(params, grads):

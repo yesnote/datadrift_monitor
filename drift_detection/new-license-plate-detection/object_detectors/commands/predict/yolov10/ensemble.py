@@ -1,6 +1,7 @@
 from pathlib import Path
 
 from commands.predict.common import *
+from commands.utils.predict_utils import resolve_project_path
 from commands.predict.yolov10.utils import (
     iter_yolov10_detection_rows,
     parse_yolov10_output_config,
@@ -12,7 +13,7 @@ from commands.predict.yolov10.utils import (
 def _resolve_path(path):
     p = Path(path)
     if not p.is_absolute():
-        p = (Path.cwd() / p).resolve()
+        p = resolve_project_path(p)
     return p
 
 
@@ -53,15 +54,22 @@ def run_ensemble_csv(config, run_dir):
             detector_inference_sec = 0.0
             feature_compute_sec = 0.0
             with torch.no_grad():
-                base = run_yolov10_forward(detectors[0], infer_batch, timing=timing)
-            detector_inference_sec += base.detector_inference_sec
+                t_detector = timing.start()
+                base_cache = detectors[0].prepare_feature_cache(infer_batch)
+                base = run_yolov10_forward(detectors[0], feature_cache=base_cache)
+                detector_inference_sec += timing.elapsed(t_detector)
             feat_sum = None
             feat_sumsq = None
             for detector in detectors:
                 with torch.no_grad():
-                    forward = base if detector is detectors[0] else run_yolov10_forward(detector, infer_batch, timing=timing)
+                    if detector is detectors[0]:
+                        forward = base
+                    else:
+                        t_detector = timing.start()
+                        feature_cache = detector.prepare_feature_cache(infer_batch)
+                        forward = run_yolov10_forward(detector, feature_cache=feature_cache)
+                        detector_inference_sec += timing.elapsed(t_detector)
                 if detector is not detectors[0]:
-                    detector_inference_sec += forward.detector_inference_sec
                     if forward.decoded_prediction.shape != base.decoded_prediction.shape:
                         raise ValueError(
                             "YOLOv10 ensemble raw output shape mismatch: "
@@ -109,7 +117,7 @@ def run_ensemble_csv(config, run_dir):
                 batch_items += 1
             prediction_matching_sec = timing.elapsed(t_match)
             timing.record(len(image_list), batch_items, {"detector_inference_sec": detector_inference_sec, "prediction_matching_sec": prediction_matching_sec, "feature_compute_sec": feature_compute_sec})
-            del infer_batch, base, feat_sum, feat_sumsq, feat_mean, feat_std
+            del infer_batch, base_cache, base, feat_sum, feat_sumsq, feat_mean, feat_std
     for detector in detectors:
         del detector
     if device.type == "cuda":

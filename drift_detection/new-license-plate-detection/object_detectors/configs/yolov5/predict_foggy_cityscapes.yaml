@@ -1,8 +1,8 @@
-﻿mode: predict
+mode: predict
 
 model:
   type: yolov5
-  weights: object_detectors/models/yolo/weights/foggy_cityscapes/yolov5x.pt
+  weights: object_detectors/models/yolov5/weights/foggy_cityscapes/yolov5x.pt
   img_size: 640
   confidence_threshold: 0.25
   iou_threshold: 0.45

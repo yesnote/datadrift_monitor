@@ -1,12 +1,14 @@
 import random
+from collections import OrderedDict
 from contextlib import nullcontext
 from functools import lru_cache
 
 import numpy as np
 import torch
+import torch.nn.functional as F
 
 from dataloaders.utils.data_utils import DATASET_CLASS_NAMES
-from models.yolo.utils.general import coco80_to_coco91_class
+from models.yolov5.utils.general import coco80_to_coco91_class
 
 
 @lru_cache(maxsize=1)
@@ -37,6 +39,116 @@ def map_coco91_to_80(labels, offset=0):
         mapped[valid_id] = lookup[labels[valid_id]]
     keep = mapped >= 0
     return mapped[keep] + int(offset), keep
+
+
+def _preprocess_cache_key(target, out_h, out_w):
+    path = target.get("path") if isinstance(target, dict) else None
+    if not path:
+        return None
+    return (str(path), int(out_h), int(out_w))
+
+
+def _get_preprocess_cache(preprocess_cache, key):
+    if preprocess_cache is None or key is None:
+        return None
+    cached = preprocess_cache.get(key)
+    if cached is not None:
+        preprocess_cache.move_to_end(key)
+    return cached
+
+
+def _put_preprocess_cache(preprocess_cache, preprocess_cache_size, key, tensor, ratio, pad):
+    if preprocess_cache is None or key is None or preprocess_cache_size <= 0:
+        return
+    preprocess_cache[key] = (tensor.detach().cpu(), ratio, pad)
+    preprocess_cache.move_to_end(key)
+    while len(preprocess_cache) > preprocess_cache_size:
+        preprocess_cache.popitem(last=False)
+
+
+def make_preprocess_cache(preprocess_cache_size):
+    return OrderedDict() if int(preprocess_cache_size) > 0 else None
+
+
+def prepare_yolo_batch(images, targets, img_size, device, preprocess_cache=None, preprocess_cache_size=0):
+    if isinstance(img_size, int):
+        out_h = out_w = int(img_size)
+    else:
+        out_h, out_w = int(img_size[0]), int(img_size[1])
+    if images and all(int(img.shape[0]) == 3 and int(img.shape[1]) == out_h and int(img.shape[2]) == out_w for img in images):
+        infer_batch = torch.stack(images, dim=0).to(device=device, non_blocking=True)
+        return infer_batch, [(1.0, 1.0)] * len(images), [(0.0, 0.0)] * len(images)
+    infer_tensors = []
+    ratios = []
+    pads = []
+    pad_value = float(114.0 / 255.0)
+    for img, target in zip(images, targets):
+        key = _preprocess_cache_key(target, out_h, out_w)
+        cached = _get_preprocess_cache(preprocess_cache, key)
+        if cached is not None:
+            cached_tensor, cached_ratio, cached_pad = cached
+            infer_tensors.append(cached_tensor)
+            ratios.append(cached_ratio)
+            pads.append(cached_pad)
+            continue
+        c, h, w = int(img.shape[0]), int(img.shape[1]), int(img.shape[2])
+        if c != 3:
+            raise ValueError(f"Expected 3-channel image tensor, got shape={tuple(img.shape)}")
+        scale = min(float(out_h) / float(h), float(out_w) / float(w))
+        new_h = max(1, int(round(h * scale)))
+        new_w = max(1, int(round(w * scale)))
+        resized = F.interpolate(img.unsqueeze(0), size=(new_h, new_w), mode="bilinear", align_corners=False).squeeze(0)
+        pad_h = out_h - new_h
+        pad_w = out_w - new_w
+        top = int(pad_h // 2)
+        bottom = int(pad_h - top)
+        left = int(pad_w // 2)
+        right = int(pad_w - left)
+        resized = F.pad(resized, (left, right, top, bottom), value=pad_value)
+        infer_tensors.append(resized)
+        ratio = (scale, scale)
+        pad = (float(left), float(top))
+        ratios.append(ratio)
+        pads.append(pad)
+        _put_preprocess_cache(preprocess_cache, preprocess_cache_size, key, resized, ratio, pad)
+    return torch.stack(infer_tensors, dim=0).to(device=device, non_blocking=True), ratios, pads
+
+
+def to_yolo_targets(targets, ratios, pads, img_h, img_w, device):
+    rows = []
+    for batch_idx, target in enumerate(targets):
+        boxes = target.get("boxes")
+        labels = target.get("labels")
+        if boxes is None or labels is None or boxes.numel() == 0:
+            continue
+        ratio_w, ratio_h = ratios[batch_idx]
+        pad_w, pad_h = pads[batch_idx]
+        b = boxes.to(device=device, dtype=torch.float32, non_blocking=True).clone()
+        b[:, [0, 2]] = b[:, [0, 2]] * ratio_w + pad_w
+        b[:, [1, 3]] = b[:, [1, 3]] * ratio_h + pad_h
+        cls = labels.to(device=device, dtype=torch.long, non_blocking=True).clone()
+        if str(target.get("dataset_name", "")).lower() == "coco":
+            mapped, keep = map_coco91_to_80(cls, offset=0)
+            if not keep.any():
+                continue
+            b = b[keep]
+            cls = mapped.to(dtype=torch.long)
+        x1, y1, x2, y2 = b[:, 0], b[:, 1], b[:, 2], b[:, 3]
+        w = (x2 - x1).clamp(min=0.0)
+        h = (y2 - y1).clamp(min=0.0)
+        valid = (w > 0.0) & (h > 0.0)
+        if not valid.any():
+            continue
+        x1, y1, w, h, cls = x1[valid], y1[valid], w[valid], h[valid], cls[valid]
+        xc = (x1 + w * 0.5) / float(img_w)
+        yc = (y1 + h * 0.5) / float(img_h)
+        wn = w / float(img_w)
+        hn = h / float(img_h)
+        batch_col = torch.full((xc.shape[0],), int(batch_idx), dtype=torch.float32, device=device)
+        rows.append(torch.stack([batch_col, cls.float(), xc.float(), yc.float(), wn.float(), hn.float()], dim=1))
+    if not rows:
+        return torch.zeros((0, 6), dtype=torch.float32, device=device)
+    return torch.cat(rows, dim=0).to(dtype=torch.float32)
 
 
 def amp_enabled(config, device):

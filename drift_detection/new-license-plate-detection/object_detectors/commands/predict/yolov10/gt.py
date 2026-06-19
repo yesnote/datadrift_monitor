@@ -1,5 +1,5 @@
 from commands.predict.common import *
-from commands.predict.yolov10.utils import parse_yolov10_output_config, run_yolov10_forward
+from commands.predict.yolov10.utils import iter_yolov10_detection_rows, parse_yolov10_output_config, run_yolov10_forward
 
 
 def run_tp_csv(config, run_dir):
@@ -29,16 +29,15 @@ def run_tp_csv(config, run_dir):
             infer_batch, ratios, pads, _resized_chws = _prepare_infer_batch(detector, image_list, device, auto=False)
             with torch.no_grad():
                 forward = run_yolov10_forward(detector, infer_batch)
+            items_by_sample = {i: [] for i in range(len(image_list))}
+            for item in iter_yolov10_detection_rows(detector, targets, forward.selected_preds, forward.selected_indices, device):
+                items_by_sample[item["sample_idx"]].append(item)
             for sample_idx in range(len(image_list)):
                 target = targets[sample_idx]
-                image_id = int(target["image_id"][0].item())
-                image_path = target["path"]
-                det_b = forward.selected_preds[sample_idx] if forward.selected_preds and sample_idx < len(forward.selected_preds) else torch.zeros((0, 6), device=device)
-                raw_keep_b = forward.selected_indices[sample_idx] if forward.selected_indices and sample_idx < len(forward.selected_indices) else torch.zeros((0,), dtype=torch.long, device=device)
-                pred_boxes = det_b[:, :4].detach().cpu().tolist()
-                pred_scores = (det_b[:, 4] if det_b.shape[1] > 4 else torch.zeros((det_b.shape[0],), device=device)).detach().cpu().tolist()
-                pred_cls_ids = det_b[:, 5].long() if det_b.shape[1] > 5 else torch.zeros((det_b.shape[0],), dtype=torch.long, device=device)
-                pred_class_names = [detector.names[int(c.item())] if detector.names is not None else int(c.item()) for c in pred_cls_ids]
+                sample_items = items_by_sample[sample_idx]
+                pred_boxes = [item["box"][:4].detach().cpu().tolist() for item in sample_items]
+                pred_scores = [float(item["box"][4].detach().cpu().item()) for item in sample_items]
+                pred_class_names = [item["base_row"]["pred_class"] for item in sample_items]
                 gt_boxes = map_boxes_to_letterbox(target["boxes"], ratios[sample_idx], pads[sample_idx])
                 gt_class_names = _resolve_gt_class_names(target, catid_to_name)
                 error_rows = analyze_prediction_error_types(
@@ -51,32 +50,17 @@ def run_tp_csv(config, run_dir):
                 )
                 if writer is None:
                     continue
-                for pred_idx, row_info in enumerate(error_rows):
-                    if pred_idx >= int(raw_keep_b.shape[0]):
-                        raise RuntimeError(
-                            "YOLOv10 selected_indices is shorter than selected predictions. "
-                            f"sample_idx={sample_idx}, pred_idx={pred_idx}, indices={int(raw_keep_b.shape[0])}"
-                        )
-                    raw_pred_idx = int(raw_keep_b[pred_idx].detach().cpu().item())
-                    box = det_b[pred_idx]
-                    writer.writerow(
+                for item, row_info in zip(sample_items, error_rows):
+                    row = dict(item["base_row"])
+                    row.update(
                         {
-                            "image_id": image_id,
-                            "image_path": image_path,
-                            "pred_idx": pred_idx,
-                            "raw_pred_idx": raw_pred_idx,
-                            "xmin": float(box[0].detach().cpu().item()),
-                            "ymin": float(box[1].detach().cpu().item()),
-                            "xmax": float(box[2].detach().cpu().item()),
-                            "ymax": float(box[3].detach().cpu().item()),
-                            "score": float(box[4].detach().cpu().item()),
-                            "pred_class": pred_class_names[pred_idx],
                             "max_iou": row_info["max_iou"],
                             "gt_iou": row_info["gt_iou"],
                             "tp": row_info["tp"],
                             "error_type": row_info["error_type"],
                         }
                     )
+                    writer.writerow(row)
             del infer_batch, forward
     finally:
         if output_file is not None:

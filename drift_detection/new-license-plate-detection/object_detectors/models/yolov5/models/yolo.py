@@ -1,9 +1,9 @@
-# YOLOv5 🚀 by Ultralytics, GPL-3.0 license
+# YOLOv5 ?? by Ultralytics, GPL-3.0 license
 """
 YOLO-specific modules
 
 Usage:
-    $ python path/to/models/yolo.py --cfg yolov5s.yaml
+    $ python path/to/models/yolov5.py --cfg yolov5s.yaml
 """
 
 import argparse
@@ -22,17 +22,17 @@ if str(ROOT) not in sys.path:
     sys.path.append(str(ROOT))  # add ROOT to PATH
 # ROOT = ROOT.relative_to(Path.cwd())  # relative
 
-from models.yolo.models.common import *
+from models.yolov5.models.common import *
 # from ..models.common import *
-from models.yolo.models.experimental import *
+from models.yolov5.models.experimental import *
 # from ..models.experimental import *
-from models.yolo.utils.autoanchor import check_anchor_order
+from models.yolov5.utils.autoanchor import check_anchor_order
 # from ..utils.autoanchor import check_anchor_order
-from models.yolo.utils.general import LOGGER, check_version, check_yaml, make_divisible, print_args, set_logging
+from models.yolov5.utils.general import LOGGER, check_version, check_yaml, make_divisible, print_args, set_logging
 # from ..utils.general import check_yaml, make_divisible, print_args, set_logging
-from models.yolo.utils.plots import feature_visualization
+from models.yolov5.utils.plots import feature_visualization
 # from ..utils.plots import feature_visualization
-from models.yolo.utils.torch_utils import (fuse_conv_and_bn, initialize_weights, model_info, profile, scale_img, \
+from models.yolov5.utils.torch_utils import (fuse_conv_and_bn, initialize_weights, model_info, profile, scale_img, \
     select_device, time_sync)
 # from ..utils.torch_utils import copy_attr, fuse_conv_and_bn, initialize_weights, model_info, scale_img, \
 #     select_device, time_sync

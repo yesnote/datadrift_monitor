@@ -38,15 +38,17 @@ def run_mc_dropout_csv(config, run_dir):
             feature_compute_sec = 0.0
             prediction_matching_sec = 0.0
             with torch.no_grad():
-                base = run_yolov10_forward(detector, infer_batch, timing=timing)
-            detector_inference_sec += base.detector_inference_sec
+                t_detector = timing.start()
+                feature_cache = detector.prepare_feature_cache(infer_batch)
+                base = run_yolov10_forward(detector, feature_cache=feature_cache)
+                detector_inference_sec += timing.elapsed(t_detector)
             feat_sum = None
             feat_sumsq = None
             restore_dropout = enable_forced_yolov10_dropout(detector.model, parsed["mc_dropout_rate"])
             try:
                 with torch.no_grad():
                     for _ in range(num_runs):
-                        run = run_yolov10_forward(detector, infer_batch, timing=timing)
+                        run = run_yolov10_forward(detector, feature_cache=feature_cache, timing=timing)
                         detector_inference_sec += run.detector_inference_sec
                         t_feature = timing.start()
                         feat = yolov10_feature_tensor(run)
@@ -92,7 +94,7 @@ def run_mc_dropout_csv(config, run_dir):
                 batch_items += 1
             prediction_matching_sec += timing.elapsed(t_match)
             timing.record(len(image_list), batch_items, {"detector_inference_sec": detector_inference_sec, "prediction_matching_sec": prediction_matching_sec, "feature_compute_sec": feature_compute_sec})
-            del infer_batch, base, feat_sum, feat_sumsq, feat_mean, feat_std
+            del infer_batch, feature_cache, base, feat_sum, feat_sumsq, feat_mean, feat_std
     del detector
     if device.type == "cuda":
         torch.cuda.empty_cache()

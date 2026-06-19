@@ -1,6 +1,7 @@
 import sys
 from contextlib import contextmanager
 from pathlib import Path
+from urllib.request import urlretrieve
 
 import torch
 import torch.nn as nn
@@ -13,6 +14,16 @@ from .core import (
     v10postprocess_with_indices,
     xywh2xyxy,
 )
+
+
+YOLOV10_WEIGHT_URLS = {
+    "n": "https://github.com/THU-MIG/yolov10/releases/download/v1.1/yolov10n.pt",
+    "s": "https://github.com/THU-MIG/yolov10/releases/download/v1.1/yolov10s.pt",
+    "m": "https://github.com/THU-MIG/yolov10/releases/download/v1.1/yolov10m.pt",
+    "b": "https://github.com/THU-MIG/yolov10/releases/download/v1.1/yolov10b.pt",
+    "l": "https://github.com/THU-MIG/yolov10/releases/download/v1.1/yolov10l.pt",
+    "x": "https://github.com/THU-MIG/yolov10/releases/download/v1.1/yolov10x.pt",
+}
 
 
 def _torch_load(path, map_location):
@@ -79,19 +90,34 @@ def _checkpoint_metadata(payload):
     }
 
 
-def _strip_prefixes(state_dict):
-    cleaned = {}
-    for key, value in state_dict.items():
-        new_key = str(key)
-        changed = True
-        while changed:
-            changed = False
-            for prefix in ("module.", "model."):
-                if new_key.startswith(prefix):
-                    new_key = new_key[len(prefix) :]
-                    changed = True
-        cleaned[new_key] = value
-    return cleaned
+def _transform_state_dict_keys(state_dict, transform):
+    return {transform(str(key)): value for key, value in state_dict.items()}
+
+
+def _select_matching_state_dict(state_dict, current):
+    candidates = [
+        _transform_state_dict_keys(state_dict, lambda key: key),
+        _transform_state_dict_keys(state_dict, lambda key: key[7:] if key.startswith("module.") else key),
+    ]
+    best = max(
+        candidates,
+        key=lambda candidate: sum(
+            1 for key, value in candidate.items() if key in current and tuple(current[key].shape) == tuple(value.shape)
+        ),
+    )
+    return best
+
+
+def _download_yolov10_weight(path, variant):
+    variant = str(variant or "n").lower().replace("yolov10", "")
+    url = YOLOV10_WEIGHT_URLS.get(variant)
+    if "coco" not in {part.lower() for part in path.parts}:
+        raise FileNotFoundError(f"YOLOv10 weight file not found: {path}")
+    if url is None:
+        raise FileNotFoundError(f"YOLOv10 weight file not found and no official URL is known for variant={variant}: {path}")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    print(f"[INFO] Downloading YOLOv10 {variant} weight to {path}")
+    urlretrieve(url, path)
 
 
 class YOLOV10TorchObjectDetector(nn.Module):
@@ -103,7 +129,6 @@ class YOLOV10TorchObjectDetector(nn.Module):
         names=None,
         mode="eval",
         confidence=0.25,
-        iou_thresh=0.45,
         variant="n",
         max_det=300,
     ):
@@ -112,7 +137,6 @@ class YOLOV10TorchObjectDetector(nn.Module):
         self.img_size = tuple(img_size)
         self.mode = str(mode)
         self.confidence = float(confidence)
-        self.iou_thresh = float(iou_thresh)
         self.max_det = int(max_det)
         self.variant = str(variant or "n").lower().replace("yolov10", "")
         self.is_yolov10 = True
@@ -143,7 +167,7 @@ class YOLOV10TorchObjectDetector(nn.Module):
     def load_weights(self, model_weight):
         path = Path(model_weight)
         if not path.is_file():
-            raise FileNotFoundError(f"YOLOv10 weight file not found: {path}")
+            _download_yolov10_weight(path, self.variant)
         payload = _torch_load(path, self.device)
         metadata = _checkpoint_metadata(payload)
         if metadata.get("model_type") and str(metadata["model_type"]).lower() != "yolov10":
@@ -151,22 +175,17 @@ class YOLOV10TorchObjectDetector(nn.Module):
         if metadata.get("variant") and str(metadata["variant"]).lower().replace("yolov10", "") != self.variant:
             raise ValueError(f"YOLOv10 checkpoint variant mismatch: checkpoint={metadata['variant']}, config={self.variant}")
         if metadata.get("num_classes") is not None and int(metadata["num_classes"]) != int(self.num_classes):
-            raise ValueError(
-                f"YOLOv10 checkpoint num_classes mismatch: checkpoint={metadata['num_classes']}, config={self.num_classes}"
-            )
-        state_dict = _strip_prefixes(_checkpoint_state_dict(payload))
+            print(f"[WARN] YOLOv10 checkpoint num_classes mismatch: checkpoint={metadata['num_classes']}, config={self.num_classes}")
         current = self.model.state_dict()
+        state_dict = _select_matching_state_dict(_checkpoint_state_dict(payload), current)
         filtered = {
             key: value
             for key, value in state_dict.items()
             if key in current and tuple(current[key].shape) == tuple(value.shape)
         }
         skipped = len(state_dict) - len(filtered)
-        if state_dict and len(filtered) / max(1, len(current)) < 0.5:
-            raise ValueError(
-                f"YOLOv10 checkpoint load ratio is too low: matched={len(filtered)}, model_keys={len(current)}, "
-                f"checkpoint_keys={len(state_dict)}"
-            )
+        if not filtered:
+            raise ValueError(f"YOLOv10 checkpoint has no matching parameters: {path}")
         if skipped:
             print(f"[WARN] YOLOv10 checkpoint partial load: loaded={len(filtered)}, skipped={skipped}")
         self.model.load_state_dict(filtered, strict=False)
@@ -204,11 +223,16 @@ class YOLOV10TorchObjectDetector(nn.Module):
             selected_probs.append(torch.sigmoid(flat_logits[sample_idx][raw_box_idx]).detach())
         return selected_preds, selected_logits, selected_probs, selected_indices, raw_levels, decoded_bnc
 
-    def forward_raw(self, images):
-        return self.model(images, augment=False)
+    def prepare_feature_cache(self, images):
+        return self.model.forward_features(images)
 
-    def forward_nms_free(self, images):
-        model_output = self.forward_raw(images)
+    def forward_raw(self, images=None, feature_cache=None):
+        if feature_cache is not None:
+            return self.model.forward_one2one_from_features(feature_cache)
+        return self.model.forward_one2one(images)
+
+    def forward_nms_free(self, images=None, feature_cache=None):
+        model_output = self.forward_raw(images, feature_cache=feature_cache)
         selected_preds, selected_logits, selected_probs, selected_indices, raw_levels, decoded_bnc = self._decode_eval_output(model_output)
         return {
             "model_output": model_output,
@@ -225,7 +249,7 @@ class YOLOV10TorchObjectDetector(nn.Module):
     def forward_layer_grad(self, images):
         was_training = self.model.training
         self.model.eval()
-        model_output = self.model(images, augment=False)
+        model_output = self.forward_raw(images)
         selected_preds, selected_logits, selected_probs, selected_indices, raw_levels, decoded_bnc = self._decode_eval_output(model_output)
         if was_training and self.mode == "train":
             self.model.train()
