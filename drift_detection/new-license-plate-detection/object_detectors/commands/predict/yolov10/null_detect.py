@@ -2,6 +2,7 @@ from commands.predict.common import *
 from commands.utils.predict_utils import _class_loss_tensor
 from commands.predict.yolov10.utils import (
     iter_yolov10_detection_rows,
+    parse_yolov10_output_config,
     run_yolov10_forward,
     selected_yolov10_logits,
     selected_yolov10_sigmoid_probs,
@@ -49,7 +50,7 @@ def run_null_detect_csv(config, run_dir):
     mode = str(config.get("mode", "predict"))
     uncertainty = "null_detect"
     split = config.get("dataset", {}).get("split", "val")
-    parsed = parse_output_config(config.get("output", {}))
+    parsed = parse_yolov10_output_config(config)
     if not parsed["save_csv_enabled"]:
         return
     cls_loss = parsed["null_detect_cls_loss"]
@@ -95,8 +96,8 @@ def run_null_detect_csv(config, run_dir):
             batch_items = 0
             for item in iter_yolov10_detection_rows(detector, targets, forward.selected_preds, forward.selected_indices, device):
                 t_feature = timing.start()
-                raw_pred_idx = item["raw_pred_idx"]
-                point_box = source_point_box(forward.source_points, raw_pred_idx, device)
+                raw_box_idx = item["raw_box_idx"]
+                point_box = source_point_box(forward.source_points, raw_box_idx, device)
                 final_xyxy = item["box"][:4].detach().float()
                 shape = _xyxy_shape_features(final_xyxy, point_box)
                 logits = logits_by_sample[item["sample_idx"]]

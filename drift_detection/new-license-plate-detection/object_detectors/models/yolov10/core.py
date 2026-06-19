@@ -657,7 +657,8 @@ def v10postprocess_with_indices(preds, max_det, nc):
     labels = second_index % nc
     local_index = second_index // nc
     final_boxes = gathered_boxes.gather(dim=1, index=local_index.unsqueeze(-1).repeat(1, 1, 4))
-    raw_indices = first_index.gather(dim=1, index=local_index)
+    raw_box_indices = first_index.gather(dim=1, index=local_index)
+    raw_indices = raw_box_indices * int(nc) + labels
     return final_boxes, final_scores, labels, raw_indices
 
 

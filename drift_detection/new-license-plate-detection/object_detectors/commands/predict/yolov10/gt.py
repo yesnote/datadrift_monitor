@@ -1,5 +1,5 @@
 from commands.predict.common import *
-from commands.predict.yolov10.utils import run_yolov10_forward
+from commands.predict.yolov10.utils import parse_yolov10_output_config, run_yolov10_forward
 
 
 def run_tp_csv(config, run_dir):
@@ -7,7 +7,7 @@ def run_tp_csv(config, run_dir):
     mode = str(config.get("mode", "predict"))
     uncertainty = "gt"
     split = config.get("dataset", {}).get("split", "val")
-    parsed = parse_output_config(config.get("output", {}))
+    parsed = parse_yolov10_output_config(config)
     if not parsed["save_csv_enabled"] and not parsed["save_image_enabled"]:
         return
     output_csv = run_dir / "tp.csv"
@@ -52,7 +52,12 @@ def run_tp_csv(config, run_dir):
                 if writer is None:
                     continue
                 for pred_idx, row_info in enumerate(error_rows):
-                    raw_pred_idx = int(raw_keep_b[pred_idx].detach().cpu().item()) if pred_idx < int(raw_keep_b.shape[0]) else -1
+                    if pred_idx >= int(raw_keep_b.shape[0]):
+                        raise RuntimeError(
+                            "YOLOv10 selected_indices is shorter than selected predictions. "
+                            f"sample_idx={sample_idx}, pred_idx={pred_idx}, indices={int(raw_keep_b.shape[0])}"
+                        )
+                    raw_pred_idx = int(raw_keep_b[pred_idx].detach().cpu().item())
                     box = det_b[pred_idx]
                     writer.writerow(
                         {

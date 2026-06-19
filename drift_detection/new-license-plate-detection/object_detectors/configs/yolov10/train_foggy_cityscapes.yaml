@@ -7,7 +7,6 @@ model:
   variant: n
   max_det: 300
   confidence_threshold: 0.25
-  iou_threshold: 0.45
   device: cuda
 
 dataset:
@@ -33,7 +32,7 @@ dataloader:
   prefetch_factor: 2
 
 loss:
-  box: 0.05
+  box: 7.5
   cls: 0.5
   dfl: 1.5
 
