@@ -31,18 +31,31 @@ def _parse_config(config):
     reduction = [str(v).strip() for v in (reduction if isinstance(reduction, (list, tuple)) else [reduction]) if str(v).strip()]
     if not reduction:
         raise ValueError("YOLOv10 layer_grad requires reduction metrics; raw gradient saving is not supported.")
-    layers = grad.get("layer", ["model.23.one2one_cv2.0.2", "model.23.one2one_cv3.0.2"])
-    layer_list = [str(v).strip() for v in (layers if isinstance(layers, (list, tuple)) else [layers]) if str(v).strip()]
-    for layer_name in layer_list:
-        if not (layer_name.startswith("model.23.one2one_cv2.") or layer_name.startswith("model.23.one2one_cv3.")):
-            raise ValueError("YOLOv10 layer_grad supports only one-to-one head layers: model.23.one2one_cv2.* or model.23.one2one_cv3.*")
+    if "layer" in grad:
+        raise ValueError("YOLOv10 layer_grad uses scalar-specific bbox_layer and cls_layer, not gradient.layer.")
+    bbox_layers = grad.get("bbox_layer", ["model.23.one2one_cv2.0.2"])
+    cls_layers = grad.get("cls_layer", ["model.23.one2one_cv3.0.2"])
+    bbox_layer_list = [str(v).strip() for v in (bbox_layers if isinstance(bbox_layers, (list, tuple)) else [bbox_layers]) if str(v).strip()]
+    cls_layer_list = [str(v).strip() for v in (cls_layers if isinstance(cls_layers, (list, tuple)) else [cls_layers]) if str(v).strip()]
+    if "bbox_loss" in scalar and not bbox_layer_list:
+        raise ValueError("YOLOv10 layer_grad.gradient.bbox_layer must not be empty when bbox_loss is active.")
+    if "cls_loss" in scalar and not cls_layer_list:
+        raise ValueError("YOLOv10 layer_grad.gradient.cls_layer must not be empty when cls_loss is active.")
+    for layer_name in bbox_layer_list:
+        if not layer_name.startswith("model.23.one2one_cv2."):
+            raise ValueError("YOLOv10 bbox_loss layer_grad supports only one-to-one bbox head layers: model.23.one2one_cv2.*")
+    for layer_name in cls_layer_list:
+        if not layer_name.startswith("model.23.one2one_cv3."):
+            raise ValueError("YOLOv10 cls_loss layer_grad supports only one-to-one cls head layers: model.23.one2one_cv3.*")
     return {
         "scalar": scalar,
-        "layer": layer_list,
+        "layers_by_scalar": {
+            "bbox_loss": bbox_layer_list if "bbox_loss" in scalar else [],
+            "cls_loss": cls_layer_list if "cls_loss" in scalar else [],
+        },
         "reduction": reduction,
         "bbox_loss": bbox_loss,
         "cls_loss": cls_loss,
-        "bbox_direction": str(grad.get("bbox_direction", "pred_to_target")).strip().lower(),
         "cls_direction": str(grad.get("cls_direction", "pred_to_target")).strip().lower(),
     }
 
@@ -68,13 +81,15 @@ def run_layer_grad_csv(config, run_dir):
         return
     layer_cfg = _parse_config(config)
     detector, device = build_detector(config)
-    layers = expand_layer_names(detector.model, layer_cfg["layer"])
-    params = [(layer_name, resolve_layer_parameter(detector.model, layer_name)) for layer_name in layers]
+    params_by_scalar = {}
+    for scalar_name in layer_cfg["scalar"]:
+        layers = expand_layer_names(detector.model, layer_cfg["layers_by_scalar"][scalar_name])
+        params_by_scalar[scalar_name] = [(layer_name, resolve_layer_parameter(detector.model, layer_name)) for layer_name in layers]
     reductions = layer_cfg["reduction"]
     fieldnames = ["image_id", "image_path", "pred_idx", "raw_pred_idx", "xmin", "ymin", "xmax", "ymax", "score", "pred_class"]
-    for layer_name, _param in params:
-        safe = layer_name.replace(".", "_")
-        for scalar_name in layer_cfg["scalar"]:
+    for scalar_name in layer_cfg["scalar"]:
+        for layer_name, _param in params_by_scalar[scalar_name]:
+            safe = layer_name.replace(".", "_")
             for metric in reductions:
                 fieldnames.append(f"{safe}_{scalar_name}_{metric}")
     output_csv = run_dir / "layer_grad.csv"
@@ -128,18 +143,12 @@ def run_layer_grad_csv(config, run_dir):
                     t_back = timing.start()
                     grads = torch.autograd.grad(
                         target_scalar,
-                        [param for _layer_name, param in params],
+                        [param for _layer_name, param in params_by_scalar[scalar_name]],
                         retain_graph=grad_call_idx < total_grad_calls,
-                        allow_unused=True,
                     )
-                    if not any(grad is not None for grad in grads):
-                        raise RuntimeError(
-                            "YOLOv10 layer_grad produced no gradient for the selected scalar. "
-                            f"scalar={scalar_name}, layers={layer_cfg['layer']}"
-                        )
                     backpropagation_sec += timing.elapsed(t_back)
                     t_feature = timing.start()
-                    for (layer_name, _param), grad in zip(params, grads):
+                    for (layer_name, _param), grad in zip(params_by_scalar[scalar_name], grads):
                         safe = layer_name.replace(".", "_")
                         stats = map_grad_tensor_to_numbers(grad)
                         for metric in reductions:

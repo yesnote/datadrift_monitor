@@ -3,8 +3,8 @@ from commands.predict.yolov10.utils import (
     iter_yolov10_detection_rows,
     parse_yolov10_output_config,
     run_yolov10_forward,
-    selected_yolov10_logits,
-    selected_yolov10_sigmoid_probs,
+    yolov10_raw_logits_for_item,
+    yolov10_raw_probs_for_item,
 )
 
 
@@ -39,28 +39,21 @@ def run_deterministic_uncertainties_csv(config, run_dir):
             infer_batch, _ratios, _pads, _resized_chws = _prepare_infer_batch(detector, image_list, device, auto=False)
             with torch.no_grad():
                 forward = run_yolov10_forward(detector, infer_batch, timing=timing)
-            probs_by_sample = {i: selected_yolov10_sigmoid_probs(forward, i, device) for i in range(len(image_list))}
-            logits_by_sample = {i: selected_yolov10_logits(forward, i, device) for i in range(len(image_list))}
             batch_items = 0
             for item in iter_yolov10_detection_rows(detector, targets, forward.selected_preds, forward.selected_indices, device):
                 base = dict(item["base_row"])
                 writers["score"].writerow(base)
-                probs = probs_by_sample[item["sample_idx"]]
-                logits = logits_by_sample[item["sample_idx"]]
                 row_prob = dict(base)
-                values = probs[item["pred_idx"]].detach().cpu().tolist() if item["pred_idx"] < probs.shape[0] else [0.0] * num_classes
+                logits = yolov10_raw_logits_for_item(forward, item, device)
+                values = yolov10_raw_probs_for_item(forward, item, device).detach().cpu().tolist()
                 for class_idx in range(num_classes):
                     row_prob[f"prob_{class_idx}"] = float(values[class_idx]) if class_idx < len(values) else 0.0
                 writers["class_probability"].writerow(row_prob)
                 row_entropy = dict(base)
                 row_energy = dict(base)
-                if item["pred_idx"] < logits.shape[0]:
-                    soft = torch.softmax(logits[item["pred_idx"]], dim=-1)
-                    row_entropy["entropy"] = float((-(soft * soft.clamp(min=1e-12).log()).sum()).detach().cpu().item())
-                    row_energy["energy"] = float((-torch.logsumexp(logits[item["pred_idx"]], dim=-1)).detach().cpu().item())
-                else:
-                    row_entropy["entropy"] = 0.0
-                    row_energy["energy"] = 0.0
+                soft = torch.softmax(logits, dim=-1)
+                row_entropy["entropy"] = float((-(soft * soft.clamp(min=1e-12).log()).sum()).detach().cpu().item())
+                row_energy["energy"] = float((-torch.logsumexp(logits, dim=-1)).detach().cpu().item())
                 writers["entropy"].writerow(row_entropy)
                 writers["energy"].writerow(row_energy)
                 batch_items += 1

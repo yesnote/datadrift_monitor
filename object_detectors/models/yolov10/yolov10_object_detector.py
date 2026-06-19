@@ -1,3 +1,4 @@
+import re
 import sys
 from contextlib import contextmanager
 from pathlib import Path
@@ -83,7 +84,7 @@ def _checkpoint_metadata(payload):
         return {}
     return {
         "model_type": payload.get("model_type"),
-        "variant": payload.get("variant"),
+        "architecture": payload.get("architecture"),
         "num_classes": payload.get("num_classes"),
         "names": payload.get("names"),
         "img_size": payload.get("img_size"),
@@ -108,15 +109,22 @@ def _select_matching_state_dict(state_dict, current):
     return best
 
 
-def _download_yolov10_weight(path, variant):
-    variant = str(variant or "n").lower().replace("yolov10", "")
-    url = YOLOV10_WEIGHT_URLS.get(variant)
+def _infer_yolov10_architecture(path):
+    if not path:
+        return None
+    match = re.search(r"yolov10([nsmblx])", Path(path).name.lower())
+    return match.group(1) if match else None
+
+
+def _download_yolov10_weight(path):
+    architecture = _infer_yolov10_architecture(path)
+    url = YOLOV10_WEIGHT_URLS.get(architecture)
     if "coco" not in {part.lower() for part in path.parts}:
         raise FileNotFoundError(f"YOLOv10 weight file not found: {path}")
     if url is None:
-        raise FileNotFoundError(f"YOLOv10 weight file not found and no official URL is known for variant={variant}: {path}")
+        raise FileNotFoundError(f"YOLOv10 weight file not found and no official URL can be inferred from filename: {path}")
     path.parent.mkdir(parents=True, exist_ok=True)
-    print(f"[INFO] Downloading YOLOv10 {variant} weight to {path}")
+    print(f"[INFO] Downloading YOLOv10 {architecture} weight to {path}")
     urlretrieve(url, path)
 
 
@@ -129,7 +137,7 @@ class YOLOV10TorchObjectDetector(nn.Module):
         names=None,
         mode="eval",
         confidence=0.25,
-        variant="n",
+        architecture=None,
         max_det=300,
     ):
         super().__init__()
@@ -138,17 +146,25 @@ class YOLOV10TorchObjectDetector(nn.Module):
         self.mode = str(mode)
         self.confidence = float(confidence)
         self.max_det = int(max_det)
-        self.variant = str(variant or "n").lower().replace("yolov10", "")
+        preloaded_payload = None
+        inferred = architecture or _infer_yolov10_architecture(model_weight)
+        if not inferred and model_weight and Path(model_weight).is_file():
+            preloaded_payload = _torch_load(Path(model_weight), self.device)
+            inferred = _checkpoint_metadata(preloaded_payload).get("architecture")
+        self.architecture = str(inferred or "").lower().replace("yolov10", "")
+        if not self.architecture:
+            raise ValueError("YOLOv10 architecture must be inferable from model.weights filename or checkpoint architecture metadata.")
         self.is_yolov10 = True
         self.agnostic = False
         self.names = list(names or [])
         self.num_classes = len(self.names) if self.names else 80
-        cfg = load_yolov10_cfg(self.variant)
+        cfg = load_yolov10_cfg(self.architecture)
         self.model = YOLOv10DetectionModel(cfg, nc=self.num_classes)
         self.model.names = self.names or [str(i) for i in range(self.num_classes)]
+        self.model.architecture = self.architecture
         self.names = self.model.names
         if model_weight:
-            self.load_weights(model_weight)
+            self.load_weights(model_weight, payload=preloaded_payload)
         self.model.to(self.device)
         if self.mode == "train":
             self.model.train()
@@ -164,16 +180,16 @@ class YOLOV10TorchObjectDetector(nn.Module):
     def eval(self):
         return self.train(False)
 
-    def load_weights(self, model_weight):
+    def load_weights(self, model_weight, payload=None):
         path = Path(model_weight)
         if not path.is_file():
-            _download_yolov10_weight(path, self.variant)
-        payload = _torch_load(path, self.device)
+            _download_yolov10_weight(path)
+        payload = payload if payload is not None else _torch_load(path, self.device)
         metadata = _checkpoint_metadata(payload)
         if metadata.get("model_type") and str(metadata["model_type"]).lower() != "yolov10":
             raise ValueError(f"Checkpoint model_type is not yolov10: {metadata['model_type']}")
-        if metadata.get("variant") and str(metadata["variant"]).lower().replace("yolov10", "") != self.variant:
-            raise ValueError(f"YOLOv10 checkpoint variant mismatch: checkpoint={metadata['variant']}, config={self.variant}")
+        if metadata.get("architecture") and str(metadata["architecture"]).lower().replace("yolov10", "") != self.architecture:
+            raise ValueError(f"YOLOv10 checkpoint architecture mismatch: checkpoint={metadata['architecture']}, model={self.architecture}")
         if metadata.get("num_classes") is not None and int(metadata["num_classes"]) != int(self.num_classes):
             print(f"[WARN] YOLOv10 checkpoint num_classes mismatch: checkpoint={metadata['num_classes']}, config={self.num_classes}")
         current = self.model.state_dict()
@@ -205,10 +221,7 @@ class YOLOV10TorchObjectDetector(nn.Module):
             nc=self.num_classes,
         )
         selected_preds = []
-        selected_logits = []
-        selected_probs = []
         selected_indices = []
-        flat_logits = self.flatten_class_logits(raw_levels)
         for sample_idx in range(decoded_bnc.shape[0]):
             keep = scores[sample_idx] >= self.confidence
             b = boxes_xywh[sample_idx][keep]
@@ -219,9 +232,7 @@ class YOLOV10TorchObjectDetector(nn.Module):
             xyxy = xywh2xyxy(b)
             selected_preds.append(torch.cat([xyxy, s[:, None], l[:, None]], dim=1))
             selected_indices.append(idx)
-            selected_logits.append(flat_logits[sample_idx][raw_box_idx].detach())
-            selected_probs.append(torch.sigmoid(flat_logits[sample_idx][raw_box_idx]).detach())
-        return selected_preds, selected_logits, selected_probs, selected_indices, raw_levels, decoded_bnc
+        return selected_preds, selected_indices, raw_levels, decoded_bnc
 
     def prepare_feature_cache(self, images):
         return self.model.forward_features(images)
@@ -231,26 +242,24 @@ class YOLOV10TorchObjectDetector(nn.Module):
             return self.model.forward_one2one_from_features(feature_cache)
         return self.model.forward_one2one(images)
 
-    def forward_nms_free(self, images=None, feature_cache=None):
+    def forward_nms_free(self, images=None, feature_cache=None, source_points=None):
         model_output = self.forward_raw(images, feature_cache=feature_cache)
-        selected_preds, selected_logits, selected_probs, selected_indices, raw_levels, decoded_bnc = self._decode_eval_output(model_output)
+        selected_preds, selected_indices, raw_levels, decoded_bnc = self._decode_eval_output(model_output)
         return {
             "model_output": model_output,
             "raw_levels": raw_levels,
             "decoded_prediction": decoded_bnc,
             "raw_logits": self.flatten_class_logits(raw_levels),
             "selected_preds": selected_preds,
-            "selected_logits": selected_logits,
-            "selected_probs": selected_probs,
             "selected_indices": selected_indices,
-            "source_points": self.source_points(raw_levels),
+            "source_points": source_points if source_points is not None else self.source_points(raw_levels),
         }
 
-    def forward_layer_grad(self, images):
+    def forward_layer_grad(self, images, source_points=None):
         was_training = self.model.training
         self.model.eval()
         model_output = self.forward_raw(images)
-        selected_preds, selected_logits, selected_probs, selected_indices, raw_levels, decoded_bnc = self._decode_eval_output(model_output)
+        selected_preds, selected_indices, raw_levels, decoded_bnc = self._decode_eval_output(model_output)
         if was_training and self.mode == "train":
             self.model.train()
         return {
@@ -259,10 +268,8 @@ class YOLOV10TorchObjectDetector(nn.Module):
             "decoded_prediction": decoded_bnc,
             "raw_logits": self.flatten_class_logits(raw_levels),
             "selected_preds": selected_preds,
-            "selected_logits": selected_logits,
-            "selected_probs": selected_probs,
             "selected_indices": selected_indices,
-            "source_points": self.source_points(raw_levels),
+            "source_points": source_points if source_points is not None else self.source_points(raw_levels),
         }
 
     def flatten_raw_levels(self, raw_levels):
@@ -299,7 +306,7 @@ class YOLOV10TorchObjectDetector(nn.Module):
             classes.append(classes_b)
             class_names.append(names_b)
             confidences.append(conf_b)
-        return [boxes, classes, class_names, confidences], output["selected_logits"], None, None
+        return [boxes, classes, class_names, confidences], output["raw_logits"], None, None
 
 
 __all__ = ["YOLOV10TorchObjectDetector"]

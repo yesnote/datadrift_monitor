@@ -1,10 +1,9 @@
-mode: predict
+﻿mode: predict
 
 model:
   type: yolov10
-  weights: object_detectors/models/yolov10/weights/coco/yolov10n.pt
+  weights: object_detectors/models/yolov10/weights/coco/yolov10x.pt
   img_size: 640
-  variant: n
   max_det: 300
   confidence_threshold: 0.25
   device: cuda
@@ -84,7 +83,8 @@ output:
       enabled: true
 
   ensemble:
-    weights: []
+    weights:
+      - object_detectors/models/yolov10/weights/coco/yolov10x.pt
     save_csv:
       enabled: true
 
@@ -101,12 +101,12 @@ output:
       #   bbox_loss l1/l2: loss(final detection box source-point offset, zero offset)
       #   cls_loss: loss(source class logits, uniform/null class target)
       scalar: [bbox_loss, cls_loss]
-      layer: ["model.23.one2one_cv2.0.2", "model.23.one2one_cv3.0.2"]
+      bbox_layer: ["model.23.one2one_cv2.0.2"]
+      cls_layer: ["model.23.one2one_cv3.0.2"]
       reduction: [l1_norm, l2_norm, min, max, mean, std]
       target: null_target
       bbox_loss: l1  # l1 | l2
       cls_loss: bcewithlogits  # bcewithlogits | kl
-      bbox_direction: pred_to_target
       cls_direction: pred_to_target
     save_csv:
       enabled: true

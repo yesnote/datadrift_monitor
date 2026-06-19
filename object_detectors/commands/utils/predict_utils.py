@@ -237,7 +237,6 @@ def build_detector(config, model_weight=None):
             names=_resolve_detector_class_names(config),
             mode="eval",
             confidence=confidence,
-            variant=model_cfg.get("variant", "n"),
             max_det=int(model_cfg.get("max_det", 300)),
         )
     elif model_type in {"faster_rcnn", "faster-rcnn", "frcnn"}:

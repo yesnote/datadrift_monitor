@@ -3,7 +3,7 @@ from commands.predict.yolov10.utils import (
     iter_yolov10_detection_rows,
     parse_yolov10_output_config,
     run_yolov10_forward,
-    selected_yolov10_sigmoid_probs,
+    yolov10_raw_probs_for_item,
 )
 
 
@@ -32,12 +32,10 @@ def run_class_probability_csv(config, run_dir):
             infer_batch, _ratios, _pads, _resized_chws = _prepare_infer_batch(detector, image_list, device, auto=False)
             with torch.no_grad():
                 forward = run_yolov10_forward(detector, infer_batch, timing=timing)
-            probs_by_sample = {i: selected_yolov10_sigmoid_probs(forward, i, device) for i in range(len(image_list))}
             batch_items = 0
             for item in iter_yolov10_detection_rows(detector, targets, forward.selected_preds, forward.selected_indices, device):
                 row = dict(item["base_row"])
-                probs = probs_by_sample[item["sample_idx"]]
-                values = probs[item["pred_idx"]].detach().cpu().tolist() if item["pred_idx"] < probs.shape[0] else [0.0] * num_classes
+                values = yolov10_raw_probs_for_item(forward, item, device).detach().cpu().tolist()
                 for class_idx in range(num_classes):
                     row[f"prob_{class_idx}"] = float(values[class_idx]) if class_idx < len(values) else 0.0
                 writer.writerow(row)
