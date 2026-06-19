@@ -6,6 +6,7 @@ from commands.predict.yolov10.utils import (
     iter_yolov10_detection_rows,
     parse_yolov10_output_config,
     run_yolov10_forward,
+    run_yolov10_raw_forward,
     yolov10_feature_vector,
 )
 
@@ -35,7 +36,13 @@ def run_ensemble_csv(config, run_dir):
     detectors = [build_detector(config, model_weight=w)[0] for w in weights]
     device = next(detectors[0].parameters()).device
     num_classes = len(detectors[0].names) if detectors[0].names is not None else 80
+    base_architecture = getattr(detectors[0], "architecture", None)
     for detector in detectors[1:]:
+        if getattr(detector, "architecture", None) != base_architecture:
+            raise ValueError(
+                "YOLOv10 ensemble architecture mismatch: "
+                f"{getattr(detector, 'architecture', None)} != {base_architecture}"
+            )
         other_classes = len(detector.names) if detector.names is not None else 80
         if other_classes != num_classes:
             raise ValueError(f"YOLOv10 ensemble class count mismatch: {other_classes} != {num_classes}")
@@ -70,7 +77,7 @@ def run_ensemble_csv(config, run_dir):
                     else:
                         t_detector = timing.start()
                         feature_cache = detector.prepare_feature_cache(infer_batch)
-                        forward = run_yolov10_forward(detector, feature_cache=feature_cache, source_points=source_points)
+                        forward = run_yolov10_raw_forward(detector, feature_cache=feature_cache, source_points=source_points)
                         detector_inference_sec += timing.elapsed(t_detector)
                 if detector is not detectors[0]:
                     if forward.decoded_prediction.shape != base.decoded_prediction.shape:

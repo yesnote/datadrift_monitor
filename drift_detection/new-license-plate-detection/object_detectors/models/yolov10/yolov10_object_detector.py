@@ -91,8 +91,61 @@ def _checkpoint_metadata(payload):
     }
 
 
+def _checkpoint_model_object(payload):
+    if isinstance(payload, dict):
+        model_payload = payload.get("ema")
+        if model_payload is None:
+            model_payload = payload.get("model")
+        return model_payload if isinstance(model_payload, nn.Module) else None
+    return payload if isinstance(payload, nn.Module) else None
+
+
+def _normalize_yolov10_architecture(value):
+    if value is None:
+        return None
+    text = str(value).lower().replace("\\", "/")
+    match = re.search(r"yolov10([nsmblx])", text)
+    if match:
+        return match.group(1)
+    text = text.replace("yolov10", "").strip()
+    return text if text in YOLOV10_WEIGHT_URLS else None
+
+
+def _infer_yolov10_architecture_from_payload(payload):
+    metadata = _checkpoint_metadata(payload)
+    inferred = _normalize_yolov10_architecture(metadata.get("architecture"))
+    if inferred:
+        return inferred
+    model_payload = _checkpoint_model_object(payload)
+    if model_payload is None:
+        return None
+    for attr in ("architecture", "yaml_file", "cfg", "model_name"):
+        inferred = _normalize_yolov10_architecture(getattr(model_payload, attr, None))
+        if inferred:
+            return inferred
+    yaml_obj = getattr(model_payload, "yaml", None)
+    if isinstance(yaml_obj, dict):
+        inferred = _normalize_yolov10_architecture(yaml_obj.get("yaml_file") or yaml_obj.get("model") or yaml_obj.get("name"))
+        if inferred:
+            return inferred
+        scale = yaml_obj.get("scale")
+        inferred = _normalize_yolov10_architecture(scale)
+        if inferred:
+            return inferred
+        scales = yaml_obj.get("scales")
+        if isinstance(scales, dict):
+            candidates = [str(k).lower() for k in scales.keys() if str(k).lower() in YOLOV10_WEIGHT_URLS]
+            if len(candidates) == 1:
+                return candidates[0]
+    return None
+
+
 def _transform_state_dict_keys(state_dict, transform):
     return {transform(str(key)): value for key, value in state_dict.items()}
+
+
+def _matching_state_dict_count(candidate, current):
+    return sum(1 for key, value in candidate.items() if key in current and tuple(current[key].shape) == tuple(value.shape))
 
 
 def _select_matching_state_dict(state_dict, current):
@@ -100,20 +153,30 @@ def _select_matching_state_dict(state_dict, current):
         _transform_state_dict_keys(state_dict, lambda key: key),
         _transform_state_dict_keys(state_dict, lambda key: key[7:] if key.startswith("module.") else key),
     ]
-    best = max(
-        candidates,
-        key=lambda candidate: sum(
-            1 for key, value in candidate.items() if key in current and tuple(current[key].shape) == tuple(value.shape)
-        ),
-    )
+    best = max(candidates, key=lambda candidate: _matching_state_dict_count(candidate, current))
     return best
 
 
-def _infer_yolov10_architecture(path):
-    if not path:
+def _infer_yolov10_architecture_from_state_dict(state_dict, num_classes):
+    scores = {}
+    for architecture in YOLOV10_WEIGHT_URLS:
+        model = YOLOv10DetectionModel(load_yolov10_cfg(architecture), nc=int(num_classes))
+        current = model.state_dict()
+        candidate = _select_matching_state_dict(state_dict, current)
+        scores[architecture] = _matching_state_dict_count(candidate, current)
+        del model
+    best_score = max(scores.values()) if scores else 0
+    if best_score <= 0:
         return None
-    match = re.search(r"yolov10([nsmblx])", Path(path).name.lower())
-    return match.group(1) if match else None
+    best = [architecture for architecture, score in scores.items() if score == best_score]
+    if len(best) != 1:
+        details = ", ".join(f"{architecture}:{score}" for architecture, score in sorted(scores.items()))
+        raise ValueError(f"Cannot uniquely infer YOLOv10 architecture from checkpoint state_dict shape matches ({details}).")
+    return best[0]
+
+
+def _infer_yolov10_architecture(path):
+    return _normalize_yolov10_architecture(Path(path).name if path else None)
 
 
 def _download_yolov10_weight(path):
@@ -146,18 +209,26 @@ class YOLOV10TorchObjectDetector(nn.Module):
         self.mode = str(mode)
         self.confidence = float(confidence)
         self.max_det = int(max_det)
-        preloaded_payload = None
-        inferred = architecture or _infer_yolov10_architecture(model_weight)
-        if not inferred and model_weight and Path(model_weight).is_file():
-            preloaded_payload = _torch_load(Path(model_weight), self.device)
-            inferred = _checkpoint_metadata(preloaded_payload).get("architecture")
-        self.architecture = str(inferred or "").lower().replace("yolov10", "")
-        if not self.architecture:
-            raise ValueError("YOLOv10 architecture must be inferable from model.weights filename or checkpoint architecture metadata.")
-        self.is_yolov10 = True
-        self.agnostic = False
         self.names = list(names or [])
         self.num_classes = len(self.names) if self.names else 80
+        preloaded_payload = None
+        inferred = architecture or _infer_yolov10_architecture(model_weight)
+        if model_weight and Path(model_weight).is_file() and not inferred:
+            preloaded_payload = _torch_load(Path(model_weight), self.device)
+            inferred = _infer_yolov10_architecture_from_payload(preloaded_payload)
+            if not inferred:
+                inferred = _infer_yolov10_architecture_from_state_dict(
+                    _checkpoint_state_dict(preloaded_payload),
+                    self.num_classes,
+                )
+        self.architecture = str(inferred or "").lower().replace("yolov10", "")
+        if not self.architecture:
+            raise ValueError(
+                "YOLOv10 architecture must be inferable from model.weights filename, "
+                "checkpoint metadata/model yaml, or checkpoint state_dict shape."
+            )
+        self.is_yolov10 = True
+        self.agnostic = False
         cfg = load_yolov10_cfg(self.architecture)
         self.model = YOLOv10DetectionModel(cfg, nc=self.num_classes)
         self.model.names = self.names or [str(i) for i in range(self.num_classes)]
@@ -188,8 +259,9 @@ class YOLOV10TorchObjectDetector(nn.Module):
         metadata = _checkpoint_metadata(payload)
         if metadata.get("model_type") and str(metadata["model_type"]).lower() != "yolov10":
             raise ValueError(f"Checkpoint model_type is not yolov10: {metadata['model_type']}")
-        if metadata.get("architecture") and str(metadata["architecture"]).lower().replace("yolov10", "") != self.architecture:
-            raise ValueError(f"YOLOv10 checkpoint architecture mismatch: checkpoint={metadata['architecture']}, model={self.architecture}")
+        payload_architecture = _infer_yolov10_architecture_from_payload(payload)
+        if payload_architecture and payload_architecture != self.architecture:
+            raise ValueError(f"YOLOv10 checkpoint architecture mismatch: checkpoint={payload_architecture}, model={self.architecture}")
         if metadata.get("num_classes") is not None and int(metadata["num_classes"]) != int(self.num_classes):
             print(f"[WARN] YOLOv10 checkpoint num_classes mismatch: checkpoint={metadata['num_classes']}, config={self.num_classes}")
         current = self.model.state_dict()
@@ -242,17 +314,32 @@ class YOLOV10TorchObjectDetector(nn.Module):
             return self.model.forward_one2one_from_features(feature_cache)
         return self.model.forward_one2one(images)
 
-    def forward_nms_free(self, images=None, feature_cache=None, source_points=None):
+    def forward_raw_decoded(self, images=None, feature_cache=None, source_points=None):
         model_output = self.forward_raw(images, feature_cache=feature_cache)
-        selected_preds, selected_indices, raw_levels, decoded_bnc = self._decode_eval_output(model_output)
+        one2one = model_output["one2one"]
+        if not isinstance(one2one, (tuple, list)) or len(one2one) < 2:
+            raise RuntimeError("YOLOv10 one2one inference output must be (decoded, raw_levels).")
+        decoded, raw_levels = one2one
+        decoded_bnc = decoded.permute(0, 2, 1).contiguous()
         return {
             "model_output": model_output,
             "raw_levels": raw_levels,
             "decoded_prediction": decoded_bnc,
             "raw_logits": self.flatten_class_logits(raw_levels),
+            "source_points": source_points if source_points is not None else self.source_points(raw_levels),
+        }
+
+    def forward_nms_free(self, images=None, feature_cache=None, source_points=None):
+        raw_output = self.forward_raw_decoded(images, feature_cache=feature_cache, source_points=source_points)
+        selected_preds, selected_indices, raw_levels, decoded_bnc = self._decode_eval_output(raw_output["model_output"])
+        return {
+            "model_output": raw_output["model_output"],
+            "raw_levels": raw_levels,
+            "decoded_prediction": decoded_bnc,
+            "raw_logits": raw_output["raw_logits"],
             "selected_preds": selected_preds,
             "selected_indices": selected_indices,
-            "source_points": source_points if source_points is not None else self.source_points(raw_levels),
+            "source_points": raw_output["source_points"],
         }
 
     def forward_layer_grad(self, images, source_points=None):

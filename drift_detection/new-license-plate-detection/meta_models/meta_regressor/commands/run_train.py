@@ -32,6 +32,17 @@ class FeatureSpec:
     dim_by_column: dict[str, int]
 
 
+def validate_unique_merge_keys(df: pd.DataFrame, keys: list[str], source_name: str) -> None:
+    duplicate_mask = df.duplicated(subset=keys, keep=False)
+    if not bool(duplicate_mask.any()):
+        return
+    examples = df.loc[duplicate_mask, keys].head(5).to_dict("records")
+    raise ValueError(
+        f"{source_name} contains duplicate merge keys {keys}. "
+        f"Examples: {examples}"
+    )
+
+
 def resolve_path_value(raw_path: str) -> Path:
     path = Path(raw_path)
     if path.is_absolute():
@@ -263,6 +274,7 @@ def load_training_dataframe(dataset_cfg: dict[str, Any]) -> tuple[pd.DataFrame, 
     if not has_raw_keys:
         raise ValueError("tp.csv missing required raw_pred_idx join keys: image_id, image_path, raw_pred_idx.")
     base_merge_keys = ["image_id", "image_path", "raw_pred_idx"]
+    validate_unique_merge_keys(gt_df, base_merge_keys, str(gt_csv))
     keep_cols = list(base_merge_keys) + [label_col]
     if has_bbox_keys:
         keep_cols.extend(["image_id", "image_path", "xmin", "ymin", "xmax", "ymax"])
@@ -296,6 +308,7 @@ def load_training_dataframe(dataset_cfg: dict[str, Any]) -> tuple[pd.DataFrame, 
                 "Both files must contain raw_pred_idx join keys: image_id, image_path, raw_pred_idx."
             )
         merge_keys = raw_merge_keys
+        validate_unique_merge_keys(feature_df, merge_keys, str(input_csv))
         meta_columns = {
             "image_id",
             "image_path",

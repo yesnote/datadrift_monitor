@@ -4,6 +4,7 @@ from commands.predict.yolov10.utils import (
     iter_yolov10_detection_rows,
     parse_yolov10_output_config,
     run_yolov10_forward,
+    run_yolov10_raw_forward,
     yolov10_feature_vector,
 )
 
@@ -51,7 +52,7 @@ def run_mc_dropout_csv(config, run_dir):
             try:
                 with torch.no_grad():
                     for _ in range(num_runs):
-                        run = run_yolov10_forward(detector, feature_cache=feature_cache, timing=timing, source_points=source_points)
+                        run = run_yolov10_raw_forward(detector, feature_cache=feature_cache, timing=timing, source_points=source_points)
                         detector_inference_sec += run.detector_inference_sec
                         t_feature = timing.start()
                         for item_idx, item in enumerate(base_items):
