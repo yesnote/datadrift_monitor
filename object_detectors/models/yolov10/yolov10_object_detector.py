@@ -25,6 +25,7 @@ YOLOV10_WEIGHT_URLS = {
     "l": "https://github.com/THU-MIG/yolov10/releases/download/v1.1/yolov10l.pt",
     "x": "https://github.com/THU-MIG/yolov10/releases/download/v1.1/yolov10x.pt",
 }
+DEFAULT_YOLOV10_ARCHITECTURE = "x"
 
 
 def _torch_load(path, map_location):
@@ -157,24 +158,6 @@ def _select_matching_state_dict(state_dict, current):
     return best
 
 
-def _infer_yolov10_architecture_from_state_dict(state_dict, num_classes):
-    scores = {}
-    for architecture in YOLOV10_WEIGHT_URLS:
-        model = YOLOv10DetectionModel(load_yolov10_cfg(architecture), nc=int(num_classes))
-        current = model.state_dict()
-        candidate = _select_matching_state_dict(state_dict, current)
-        scores[architecture] = _matching_state_dict_count(candidate, current)
-        del model
-    best_score = max(scores.values()) if scores else 0
-    if best_score <= 0:
-        return None
-    best = [architecture for architecture, score in scores.items() if score == best_score]
-    if len(best) != 1:
-        details = ", ".join(f"{architecture}:{score}" for architecture, score in sorted(scores.items()))
-        raise ValueError(f"Cannot uniquely infer YOLOv10 architecture from checkpoint state_dict shape matches ({details}).")
-    return best[0]
-
-
 def _infer_yolov10_architecture(path):
     return _normalize_yolov10_architecture(Path(path).name if path else None)
 
@@ -216,16 +199,10 @@ class YOLOV10TorchObjectDetector(nn.Module):
         if model_weight and Path(model_weight).is_file() and not inferred:
             preloaded_payload = _torch_load(Path(model_weight), self.device)
             inferred = _infer_yolov10_architecture_from_payload(preloaded_payload)
-            if not inferred:
-                inferred = _infer_yolov10_architecture_from_state_dict(
-                    _checkpoint_state_dict(preloaded_payload),
-                    self.num_classes,
-                )
-        self.architecture = str(inferred or "").lower().replace("yolov10", "")
+        self.architecture = str(inferred or DEFAULT_YOLOV10_ARCHITECTURE).lower().replace("yolov10", "")
         if not self.architecture:
             raise ValueError(
-                "YOLOv10 architecture must be inferable from model.weights filename, "
-                "checkpoint metadata/model yaml, or checkpoint state_dict shape."
+                "YOLOv10 architecture must be inferable from model.weights filename or checkpoint metadata/model yaml."
             )
         self.is_yolov10 = True
         self.agnostic = False
