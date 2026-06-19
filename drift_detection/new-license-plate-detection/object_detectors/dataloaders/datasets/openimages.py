@@ -3,7 +3,7 @@ from pathlib import Path
 import torch
 from torch.utils.data import Dataset
 
-from dataloaders.utils.data_utils import read_image_as_rgb
+from dataloaders.image_io import read_image_as_rgb
 
 
 class OpenImagesDataset(Dataset):

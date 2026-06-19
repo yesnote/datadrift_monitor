@@ -4,7 +4,8 @@ import xml.etree.ElementTree as ET
 import torch
 from torch.utils.data import Dataset
 
-from dataloaders.utils.data_utils import list_image_files, pascal_voc_names, read_image_as_rgb
+from dataloaders.class_names import pascal_voc_names
+from dataloaders.image_io import list_image_files, read_image_as_rgb
 
 
 class VOCDataset(Dataset):

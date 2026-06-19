@@ -7,7 +7,7 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 
-from dataloaders.utils.data_utils import DATASET_CLASS_NAMES
+from dataloaders.class_names import DATASET_CLASS_NAMES
 from models.yolov5.utils.general import coco80_to_coco91_class
 
 
