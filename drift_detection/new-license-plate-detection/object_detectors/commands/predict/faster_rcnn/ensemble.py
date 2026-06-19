@@ -169,7 +169,7 @@ def run_ensemble_csv(config, run_dir):
                 mean = None
                 std = None
                 if not variable_candidate_runs:
-                    runs_tensor = torch.stack(feature_runs, dim=0)  # [M, B, N, F]
+                    runs_tensor = torch.stack(feature_runs, dim=0)
                     mean = runs_tensor.mean(dim=0)
                     std = runs_tensor.std(dim=0, unbiased=False)
                     del runs_tensor

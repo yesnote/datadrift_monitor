@@ -1,4 +1,4 @@
-# Copyright (c) Facebook, Inc. and its affiliates. All Rights Reserved.
+
 import torch
 import torch.nn.functional as F
 from torch import nn
@@ -56,7 +56,7 @@ class FPN(nn.Module):
         ):
             if not inner_block:
                 continue
-            # inner_top_down = F.interpolate(last_inner, scale_factor=2, mode="nearest")
+
             inner_lateral = getattr(self, inner_block)(feature)
             inner_top_down = F.interpolate(
                 last_inner, size=(int(inner_lateral.shape[-2]), int(inner_lateral.shape[-1])),

@@ -187,8 +187,8 @@ class FasterRCNNTorchObjectDetector(nn.Module):
             in_features = model.roi_heads.box_predictor.cls_score.in_features
             model.roi_heads.box_predictor = FastRCNNPredictor(in_features, self.num_classes_with_bg)
 
-        # Keep the downloaded local COCO file as a cache artifact, but do not load it manually
-        # for the default COCO case. The official weights path builds the matching FrozenBN model.
+
+
         if model_weight and Path(model_weight).is_file() and not use_official_coco:
             _load_checkpoint_state(model, Path(model_weight), self.device)
         elif model_weight and not Path(model_weight).is_file() and not use_official_coco:
@@ -410,7 +410,7 @@ class FasterRCNNTorchObjectDetector(nn.Module):
             labels = labels.view(1, -1).expand_as(scores)
             proposal_indices = torch.arange(num_proposals, device=device).view(-1, 1).expand_as(scores)
 
-            # Remove background class, then flatten proposal x class candidates.
+
             boxes = boxes[:, 1:]
             scores = scores[:, 1:]
             labels = labels[:, 1:]

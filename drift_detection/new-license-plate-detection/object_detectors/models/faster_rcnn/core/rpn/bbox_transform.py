@@ -1,12 +1,12 @@
-﻿# --------------------------------------------------------
-# Fast R-CNN
-# Copyright (c) 2015 Microsoft
-# Licensed under The MIT License [see LICENSE for details]
-# Written by Ross Girshick
-# --------------------------------------------------------
-# --------------------------------------------------------
-# Reorganized and modified by Jianwei Yang and Jiasen Lu
-# --------------------------------------------------------
+﻿
+
+
+
+
+
+
+
+
 
 import torch
 import numpy as np
@@ -91,13 +91,13 @@ def bbox_transform_inv(boxes, deltas, batch_size):
     pred_h = torch.exp(dh) * heights.unsqueeze(2)
 
     pred_boxes = deltas.clone()
-    # x1
+
     pred_boxes[:, :, 0::4] = pred_ctr_x - 0.5 * pred_w
-    # y1
+
     pred_boxes[:, :, 1::4] = pred_ctr_y - 0.5 * pred_h
-    # x2
+
     pred_boxes[:, :, 2::4] = pred_ctr_x + 0.5 * pred_w
-    # y2
+
     pred_boxes[:, :, 3::4] = pred_ctr_y + 0.5 * pred_h
 
     return pred_boxes
@@ -109,8 +109,8 @@ def clip_boxes_batch(boxes, im_shape, batch_size):
     num_rois = boxes.size(1)
 
     boxes[boxes < 0] = 0
-    # batch_x = (im_shape[:,0]-1).view(batch_size, 1).expand(batch_size, num_rois)
-    # batch_y = (im_shape[:,1]-1).view(batch_size, 1).expand(batch_size, num_rois)
+
+
 
     batch_x = im_shape[:, 1] - 1
     batch_y = im_shape[:, 0] - 1
@@ -208,7 +208,7 @@ def bbox_overlaps_batch(anchors, gt_boxes):
         ua = anchors_area + gt_boxes_area - (iw * ih)
         overlaps = iw * ih / ua
 
-        # mask the overlap here.
+
         overlaps.masked_fill_(gt_area_zero.view(batch_size, 1, K).expand(batch_size, N, K), 0)
         overlaps.masked_fill_(anchors_area_zero.view(batch_size, N, 1).expand(batch_size, N, K), -1)
 
@@ -246,10 +246,10 @@ def bbox_overlaps_batch(anchors, gt_boxes):
         ih[ih < 0] = 0
         ua = anchors_area + gt_boxes_area - (iw * ih)
         
-        # Intersection (iw * ih) divided by Union (ua)
+
         overlaps = iw * ih / ua
 
-        # mask the overlap here.
+
         overlaps.masked_fill_(gt_area_zero.view(batch_size, 1, K).expand(batch_size, N, K), 0)
         overlaps.masked_fill_(anchors_area_zero.view(batch_size, N, 1).expand(batch_size, N, K), -1)
     else:

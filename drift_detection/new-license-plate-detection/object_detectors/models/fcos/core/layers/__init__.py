@@ -1,4 +1,4 @@
-# Copyright (c) Facebook, Inc. and its affiliates. All Rights Reserved.
+
 from .batch_norm import FrozenBatchNorm2d
 from .misc import Conv2d
 from .nms import nms, ml_nms

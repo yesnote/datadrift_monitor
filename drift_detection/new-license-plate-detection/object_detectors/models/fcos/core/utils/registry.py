@@ -1,4 +1,4 @@
-# Copyright (c) Facebook, Inc. and its affiliates. All Rights Reserved.
+
 
 
 def _register_generic(module_dict, module_name, module):
@@ -32,12 +32,12 @@ class Registry(dict):
         super(Registry, self).__init__(*args, **kwargs)
 
     def register(self, module_name, module=None):
-        # used as function call
+
         if module is not None:
             _register_generic(self, module_name, module)
             return
 
-        # used as decorator
+
         def register_fn(fn):
             _register_generic(self, module_name, fn)
             return fn

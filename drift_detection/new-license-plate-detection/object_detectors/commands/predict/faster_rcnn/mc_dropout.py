@@ -91,8 +91,8 @@ def run_mc_dropout_csv(config, run_dir):
     if not save_csv:
         return
 
-    # Use the same dataset ordering and aspect-ratio grouping as gt/deterministic.
-    # Keep MC-dropout single-process to avoid Windows OpenMP worker conflicts.
+
+
     dataloader_config = deepcopy(config)
     dataloader_config.setdefault("dataloader", {})
     dataloader_config["dataloader"]["num_workers"] = 0
@@ -122,7 +122,7 @@ def run_mc_dropout_csv(config, run_dir):
         fieldnames.append(f"prob_{class_idx}_mean")
         fieldnames.append(f"prob_{class_idx}_std")
 
-    # Probe once to notify if forced-dropout hooks are unavailable on this model.
+
     if hasattr(detector, "set_dropout_rate"):
         probe_handles = []
     else:
@@ -164,13 +164,13 @@ def run_mc_dropout_csv(config, run_dir):
             yolo_cached_features = None
             use_yolo_head_cache = _is_yolov5_detector(detector)
 
-            # 1) Deterministic forward once: get final NMS predictions and raw pre-NMS indices.
+
             detector_inference_sec = 0.0
             prediction_matching_sec = 0.0
             feature_compute_sec = 0.0
 
-            # Deterministic forward once: get final NMS predictions and raw pre-NMS indices.
-            # Count this as detector inference because it is a model forward plus NMS.
+
+
             t_detector = timing.start()
             with torch.no_grad():
                 roi_cache = None
@@ -285,7 +285,7 @@ def run_mc_dropout_csv(config, run_dir):
             feat_std = None
             if not variable_candidate_runs:
                 t_feature = timing.start()
-                runs_tensor = torch.stack(feature_runs, dim=0)  # [R, B, N, F]
+                runs_tensor = torch.stack(feature_runs, dim=0)
                 feat_mean = runs_tensor.mean(dim=0)
                 feat_std = runs_tensor.std(dim=0, unbiased=False)
                 feature_compute_sec += timing.elapsed(t_feature)

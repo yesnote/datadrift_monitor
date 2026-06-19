@@ -68,9 +68,9 @@ class Bottleneck(nn.Module):
 
   def __init__(self, inplanes, planes, stride=1, downsample=None):
     super(Bottleneck, self).__init__()
-    self.conv1 = nn.Conv2d(inplanes, planes, kernel_size=1, stride=stride, bias=False) # change
+    self.conv1 = nn.Conv2d(inplanes, planes, kernel_size=1, stride=stride, bias=False)
     self.bn1 = nn.BatchNorm2d(planes)
-    self.conv2 = nn.Conv2d(planes, planes, kernel_size=3, stride=1, # change
+    self.conv2 = nn.Conv2d(planes, planes, kernel_size=3, stride=1,
                  padding=1, bias=False)
     self.bn2 = nn.BatchNorm2d(planes)
     self.conv3 = nn.Conv2d(planes, planes * 4, kernel_size=1, bias=False)
@@ -110,13 +110,13 @@ class ResNet(nn.Module):
                  bias=False)
     self.bn1 = nn.BatchNorm2d(64)
     self.relu = nn.ReLU(inplace=True)
-    self.maxpool = nn.MaxPool2d(kernel_size=3, stride=2, padding=0, ceil_mode=True) # change
+    self.maxpool = nn.MaxPool2d(kernel_size=3, stride=2, padding=0, ceil_mode=True)
     self.layer1 = self._make_layer(block, 64, layers[0])
     self.layer2 = self._make_layer(block, 128, layers[1], stride=2)
     self.layer3 = self._make_layer(block, 256, layers[2], stride=2)
     self.layer4 = self._make_layer(block, 512, layers[3], stride=2)
-    # it is slightly better whereas slower to set stride = 1
-    # self.layer4 = self._make_layer(block, 512, layers[3], stride=1)
+
+
     self.avgpool = nn.AvgPool2d(7)
     self.fc = nn.Linear(512 * block.expansion, num_classes)
 
@@ -244,7 +244,7 @@ class resnet(_fasterRCNN):
       state_dict = torch.load(self.model_path)
       resnet.load_state_dict({k:v for k,v in state_dict.items() if k in resnet.state_dict()})
 
-    # Build resnet.
+
     self.RCNN_base = nn.Sequential(resnet.conv1, resnet.bn1,resnet.relu,
       resnet.maxpool,resnet.layer1,resnet.layer2,resnet.layer3)
 
@@ -256,7 +256,7 @@ class resnet(_fasterRCNN):
     else:
       self.RCNN_bbox_pred = nn.Linear(2048, 4 * self.n_classes)
 
-    # Fix blocks
+
     for p in self.RCNN_base[0].parameters(): p.requires_grad=False
     for p in self.RCNN_base[1].parameters(): p.requires_grad=False
 
@@ -277,10 +277,10 @@ class resnet(_fasterRCNN):
     self.RCNN_top.apply(set_bn_fix)
 
   def train(self, mode=True):
-    # Override train so that the training mode is set as we want
+
     nn.Module.train(self, mode)
     if mode:
-      # Set fixed blocks to be in eval mode
+
       self.RCNN_base.eval()
       self.RCNN_base[5].train()
       self.RCNN_base[6].train()

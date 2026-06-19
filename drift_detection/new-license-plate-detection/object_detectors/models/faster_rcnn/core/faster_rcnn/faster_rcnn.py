@@ -22,11 +22,11 @@ class _fasterRCNN(nn.Module):
         self.classes = classes
         self.n_classes = len(classes)
         self.class_agnostic = class_agnostic
-        # loss
+
         self.RCNN_loss_cls = 0
         self.RCNN_loss_bbox = 0
 
-        # define rpn
+
         self.RCNN_rpn = _RPN(self.dout_base_model)
         self.RCNN_proposal_target = _ProposalTargetLayer(self.n_classes)
         self.RCNN_roi_pool = _RoIPooling(cfg.POOLING_SIZE, cfg.POOLING_SIZE, 1.0/16.0)
@@ -42,13 +42,13 @@ class _fasterRCNN(nn.Module):
         gt_boxes = gt_boxes.data
         num_boxes = num_boxes.data
 
-        # feed image data to base model to obtain base feature map
+
         base_feat = self.RCNN_base(im_data)
 
-        # feed base feature map to RPN to obtain rois
+
         rois, rpn_loss_cls, rpn_loss_bbox = self.RCNN_rpn(base_feat, im_info, gt_boxes, num_boxes)
 
-        # if it is training phase, then use ground truth bboxes for refining
+
         if self.training:
             roi_data = self.RCNN_proposal_target(rois, gt_boxes, num_boxes)
             rois, rois_label, rois_target, rois_inside_ws, rois_outside_ws = roi_data
@@ -66,7 +66,7 @@ class _fasterRCNN(nn.Module):
             rpn_loss_bbox = 0
 
         rois = Variable(rois)
-        # do roi pooling based on predicted rois
+
 
         if cfg.POOLING_MODE == 'crop':
             pooled_feat = self.RCNN_roi_align(base_feat, rois.view(-1, 5))
@@ -75,18 +75,18 @@ class _fasterRCNN(nn.Module):
         elif cfg.POOLING_MODE == 'pool':
             pooled_feat = self.RCNN_roi_pool(base_feat, rois.view(-1,5))
 
-        # feed pooled features to top model
+
         pooled_feat = self._head_to_tail(pooled_feat)
 
-        # compute bbox offset
+
         bbox_pred = self.RCNN_bbox_pred(pooled_feat)
         if self.training and not self.class_agnostic:
-            # select the corresponding columns according to roi labels
+
             bbox_pred_view = bbox_pred.view(bbox_pred.size(0), int(bbox_pred.size(1) / 4), 4)
             bbox_pred_select = torch.gather(bbox_pred_view, 1, rois_label.view(rois_label.size(0), 1, 1).expand(rois_label.size(0), 1, 4))
             bbox_pred = bbox_pred_select.squeeze(1)
 
-        # compute object classification probability
+
         cls_score = self.RCNN_cls_score(pooled_feat)
         cls_prob = F.softmax(cls_score, 1)
 
@@ -94,10 +94,10 @@ class _fasterRCNN(nn.Module):
         RCNN_loss_bbox = 0
 
         if self.training:
-            # classification loss
+
             RCNN_loss_cls = F.cross_entropy(cls_score, rois_label)
 
-            # bounding box regression L1 loss
+
             RCNN_loss_bbox = _smooth_l1_loss(bbox_pred, rois_target, rois_inside_ws, rois_outside_ws)
 
 
@@ -111,9 +111,9 @@ class _fasterRCNN(nn.Module):
             """
             weight initalizer: truncated normal and random normal.
             """
-            # x is a parameter
+
             if truncated:
-                m.weight.data.normal_().fmod_(2).mul_(stddev).add_(mean) # not a perfect approximation
+                m.weight.data.normal_().fmod_(2).mul_(stddev).add_(mean)
             else:
                 m.weight.data.normal_(mean, stddev)
                 m.bias.data.zero_()

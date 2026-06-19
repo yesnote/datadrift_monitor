@@ -1,7 +1,7 @@
-# Copyright (c) Facebook, Inc. and its affiliates. All Rights Reserved.
+
 import torch
 
-# transpose
+
 FLIP_LEFT_RIGHT = 0
 FLIP_TOP_BOTTOM = 1
 
@@ -32,7 +32,7 @@ class BoxList(object):
             raise ValueError("mode should be 'xyxy' or 'xywh'")
 
         self.bbox = bbox
-        self.size = image_size  # (image_width, image_height)
+        self.size = image_size
         self.mode = mode
         self.extra_fields = {}
 
@@ -57,8 +57,8 @@ class BoxList(object):
             raise ValueError("mode should be 'xyxy' or 'xywh'")
         if mode == self.mode:
             return self
-        # we only have two modes, so don't need to check
-        # self.mode
+
+
         xmin, ymin, xmax, ymax = self._split_into_xyxy()
         if mode == "xyxy":
             bbox = torch.cat((xmin, ymin, xmax, ymax), dim=-1)
@@ -101,7 +101,7 @@ class BoxList(object):
             ratio = ratios[0]
             scaled_box = self.bbox * ratio
             bbox = BoxList(scaled_box, size, mode=self.mode)
-            # bbox._copy_extra_fields(self)
+
             for k, v in self.extra_fields.items():
                 if not isinstance(v, torch.Tensor):
                     v = v.resize(size, *args, **kwargs)
@@ -118,7 +118,7 @@ class BoxList(object):
             (scaled_xmin, scaled_ymin, scaled_xmax, scaled_ymax), dim=-1
         )
         bbox = BoxList(scaled_box, size, mode="xyxy")
-        # bbox._copy_extra_fields(self)
+
         for k, v in self.extra_fields.items():
             if not isinstance(v, torch.Tensor):
                 v = v.resize(size, *args, **kwargs)
@@ -157,7 +157,7 @@ class BoxList(object):
             (transposed_xmin, transposed_ymin, transposed_xmax, transposed_ymax), dim=-1
         )
         bbox = BoxList(transposed_boxes, self.size, mode="xyxy")
-        # bbox._copy_extra_fields(self)
+
         for k, v in self.extra_fields.items():
             if not isinstance(v, torch.Tensor):
                 v = v.transpose(method)
@@ -177,7 +177,7 @@ class BoxList(object):
         cropped_xmax = (xmax - box[0]).clamp(min=0, max=w)
         cropped_ymax = (ymax - box[1]).clamp(min=0, max=h)
 
-        # TODO should I filter empty boxes here?
+
         if False:
             is_empty = (cropped_xmin == cropped_xmax) | (cropped_ymin == cropped_ymax)
 
@@ -185,14 +185,14 @@ class BoxList(object):
             (cropped_xmin, cropped_ymin, cropped_xmax, cropped_ymax), dim=-1
         )
         bbox = BoxList(cropped_box, (w, h), mode="xyxy")
-        # bbox._copy_extra_fields(self)
+
         for k, v in self.extra_fields.items():
             if not isinstance(v, torch.Tensor):
                 v = v.crop(box)
             bbox.add_field(k, v)
         return bbox.convert(self.mode)
 
-    # Tensor-like methods
+
 
     def to(self, device):
         bbox = BoxList(self.bbox.to(device), self.size, self.mode)

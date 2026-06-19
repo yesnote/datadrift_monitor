@@ -1,13 +1,13 @@
 from __future__ import absolute_import
-# --------------------------------------------------------
-# Faster R-CNN
-# Copyright (c) 2015 Microsoft
-# Licensed under The MIT License [see LICENSE for details]
-# Written by Ross Girshick and Sean Bell
-# --------------------------------------------------------
-# --------------------------------------------------------
-# Reorganized and modified by Jianwei Yang and Jiasen Lu
-# --------------------------------------------------------
+
+
+
+
+
+
+
+
+
 
 import torch
 import torch.nn as nn
@@ -23,9 +23,9 @@ import pdb
 DEBUG = False
 
 try:
-    long        # Python 2
+    long
 except NameError:
-    long = int  # Python 3
+    long = int
 
 
 class _AnchorTargetLayer(nn.Module):
@@ -42,23 +42,23 @@ class _AnchorTargetLayer(nn.Module):
         self._anchors = torch.from_numpy(generate_anchors(scales=np.array(anchor_scales), ratios=np.array(ratios))).float()
         self._num_anchors = self._anchors.size(0)
 
-        # allow boxes to sit over the edge by a small amount
-        self._allowed_border = 0  # default is 0
+
+        self._allowed_border = 0
 
     def forward(self, input):
-        # Algorithm:
-        #
-        # for each (H, W) location i
-        #   generate 9 anchor boxes centered on cell i
-        #   apply predicted bbox deltas at cell i to each of the 9 anchors
-        # filter out-of-image anchors
+
+
+
+
+
+
 
         rpn_cls_score = input[0]
         gt_boxes = input[1]
         im_info = input[2]
         num_boxes = input[3]
 
-        # map of shape (..., H, W)
+
         height, width = rpn_cls_score.size(2), rpn_cls_score.size(3)
 
         batch_size = gt_boxes.size(0)
@@ -74,7 +74,7 @@ class _AnchorTargetLayer(nn.Module):
         A = self._num_anchors
         K = shifts.size(0)
 
-        self._anchors = self._anchors.type_as(gt_boxes) # move to specific gpu.
+        self._anchors = self._anchors.type_as(gt_boxes)
         all_anchors = self._anchors.view(1, A, 4) + shifts.view(K, 1, 4)
         all_anchors = all_anchors.view(K * A, 4)
 
@@ -87,10 +87,10 @@ class _AnchorTargetLayer(nn.Module):
 
         inds_inside = torch.nonzero(keep).view(-1)
 
-        # keep only inside anchors
+
         anchors = all_anchors[inds_inside, :]
 
-        # label: 1 is positive, 0 is negative, -1 is dont care
+
         labels = gt_boxes.new(batch_size, inds_inside.size(0)).fill_(-1)
         bbox_inside_weights = gt_boxes.new(batch_size, inds_inside.size(0)).zero_()
         bbox_outside_weights = gt_boxes.new(batch_size, inds_inside.size(0)).zero_()
@@ -109,7 +109,7 @@ class _AnchorTargetLayer(nn.Module):
         if torch.sum(keep) > 0:
             labels[keep>0] = 1
 
-        # fg label: above threshold IOU
+
         labels[max_overlaps >= cfg.TRAIN.RPN_POSITIVE_OVERLAP] = 1
 
         if cfg.TRAIN.RPN_CLOBBER_POSITIVES:
@@ -121,24 +121,24 @@ class _AnchorTargetLayer(nn.Module):
         sum_bg = torch.sum((labels == 0).int(), 1)
 
         for i in range(batch_size):
-            # subsample positive labels if we have too many
+
             if sum_fg[i] > num_fg:
                 fg_inds = torch.nonzero(labels[i] == 1).view(-1)
-                # torch.randperm seems has a bug on multi-gpu setting that cause the segfault.
-                # See https://github.com/pytorch/pytorch/issues/1868 for more details.
-                # use numpy instead.
-                #rand_num = torch.randperm(fg_inds.size(0)).type_as(gt_boxes).long()
+
+
+
+
                 rand_num = torch.from_numpy(np.random.permutation(fg_inds.size(0))).type_as(gt_boxes).long()
                 disable_inds = fg_inds[rand_num[:fg_inds.size(0)-num_fg]]
                 labels[i][disable_inds] = -1
 
-#           num_bg = cfg.TRAIN.RPN_BATCHSIZE - sum_fg[i]
+
             num_bg = cfg.TRAIN.RPN_BATCHSIZE - torch.sum((labels == 1).int(), 1)[i]
 
-            # subsample negative labels if we have too many
+
             if sum_bg[i] > num_bg:
                 bg_inds = torch.nonzero(labels[i] == 0).view(-1)
-                #rand_num = torch.randperm(bg_inds.size(0)).type_as(gt_boxes).long()
+
 
                 rand_num = torch.from_numpy(np.random.permutation(bg_inds.size(0))).type_as(gt_boxes).long()
                 disable_inds = bg_inds[rand_num[:bg_inds.size(0)-num_bg]]
@@ -149,7 +149,7 @@ class _AnchorTargetLayer(nn.Module):
         argmax_overlaps = argmax_overlaps + offset.view(batch_size, 1).type_as(argmax_overlaps)
         bbox_targets = _compute_targets_batch(anchors, gt_boxes.view(-1,5)[argmax_overlaps.view(-1), :].view(batch_size, -1, 5))
 
-        # use a single value instead of 4 values for easy index.
+
         bbox_inside_weights[labels==1] = cfg.TRAIN.RPN_BBOX_INSIDE_WEIGHTS[0]
 
         if cfg.TRAIN.RPN_POSITIVE_WEIGHT < 0:

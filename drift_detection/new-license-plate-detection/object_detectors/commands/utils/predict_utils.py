@@ -933,13 +933,13 @@ def build_target_scalar_pre_nms(target_value, raw_prediction, raw_logits):
     if target_value == "obj":
         if raw_prediction is None or raw_prediction.numel() == 0:
             return None
-        # NMS 이전: 모든 후보 bbox의 objectness(sigmoid) 합
+
         return raw_prediction[..., 4].sum()
 
     if target_value == "cls":
         if raw_logits is None or raw_logits.numel() == 0:
             return None
-        # NMS 이전: 모든 후보 bbox의 max(class logit) 합
+
         return raw_logits.max(dim=-1).values.sum()
 
     raise ValueError(f"Unsupported target_value: {target_value}")
@@ -1035,7 +1035,7 @@ def collect_gradients_per_target(
                         if logit_img is not None and logit_img.numel() > 0:
                             target_scalar = logit_img[raw_keep_indices].max(dim=1).values.sum()
         else:
-            # Loss targets use the final NMS predictions.
+
             with torch.no_grad():
                 max_det = getattr(detector, "max_det", 300)
                 _selected_preds, _selected_logits, _selected_objectness, selected_indices = detector.non_max_suppression(
@@ -1125,7 +1125,7 @@ def configure_mc_dropout(model: torch.nn.Module, dropout_rate: float) -> int:
 
 
 def enable_forced_mc_dropout_on_yolov5_head(model: torch.nn.Module, dropout_rate: float):
-    # DiL-style behavior for YOLO: apply dropout in inference path explicitly.
+
     detect_module = None
     for module in model.modules():
         if hasattr(module, "m") and hasattr(module, "nc") and hasattr(module, "na"):
@@ -2619,8 +2619,8 @@ def collect_bbox_layer_grads_per_target(
     raw_anchor_priors = model_output[3] if isinstance(model_output, (tuple, list)) and len(model_output) > 3 else None
     _add_elapsed_timing(timing_accumulator, "detector_inference_sec", t_detector, timing_device)
     with torch.no_grad():
-        # Final detections use the model confidence threshold. Candidate search for
-        # cand_target later uses the unfiltered raw_prediction and cand_score_threshold.
+
+
         max_det = getattr(detector, "max_det", 300)
         t_detector = _start_timing(timing_device)
         selected_preds, _selected_logits, _selected_objectness, selected_indices = detector.non_max_suppression(
@@ -2765,8 +2765,8 @@ def preprocess_with_letterbox(detector, image_tensor, device, requires_grad=True
     image_np = image_tensor.permute(1, 2, 0).cpu().numpy()
     image_np = np.clip(image_np * 255.0, 0, 255).astype(np.uint8)
 
-    # For most modes we keep YOLO letterbox default behavior (auto=True).
-    # MC-dropout batched path can set auto=False to force fixed-size tensors.
+
+
     resized, ratio, pad = detector.yolo_resize(image_np, new_shape=detector.img_size, auto=auto)
     resized = resized.transpose((2, 0, 1))
     resized = np.ascontiguousarray(resized)
@@ -2795,7 +2795,7 @@ def classes_match(name_a, name_b) -> bool:
 
 
 def draw_predictions(image_chw, boxes, labels, scores):
-    # image_chw: C,H,W uint8
+
     image = np.transpose(image_chw, (1, 2, 0)).copy()
     for box, label, score in zip(boxes, labels, scores):
         x1, y1, x2, y2 = [int(v) for v in box]

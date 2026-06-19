@@ -43,8 +43,8 @@ class FCOSLossComputation(object):
         self.iou_loss_type = cfg.MODEL.FCOS.IOU_LOSS_TYPE
         self.norm_reg_targets = cfg.MODEL.FCOS.NORM_REG_TARGETS
 
-        # we make use of IOU Loss for bounding boxes regression,
-        # but we found that L1 in log scale can yield a similar performance
+
+
         self.box_reg_loss_func = IOULoss(self.iou_loss_type)
         self.centerness_loss_func = nn.BCEWithLogitsLoss(reduction="sum")
 
@@ -60,7 +60,7 @@ class FCOSLossComputation(object):
         center_x = (gt[..., 0] + gt[..., 2]) / 2
         center_y = (gt[..., 1] + gt[..., 3]) / 2
         center_gt = gt.new_zeros(gt.shape)
-        # no gt
+
         if center_x[..., 0].sum() == 0:
             return gt_xs.new_zeros(gt_xs.shape, dtype=torch.uint8)
         beg = 0
@@ -71,7 +71,7 @@ class FCOSLossComputation(object):
             ymin = center_y[beg:end] - stride
             xmax = center_x[beg:end] + stride
             ymax = center_y[beg:end] + stride
-            # limit sample region in gt
+
             center_gt[beg:end, :, 0] = torch.where(
                 xmin > gt[beg:end, :, 0], xmin, gt[beg:end, :, 0]
             )
@@ -168,11 +168,11 @@ class FCOSLossComputation(object):
                     radius=self.center_sampling_radius
                 )
             else:
-                # no center sampling, it will use all the locations within a ground-truth box
+
                 is_in_boxes = reg_targets_per_im.min(dim=2)[0] > 0
 
             max_reg_targets_per_im = reg_targets_per_im.max(dim=2)[0]
-            # limit the regression range for each location
+
             is_cared_in_the_level = \
                 (max_reg_targets_per_im >= object_sizes_of_interest[:, [0]]) & \
                 (max_reg_targets_per_im <= object_sizes_of_interest[:, [1]])
@@ -181,8 +181,8 @@ class FCOSLossComputation(object):
             locations_to_gt_area[is_in_boxes == 0] = INF
             locations_to_gt_area[is_cared_in_the_level == 0] = INF
 
-            # if there are still more than one objects for a location,
-            # we choose the one with minimal area
+
+
             locations_to_min_area, locations_to_gt_inds = locations_to_gt_area.min(dim=1)
 
             reg_targets_per_im = reg_targets_per_im[range(len(locations)), locations_to_gt_inds]
@@ -244,7 +244,7 @@ class FCOSLossComputation(object):
         centerness_flatten = centerness_flatten[pos_inds]
 
         num_gpus = get_num_gpus()
-        # sync num_pos from all gpus
+
         total_num_pos = reduce_sum(pos_inds.new_tensor([pos_inds.numel()])).item()
         num_pos_avg_per_gpu = max(total_num_pos / float(num_gpus), 1.0)
 
@@ -256,8 +256,8 @@ class FCOSLossComputation(object):
         if pos_inds.numel() > 0:
             centerness_targets = self.compute_centerness_targets(reg_targets_flatten)
 
-            # average sum_centerness_targets from all gpus,
-            # which is used to normalize centerness-weighed reg loss
+
+
             sum_centerness_targets_avg_per_gpu = \
                 reduce_sum(centerness_targets.sum()).item() / float(num_gpus)
 

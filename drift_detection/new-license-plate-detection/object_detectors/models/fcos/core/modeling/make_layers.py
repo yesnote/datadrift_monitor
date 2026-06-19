@@ -1,4 +1,4 @@
-# Copyright (c) Facebook, Inc. and its affiliates. All Rights Reserved.
+
 """
 Miscellaneous utility functions
 """
@@ -30,7 +30,7 @@ def group_norm(out_channels, affine=True, divisor=1):
     out_channels = out_channels // divisor
     dim_per_gp = cfg.MODEL.GROUP_NORM.DIM_PER_GP // divisor
     num_groups = cfg.MODEL.GROUP_NORM.NUM_GROUPS // divisor
-    eps = cfg.MODEL.GROUP_NORM.EPSILON # default: 1e-5
+    eps = cfg.MODEL.GROUP_NORM.EPSILON
     return torch.nn.GroupNorm(
         get_group_gn(out_channels, dim_per_gp, num_groups), 
         out_channels, 
@@ -52,8 +52,8 @@ def conv_with_kaiming_uniform(use_gn=False, use_relu=False):
             dilation=dilation, 
             bias=False if use_gn else True
         )
-        # Caffe2 implementation uses XavierFill, which in fact
-        # corresponds to kaiming_uniform_ in PyTorch
+
+
         nn.init.kaiming_uniform_(conv.weight, a=1)
         if not use_gn:
             nn.init.constant_(conv.bias, 0)
