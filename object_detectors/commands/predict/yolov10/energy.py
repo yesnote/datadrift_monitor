@@ -1,5 +1,10 @@
 from commands.predict.common import *
-from commands.predict.yolov10.utils import iter_yolov10_detection_rows, run_yolov10_forward, selected_yolov10_logits
+from commands.predict.yolov10.utils import (
+    iter_yolov10_detection_rows,
+    parse_yolov10_output_config,
+    run_yolov10_forward,
+    selected_yolov10_logits,
+)
 
 
 def run_energy_csv(config, run_dir):
@@ -7,7 +12,7 @@ def run_energy_csv(config, run_dir):
     mode = str(config.get("mode", "predict"))
     uncertainty = "energy"
     split = config.get("dataset", {}).get("split", "val")
-    parsed = parse_output_config(config.get("output", {}))
+    parsed = parse_yolov10_output_config(config)
     if not parsed["save_csv_enabled"]:
         return
     output_csv = run_dir / "energy.csv"

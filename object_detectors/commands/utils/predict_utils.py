@@ -210,6 +210,8 @@ def build_detector(config, model_weight=None):
         if len(weight_source) == 0:
             raise ValueError("model.weights is empty.")
         weight_source = weight_source[0]
+    if model_type in {"yolov10", "yolo_v10"} and not str(weight_source).strip():
+        raise ValueError("YOLOv10 predict requires model.weights. Refusing to run a random model.")
     weight_path = None
     if str(weight_source).strip():
         weight_path = Path(weight_source)

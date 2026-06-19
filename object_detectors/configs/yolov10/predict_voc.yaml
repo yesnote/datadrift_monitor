@@ -7,7 +7,6 @@ model:
   variant: n
   max_det: 300
   confidence_threshold: 0.25
-  iou_threshold: 0.45
   device: cuda
 
 dataset:
@@ -50,7 +49,7 @@ dataloader:
   shuffle_eval: false
 
 output:
-  # gt | deterministic | score | class_probability | entropy | energy | mc_dropout | ensemble | meta_detect | null_detect | layer_grad
+  # gt | deterministic | score | class_probability | entropy | energy | mc_dropout | ensemble | null_detect | layer_grad
   uncertainty: score
 
   gt:
@@ -86,12 +85,6 @@ output:
 
   ensemble:
     weights: []
-    save_csv:
-      enabled: true
-
-  meta_detect:
-    score_threshold: 0.0
-    iou_threshold: 0.45
     save_csv:
       enabled: true
 

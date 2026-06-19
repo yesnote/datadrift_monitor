@@ -1,3 +1,5 @@
+import sys
+from contextlib import contextmanager
 from pathlib import Path
 
 import torch
@@ -14,15 +16,42 @@ from .core import (
 
 
 def _torch_load(path, map_location):
+    ref_root = Path(__file__).resolve().parents[3] / "code_references" / "yolov10-main"
+    with _temporary_sys_path(ref_root if ref_root.is_dir() else None):
+        try:
+            return torch.load(path, map_location=map_location, weights_only=False)
+        except TypeError:
+            return torch.load(path, map_location=map_location)
+
+
+@contextmanager
+def _temporary_sys_path(path):
+    if path is None:
+        yield
+        return
+    token = str(path)
+    inserted = token not in sys.path
+    if inserted:
+        sys.path.insert(0, token)
     try:
-        return torch.load(path, map_location=map_location, weights_only=False)
-    except TypeError:
-        return torch.load(path, map_location=map_location)
+        yield
+    finally:
+        if inserted:
+            try:
+                sys.path.remove(token)
+            except ValueError:
+                pass
 
 
 def _checkpoint_state_dict(payload):
     if isinstance(payload, dict) and "model_state_dict" in payload:
         return payload["model_state_dict"]
+    if isinstance(payload, dict) and payload.get("ema") is not None:
+        model_payload = payload["ema"]
+        if isinstance(model_payload, nn.Module):
+            return model_payload.state_dict()
+        if isinstance(model_payload, dict):
+            return model_payload
     if isinstance(payload, dict) and "model" in payload:
         model_payload = payload["model"]
         if isinstance(model_payload, nn.Module):
@@ -36,6 +65,18 @@ def _checkpoint_state_dict(payload):
     if isinstance(payload, nn.Module):
         return payload.state_dict()
     raise ValueError("Unsupported YOLOv10 checkpoint payload.")
+
+
+def _checkpoint_metadata(payload):
+    if not isinstance(payload, dict):
+        return {}
+    return {
+        "model_type": payload.get("model_type"),
+        "variant": payload.get("variant"),
+        "num_classes": payload.get("num_classes"),
+        "names": payload.get("names"),
+        "img_size": payload.get("img_size"),
+    }
 
 
 def _strip_prefixes(state_dict):
@@ -73,11 +114,12 @@ class YOLOV10TorchObjectDetector(nn.Module):
         self.confidence = float(confidence)
         self.iou_thresh = float(iou_thresh)
         self.max_det = int(max_det)
+        self.variant = str(variant or "n").lower().replace("yolov10", "")
         self.is_yolov10 = True
         self.agnostic = False
         self.names = list(names or [])
         self.num_classes = len(self.names) if self.names else 80
-        cfg = load_yolov10_cfg(variant)
+        cfg = load_yolov10_cfg(self.variant)
         self.model = YOLOv10DetectionModel(cfg, nc=self.num_classes)
         self.model.names = self.names or [str(i) for i in range(self.num_classes)]
         self.names = self.model.names
@@ -102,7 +144,17 @@ class YOLOV10TorchObjectDetector(nn.Module):
         path = Path(model_weight)
         if not path.is_file():
             raise FileNotFoundError(f"YOLOv10 weight file not found: {path}")
-        state_dict = _strip_prefixes(_checkpoint_state_dict(_torch_load(path, self.device)))
+        payload = _torch_load(path, self.device)
+        metadata = _checkpoint_metadata(payload)
+        if metadata.get("model_type") and str(metadata["model_type"]).lower() != "yolov10":
+            raise ValueError(f"Checkpoint model_type is not yolov10: {metadata['model_type']}")
+        if metadata.get("variant") and str(metadata["variant"]).lower().replace("yolov10", "") != self.variant:
+            raise ValueError(f"YOLOv10 checkpoint variant mismatch: checkpoint={metadata['variant']}, config={self.variant}")
+        if metadata.get("num_classes") is not None and int(metadata["num_classes"]) != int(self.num_classes):
+            raise ValueError(
+                f"YOLOv10 checkpoint num_classes mismatch: checkpoint={metadata['num_classes']}, config={self.num_classes}"
+            )
+        state_dict = _strip_prefixes(_checkpoint_state_dict(payload))
         current = self.model.state_dict()
         filtered = {
             key: value
@@ -110,6 +162,11 @@ class YOLOV10TorchObjectDetector(nn.Module):
             if key in current and tuple(current[key].shape) == tuple(value.shape)
         }
         skipped = len(state_dict) - len(filtered)
+        if state_dict and len(filtered) / max(1, len(current)) < 0.5:
+            raise ValueError(
+                f"YOLOv10 checkpoint load ratio is too low: matched={len(filtered)}, model_keys={len(current)}, "
+                f"checkpoint_keys={len(state_dict)}"
+            )
         if skipped:
             print(f"[WARN] YOLOv10 checkpoint partial load: loaded={len(filtered)}, skipped={skipped}")
         self.model.load_state_dict(filtered, strict=False)
@@ -139,11 +196,12 @@ class YOLOV10TorchObjectDetector(nn.Module):
             s = scores[sample_idx][keep]
             l = labels[sample_idx][keep].float()
             idx = raw_indices[sample_idx][keep].long()
+            raw_box_idx = torch.div(idx, self.num_classes, rounding_mode="floor")
             xyxy = xywh2xyxy(b)
             selected_preds.append(torch.cat([xyxy, s[:, None], l[:, None]], dim=1))
             selected_indices.append(idx)
-            selected_logits.append(flat_logits[sample_idx][idx].detach())
-            selected_probs.append(torch.sigmoid(flat_logits[sample_idx][idx]).detach())
+            selected_logits.append(flat_logits[sample_idx][raw_box_idx].detach())
+            selected_probs.append(torch.sigmoid(flat_logits[sample_idx][raw_box_idx]).detach())
         return selected_preds, selected_logits, selected_probs, selected_indices, raw_levels, decoded_bnc
 
     def forward_raw(self, images):

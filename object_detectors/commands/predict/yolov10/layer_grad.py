@@ -1,6 +1,11 @@
 from commands.predict.common import *
 from commands.utils.predict_utils import _class_loss_tensor, expand_layer_names, map_grad_tensor_to_numbers, resolve_layer_parameter
-from commands.predict.yolov10.utils import iter_yolov10_detection_rows, run_yolov10_forward, source_point_box
+from commands.predict.yolov10.utils import (
+    iter_yolov10_detection_rows,
+    parse_yolov10_output_config,
+    run_yolov10_forward,
+    source_point_box,
+)
 from models.yolov10.core import xywh2xyxy
 
 
@@ -26,9 +31,16 @@ def _parse_config(config):
         raise ValueError("YOLOv10 layer_grad.gradient.cls_loss supports only bcewithlogits or kl.")
     reduction = grad.get("reduction", ["l1_norm", "l2_norm", "min", "max", "mean", "std"])
     reduction = [str(v).strip() for v in (reduction if isinstance(reduction, (list, tuple)) else [reduction]) if str(v).strip()]
+    if not reduction:
+        raise ValueError("YOLOv10 layer_grad requires reduction metrics; raw gradient saving is not supported.")
+    layers = grad.get("layer", ["model.23.one2one_cv2.0.2", "model.23.one2one_cv3.0.2"])
+    layer_list = [str(v).strip() for v in (layers if isinstance(layers, (list, tuple)) else [layers]) if str(v).strip()]
+    for layer_name in layer_list:
+        if not layer_name.startswith("model.23."):
+            raise ValueError("YOLOv10 layer_grad supports head layers only because one-to-one head features detach backbone/neck.")
     return {
         "scalar": scalar,
-        "layer": grad.get("layer", ["model.23.one2one_cv2.0.2", "model.23.one2one_cv3.0.2"]),
+        "layer": layer_list,
         "reduction": reduction,
         "bbox_loss": bbox_loss,
         "cls_loss": cls_loss,
@@ -51,7 +63,7 @@ def run_layer_grad_csv(config, run_dir):
     mode = str(config.get("mode", "predict"))
     uncertainty = "layer_grad"
     split = config.get("dataset", {}).get("split", "val")
-    parsed = parse_output_config(config.get("output", {}))
+    parsed = parse_yolov10_output_config(config)
     if not parsed["save_csv_enabled"]:
         return
     layer_cfg = _parse_config(config)
@@ -86,18 +98,21 @@ def run_layer_grad_csv(config, run_dir):
             backpropagation_sec = 0.0
             feature_compute_sec = 0.0
             batch_items = 0
-            for item in iter_yolov10_detection_rows(detector, targets, forward.selected_preds, forward.selected_indices, device):
+            all_items = list(iter_yolov10_detection_rows(detector, targets, forward.selected_preds, forward.selected_indices, device))
+            total_grad_calls = len(all_items) * len(layer_cfg["scalar"])
+            grad_call_idx = 0
+            for item in all_items:
                 row = dict(item["base_row"])
-                raw_pred_idx = item["raw_pred_idx"]
+                raw_box_idx = item["raw_box_idx"]
                 t_loss = timing.start()
-                pred_xywh = forward.decoded_prediction[item["sample_idx"], raw_pred_idx, :4]
+                pred_xywh = forward.decoded_prediction[item["sample_idx"], raw_box_idx, :4]
                 pred_xyxy = xywh2xyxy(pred_xywh)
-                ref_xyxy = source_point_box(forward.source_points, raw_pred_idx, device)
+                ref_xyxy = source_point_box(forward.source_points, raw_box_idx, device)
                 scalar_terms = {}
                 if "bbox_loss" in layer_cfg["scalar"]:
                     scalar_terms["bbox_loss"] = _bbox_loss(pred_xyxy, ref_xyxy, layer_cfg["bbox_loss"])
                 if "cls_loss" in layer_cfg["scalar"]:
-                    cls_logits = forward.raw_logits[item["sample_idx"], raw_pred_idx]
+                    cls_logits = forward.raw_logits[item["sample_idx"], raw_box_idx]
                     target_value = 0.5 if layer_cfg["cls_loss"] == "bcewithlogits" else 1.0 / float(max(1, cls_logits.numel()))
                     cls_target = torch.full_like(cls_logits, target_value)
                     scalar_terms["cls_loss"] = _class_loss_tensor(
@@ -110,11 +125,12 @@ def run_layer_grad_csv(config, run_dir):
                     )
                 loss_compute_sec += timing.elapsed(t_loss)
                 for scalar_name, target_scalar in scalar_terms.items():
+                    grad_call_idx += 1
                     t_back = timing.start()
                     grads = torch.autograd.grad(
                         target_scalar,
                         [param for _layer_name, param in params],
-                        retain_graph=True,
+                        retain_graph=grad_call_idx < total_grad_calls,
                         allow_unused=True,
                     )
                     backpropagation_sec += timing.elapsed(t_back)
@@ -138,7 +154,7 @@ def run_layer_grad_csv(config, run_dir):
                     "feature_compute_sec": feature_compute_sec,
                 },
             )
-            del infer_batch, forward
+            del infer_batch, forward, all_items
             if device.type == "cuda":
                 torch.cuda.empty_cache()
     del detector

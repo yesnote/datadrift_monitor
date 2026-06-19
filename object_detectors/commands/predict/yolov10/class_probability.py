@@ -1,6 +1,7 @@
 from commands.predict.common import *
 from commands.predict.yolov10.utils import (
     iter_yolov10_detection_rows,
+    parse_yolov10_output_config,
     run_yolov10_forward,
     selected_yolov10_sigmoid_probs,
 )
@@ -11,7 +12,7 @@ def run_class_probability_csv(config, run_dir):
     mode = str(config.get("mode", "predict"))
     uncertainty = "class_probability"
     split = config.get("dataset", {}).get("split", "val")
-    parsed = parse_output_config(config.get("output", {}))
+    parsed = parse_yolov10_output_config(config)
     if not parsed["save_csv_enabled"]:
         return
     dataloader = create_dataloader(config, split=split)

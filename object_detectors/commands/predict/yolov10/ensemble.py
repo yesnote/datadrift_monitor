@@ -1,8 +1,12 @@
 from pathlib import Path
 
 from commands.predict.common import *
-from commands.predict.yolov10.mc_dropout import _feature_tensor
-from commands.predict.yolov10.utils import iter_yolov10_detection_rows, run_yolov10_forward
+from commands.predict.yolov10.utils import (
+    iter_yolov10_detection_rows,
+    parse_yolov10_output_config,
+    run_yolov10_forward,
+    yolov10_feature_tensor,
+)
 
 
 def _resolve_path(path):
@@ -17,7 +21,7 @@ def run_ensemble_csv(config, run_dir):
     mode = str(config.get("mode", "predict"))
     uncertainty = "ensemble"
     split = config.get("dataset", {}).get("split", "val")
-    parsed = parse_output_config(config.get("output", {}))
+    parsed = parse_yolov10_output_config(config)
     if not parsed["save_csv_enabled"]:
         return
     weights = config.get("output", {}).get("ensemble", {}).get("weights", [])
@@ -30,6 +34,10 @@ def run_ensemble_csv(config, run_dir):
     detectors = [build_detector(config, model_weight=w)[0] for w in weights]
     device = next(detectors[0].parameters()).device
     num_classes = len(detectors[0].names) if detectors[0].names is not None else 80
+    for detector in detectors[1:]:
+        other_classes = len(detector.names) if detector.names is not None else 80
+        if other_classes != num_classes:
+            raise ValueError(f"YOLOv10 ensemble class count mismatch: {other_classes} != {num_classes}")
     fieldnames = ["image_id", "image_path", "pred_idx", "raw_pred_idx", "xmin", "ymin", "xmax", "ymax", "score", "pred_class", "xmin_mean", "ymin_mean", "xmax_mean", "ymax_mean", "score_mean", "xmin_std", "ymin_std", "xmax_std", "ymax_std", "score_std"]
     for class_idx in range(num_classes):
         fieldnames.append(f"prob_{class_idx}_mean")
@@ -47,26 +55,37 @@ def run_ensemble_csv(config, run_dir):
             with torch.no_grad():
                 base = run_yolov10_forward(detectors[0], infer_batch, timing=timing)
             detector_inference_sec += base.detector_inference_sec
-            features = []
+            feat_sum = None
+            feat_sumsq = None
             for detector in detectors:
                 with torch.no_grad():
                     forward = base if detector is detectors[0] else run_yolov10_forward(detector, infer_batch, timing=timing)
                 if detector is not detectors[0]:
                     detector_inference_sec += forward.detector_inference_sec
+                    if forward.decoded_prediction.shape != base.decoded_prediction.shape:
+                        raise ValueError(
+                            "YOLOv10 ensemble raw output shape mismatch: "
+                            f"{tuple(forward.decoded_prediction.shape)} != {tuple(base.decoded_prediction.shape)}"
+                        )
                 t_feature = timing.start()
-                features.append(_feature_tensor(forward))
+                feat = yolov10_feature_tensor(forward)
+                feat_sum = feat if feat_sum is None else feat_sum + feat
+                feat_sumsq = feat.pow(2) if feat_sumsq is None else feat_sumsq + feat.pow(2)
                 feature_compute_sec += timing.elapsed(t_feature)
             t_feature = timing.start()
-            tensor = torch.stack(features, dim=0)
-            feat_mean = tensor.mean(dim=0)
-            feat_std = tensor.std(dim=0, unbiased=False)
+            n = float(len(detectors))
+            feat_mean = feat_sum / n
+            feat_var = (feat_sumsq / n - feat_mean.pow(2)).clamp(min=0)
+            feat_std = feat_var.sqrt()
             feature_compute_sec += timing.elapsed(t_feature)
             t_match = timing.start()
             batch_items = 0
             for item in iter_yolov10_detection_rows(detectors[0], targets, base.selected_preds, base.selected_indices, device):
-                raw_idx = item["raw_pred_idx"]
-                mean_vec = feat_mean[item["sample_idx"], raw_idx].detach().cpu()
-                std_vec = feat_std[item["sample_idx"], raw_idx].detach().cpu()
+                raw_box_idx = item["raw_box_idx"]
+                raw_class_idx = item["raw_class_idx"]
+                mean_vec = feat_mean[item["sample_idx"], raw_box_idx].detach().cpu()
+                std_vec = feat_std[item["sample_idx"], raw_box_idx].detach().cpu()
+                score_offset = 4 + raw_class_idx
                 row = dict(item["base_row"])
                 row.update(
                     {
@@ -74,22 +93,23 @@ def run_ensemble_csv(config, run_dir):
                         "ymin_mean": float(mean_vec[1].item()),
                         "xmax_mean": float(mean_vec[2].item()),
                         "ymax_mean": float(mean_vec[3].item()),
-                        "score_mean": float(mean_vec[4].item()),
+                        "score_mean": float(mean_vec[score_offset].item()),
                         "xmin_std": float(std_vec[0].item()),
                         "ymin_std": float(std_vec[1].item()),
                         "xmax_std": float(std_vec[2].item()),
                         "ymax_std": float(std_vec[3].item()),
-                        "score_std": float(std_vec[4].item()),
+                        "score_std": float(std_vec[score_offset].item()),
                     }
                 )
                 for class_idx in range(num_classes):
-                    row[f"prob_{class_idx}_mean"] = float(mean_vec[5 + class_idx].item()) if class_idx < mean_vec.numel() - 5 else 0.0
-                    row[f"prob_{class_idx}_std"] = float(std_vec[5 + class_idx].item()) if class_idx < std_vec.numel() - 5 else 0.0
+                    offset = 4 + class_idx
+                    row[f"prob_{class_idx}_mean"] = float(mean_vec[offset].item()) if offset < mean_vec.numel() else 0.0
+                    row[f"prob_{class_idx}_std"] = float(std_vec[offset].item()) if offset < std_vec.numel() else 0.0
                 writer.writerow(row)
                 batch_items += 1
             prediction_matching_sec = timing.elapsed(t_match)
             timing.record(len(image_list), batch_items, {"detector_inference_sec": detector_inference_sec, "prediction_matching_sec": prediction_matching_sec, "feature_compute_sec": feature_compute_sec})
-            del infer_batch, base, features, tensor, feat_mean, feat_std
+            del infer_batch, base, feat_sum, feat_sumsq, feat_mean, feat_std
     for detector in detectors:
         del detector
     if device.type == "cuda":

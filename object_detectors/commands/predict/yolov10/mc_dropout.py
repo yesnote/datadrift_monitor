@@ -1,23 +1,11 @@
 from commands.predict.common import *
-from commands.predict.yolov10.utils import iter_yolov10_detection_rows, run_yolov10_forward
-from models.yolov10.core import xywh2xyxy
-
-
-def _feature_tensor(forward):
-    boxes = xywh2xyxy(forward.decoded_prediction[..., :4].detach().float())
-    probs = torch.sigmoid(forward.raw_logits.detach().float())
-    scores = probs.max(dim=-1, keepdim=True).values
-    return torch.cat([boxes, scores, probs], dim=-1)
-
-
-def _set_dropout(model, rate):
-    handles = []
-    for module in model.modules():
-        if isinstance(module, (torch.nn.Dropout, torch.nn.Dropout2d, torch.nn.Dropout3d)):
-            module.train()
-            module.p = float(rate)
-            handles.append(module)
-    return handles
+from commands.predict.yolov10.utils import (
+    enable_forced_yolov10_dropout,
+    iter_yolov10_detection_rows,
+    parse_yolov10_output_config,
+    run_yolov10_forward,
+    yolov10_feature_tensor,
+)
 
 
 def run_mc_dropout_csv(config, run_dir):
@@ -25,7 +13,7 @@ def run_mc_dropout_csv(config, run_dir):
     mode = str(config.get("mode", "predict"))
     uncertainty = "mc_dropout"
     split = config.get("dataset", {}).get("split", "val")
-    parsed = parse_output_config(config.get("output", {}))
+    parsed = parse_yolov10_output_config(config)
     if not parsed["save_csv_enabled"]:
         return
     num_runs = int(parsed["mc_num_runs"])
@@ -52,30 +40,35 @@ def run_mc_dropout_csv(config, run_dir):
             with torch.no_grad():
                 base = run_yolov10_forward(detector, infer_batch, timing=timing)
             detector_inference_sec += base.detector_inference_sec
-            runs = []
-            dropout_modules = _set_dropout(detector.model, parsed["mc_dropout_rate"])
+            feat_sum = None
+            feat_sumsq = None
+            restore_dropout = enable_forced_yolov10_dropout(detector.model, parsed["mc_dropout_rate"])
             try:
                 with torch.no_grad():
                     for _ in range(num_runs):
                         run = run_yolov10_forward(detector, infer_batch, timing=timing)
                         detector_inference_sec += run.detector_inference_sec
                         t_feature = timing.start()
-                        runs.append(_feature_tensor(run))
+                        feat = yolov10_feature_tensor(run)
+                        feat_sum = feat if feat_sum is None else feat_sum + feat
+                        feat_sumsq = feat.pow(2) if feat_sumsq is None else feat_sumsq + feat.pow(2)
                         feature_compute_sec += timing.elapsed(t_feature)
             finally:
+                restore_dropout()
                 detector.model.eval()
-                del dropout_modules
             t_feature = timing.start()
-            runs_tensor = torch.stack(runs, dim=0)
-            feat_mean = runs_tensor.mean(dim=0)
-            feat_std = runs_tensor.std(dim=0, unbiased=False)
+            feat_mean = feat_sum / float(num_runs)
+            feat_var = (feat_sumsq / float(num_runs) - feat_mean.pow(2)).clamp(min=0)
+            feat_std = feat_var.sqrt()
             feature_compute_sec += timing.elapsed(t_feature)
             t_match = timing.start()
             batch_items = 0
             for item in iter_yolov10_detection_rows(detector, targets, base.selected_preds, base.selected_indices, device):
-                raw_idx = item["raw_pred_idx"]
-                mean_vec = feat_mean[item["sample_idx"], raw_idx].detach().cpu()
-                std_vec = feat_std[item["sample_idx"], raw_idx].detach().cpu()
+                raw_box_idx = item["raw_box_idx"]
+                raw_class_idx = item["raw_class_idx"]
+                mean_vec = feat_mean[item["sample_idx"], raw_box_idx].detach().cpu()
+                std_vec = feat_std[item["sample_idx"], raw_box_idx].detach().cpu()
+                score_offset = 4 + raw_class_idx
                 row = dict(item["base_row"])
                 row.update(
                     {
@@ -83,22 +76,23 @@ def run_mc_dropout_csv(config, run_dir):
                         "ymin_mean": float(mean_vec[1].item()),
                         "xmax_mean": float(mean_vec[2].item()),
                         "ymax_mean": float(mean_vec[3].item()),
-                        "score_mean": float(mean_vec[4].item()),
+                        "score_mean": float(mean_vec[score_offset].item()),
                         "xmin_std": float(std_vec[0].item()),
                         "ymin_std": float(std_vec[1].item()),
                         "xmax_std": float(std_vec[2].item()),
                         "ymax_std": float(std_vec[3].item()),
-                        "score_std": float(std_vec[4].item()),
+                        "score_std": float(std_vec[score_offset].item()),
                     }
                 )
                 for class_idx in range(num_classes):
-                    row[f"prob_{class_idx}_mean"] = float(mean_vec[5 + class_idx].item()) if class_idx < mean_vec.numel() - 5 else 0.0
-                    row[f"prob_{class_idx}_std"] = float(std_vec[5 + class_idx].item()) if class_idx < std_vec.numel() - 5 else 0.0
+                    offset = 4 + class_idx
+                    row[f"prob_{class_idx}_mean"] = float(mean_vec[offset].item()) if offset < mean_vec.numel() else 0.0
+                    row[f"prob_{class_idx}_std"] = float(std_vec[offset].item()) if offset < std_vec.numel() else 0.0
                 writer.writerow(row)
                 batch_items += 1
             prediction_matching_sec += timing.elapsed(t_match)
             timing.record(len(image_list), batch_items, {"detector_inference_sec": detector_inference_sec, "prediction_matching_sec": prediction_matching_sec, "feature_compute_sec": feature_compute_sec})
-            del infer_batch, base, runs, runs_tensor, feat_mean, feat_std
+            del infer_batch, base, feat_sum, feat_sumsq, feat_mean, feat_std
     del detector
     if device.type == "cuda":
         torch.cuda.empty_cache()

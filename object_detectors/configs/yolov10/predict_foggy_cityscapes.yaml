@@ -7,7 +7,6 @@ model:
   variant: n
   max_det: 300
   confidence_threshold: 0.25
-  iou_threshold: 0.45
   device: cuda
 
 dataset:
@@ -70,12 +69,6 @@ output:
 
   ensemble:
     weights: []
-    save_csv:
-      enabled: false
-
-  meta_detect:
-    score_threshold: 0.0
-    iou_threshold: 0.45
     save_csv:
       enabled: false
 
