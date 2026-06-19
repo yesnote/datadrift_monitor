@@ -3,7 +3,7 @@ from commands.predict.yolov10.utils import (
     iter_yolov10_detection_rows,
     parse_yolov10_output_config,
     run_yolov10_forward,
-    selected_yolov10_logits,
+    yolov10_raw_logits_for_item,
 )
 
 
@@ -29,11 +29,10 @@ def run_energy_csv(config, run_dir):
             infer_batch, _ratios, _pads, _resized_chws = _prepare_infer_batch(detector, image_list, device, auto=False)
             with torch.no_grad():
                 forward = run_yolov10_forward(detector, infer_batch, timing=timing)
-            logits_by_sample = {i: selected_yolov10_logits(forward, i, device) for i in range(len(image_list))}
             batch_items = 0
             for item in iter_yolov10_detection_rows(detector, targets, forward.selected_preds, forward.selected_indices, device):
-                logits = logits_by_sample[item["sample_idx"]]
-                energy = float((-torch.logsumexp(logits[item["pred_idx"]], dim=-1)).detach().cpu().item()) if item["pred_idx"] < logits.shape[0] else 0.0
+                logits = yolov10_raw_logits_for_item(forward, item, device)
+                energy = float((-torch.logsumexp(logits, dim=-1)).detach().cpu().item())
                 row = dict(item["base_row"])
                 row["energy"] = energy
                 writer.writerow(row)

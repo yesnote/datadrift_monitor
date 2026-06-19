@@ -33,10 +33,10 @@ def _build_model(config, device):
         names=names,
         mode="train",
         confidence=float(model_cfg.get("confidence_threshold", 0.25)),
-        variant=model_cfg.get("variant", "n"),
         max_det=int(model_cfg.get("max_det", 300)),
     )
     model = detector.model
+    model.architecture = detector.architecture
     loss_cfg = config.get("loss", {})
     model.args.box = float(loss_cfg.get("box", 7.5))
     model.args.cls = float(loss_cfg.get("cls", 0.5))
@@ -163,7 +163,7 @@ def _save_ckpt(path, epoch, model, optimizer, train_loss, val_loss, config, save
         {
             "epoch": int(epoch),
             "model_type": "yolov10",
-            "variant": model_cfg.get("variant", "n"),
+            "architecture": getattr(model, "architecture", None),
             "num_classes": int(getattr(model, "nc", 0)),
             "names": list(getattr(model, "names", [])),
             "img_size": model_cfg.get("img_size", 640),

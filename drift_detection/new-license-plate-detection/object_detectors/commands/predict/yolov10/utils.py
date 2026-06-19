@@ -118,7 +118,7 @@ def parse_yolov10_output_config(config):
         target = str(grad.get("target", "null_target")).strip().lower()
         if target != "null_target":
             raise NotImplementedError("YOLOv10 layer_grad supports only target=null_target.")
-        for forbidden in ("obj_loss", "obj_direction", "cand_score_threshold"):
+        for forbidden in ("obj_loss", "obj_direction", "cand_score_threshold", "bbox_direction", "layer"):
             if forbidden in grad:
                 raise ValueError(f"YOLOv10 layer_grad does not support gradient.{forbidden}.")
         normalize_loss(grad.get("bbox_loss", "l1"), "l1", {"l1", "l2"}, "layer_grad.gradient.bbox_loss")
@@ -141,16 +141,18 @@ class YoloV10ForwardResult:
     decoded_prediction: torch.Tensor
     raw_logits: torch.Tensor
     selected_preds: list
-    selected_logits: list
-    selected_probs: list
     selected_indices: list
     source_points: torch.Tensor
     detector_inference_sec: float
 
 
-def run_yolov10_forward(detector, infer_batch=None, timing=None, grad=False, feature_cache=None):
+def run_yolov10_forward(detector, infer_batch=None, timing=None, grad=False, feature_cache=None, source_points=None):
     t_detector = timing.start() if timing is not None else None
-    output = detector.forward_layer_grad(infer_batch) if grad else detector.forward_nms_free(infer_batch, feature_cache=feature_cache)
+    output = (
+        detector.forward_layer_grad(infer_batch, source_points=source_points)
+        if grad
+        else detector.forward_nms_free(infer_batch, feature_cache=feature_cache, source_points=source_points)
+    )
     detector_inference_sec = timing.elapsed(t_detector) if timing is not None else 0.0
     return YoloV10ForwardResult(
         model_output=output["model_output"],
@@ -158,8 +160,6 @@ def run_yolov10_forward(detector, infer_batch=None, timing=None, grad=False, fea
         decoded_prediction=output["decoded_prediction"],
         raw_logits=output["raw_logits"],
         selected_preds=output["selected_preds"],
-        selected_logits=output["selected_logits"],
-        selected_probs=output["selected_probs"],
         selected_indices=output["selected_indices"],
         source_points=output["source_points"],
         detector_inference_sec=detector_inference_sec,
@@ -229,16 +229,12 @@ def iter_yolov10_detection_rows(detector, targets, selected_preds, selected_indi
             }
 
 
-def selected_yolov10_sigmoid_probs(forward, sample_idx, device):
-    if forward.selected_probs and sample_idx < len(forward.selected_probs):
-        return forward.selected_probs[sample_idx].to(device=device, dtype=torch.float32)
-    return torch.zeros((0, 0), dtype=torch.float32, device=device)
+def yolov10_raw_logits_for_item(forward, item, device):
+    return forward.raw_logits[item["sample_idx"], item["raw_box_idx"]].to(device=device, dtype=torch.float32)
 
 
-def selected_yolov10_logits(forward, sample_idx, device):
-    if forward.selected_logits and sample_idx < len(forward.selected_logits):
-        return forward.selected_logits[sample_idx].to(device=device, dtype=torch.float32)
-    return torch.zeros((0, 0), dtype=torch.float32, device=device)
+def yolov10_raw_probs_for_item(forward, item, device):
+    return torch.sigmoid(yolov10_raw_logits_for_item(forward, item, device))
 
 
 def source_point_box(source_points, raw_box_idx, device):
@@ -246,12 +242,14 @@ def source_point_box(source_points, raw_box_idx, device):
     return torch.stack([point[0], point[1], point[0], point[1]])
 
 
-def yolov10_feature_tensor(forward):
+def yolov10_feature_vector(forward, item, device):
     from models.yolov10.core import xywh2xyxy
 
-    boxes = xywh2xyxy(forward.decoded_prediction[..., :4].detach().float())
-    probs = torch.sigmoid(forward.raw_logits.detach().float())
-    return torch.cat([boxes, probs], dim=-1)
+    sample_idx = item["sample_idx"]
+    raw_box_idx = item["raw_box_idx"]
+    box = xywh2xyxy(forward.decoded_prediction[sample_idx, raw_box_idx, :4].detach().float().view(1, 4))[0]
+    probs = torch.sigmoid(forward.raw_logits[sample_idx, raw_box_idx].detach().float())
+    return torch.cat([box.to(device=device), probs.to(device=device)], dim=0)
 
 
 def enable_forced_yolov10_dropout(model, dropout_rate):
