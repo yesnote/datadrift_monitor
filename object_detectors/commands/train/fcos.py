@@ -19,7 +19,7 @@ from commands.train.common import (
     training_options,
 )
 from dataloaders.fcos import create_dataloader
-from dataloaders.utils.data_utils import DATASET_CLASS_NAMES
+from dataloaders.class_names import DATASET_CLASS_NAMES
 from models.fcos import FCOSTorchObjectDetector
 from fcos_core.structures.bounding_box import BoxList
 

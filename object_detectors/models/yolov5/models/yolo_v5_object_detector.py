@@ -4,7 +4,7 @@ import torch
 from models.yolov5.models.experimental import attempt_load
 from models.yolov5.utils.general import xywh2xyxy
 from models.yolov5.utils.general import xywh2xyxy
-from dataloaders.utils.yolo_datasets import letterbox
+from models.yolov5.utils.datasets import letterbox
 import cv2
 import time
 import torchvision
