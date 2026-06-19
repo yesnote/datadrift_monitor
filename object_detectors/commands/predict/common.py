@@ -12,14 +12,31 @@ import matplotlib
 import numpy as np
 import pandas as pd
 import torch
-from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm
 
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt  # noqa: E402
 
-from dataloaders.dataloader_yolo import build_dataset, create_dataloader, yolo_collate_fn
+from dataloaders.faster_rcnn import create_dataloader as create_faster_rcnn_dataloader
+from dataloaders.fcos import create_dataloader as create_fcos_dataloader
+from dataloaders.yolov10 import create_dataloader as create_yolov10_dataloader
+from dataloaders.yolov5 import create_dataloader as create_yolov5_dataloader
+
+
+def create_dataloader(config, split="train"):
+    model_type = str(config.get("model", {}).get("type", "yolov5")).strip().lower().replace("-", "_")
+    if model_type in {"yolo", "yolov5"}:
+        return create_yolov5_dataloader(config, split=split)
+    if model_type == "yolov10":
+        return create_yolov10_dataloader(config, split=split)
+    if model_type == "fcos":
+        return create_fcos_dataloader(config, split=split)
+    if model_type in {"faster_rcnn", "fasterrcnn", "frcnn"}:
+        return create_faster_rcnn_dataloader(config, split=split)
+    raise ValueError(f"Unsupported dataloader model.type: {model_type}")
+
+
 from commands.utils.predict_utils import (
     assign_tp_to_predictions,
     analyze_prediction_error_types,

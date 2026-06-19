@@ -62,17 +62,7 @@ def run_mc_dropout_csv(config, run_dir):
     if num_runs <= 0:
         raise ValueError("mc_dropout.num_runs must be positive.")
 
-    dataset = build_dataset(config, split=split)
-    dl_cfg = config["dataloader"]
-    shuffle = dl_cfg["shuffle_train"] if split == "train" else dl_cfg["shuffle_eval"]
-    dataloader = DataLoader(
-        dataset,
-        batch_size=dl_cfg["batch_size"],
-        shuffle=shuffle,
-        num_workers=0,
-        pin_memory=dl_cfg["pin_memory"],
-        collate_fn=yolo_collate_fn,
-    )
+    dataloader = create_dataloader(config, split=split)
     if len(dataloader.dataset) == 0:
         raise ValueError("Loaded 0 images. Check dataset root/image_dir/split configuration in YAML.")
 
