@@ -1,4 +1,4 @@
-import json
+ï»¿import json
 import math
 import time
 from pathlib import Path
@@ -13,7 +13,7 @@ from torchvision.ops import boxes as box_ops
 from dataloaders.core.class_names import DATASET_CLASS_NAMES
 from models.fcos import FCOSTorchObjectDetector
 from models.faster_rcnn import FasterRCNNTorchObjectDetector
-from models.yolov5.models.yolo_v5_object_detector import YOLOV5TorchObjectDetector
+from models.yolov5 import YOLOV5TorchObjectDetector
 from models.yolov10 import YOLOV10TorchObjectDetector
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -933,13 +933,13 @@ def build_target_scalar_pre_nms(target_value, raw_prediction, raw_logits):
     if target_value == "obj":
         if raw_prediction is None or raw_prediction.numel() == 0:
             return None
-        # NMS ÀÌÀü: ¸ğµç ÈÄº¸ bboxÀÇ objectness(sigmoid) ÇÕ
+        # NMS ì´ì „: ëª¨ë“  í›„ë³´ bboxì˜ objectness(sigmoid) í•©
         return raw_prediction[..., 4].sum()
 
     if target_value == "cls":
         if raw_logits is None or raw_logits.numel() == 0:
             return None
-        # NMS ÀÌÀü: ¸ğµç ÈÄº¸ bboxÀÇ max(class logit) ÇÕ
+        # NMS ì´ì „: ëª¨ë“  í›„ë³´ bboxì˜ max(class logit) í•©
         return raw_logits.max(dim=-1).values.sum()
 
     raise ValueError(f"Unsupported target_value: {target_value}")

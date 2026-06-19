@@ -1,4 +1,4 @@
-from models.yolov5.utils.loss import ComputeLoss
+from models.yolov5.core.utils.loss import ComputeLoss
 
 
 class YoloV5Loss:

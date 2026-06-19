@@ -23,7 +23,7 @@ from commands.train.common import (
 )
 from dataloaders.yolov5 import create_dataloader
 from losses.registry import build_loss
-from models.yolov5.models.experimental import attempt_load
+from models.yolov5.core.models.experimental import attempt_load
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]

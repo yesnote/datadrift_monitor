@@ -1,3 +1,3 @@
-from .fcos_object_detector import FCOSTorchObjectDetector
+from .detector import FCOSTorchObjectDetector
 
 __all__ = ["FCOSTorchObjectDetector"]

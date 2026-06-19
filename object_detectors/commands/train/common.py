@@ -8,7 +8,7 @@ import torch
 import torch.nn.functional as F
 
 from dataloaders.core.class_names import DATASET_CLASS_NAMES
-from models.yolov5.utils.general import coco80_to_coco91_class
+from models.yolov5.core.utils.general import coco80_to_coco91_class
 
 
 @lru_cache(maxsize=1)

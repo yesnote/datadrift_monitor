@@ -1,1 +1,3 @@
-from models.yolov5.models.yolo import Detect, Model
+from .detector import YOLOV5TorchObjectDetector
+
+__all__ = ["YOLOV5TorchObjectDetector"]

@@ -21,7 +21,7 @@ from commands.train.common import (
 from dataloaders.fcos import create_dataloader
 from dataloaders.core.class_names import DATASET_CLASS_NAMES
 from models.fcos import FCOSTorchObjectDetector
-from fcos_core.structures.bounding_box import BoxList
+from models.fcos.core.structures.bounding_box import BoxList
 
 
 def _resolve_class_names(config):
