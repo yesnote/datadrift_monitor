@@ -17,7 +17,7 @@ from dataloaders.datasets.road import (
 )
 from dataloaders.datasets.voc import VOCDataset
 
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 
 def load_config(config_path):

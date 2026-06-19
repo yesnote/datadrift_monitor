@@ -5,13 +5,13 @@ from pathlib import Path
 import torch
 from torch.utils.data import Dataset
 
-from dataloaders.class_names import (
+from dataloaders.core.class_names import (
     bdd100k_names,
     cityscapes_names,
     foggy_cityscapes_names,
     kitti_names,
 )
-from dataloaders.image_io import read_image_as_rgb
+from dataloaders.core.io import read_image_as_rgb
 
 
 def _image_tensor(path):

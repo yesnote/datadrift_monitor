@@ -6,8 +6,8 @@ from torch.cuda.amp import autocast
 from torchvision.ops import box_iou
 from tqdm import tqdm
 
-from dataloaders.class_names import coco_names, pascal_voc_names
-from dataloaders.visualization import plot_image_with_boxes
+from dataloaders.core.class_names import coco_names, pascal_voc_names
+from dataloaders.core.visualization import plot_image_with_boxes
 from models.yolov5.models.yolo_v5_object_detector import YOLOV5TorchObjectDetector
 
 """

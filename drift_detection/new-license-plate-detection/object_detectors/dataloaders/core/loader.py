@@ -1,6 +1,6 @@
 from torch.utils.data import DataLoader
 
-from dataloaders.factory import build_dataset, detection_collate_fn, sort_dataset_by_aspect_ratio
+from dataloaders.core.factory import build_dataset, detection_collate_fn, sort_dataset_by_aspect_ratio
 
 
 def is_train_split(split):

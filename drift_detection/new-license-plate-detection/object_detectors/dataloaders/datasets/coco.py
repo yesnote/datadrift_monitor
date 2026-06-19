@@ -5,7 +5,7 @@ from collections import defaultdict
 import torch
 from torch.utils.data import Dataset
 
-from dataloaders.image_io import list_image_files, read_image_as_rgb
+from dataloaders.core.io import list_image_files, read_image_as_rgb
 
 
 class COCODataset(Dataset):

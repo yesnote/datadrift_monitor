@@ -10,7 +10,7 @@ import yaml
 # Workaround for duplicated OpenMP runtime initialization on some Windows envs.
 os.environ.setdefault("KMP_DUPLICATE_LIB_OK", "TRUE")
 
-from dataloaders.factory import load_config
+from dataloaders.core.factory import load_config
 from commands.run_predict import run_predict
 from commands.run_train import run_train
 from commands.utils.predict_utils import parse_output_config
