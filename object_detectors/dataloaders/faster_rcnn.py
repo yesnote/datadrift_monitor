@@ -1,5 +1,5 @@
-from dataloaders.common import create_detection_dataloader
-from dataloaders.factory import build_dataset, detection_collate_fn
+from dataloaders.core.factory import build_dataset, detection_collate_fn
+from dataloaders.core.loader import create_detection_dataloader
 
 
 def create_dataloader(config, split="train"):

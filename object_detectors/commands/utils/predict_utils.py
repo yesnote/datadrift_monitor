@@ -10,7 +10,7 @@ import torch.nn.functional as F
 import torch.nn as nn
 from torchvision.ops import boxes as box_ops
 
-from dataloaders.class_names import DATASET_CLASS_NAMES
+from dataloaders.core.class_names import DATASET_CLASS_NAMES
 from models.fcos import FCOSTorchObjectDetector
 from models.faster_rcnn import FasterRCNNTorchObjectDetector
 from models.yolov5.models.yolo_v5_object_detector import YOLOV5TorchObjectDetector
