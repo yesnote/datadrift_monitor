@@ -4,7 +4,6 @@ from datetime import datetime
 from pathlib import Path
 
 import torch
-import torch.nn.functional as F
 from tqdm import tqdm
 
 from commands.train.common import (
@@ -12,81 +11,15 @@ from commands.train.common import (
     count_total_params,
     count_trainable_params,
     make_grad_scaler,
-    map_coco91_to_80,
     merge_epoch_timing,
+    prepare_yolo_batch,
     resolve_train_class_names,
+    to_yolo_targets,
     trainable_parameters,
     training_options,
 )
 from dataloaders.dataloader_yolo import create_dataloader
 from models.yolov10 import YOLOV10TorchObjectDetector
-
-
-def _prepare_batch(images, targets, img_size, device):
-    if isinstance(img_size, int):
-        out_h = out_w = int(img_size)
-    else:
-        out_h, out_w = int(img_size[0]), int(img_size[1])
-    if images and all(int(img.shape[0]) == 3 and int(img.shape[1]) == out_h and int(img.shape[2]) == out_w for img in images):
-        infer_batch = torch.stack(images, dim=0).to(device=device, non_blocking=True)
-        return infer_batch, [(1.0, 1.0)] * len(images), [(0.0, 0.0)] * len(images)
-    infer_tensors, ratios, pads = [], [], []
-    for img in images:
-        c, h, w = int(img.shape[0]), int(img.shape[1]), int(img.shape[2])
-        if c != 3:
-            raise ValueError(f"Expected 3-channel image tensor, got shape={tuple(img.shape)}")
-        scale = min(float(out_h) / float(h), float(out_w) / float(w))
-        new_h = max(1, int(round(h * scale)))
-        new_w = max(1, int(round(w * scale)))
-        resized = F.interpolate(img.unsqueeze(0), size=(new_h, new_w), mode="bilinear", align_corners=False).squeeze(0)
-        pad_h = out_h - new_h
-        pad_w = out_w - new_w
-        top = int(pad_h // 2)
-        bottom = int(pad_h - top)
-        left = int(pad_w // 2)
-        right = int(pad_w - left)
-        infer_tensors.append(F.pad(resized, (left, right, top, bottom), value=float(114.0 / 255.0)))
-        ratios.append((scale, scale))
-        pads.append((float(left), float(top)))
-    return torch.stack(infer_tensors, dim=0).to(device=device, non_blocking=True), ratios, pads
-
-
-def _to_yolo_targets(targets, ratios, pads, img_h, img_w, device):
-    rows = []
-    for batch_idx, target in enumerate(targets):
-        boxes = target.get("boxes")
-        labels = target.get("labels")
-        if boxes is None or labels is None or boxes.numel() == 0:
-            continue
-        ratio_w, ratio_h = ratios[batch_idx]
-        pad_w, pad_h = pads[batch_idx]
-        b = boxes.to(device=device, dtype=torch.float32, non_blocking=True).clone()
-        b[:, [0, 2]] = b[:, [0, 2]] * ratio_w + pad_w
-        b[:, [1, 3]] = b[:, [1, 3]] * ratio_h + pad_h
-        cls = labels.to(device=device, dtype=torch.long, non_blocking=True).clone()
-        if str(target.get("dataset_name", "")).lower() == "coco":
-            mapped, keep = map_coco91_to_80(cls, offset=0)
-            if not keep.any():
-                continue
-            b = b[keep]
-            cls = mapped.to(dtype=torch.long)
-        x1, y1, x2, y2 = b[:, 0], b[:, 1], b[:, 2], b[:, 3]
-        w = (x2 - x1).clamp(min=0.0)
-        h = (y2 - y1).clamp(min=0.0)
-        valid = (w > 0.0) & (h > 0.0)
-        if not valid.any():
-            continue
-        x1, y1, w, h, cls = x1[valid], y1[valid], w[valid], h[valid], cls[valid]
-        xc = (x1 + w * 0.5) / float(img_w)
-        yc = (y1 + h * 0.5) / float(img_h)
-        wn = w / float(img_w)
-        hn = h / float(img_h)
-        batch_col = torch.full((xc.shape[0],), int(batch_idx), dtype=torch.float32, device=device)
-        rows.append(torch.stack([batch_col, cls.float(), xc.float(), yc.float(), wn.float(), hn.float()], dim=1))
-    if not rows:
-        return torch.zeros((0, 6), dtype=torch.float32, device=device)
-    return torch.cat(rows, dim=0).to(dtype=torch.float32)
-
 
 def _build_model(config, device):
     model_cfg = config.get("model", {})
@@ -100,7 +33,6 @@ def _build_model(config, device):
         names=names,
         mode="train",
         confidence=float(model_cfg.get("confidence_threshold", 0.25)),
-        iou_thresh=float(model_cfg.get("iou_threshold", 0.45)),
         variant=model_cfg.get("variant", "n"),
         max_det=int(model_cfg.get("max_det", 300)),
     )
@@ -182,8 +114,8 @@ def _run_one_epoch(
         if log_timing:
             timing["data_sec"] += time.perf_counter() - next_data_start
         t_target = time.perf_counter()
-        infer_batch, ratios, pads = _prepare_batch(images, targets, img_size=img_size, device=device)
-        yolo_targets = _to_yolo_targets(targets, ratios, pads, img_h=int(infer_batch.shape[2]), img_w=int(infer_batch.shape[3]), device=device)
+        infer_batch, ratios, pads = prepare_yolo_batch(images, targets, img_size=img_size, device=device)
+        yolo_targets = to_yolo_targets(targets, ratios, pads, img_h=int(infer_batch.shape[2]), img_w=int(infer_batch.shape[3]), device=device)
         batch = _targets_to_batch(yolo_targets)
         if log_timing:
             timing["target_sec"] += time.perf_counter() - t_target

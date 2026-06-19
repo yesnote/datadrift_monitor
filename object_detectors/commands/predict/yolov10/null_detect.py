@@ -4,8 +4,6 @@ from commands.predict.yolov10.utils import (
     iter_yolov10_detection_rows,
     parse_yolov10_output_config,
     run_yolov10_forward,
-    selected_yolov10_logits,
-    selected_yolov10_sigmoid_probs,
     source_point_box,
 )
 
@@ -90,8 +88,6 @@ def run_null_detect_csv(config, run_dir):
             infer_batch, _ratios, _pads, _resized_chws = _prepare_infer_batch(detector, image_list, device, auto=False)
             with torch.no_grad():
                 forward = run_yolov10_forward(detector, infer_batch, timing=timing)
-            probs_by_sample = {i: selected_yolov10_sigmoid_probs(forward, i, device) for i in range(len(image_list))}
-            logits_by_sample = {i: selected_yolov10_logits(forward, i, device) for i in range(len(image_list))}
             feature_compute_sec = 0.0
             batch_items = 0
             for item in iter_yolov10_detection_rows(detector, targets, forward.selected_preds, forward.selected_indices, device):
@@ -100,15 +96,13 @@ def run_null_detect_csv(config, run_dir):
                 point_box = source_point_box(forward.source_points, raw_box_idx, device)
                 final_xyxy = item["box"][:4].detach().float()
                 shape = _xyxy_shape_features(final_xyxy, point_box)
-                logits = logits_by_sample[item["sample_idx"]]
-                cls_logits = logits[item["pred_idx"]] if item["pred_idx"] < logits.shape[0] else torch.zeros((num_classes,), dtype=torch.float32, device=device)
+                cls_logits = forward.raw_logits[item["sample_idx"], raw_box_idx].to(device=device, dtype=torch.float32)
                 target_value = 0.5 if str(cls_loss).strip().lower() == "bcewithlogits" else 1.0 / float(max(1, cls_logits.numel()))
                 cls_target = torch.full_like(cls_logits, target_value)
                 cls_loss_value = _class_loss_tensor(cls_logits, cls_target, class_idx=None, mode=cls_loss, direction=cls_direction, reduction="sum")
                 row = dict(item["base_row"])
                 if feature_set != "losses_only":
-                    probs = probs_by_sample[item["sample_idx"]]
-                    prob_vec = probs[item["pred_idx"]] if item["pred_idx"] < probs.shape[0] else torch.zeros((num_classes,), dtype=torch.float32, device=device)
+                    prob_vec = torch.sigmoid(cls_logits)
                     row["prob_sum"] = _to_float(prob_vec.sum())
                     for class_idx in range(num_classes):
                         row[f"prob_{class_idx}"] = _to_float(prob_vec[class_idx]) if class_idx < prob_vec.numel() else 0.0

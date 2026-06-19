@@ -1,2 +1,2 @@
-from models.yolo.models.experimental import *  # noqa: F401,F403
+from models.yolov5.models.experimental import *  # noqa: F401,F403
 

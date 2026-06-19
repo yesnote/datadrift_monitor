@@ -1,4 +1,4 @@
-# YOLOv5 🚀 by Ultralytics, GPL-3.0 license
+# YOLOv5 ?? by Ultralytics, GPL-3.0 license
 """
 Experimental modules
 """
@@ -7,9 +7,9 @@ import math
 import numpy as np
 import torch
 import torch.nn as nn
-from models.yolo.models.common import Conv
+from models.yolov5.models.common import Conv
 # from common import Conv
-from models.yolo.utils.downloads import attempt_download
+from models.yolov5.utils.downloads import attempt_download
 
 
 class Sum(nn.Module):

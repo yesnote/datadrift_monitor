@@ -112,6 +112,29 @@ class Conv(nn.Module):
     def forward(self, x):
         return self.act(self.bn(self.conv(x)))
 
+    def forward_fuse(self, x):
+        return self.act(self.conv(x))
+
+
+def fuse_conv_and_bn(conv, bn):
+    fused = nn.Conv2d(
+        conv.in_channels,
+        conv.out_channels,
+        kernel_size=conv.kernel_size,
+        stride=conv.stride,
+        padding=conv.padding,
+        dilation=conv.dilation,
+        groups=conv.groups,
+        bias=True,
+    ).requires_grad_(False).to(conv.weight.device)
+    w_conv = conv.weight.clone().view(conv.out_channels, -1)
+    w_bn = torch.diag(bn.weight.div(torch.sqrt(bn.eps + bn.running_var)))
+    fused.weight.copy_(torch.mm(w_bn, w_conv).view(fused.weight.shape))
+    b_conv = torch.zeros(conv.weight.shape[0], device=conv.weight.device) if conv.bias is None else conv.bias
+    b_bn = bn.bias - bn.weight.mul(bn.running_mean).div(torch.sqrt(bn.running_var + bn.eps))
+    fused.bias.copy_(torch.mm(w_bn, b_conv.reshape(-1, 1)).reshape(-1) + b_bn)
+    return fused
+
 
 class Concat(nn.Module):
     def __init__(self, dimension=1):
@@ -148,6 +171,31 @@ class SPPF(nn.Module):
         return self.cv2(torch.cat(y, 1))
 
 
+class RepVGGDW(nn.Module):
+    def __init__(self, ed):
+        super().__init__()
+        self.conv = Conv(ed, ed, 7, 1, 3, g=ed, act=False)
+        self.conv1 = Conv(ed, ed, 3, 1, 1, g=ed, act=False)
+        self.dim = ed
+        self.act = nn.SiLU()
+
+    def forward(self, x):
+        return self.act(self.conv(x) + self.conv1(x))
+
+    def forward_fuse(self, x):
+        return self.act(self.conv(x))
+
+    @torch.no_grad()
+    def fuse(self):
+        conv = fuse_conv_and_bn(self.conv.conv, self.conv.bn)
+        conv1 = fuse_conv_and_bn(self.conv1.conv, self.conv1.bn)
+        conv1_w = F.pad(conv1.weight, [2, 2, 2, 2])
+        conv.weight.data.copy_(conv.weight + conv1_w)
+        conv.bias.data.copy_(conv.bias + conv1.bias)
+        self.conv = conv
+        del self.conv1
+
+
 class Bottleneck(nn.Module):
     def __init__(self, c1, c2, shortcut=True, g=1, k=(3, 3), e=0.5):
         super().__init__()
@@ -178,11 +226,10 @@ class CIB(nn.Module):
     def __init__(self, c1, c2, shortcut=True, e=0.5, lk=False):
         super().__init__()
         c_ = int(c2 * e)
-        k = 7 if lk else 3
         self.cv1 = nn.Sequential(
             Conv(c1, c1, 3, g=c1),
             Conv(c1, 2 * c_, 1),
-            Conv(2 * c_, 2 * c_, k, g=2 * c_),
+            Conv(2 * c_, 2 * c_, 3, g=2 * c_) if not lk else RepVGGDW(2 * c_),
             Conv(2 * c_, c2, 1),
             Conv(c2, c2, 3, g=c2),
         )
@@ -323,6 +370,10 @@ class v10Detect(Detect):
             one2one = self.inference(one2one)
         return {"one2many": one2many, "one2one": one2one}
 
+    def forward_one2one(self, x):
+        one2one = self.forward_feat([xi.detach() for xi in x], self.one2one_cv2, self.one2one_cv3)
+        return self.inference(one2one)
+
     def bias_init(self):
         super().bias_init()
         for a, b, s in zip(self.one2one_cv2, self.one2one_cv3, self.stride):
@@ -406,6 +457,22 @@ class YOLOv10DetectionModel(nn.Module):
 
     def forward(self, x, augment=False, *args, **kwargs):
         return self._forward_once(x)
+
+    def forward_features(self, x):
+        y = []
+        for m in self.model[:-1]:
+            if m.f != -1:
+                x = y[m.f] if isinstance(m.f, int) else [x if j == -1 else y[j] for j in m.f]
+            x = m(x)
+            y.append(x if m.i in self.save else None)
+        head = self.model[-1]
+        return y[head.f] if isinstance(head.f, int) else [x if j == -1 else y[j] for j in head.f]
+
+    def forward_one2one(self, x):
+        return self.forward_one2one_from_features(self.forward_features(x))
+
+    def forward_one2one_from_features(self, features):
+        return {"one2many": None, "one2one": self.model[-1].forward_one2one(features)}
 
     def _initialize_strides(self):
         m = self.model[-1]

@@ -1,8 +1,8 @@
-﻿mode: train
+mode: train
 
 model:
   type: yolov10
-  weights: 
+  weights: object_detectors/models/yolov10/weights/coco/yolov10n.pt
   img_size: 640
   variant: n
   max_det: 300

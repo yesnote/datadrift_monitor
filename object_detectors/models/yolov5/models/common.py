@@ -1,4 +1,4 @@
-# YOLOv5 🚀 by Ultralytics, GPL-3.0 license
+# YOLOv5 ?? by Ultralytics, GPL-3.0 license
 """
 Common modules
 """
@@ -22,12 +22,12 @@ from torch.cuda import amp
 from dataloaders.utils.yolo_datasets import exif_transpose, letterbox
 # from ..utils.general import (LOGGER, check_requirements, check_suffix, check_version, colorstr, increment_path,
 #                            make_divisible, non_max_suppression, scale_coords, xywh2xyxy, xyxy2xywh)
-from models.yolo.utils.general import (LOGGER, check_requirements, check_suffix, check_version, colorstr, increment_path,
+from models.yolov5.utils.general import (LOGGER, check_requirements, check_suffix, check_version, colorstr, increment_path,
                                        make_divisible, non_max_suppression, scale_coords, xywh2xyxy, xyxy2xywh)
 # from ..utils.plots import Annotator, colors, save_one_box
-from models.yolo.utils.plots import Annotator, colors, save_one_box
+from models.yolov5.utils.plots import Annotator, colors, save_one_box
 # from ..utils.torch_utils import time_sync
-from models.yolo.utils.torch_utils import time_sync
+from models.yolov5.utils.torch_utils import time_sync
 
 LOGGER = logging.getLogger(__name__)
 

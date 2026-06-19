@@ -1,15 +1,15 @@
 import numpy as np
 # from deep_utils.utils.box_utils.boxes import Box, Point
 import torch
-from models.yolo.models.experimental import attempt_load
-from models.yolo.utils.general import xywh2xyxy
-from models.yolo.utils.general import xywh2xyxy
+from models.yolov5.models.experimental import attempt_load
+from models.yolov5.utils.general import xywh2xyxy
+from models.yolov5.utils.general import xywh2xyxy
 from dataloaders.utils.yolo_datasets import letterbox
 import cv2
 import time
 import torchvision
 import torch.nn as nn
-from models.yolo.utils.metrics import box_iou
+from models.yolov5.utils.metrics import box_iou
 
 
 class YOLOV5TorchObjectDetector(nn.Module):

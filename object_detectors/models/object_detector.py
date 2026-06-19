@@ -11,7 +11,7 @@ from dataloaders.utils.data_utils import (
     pascal_voc_names,
     plot_image_with_boxes,
 )
-from models.yolo.models.yolo_v5_object_detector import YOLOV5TorchObjectDetector
+from models.yolov5.models.yolo_v5_object_detector import YOLOV5TorchObjectDetector
 
 """
 YOLOv5 object detection wrapper for COCO/PascalVOC.

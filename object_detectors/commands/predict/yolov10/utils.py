@@ -6,32 +6,124 @@ import torch.nn.functional as F
 
 
 def parse_yolov10_output_config(config):
-    from commands.utils.predict_utils import parse_output_config
-
     output = config.get("output", {}) if isinstance(config, dict) and "output" in config else config
     output = output if isinstance(output, dict) else {}
     uncertainty = str(output.get("uncertainty", "")).strip().lower()
+    if not uncertainty:
+        uncertainty = "gt"
+    supported = {
+        "deterministic",
+        "gt",
+        "score",
+        "class_probability",
+        "entropy",
+        "energy",
+        "mc_dropout",
+        "ensemble",
+        "null_detect",
+        "layer_grad",
+    }
+    if uncertainty not in supported and uncertainty != "meta_detect":
+        raise ValueError(f"Unsupported YOLOv10 uncertainty: {uncertainty}")
     if uncertainty == "meta_detect":
         raise NotImplementedError("YOLOv10 does not support meta_detect because it is NMS-free.")
-    layer_cfg = output.get("layer_grad", {}) if isinstance(output.get("layer_grad", {}), dict) else {}
-    grad = layer_cfg.get("gradient", {}) if isinstance(layer_cfg.get("gradient", {}), dict) else {}
-    if uncertainty == "layer_grad" or grad:
+
+    def as_dict(value):
+        return value if isinstance(value, dict) else {}
+
+    def as_bool_save(value):
+        if isinstance(value, bool):
+            return value
+        value = as_dict(value)
+        return bool(value.get("enabled", False))
+
+    def as_int(value, default):
+        try:
+            return int(value)
+        except Exception:
+            return default
+
+    def as_float(value, default):
+        try:
+            return float(value)
+        except Exception:
+            return default
+
+    def normalize_loss(raw, default, supported_values, key):
+        value = str(raw if raw is not None else default).strip().lower().replace("-", "_")
+        aliases = {
+            "bce": "bcewithlogits",
+            "bce_with_logits": "bcewithlogits",
+            "bcewithlogits": "bcewithlogits",
+            "kl": "kl",
+            "kl_div": "kl",
+            "kl_divergence": "kl",
+            "l1": "l1",
+            "l1_loss": "l1",
+            "l2": "l2",
+            "l2_loss": "l2",
+            "mse": "l2",
+        }.get(value)
+        if value in {"box_l1", "box_l2", "offset_l1", "offset_l2", "obj_loss", "obj"}:
+            raise ValueError(f"YOLOv10 does not support YOLOv5-style {key}: {raw}")
+        if value not in supported_values and aliases not in supported_values:
+            raise ValueError(f"Unsupported YOLOv10 {key}: {raw}. Supported values: {', '.join(sorted(supported_values))}.")
+        return aliases or value
+
+    def normalize_direction(raw, default="pred_to_target"):
+        value = str(raw if raw is not None else default).strip().lower().replace("-", "_")
+        aliases = {
+            "pred_to_target": "pred_to_target",
+            "prediction_to_target": "pred_to_target",
+            "target": "pred_to_target",
+            "target_to_pred": "target_to_pred",
+            "target_to_prediction": "target_to_pred",
+            "reverse": "target_to_pred",
+        }
+        if value not in aliases:
+            raise ValueError(f"Unsupported YOLOv10 direction: {raw}")
+        return aliases[value]
+
+    active = as_dict(output.get(uncertainty, {}))
+    parsed = {
+        "uncertainty": uncertainty,
+        "unit": "bbox",
+        "save_csv_enabled": as_bool_save(active.get("save_csv", False)),
+        "save_image_enabled": as_bool_save(active.get("save_image", False)),
+        "gt_iou_match_threshold": 0.5,
+        "mc_num_runs": 30,
+        "mc_dropout_rate": 0.5,
+        "null_detect_cls_loss": "kl",
+        "null_detect_cls_direction": "pred_to_target",
+        "null_detect_feature_set": "full",
+    }
+    if uncertainty == "gt":
+        parsed["gt_iou_match_threshold"] = as_float(active.get("iou_match_threshold", 0.5), 0.5)
+    elif uncertainty == "mc_dropout":
+        parsed["mc_num_runs"] = as_int(active.get("num_runs", 30), 30)
+        parsed["mc_dropout_rate"] = as_float(active.get("dropout_rate", 0.5), 0.5)
+    elif uncertainty == "null_detect":
+        for forbidden in ("obj_loss", "bbox_loss", "bbox_direction"):
+            if forbidden in active:
+                raise ValueError(f"YOLOv10 null_detect does not support {forbidden}.")
+        parsed["null_detect_cls_loss"] = normalize_loss(active.get("cls_loss", "kl"), "kl", {"bcewithlogits", "kl"}, "null_detect.cls_loss")
+        parsed["null_detect_cls_direction"] = normalize_direction(active.get("cls_direction", "pred_to_target"))
+        feature_set = str(active.get("feature_set", "full")).strip().lower()
+        if feature_set not in {"full", "losses_only"}:
+            raise ValueError("YOLOv10 null_detect.feature_set must be full or losses_only.")
+        parsed["null_detect_feature_set"] = feature_set
+    elif uncertainty == "layer_grad":
+        layer_cfg = as_dict(output.get("layer_grad", {}))
+        grad = as_dict(layer_cfg.get("gradient", {}))
         target = str(grad.get("target", "null_target")).strip().lower()
         if target != "null_target":
             raise NotImplementedError("YOLOv10 layer_grad supports only target=null_target.")
         for forbidden in ("obj_loss", "obj_direction", "cand_score_threshold"):
             if forbidden in grad:
                 raise ValueError(f"YOLOv10 layer_grad does not support gradient.{forbidden}.")
-        bbox_loss = str(grad.get("bbox_loss", "l1")).strip().lower()
-        if bbox_loss in {"box_l1", "box_l2", "offset_l1", "offset_l2"}:
-            raise ValueError("YOLOv10 layer_grad bbox_loss supports l1/l2 only, not YOLOv5 box/offset losses.")
-        if bbox_loss not in {"l1", "l2"}:
-            raise ValueError("YOLOv10 layer_grad bbox_loss supports only l1 or l2.")
-    null_cfg = output.get("null_detect", {}) if isinstance(output.get("null_detect", {}), dict) else {}
-    for forbidden in ("obj_loss", "bbox_loss", "bbox_direction"):
-        if forbidden in null_cfg:
-            raise ValueError(f"YOLOv10 null_detect does not support {forbidden}.")
-    return parse_output_config(output)
+        normalize_loss(grad.get("bbox_loss", "l1"), "l1", {"l1", "l2"}, "layer_grad.gradient.bbox_loss")
+        normalize_loss(grad.get("cls_loss", "bcewithlogits"), "bcewithlogits", {"bcewithlogits", "kl"}, "layer_grad.gradient.cls_loss")
+    return parsed
 
 
 def split_yolov10_raw_pred_idx(raw_pred_idx, num_classes):
@@ -56,9 +148,9 @@ class YoloV10ForwardResult:
     detector_inference_sec: float
 
 
-def run_yolov10_forward(detector, infer_batch, timing=None, grad=False):
+def run_yolov10_forward(detector, infer_batch=None, timing=None, grad=False, feature_cache=None):
     t_detector = timing.start() if timing is not None else None
-    output = detector.forward_layer_grad(infer_batch) if grad else detector.forward_nms_free(infer_batch)
+    output = detector.forward_layer_grad(infer_batch) if grad else detector.forward_nms_free(infer_batch, feature_cache=feature_cache)
     detector_inference_sec = timing.elapsed(t_detector) if timing is not None else 0.0
     return YoloV10ForwardResult(
         model_output=output["model_output"],

@@ -1,4 +1,4 @@
-# YOLOv5 🚀 by Ultralytics, GPL-3.0 license
+# YOLOv5 ?? by Ultralytics, GPL-3.0 license
 """
 Loss functions
 """
@@ -6,8 +6,8 @@ Loss functions
 import torch
 import torch.nn as nn
 
-from models.yolo.utils.metrics import bbox_iou
-from models.yolo.utils.torch_utils import is_parallel
+from models.yolov5.utils.metrics import bbox_iou
+from models.yolov5.utils.torch_utils import is_parallel
 
 
 def smooth_BCE(eps=0.1):  # https://github.com/ultralytics/yolov3/issues/238#issuecomment-598028441
