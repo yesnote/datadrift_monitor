@@ -35,7 +35,7 @@ from commands.predict.yolov5.utils import (  # noqa: E402
     build_yolo_candidate_cache,
     yolo_candidate_mask_from_cache,
 )
-from dataloaders.dataloader_yolo import create_dataloader  # noqa: E402
+from dataloaders.yolov5 import create_dataloader  # noqa: E402
 
 OBJECT_DETECTOR_CONFIG = r"object_detectors/configs/yolov5/predict_coco.yaml"
 META_CLASSIFIER_CONFIG = (

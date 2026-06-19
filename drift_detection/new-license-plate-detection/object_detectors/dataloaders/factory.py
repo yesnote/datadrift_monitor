@@ -4,7 +4,7 @@ from bisect import bisect_right
 from pathlib import Path
 
 from PIL import Image
-from torch.utils.data import ConcatDataset, DataLoader, Subset
+from torch.utils.data import ConcatDataset, Subset
 import yaml
 
 from dataloaders.datasets.coco import COCODataset
@@ -20,15 +20,6 @@ from dataloaders.datasets.voc import VOCDataset
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 
-def _resolve_dataset_path(root, value):
-    if not value:
-        return None
-    path = Path(value)
-    if path.is_absolute():
-        return str(path)
-    return str(Path(root) / path)
-
-
 def load_config(config_path):
     with open(config_path, "r", encoding="utf-8") as f:
         return yaml.safe_load(f)
@@ -42,7 +33,16 @@ def get_mode(config):
     return mode
 
 
-def _normalize_dataset_names(dataset_cfg):
+def resolve_dataset_path(root, value):
+    if not value:
+        return None
+    path = Path(value)
+    if path.is_absolute():
+        return str(path)
+    return str(Path(root) / path)
+
+
+def normalize_dataset_names(dataset_cfg):
     raw = dataset_cfg["used_dataset"]
     if isinstance(raw, str):
         names = [raw.strip().lower()]
@@ -55,7 +55,7 @@ def _normalize_dataset_names(dataset_cfg):
     return names
 
 
-def _build_single_dataset(name, dataset_cfg, root, split_key, img_size):
+def build_single_dataset(name, dataset_cfg, root, split_key, img_size):
     if name == "coco":
         coco_split = dataset_cfg.get(f"{split_key}_split", split_key)
         ann_file_key = f"{split_key}_annotation_file"
@@ -68,13 +68,7 @@ def _build_single_dataset(name, dataset_cfg, root, split_key, img_size):
             fallback_dir = Path(root) / coco_split
             if fallback_dir.is_dir():
                 image_dir = str(fallback_dir)
-        return COCODataset(
-            root=root,
-            split=coco_split,
-            image_dir=image_dir,
-            annotation_file=ann_path,
-            img_size=img_size,
-        )
+        return COCODataset(root=root, split=coco_split, image_dir=image_dir, annotation_file=ann_path, img_size=img_size)
 
     if name in {"voc", "pascal_voc"}:
         voc_split = dataset_cfg.get(f"{split_key}_split", split_key)
@@ -82,69 +76,59 @@ def _build_single_dataset(name, dataset_cfg, root, split_key, img_size):
 
     if name in {"openimages", "open_images", "oid"}:
         oi_split = dataset_cfg.get(f"{split_key}_split", split_key)
-        min_gt_boxes = int(dataset_cfg.get("min_gt_boxes", 0))
         return OpenImagesDataset(
             root=root,
             split=oi_split,
             img_size=img_size,
-            min_gt_boxes=min_gt_boxes,
+            min_gt_boxes=int(dataset_cfg.get("min_gt_boxes", 0)),
         )
 
     if name == "kitti":
         kitti_split = dataset_cfg.get(f"{split_key}_split", split_key)
-        split_file = dataset_cfg.get(f"{split_key}_split_file") or dataset_cfg.get("split_file")
-        image_dir = dataset_cfg.get(f"{split_key}_image_dir") or dataset_cfg.get("image_dir")
-        label_dir = dataset_cfg.get(f"{split_key}_label_dir") or dataset_cfg.get("label_dir")
         return KITTIDataset(
             root=root,
             split=kitti_split,
             img_size=img_size,
-            image_dir=_resolve_dataset_path(root, image_dir),
-            label_dir=_resolve_dataset_path(root, label_dir),
-            split_file=_resolve_dataset_path(root, split_file),
+            image_dir=resolve_dataset_path(root, dataset_cfg.get(f"{split_key}_image_dir") or dataset_cfg.get("image_dir")),
+            label_dir=resolve_dataset_path(root, dataset_cfg.get(f"{split_key}_label_dir") or dataset_cfg.get("label_dir")),
+            split_file=resolve_dataset_path(root, dataset_cfg.get(f"{split_key}_split_file") or dataset_cfg.get("split_file")),
             trainval_split_ratio=float(dataset_cfg.get("trainval_split_ratio", 0.8)),
         )
 
     if name in {"bdd100k", "bdd"}:
         bdd_split = dataset_cfg.get(f"{split_key}_split", split_key)
-        ann_file = dataset_cfg.get(f"{split_key}_annotation_file") or dataset_cfg.get("annotation_file")
-        image_dir = dataset_cfg.get(f"{split_key}_image_dir") or dataset_cfg.get("image_dir")
         return BDD100KDataset(
             root=root,
             split=bdd_split,
             img_size=img_size,
-            image_dir=_resolve_dataset_path(root, image_dir) if image_dir else None,
-            annotation_file=_resolve_dataset_path(root, ann_file) if ann_file else None,
+            image_dir=resolve_dataset_path(root, dataset_cfg.get(f"{split_key}_image_dir") or dataset_cfg.get("image_dir")),
+            annotation_file=resolve_dataset_path(root, dataset_cfg.get(f"{split_key}_annotation_file") or dataset_cfg.get("annotation_file")),
         )
 
     if name == "cityscapes":
         city_split = dataset_cfg.get(f"{split_key}_split", split_key)
-        image_dir = dataset_cfg.get(f"{split_key}_image_dir") or dataset_cfg.get("image_dir")
-        annotation_dir = dataset_cfg.get(f"{split_key}_annotation_dir") or dataset_cfg.get("annotation_dir")
         return CityscapesDetectionDataset(
             root=root,
             split=city_split,
             img_size=img_size,
-            image_dir=_resolve_dataset_path(root, image_dir) if image_dir else None,
-            annotation_dir=_resolve_dataset_path(root, annotation_dir) if annotation_dir else None,
+            image_dir=resolve_dataset_path(root, dataset_cfg.get(f"{split_key}_image_dir") or dataset_cfg.get("image_dir")),
+            annotation_dir=resolve_dataset_path(root, dataset_cfg.get(f"{split_key}_annotation_dir") or dataset_cfg.get("annotation_dir")),
         )
 
     if name in {"foggy_cityscapes", "foggy_city"}:
         foggy_split = dataset_cfg.get(f"{split_key}_split", split_key)
-        image_dir = dataset_cfg.get(f"{split_key}_image_dir") or dataset_cfg.get("image_dir")
-        annotation_dir = dataset_cfg.get(f"{split_key}_annotation_dir") or dataset_cfg.get("annotation_dir")
         return FoggyCityscapesDetectionDataset(
             root=root,
             split=foggy_split,
             img_size=img_size,
-            image_dir=_resolve_dataset_path(root, image_dir) if image_dir else None,
-            annotation_dir=_resolve_dataset_path(root, annotation_dir) if annotation_dir else None,
+            image_dir=resolve_dataset_path(root, dataset_cfg.get(f"{split_key}_image_dir") or dataset_cfg.get("image_dir")),
+            annotation_dir=resolve_dataset_path(root, dataset_cfg.get(f"{split_key}_annotation_dir") or dataset_cfg.get("annotation_dir")),
         )
 
     raise ValueError(f"Unsupported dataset name: {name}")
 
 
-def _sample_key(dataset, index, dataset_name, split_key):
+def sample_key(dataset, index, dataset_name, split_key):
     if hasattr(dataset, "images") and index < len(getattr(dataset, "images")):
         sample_id = str(dataset.images[index])
     elif hasattr(dataset, "samples") and index < len(getattr(dataset, "samples")):
@@ -155,7 +139,7 @@ def _sample_key(dataset, index, dataset_name, split_key):
     return f"{dataset_name}|{split_key}|{sample_id}"
 
 
-def _apply_used_ratio(dataset, dataset_cfg, dataset_name, split_key):
+def apply_used_ratio(dataset, dataset_cfg, dataset_name, split_key):
     ratio = float(dataset_cfg.get("used_ratio", 1.0))
     if not (0.0 < ratio <= 1.0):
         raise ValueError(f"dataset.used_ratio for '{dataset_name}' must be in (0, 1].")
@@ -166,7 +150,7 @@ def _apply_used_ratio(dataset, dataset_cfg, dataset_name, split_key):
     keep = max(1, int(math.ceil(n * ratio)))
     ranked = []
     for idx in range(n):
-        key = _sample_key(dataset, idx, dataset_name, split_key)
+        key = sample_key(dataset, idx, dataset_name, split_key)
         digest = hashlib.sha256(key.encode("utf-8")).hexdigest()
         ranked.append((digest, idx))
     selected = sorted(idx for _digest, idx in sorted(ranked)[:keep])
@@ -174,9 +158,8 @@ def _apply_used_ratio(dataset, dataset_cfg, dataset_name, split_key):
 
 
 def build_dataset(config, split="train"):
-    mode = get_mode(config)
     root_dataset_cfg = config["dataset"]
-    names = _normalize_dataset_names(root_dataset_cfg)
+    names = normalize_dataset_names(root_dataset_cfg)
     used_ratios = root_dataset_cfg.get("used_ratio", 1.0)
 
     if isinstance(split, (list, tuple)):
@@ -185,9 +168,7 @@ def build_dataset(config, split="train"):
         split_keys = [str(split).strip()] * len(names)
 
     if len(split_keys) != len(names):
-        raise ValueError(
-            f"Length mismatch: used_dataset has {len(names)} entries but split has {len(split_keys)} entries."
-        )
+        raise ValueError(f"Length mismatch: used_dataset has {len(names)} entries but split has {len(split_keys)} entries.")
     if isinstance(used_ratios, (list, tuple)):
         ratio_values = [float(v) for v in used_ratios]
     else:
@@ -208,27 +189,26 @@ def build_dataset(config, split="train"):
         root_path = Path(dataset_cfg["root"])
         if not root_path.is_absolute():
             root_path = (PROJECT_ROOT / root_path).resolve()
-        root = str(root_path)
-        dataset = _build_single_dataset(name, dataset_cfg, root, split_key, img_size)
-        datasets.append(_apply_used_ratio(dataset, dataset_cfg, name, split_key))
+        dataset = build_single_dataset(name, dataset_cfg, str(root_path), split_key, img_size)
+        datasets.append(apply_used_ratio(dataset, dataset_cfg, name, split_key))
 
     if len(datasets) == 1:
         return datasets[0]
     return ConcatDataset(datasets)
 
 
-def yolo_collate_fn(batch):
+def detection_collate_fn(batch):
     images, targets = zip(*batch)
     return list(images), list(targets)
 
 
-def _dataset_image_path(dataset, index):
+def dataset_image_path(dataset, index):
     if isinstance(dataset, Subset):
-        return _dataset_image_path(dataset.dataset, int(dataset.indices[index]))
+        return dataset_image_path(dataset.dataset, int(dataset.indices[index]))
     if isinstance(dataset, ConcatDataset):
         dataset_idx = bisect_right(dataset.cumulative_sizes, index)
         sample_idx = index if dataset_idx == 0 else index - dataset.cumulative_sizes[dataset_idx - 1]
-        return _dataset_image_path(dataset.datasets[dataset_idx], sample_idx)
+        return dataset_image_path(dataset.datasets[dataset_idx], sample_idx)
     if hasattr(dataset, "images") and index < len(getattr(dataset, "images")):
         return str(dataset.images[index])
     if hasattr(dataset, "samples") and index < len(getattr(dataset, "samples")):
@@ -238,7 +218,7 @@ def _dataset_image_path(dataset, index):
     return ""
 
 
-def _image_aspect_ratio(path):
+def image_aspect_ratio(path):
     try:
         with Image.open(path) as image:
             width, height = image.size
@@ -249,13 +229,13 @@ def _image_aspect_ratio(path):
         return 1.0
 
 
-def _dataset_aspect_ratio(dataset, index):
+def dataset_aspect_ratio(dataset, index):
     if isinstance(dataset, Subset):
-        return _dataset_aspect_ratio(dataset.dataset, int(dataset.indices[index]))
+        return dataset_aspect_ratio(dataset.dataset, int(dataset.indices[index]))
     if isinstance(dataset, ConcatDataset):
         dataset_idx = bisect_right(dataset.cumulative_sizes, index)
         sample_idx = index if dataset_idx == 0 else index - dataset.cumulative_sizes[dataset_idx - 1]
-        return _dataset_aspect_ratio(dataset.datasets[dataset_idx], sample_idx)
+        return dataset_aspect_ratio(dataset.datasets[dataset_idx], sample_idx)
     getter = getattr(dataset, "get_aspect_ratio", None)
     if callable(getter):
         ratio = getter(index)
@@ -266,46 +246,11 @@ def _dataset_aspect_ratio(dataset, index):
                 ratio = None
             if ratio is not None and ratio > 0:
                 return ratio
-    return _image_aspect_ratio(_dataset_image_path(dataset, index))
+    return image_aspect_ratio(dataset_image_path(dataset, index))
 
 
-def _sort_dataset_by_aspect_ratio(dataset):
+def sort_dataset_by_aspect_ratio(dataset):
     ranked = []
     for idx in range(len(dataset)):
-        ranked.append((_dataset_aspect_ratio(dataset, idx), idx))
+        ranked.append((dataset_aspect_ratio(dataset, idx), idx))
     return Subset(dataset, [idx for _ratio, idx in sorted(ranked)])
-
-
-def create_dataloader(config, split="train"):
-    _ = get_mode(config)
-    dataset = build_dataset(config, split=split)
-    dl_cfg = config["dataloader"]
-    if isinstance(split, (list, tuple)):
-        split_values = [str(v).strip().lower() for v in split if str(v).strip()]
-        is_train_split = bool(split_values) and all(v == "train" for v in split_values)
-    else:
-        is_train_split = str(split).strip().lower() == "train"
-    shuffle = dl_cfg["shuffle_train"] if is_train_split else dl_cfg["shuffle_eval"]
-    model_type = str(config.get("model", {}).get("type", "yolov5")).strip().lower()
-    aspect_grouping = dl_cfg.get("aspect_ratio_grouping", None)
-    if aspect_grouping is None:
-        aspect_grouping = model_type in {"faster_rcnn", "faster-rcnn", "frcnn"} and not bool(shuffle)
-    if bool(aspect_grouping) and not bool(shuffle):
-        dataset = _sort_dataset_by_aspect_ratio(dataset)
-    num_workers = int(dl_cfg["num_workers"])
-    loader_kwargs = {
-        "batch_size": dl_cfg["batch_size"],
-        "shuffle": shuffle,
-        "num_workers": num_workers,
-        "pin_memory": dl_cfg["pin_memory"],
-        "collate_fn": yolo_collate_fn,
-    }
-    if num_workers > 0:
-        if "persistent_workers" in dl_cfg:
-            loader_kwargs["persistent_workers"] = bool(dl_cfg.get("persistent_workers", False))
-        if "prefetch_factor" in dl_cfg and dl_cfg.get("prefetch_factor") is not None:
-            loader_kwargs["prefetch_factor"] = int(dl_cfg["prefetch_factor"])
-    return DataLoader(
-        dataset,
-        **loader_kwargs,
-    )

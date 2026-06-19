@@ -18,7 +18,7 @@ from commands.train.common import (
     trainable_parameters,
     training_options,
 )
-from dataloaders.dataloader_yolo import create_dataloader
+from dataloaders.fcos import create_dataloader
 from dataloaders.utils.data_utils import DATASET_CLASS_NAMES
 from models.fcos import FCOSTorchObjectDetector
 from fcos_core.structures.bounding_box import BoxList

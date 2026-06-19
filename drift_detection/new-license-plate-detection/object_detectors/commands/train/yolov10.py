@@ -18,7 +18,7 @@ from commands.train.common import (
     trainable_parameters,
     training_options,
 )
-from dataloaders.dataloader_yolo import create_dataloader
+from dataloaders.yolov10 import create_dataloader
 from models.yolov10 import YOLOV10TorchObjectDetector
 
 def _build_model(config, device):

@@ -15,7 +15,7 @@ from commands.train.common import (
     resolve_train_class_names,
     torch_load,
 )
-from dataloaders.dataloader_yolo import create_dataloader
+from dataloaders.faster_rcnn import create_dataloader
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]

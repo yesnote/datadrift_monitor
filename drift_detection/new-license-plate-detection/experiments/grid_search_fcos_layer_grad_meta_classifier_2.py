@@ -41,7 +41,7 @@ from commands.utils.predict_utils import (  # noqa: E402
     resolve_layer_parameter,
 )
 from commands.utils.predict_utils import build_detector  # noqa: E402
-from dataloaders.dataloader_yolo import create_dataloader  # noqa: E402
+from dataloaders.fcos import create_dataloader  # noqa: E402
 
 OBJECT_DETECTOR_CONFIG = r"object_detectors/configs/fcos/predict_coco.yaml"
 META_CLASSIFIER_CONFIG = (

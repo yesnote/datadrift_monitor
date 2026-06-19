@@ -21,7 +21,7 @@ from commands.train.common import (
     trainable_parameters,
     training_options,
 )
-from dataloaders.dataloader_yolo import create_dataloader
+from dataloaders.yolov5 import create_dataloader
 from losses.loss import build_loss
 from models.yolov5.models.experimental import attempt_load
 
