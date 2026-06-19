@@ -43,7 +43,7 @@ from commands.utils.predict_utils import (  # noqa: E402
 from commands.utils.predict_utils import build_detector  # noqa: E402
 from dataloaders.fcos import create_dataloader  # noqa: E402
 
-OBJECT_DETECTOR_CONFIG = r"object_detectors/configs/fcos/predict_coco.yaml"
+OBJECT_DETECTOR_CONFIG = r"object_detectors/configs/fcos/predict/coco.yaml"
 META_CLASSIFIER_CONFIG = (
     r"meta_models/meta_classifier/configs/train_meta_classifier.yaml"
 )

@@ -11,7 +11,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 
 # Edit these paths before running.
 OBJECT_DETECTOR_CONFIG = (
-    r"object_detectors/configs/faster_rcnn/predict_coco_faster_rcnn.yaml"
+    r"object_detectors/configs/faster_rcnn/predict/coco.yaml"
 )
 META_CLASSIFIER_CONFIG = (
     r"meta_models/meta_classifier/configs/train_meta_classifier.yaml"

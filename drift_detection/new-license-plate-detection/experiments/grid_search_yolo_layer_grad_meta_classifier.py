@@ -37,7 +37,7 @@ from commands.predict.yolov5.utils import (  # noqa: E402
 )
 from dataloaders.yolov5 import create_dataloader  # noqa: E402
 
-OBJECT_DETECTOR_CONFIG = r"object_detectors/configs/yolov5/predict_coco.yaml"
+OBJECT_DETECTOR_CONFIG = r"object_detectors/configs/yolov5/predict/coco.yaml"
 META_CLASSIFIER_CONFIG = (
     r"meta_models/meta_classifier/configs/train_meta_classifier.yaml"
 )
