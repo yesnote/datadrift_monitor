@@ -166,6 +166,22 @@ def run_yolov10_forward(detector, infer_batch=None, timing=None, grad=False, fea
     )
 
 
+def run_yolov10_raw_forward(detector, infer_batch=None, timing=None, feature_cache=None, source_points=None):
+    t_detector = timing.start() if timing is not None else None
+    output = detector.forward_raw_decoded(infer_batch, feature_cache=feature_cache, source_points=source_points)
+    detector_inference_sec = timing.elapsed(t_detector) if timing is not None else 0.0
+    return YoloV10ForwardResult(
+        model_output=output["model_output"],
+        raw_levels=output["raw_levels"],
+        decoded_prediction=output["decoded_prediction"],
+        raw_logits=output["raw_logits"],
+        selected_preds=[],
+        selected_indices=[],
+        source_points=output["source_points"],
+        detector_inference_sec=detector_inference_sec,
+    )
+
+
 def yolov10_class_name(detector, cls_idx):
     if isinstance(detector.names, dict):
         return detector.names.get(cls_idx, str(cls_idx))
