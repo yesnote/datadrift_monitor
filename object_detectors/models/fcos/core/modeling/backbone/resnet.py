@@ -1,4 +1,4 @@
-# Copyright (c) Facebook, Inc. and its affiliates. All Rights Reserved.
+
 """
 Variant of the resnet module that takes cfg as an argument.
 Example usage. Strings may be specified in the config file.
@@ -28,50 +28,50 @@ from models.fcos.core.modeling.make_layers import group_norm
 from models.fcos.core.utils.registry import Registry
 
 
-# ResNet stage specification
+
 StageSpec = namedtuple(
     "StageSpec",
     [
-        "index",  # Index of the stage, eg 1, 2, ..,. 5
-        "block_count",  # Number of residual blocks in the stage
-        "return_features",  # True => return the last feature map from this stage
+        "index",
+        "block_count",
+        "return_features",
     ],
 )
 
-# -----------------------------------------------------------------------------
-# Standard ResNet models
-# -----------------------------------------------------------------------------
-# ResNet-50 (including all stages)
+
+
+
+
 ResNet50StagesTo5 = tuple(
     StageSpec(index=i, block_count=c, return_features=r)
     for (i, c, r) in ((1, 3, False), (2, 4, False), (3, 6, False), (4, 3, True))
 )
-# ResNet-50 up to stage 4 (excludes stage 5)
+
 ResNet50StagesTo4 = tuple(
     StageSpec(index=i, block_count=c, return_features=r)
     for (i, c, r) in ((1, 3, False), (2, 4, False), (3, 6, True))
 )
-# ResNet-101 (including all stages)
+
 ResNet101StagesTo5 = tuple(
     StageSpec(index=i, block_count=c, return_features=r)
     for (i, c, r) in ((1, 3, False), (2, 4, False), (3, 23, False), (4, 3, True))
 )
-# ResNet-101 up to stage 4 (excludes stage 5)
+
 ResNet101StagesTo4 = tuple(
     StageSpec(index=i, block_count=c, return_features=r)
     for (i, c, r) in ((1, 3, False), (2, 4, False), (3, 23, True))
 )
-# ResNet-50-FPN (including all stages)
+
 ResNet50FPNStagesTo5 = tuple(
     StageSpec(index=i, block_count=c, return_features=r)
     for (i, c, r) in ((1, 3, True), (2, 4, True), (3, 6, True), (4, 3, True))
 )
-# ResNet-101-FPN (including all stages)
+
 ResNet101FPNStagesTo5 = tuple(
     StageSpec(index=i, block_count=c, return_features=r)
     for (i, c, r) in ((1, 3, True), (2, 4, True), (3, 23, True), (4, 3, True))
 )
-# ResNet-152-FPN (including all stages)
+
 ResNet152FPNStagesTo5 = tuple(
     StageSpec(index=i, block_count=c, return_features=r)
     for (i, c, r) in ((1, 3, True), (2, 8, True), (3, 36, True), (4, 3, True))
@@ -81,19 +81,19 @@ class ResNet(nn.Module):
     def __init__(self, cfg):
         super(ResNet, self).__init__()
 
-        # If we want to use the cfg in forward(), then we should make a copy
-        # of it and store it for later use:
-        # self.cfg = cfg.clone()
 
-        # Translate string names to implementations
+
+
+
+
         stem_module = _STEM_MODULES[cfg.MODEL.RESNETS.STEM_FUNC]
         stage_specs = _STAGE_SPECS[cfg.MODEL.BACKBONE.CONV_BODY]
         transformation_module = _TRANSFORMATION_MODULES[cfg.MODEL.RESNETS.TRANS_FUNC]
 
-        # Construct the stem module
+
         self.stem = stem_module(cfg)
 
-        # Constuct the specified ResNet stages
+
         num_groups = cfg.MODEL.RESNETS.NUM_GROUPS
         width_per_group = cfg.MODEL.RESNETS.WIDTH_PER_GROUP
         in_channels = cfg.MODEL.RESNETS.STEM_OUT_CHANNELS
@@ -127,7 +127,7 @@ class ResNet(nn.Module):
             self.stages.append(name)
             self.return_features[name] = stage_spec.return_features
 
-        # Optionally freeze (requires_grad=False) parts of the backbone
+
         self._freeze_backbone(cfg.MODEL.BACKBONE.FREEZE_CONV_BODY_AT)
 
     def _freeze_backbone(self, freeze_at):
@@ -135,7 +135,7 @@ class ResNet(nn.Module):
             return
         for stage_index in range(freeze_at):
             if stage_index == 0:
-                m = self.stem  # stage 0 is the stem
+                m = self.stem
             else:
                 m = getattr(self, "layer" + str(stage_index))
             for p in m.parameters():
@@ -266,11 +266,11 @@ class Bottleneck(nn.Module):
                         nn.init.kaiming_uniform_(l.weight, a=1)
 
         if dilation > 1:
-            stride = 1 # reset to be 1
+            stride = 1
 
-        # The original MSRA ResNet models have stride in the first 1x1 conv
-        # The subsequent fb.torch.resnet and Caffe2 ResNe[X]t implementations have
-        # stride in the 3x3 conv
+
+
+
         stride_1x1, stride_3x3 = (stride, 1) if stride_in_1x1 else (1, stride)
 
         self.conv1 = Conv2d(
@@ -281,7 +281,7 @@ class Bottleneck(nn.Module):
             bias=False,
         )
         self.bn1 = norm_func(bottleneck_channels)
-        # TODO: specify init for the above
+
         with_dcn = dcn_config.get("stage_with_dcn", False)
         if with_dcn:
             raise NotImplementedError("DCN stages are not supported in this FCOS-only copy.")

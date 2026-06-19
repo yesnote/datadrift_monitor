@@ -1,4 +1,4 @@
-# Copyright (c) Facebook, Inc. and its affiliates. All Rights Reserved.
+
 """
 helper class that supports empty tensors on some nn functions.
 
@@ -28,7 +28,7 @@ class Conv2d(torch.nn.Conv2d):
     def forward(self, x):
         if x.numel() > 0:
             return super(Conv2d, self).forward(x)
-        # get output shape
+
 
         output_shape = [
             (i + 2 * p - (di * (k - 1) + 1)) // d + 1

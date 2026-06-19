@@ -1,45 +1,45 @@
 ﻿from __future__ import print_function
-# --------------------------------------------------------
-# Faster R-CNN
-# Copyright (c) 2015 Microsoft
-# Licensed under The MIT License [see LICENSE for details]
-# Written by Ross Girshick and Sean Bell
-# --------------------------------------------------------
+
+
+
+
+
+
 
 import numpy as np
 import pdb
 
-# Verify that we compute the same anchors as Shaoqing's matlab implementation:
-#
-#    >> load output/rpn_cachedir/faster_rcnn_VOC2007_ZF_stage1_rpn/anchors.mat
-#    >> anchors
-#
-#    anchors =
-#
-#       -83   -39   100    56
-#      -175   -87   192   104
-#      -359  -183   376   200
-#       -55   -55    72    72
-#      -119  -119   136   136
-#      -247  -247   264   264
-#       -35   -79    52    96
-#       -79  -167    96   184
-#      -167  -343   184   360
 
-#array([[ -83.,  -39.,  100.,   56.],
-#       [-175.,  -87.,  192.,  104.],
-#       [-359., -183.,  376.,  200.],
-#       [ -55.,  -55.,   72.,   72.],
-#       [-119., -119.,  136.,  136.],
-#       [-247., -247.,  264.,  264.],
-#       [ -35.,  -79.,   52.,   96.],
-#       [ -79., -167.,   96.,  184.],
-#       [-167., -343.,  184.,  360.]])
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 try:
-    xrange          # Python 2
+    xrange
 except NameError:
-    xrange = range  # Python 3
+    xrange = range
 
 
 def generate_anchors(base_size=16, ratios=[0.5, 1, 2],

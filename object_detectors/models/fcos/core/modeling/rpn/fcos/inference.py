@@ -54,7 +54,7 @@ class FCOSPostProcessor(torch.nn.Module):
         """
         N, C, H, W = box_cls.shape
 
-        # put in the same format as locations
+
         raw_box_cls = box_cls.reshape(N, C, H, W).permute(0, 2, 3, 1)
         raw_box_cls = raw_box_cls.reshape(N, -1, C)
         box_cls = raw_box_cls.sigmoid()
@@ -67,7 +67,7 @@ class FCOSPostProcessor(torch.nn.Module):
         pre_nms_top_n = candidate_inds.reshape(N, -1).sum(1)
         pre_nms_top_n = pre_nms_top_n.clamp(max=self.pre_nms_top_n)
 
-        # multiply the classification scores with centerness scores
+
         box_cls = box_cls * centerness[:, :, None]
 
         results = []
@@ -158,19 +158,19 @@ class FCOSPostProcessor(torch.nn.Module):
 
         return boxlists
 
-    # TODO very similar to filter_results from PostProcessor
-    # but filter_results is per image
-    # TODO Yang: solve this issue in the future. No good solution
-    # right now.
+
+
+
+
     def select_over_all_levels(self, boxlists):
         num_images = len(boxlists)
         results = []
         for i in range(num_images):
-            # multiclass nms
+
             result = boxlist_ml_nms(boxlists[i], self.nms_thresh)
             number_of_detections = len(result)
 
-            # Limit to max_per_image detections **over all classes**
+
             if number_of_detections > self.fpn_post_nms_top_n > 0:
                 cls_scores = result.get_field("scores")
                 image_thresh, _ = torch.kthvalue(

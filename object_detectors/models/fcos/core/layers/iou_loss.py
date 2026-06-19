@@ -1,5 +1,5 @@
-# GIoU and Linear IoU are added by following
-# https://github.com/yqyao/FCOS_PLUS/blob/master/maskrcnn_benchmark/layers/iou_loss.py.
+
+
 import torch
 from torch import nn
 

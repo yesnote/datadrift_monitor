@@ -1,5 +1,5 @@
 import numpy as np
-# from deep_utils.utils.box_utils.boxes import Box, Point
+
 import torch
 from models.yolov5.core.models.experimental import attempt_load
 from models.yolov5.core.utils.general import xywh2xyxy
@@ -43,7 +43,7 @@ class YOLOV5TorchObjectDetector(nn.Module):
             self.model.train()
         else:
             self.model.eval()
-        # fetch the names
+
         if names is None:
             print('[INFO] fetching names from coco file')
             self.names = ['person', 'bicycle', 'car', 'motorcycle', 'airplane', 'bus', 'train', 'truck', 'boat',
@@ -66,7 +66,7 @@ class YOLOV5TorchObjectDetector(nn.Module):
         else:
             self.names = names
 
-        # preventing cold start
+
         img = torch.zeros((1, 3, *self.img_size), device=device)
         with torch.no_grad():
             self.model(img)
@@ -80,97 +80,97 @@ class YOLOV5TorchObjectDetector(nn.Module):
              list of detections, on (n,6) tensor per image [xyxy, conf, cls] and pruned input logits (n, number-classes)
         """
 
-        nc = prediction.shape[2] - 5  # number of classes
-        xc = prediction[..., 4] > conf_thres  # candidates
+        nc = prediction.shape[2] - 5
+        xc = prediction[..., 4] > conf_thres
 
-        # Checks
+
         assert 0 <= conf_thres <= 1, f'Invalid Confidence threshold {conf_thres}, valid values are between 0.0 and 1.0'
         assert 0 <= iou_thres <= 1, f'Invalid IoU {iou_thres}, valid values are between 0.0 and 1.0'
 
-        # Settings
-        min_wh, max_wh = 2, 4096  # (pixels) minimum and maximum box width and height
-        max_nms = 30000  # maximum number of boxes into torchvision.ops.nms()
-        time_limit = 10.0  # seconds to quit after
-        redundant = True  # require redundant detections
-        multi_label &= nc > 1  # multiple labels per box (adds 0.5ms/img)
-        merge = False  # use merge-NMS
+
+        min_wh, max_wh = 2, 4096
+        max_nms = 30000
+        time_limit = 10.0
+        redundant = True
+        multi_label &= nc > 1
+        merge = False
 
         t = time.time()
         output = [torch.zeros((0, 6), device=prediction.device)] * prediction.shape[0]
         logits_output = [torch.zeros((0, nc), device=logits.device)] * logits.shape[0]
         objectivness_output = [torch.zeros((0, 1), device=prediction.device)] * prediction.shape[0]
         index_output = [torch.zeros((0,), dtype=torch.long, device=prediction.device)] * prediction.shape[0]
-        for xi, (x, log_) in enumerate(zip(prediction, logits)):  # image index, image inference
-            # Apply constraints
-            # x[((x[..., 2:4] < min_wh) | (x[..., 2:4] > max_wh)).any(1), 4] = 0  # width-height
+        for xi, (x, log_) in enumerate(zip(prediction, logits)):
+
+
             candidate_mask = xc[xi]
             candidate_indices = torch.arange(prediction.shape[1], device=prediction.device)[candidate_mask]
-            x = x[candidate_mask]  # confidence
+            x = x[candidate_mask]
             log_ = log_[candidate_mask]
-            # Cat apriori labels if autolabelling
+
             if labels and len(labels[xi]):
                 l = labels[xi]
                 v = torch.zeros((len(l), nc + 5), device=x.device)
-                v[:, :4] = l[:, 1:5]  # box
-                v[:, 4] = 1.0  # conf
-                v[range(len(l)), l[:, 0].long() + 5] = 1.0  # cls
+                v[:, :4] = l[:, 1:5]
+                v[:, 4] = 1.0
+                v[range(len(l)), l[:, 0].long() + 5] = 1.0
                 x = torch.cat((x, v), 0)
 
-            # If none remain process next image
+
             if not x.shape[0]:
                 continue
 
-            # Compute conf
+
             objectivness = x.clone()
             objectivness = objectivness[:, 4:5].view(-1)
-            x[:, 5:] = x[:, 5:] * x[:, 4:5]  # conf = obj_conf * cls_conf
-            # x[:, 5:] *= x[:, 4:5]  # conf = obj_conf * cls_conf
-            # log_ *= x[:, 4:5]
-            # Box (center x, center y, width, height) to (x1, y1, x2, y2)
+            x[:, 5:] = x[:, 5:] * x[:, 4:5]
+
+
+
             box = xywh2xyxy(x[:, :4])
 
-            # Detections matrix nx6 (xyxy, conf, cls)
+
             if multi_label:
                 i, j = (x[:, 5:] > conf_thres).nonzero(as_tuple=False).T
                 x = torch.cat((box[i], x[i, j + 5, None], j[:, None].float()), 1)
-            else:  # best class only
+            else:
                 conf, j = x[:, 5:].max(1, keepdim=True)
-                # log_ = x[:, 5:]
+
                 conf_mask = conf.view(-1) > conf_thres
                 x = torch.cat((box, conf, j.float()), 1)[conf_mask]
                 log_ = log_[conf_mask]
                 candidate_indices = candidate_indices[conf_mask]
-            # Filter by class
+
             if classes is not None:
                 class_mask = (x[:, 5:6] == torch.tensor(classes, device=x.device)).any(1)
                 x = x[class_mask]
                 log_ = log_[class_mask]
                 candidate_indices = candidate_indices[class_mask]
 
-            # Check shape
-            n = x.shape[0]  # number of boxes
-            if not n:  # no boxes
+
+            n = x.shape[0]
+            if not n:
                 continue
-            elif n > max_nms:  # excess boxes
+            elif n > max_nms:
                 sorted_idx = x[:, 4].argsort(descending=True)[:max_nms]
-                x = x[sorted_idx]  # sort by confidence
+                x = x[sorted_idx]
                 log_ = log_[sorted_idx]
                 objectivness = objectivness[sorted_idx]
                 candidate_indices = candidate_indices[sorted_idx]
 
-            # Batched NMS
-            c = x[:, 5:6] * (0 if agnostic else max_wh)  # classes
-            boxes, scores = x[:, :4] + c, x[:, 4]  # boxes (offset by class), scores
-            i = torchvision.ops.nms(boxes, scores, iou_thres)  # NMS
-            if i.shape[0] > max_det:  # limit detections
+
+            c = x[:, 5:6] * (0 if agnostic else max_wh)
+            boxes, scores = x[:, :4] + c, x[:, 4]
+            i = torchvision.ops.nms(boxes, scores, iou_thres)
+            if i.shape[0] > max_det:
                 i = i[:max_det]
-            if merge and (1 < n < 3E3):  # Merge NMS (boxes merged using weighted mean)
-                # update boxes as boxes(i,4) = weights(i,n) * boxes(n,4)
-                iou = box_iou(boxes[i], boxes) > iou_thres  # iou matrix
-                weights = iou * scores[None]  # box weights
-                x[i, :4] = torch.mm(weights, x[:, :4]).float() / weights.sum(1, keepdim=True)  # merged boxes
+            if merge and (1 < n < 3E3):
+
+                iou = box_iou(boxes[i], boxes) > iou_thres
+                weights = iou * scores[None]
+                x[i, :4] = torch.mm(weights, x[:, :4]).float() / weights.sum(1, keepdim=True)
                 if redundant:
-                    i = i[iou.sum(1) > 1]  # require redundancy
+                    i = i[iou.sum(1) > 1]
 
             output[xi] = x[i]
             logits_output[xi] = log_[i]
@@ -179,7 +179,7 @@ class YOLOV5TorchObjectDetector(nn.Module):
             assert log_[i].shape[0] == x[i].shape[0]
             if (time.time() - t) > time_limit:
                 print(f'WARNING: NMS time limit {time_limit}s exceeded')
-                break  # time limit exceeded
+                break
 
         if return_indices:
             return output, logits_output, objectivness_output, index_output
@@ -200,14 +200,14 @@ class YOLOV5TorchObjectDetector(nn.Module):
                                                       agnostic=self.agnostic)
         self.boxes, self.class_names, self.classes, self.confidences = [[[] for _ in range(img.shape[0])] for _ in
                                                                         range(4)]
-        for i, det in enumerate(prediction):  # detections per image
+        for i, det in enumerate(prediction):
             if len(det):
                 for *xyxy, conf, cls in det:
                     bbox = self.box2box(xyxy)
-                    # bbox = Box.box2box(xyxy,
-                    #                    in_source=Box.BoxSource.Torch,
-                    #                    to_source=Box.BoxSource.Numpy,
-                    #                    return_int=True)
+
+
+
+
                     self.boxes[i].append(bbox)
                     self.confidences[i].append(round(conf.item(), 2))
                     cls = int(cls.item())

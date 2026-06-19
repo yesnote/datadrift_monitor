@@ -1,20 +1,20 @@
-﻿# --------------------------------------------------------
-# Fast R-CNN
-# Copyright (c) 2015 Microsoft
-# Licensed under The MIT License [see LICENSE for details]
-# Written by Ross Girshick
-# --------------------------------------------------------
+﻿
+
+
+
+
+
 
 """Blob helper functions."""
 
 import numpy as np
-# from scipy.misc import imread, imresize
+
 import cv2
 
 try:
-    xrange          # Python 2
+    xrange
 except NameError:
-    xrange = range  # Python 3
+    xrange = range
 
 
 def im_list_to_blob(ims):
@@ -37,15 +37,15 @@ def prep_im_for_blob(im, pixel_means, target_size, max_size):
 
     im = im.astype(np.float32, copy=False)
     im -= pixel_means
-    # im = im[:, :, ::-1]
+
     im_shape = im.shape
     im_size_min = np.min(im_shape[0:2])
     im_size_max = np.max(im_shape[0:2])
     im_scale = float(target_size) / float(im_size_min)
-    # Prevent the biggest axis from being more than MAX_SIZE
-    # if np.round(im_scale * im_size_max) > max_size:
-    #     im_scale = float(max_size) / float(im_size_max)
-    # im = imresize(im, im_scale)
+
+
+
+
     im = cv2.resize(im, None, None, fx=im_scale, fy=im_scale,
                     interpolation=cv2.INTER_LINEAR)
 

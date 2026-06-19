@@ -163,7 +163,7 @@ def _vector_from_grad_value(grad_value):
     if isinstance(grad_value, (int, float)):
         return np.asarray([abs(float(grad_value))], dtype=np.float32)
     if isinstance(grad_value, dict):
-        # Fallback: when vector_reduction is configured, grad value may be a stats dict.
+
         vals = []
         for k in sorted(grad_value.keys()):
             try:

@@ -16,7 +16,7 @@ class FCOSHead(torch.nn.Module):
             in_channels (int): number of channels of the input feature
         """
         super(FCOSHead, self).__init__()
-        # TODO: Implement the sigmoid version first.
+
         num_classes = cfg.MODEL.FCOS.NUM_CLASSES - 1
         self.fpn_strides = cfg.MODEL.FCOS.FPN_STRIDES
         self.norm_reg_targets = cfg.MODEL.FCOS.NORM_REG_TARGETS
@@ -72,7 +72,7 @@ class FCOSHead(torch.nn.Module):
             padding=1
         )
 
-        # initialization
+
         for modules in [self.cls_tower, self.bbox_tower,
                         self.cls_logits, self.bbox_pred,
                         self.centerness]:
@@ -81,7 +81,7 @@ class FCOSHead(torch.nn.Module):
                     torch.nn.init.normal_(l.weight, std=0.01)
                     torch.nn.init.constant_(l.bias, 0)
 
-        # initialize the bias for focal loss
+
         prior_prob = cfg.MODEL.FCOS.PRIOR_PROB
         bias_value = -math.log((1 - prior_prob) / prior_prob)
         torch.nn.init.constant_(self.cls_logits.bias, bias_value)

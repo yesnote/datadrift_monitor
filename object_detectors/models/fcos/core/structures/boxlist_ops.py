@@ -1,4 +1,4 @@
-# Copyright (c) Facebook, Inc. and its affiliates. All Rights Reserved.
+
 import torch
 
 from .bounding_box import BoxList
@@ -67,7 +67,7 @@ def remove_small_boxes(boxlist, min_size):
         boxlist (Boxlist)
         min_size (int)
     """
-    # TODO maybe add an API for querying the ws / hs
+
     xywh_boxes = boxlist.convert("xywh").bbox
     _, _, ws, hs = xywh_boxes.unbind(dim=1)
     keep = (
@@ -76,8 +76,8 @@ def remove_small_boxes(boxlist, min_size):
     return boxlist[keep]
 
 
-# implementation from https://github.com/kuangliu/torchcv/blob/master/torchcv/utils/box.py
-# with slight modifications
+
+
 def boxlist_iou(boxlist1, boxlist2):
     """Compute the intersection over union of two set of boxes.
     The box order must be (xmin, ymin, xmax, ymax).
@@ -104,19 +104,19 @@ def boxlist_iou(boxlist1, boxlist2):
 
     box1, box2 = boxlist1.bbox, boxlist2.bbox
 
-    lt = torch.max(box1[:, None, :2], box2[:, :2])  # [N,M,2]
-    rb = torch.min(box1[:, None, 2:], box2[:, 2:])  # [N,M,2]
+    lt = torch.max(box1[:, None, :2], box2[:, :2])
+    rb = torch.min(box1[:, None, 2:], box2[:, 2:])
 
     TO_REMOVE = 1
 
-    wh = (rb - lt + TO_REMOVE).clamp(min=0)  # [N,M,2]
-    inter = wh[:, :, 0] * wh[:, :, 1]  # [N,M]
+    wh = (rb - lt + TO_REMOVE).clamp(min=0)
+    inter = wh[:, :, 0] * wh[:, :, 1]
 
     iou = inter / (area1[:, None] + area2 - inter)
     return iou
 
 
-# TODO redundant, remove
+
 def _cat(tensors, dim=0):
     """
     Efficient version of torch.cat that avoids a copy if there is only a single element in a list

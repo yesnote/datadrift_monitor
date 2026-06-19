@@ -7,7 +7,7 @@ from pathlib import Path
 
 import yaml
 
-# Workaround for duplicated OpenMP runtime initialization on some Windows envs.
+
 os.environ.setdefault("KMP_DUPLICATE_LIB_OK", "TRUE")
 
 from dataloaders.core.factory import load_config

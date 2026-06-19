@@ -55,7 +55,7 @@ def _count_rows(csv_path: Path) -> int | None:
         return None
     with open(csv_path, "r", encoding="utf-8", newline="") as f:
         reader = csv.reader(f)
-        next(reader, None)  # skip header
+        next(reader, None)
         return sum(1 for _ in reader)
 
 

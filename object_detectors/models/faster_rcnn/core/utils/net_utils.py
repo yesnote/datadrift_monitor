@@ -85,11 +85,11 @@ def _smooth_l1_loss(bbox_pred, bbox_targets, bbox_inside_weights, bbox_outside_w
     return loss_box
 
 def _crop_pool_layer(bottom, rois, max_pool=True):
-    # code modified from 
-    # https://github.com/ruotianluo/pytorch-faster-rcnn
-    # implement it using stn
-    # box to affine
-    # input (x1,y1,x2,y2)
+
+
+
+
+
     """
     [  x2-x1             x1 + x2 - W + 1  ]
     [  -----      0      ---------------  ]
@@ -113,7 +113,7 @@ def _crop_pool_layer(bottom, rois, max_pool=True):
     height = bottom.size(2)
     width = bottom.size(3)
 
-    # affine theta
+
     zero = Variable(rois.data.new(rois.size(0), 1).zero_())
     theta = torch.cat([\
       (x2 - x1) / (width - 1),
@@ -175,13 +175,13 @@ def _affine_theta(rois, input_size):
 
     zero = Variable(rois.data.new(rois.size(0), 1).zero_())
 
-    # theta = torch.cat([\
-    #   (x2 - x1) / (width - 1),
-    #   zero,
-    #   (x1 + x2 - width + 1) / (width - 1),
-    #   zero,
-    #   (y2 - y1) / (height - 1),
-    #   (y1 + y2 - height + 1) / (height - 1)], 1).view(-1, 2, 3)
+
+
+
+
+
+
+
 
     theta = torch.cat([\
       (y2 - y1) / (height - 1),
@@ -196,11 +196,11 @@ def _affine_theta(rois, input_size):
 def compare_grid_sample():
     from models.faster_rcnn.core.roi_crop.functions.roi_crop import RoICropFunction
 
-    # do gradcheck
+
     N = random.randint(1, 8)
-    C = 2 # random.randint(1, 8)
-    H = 5 # random.randint(1, 8)
-    W = 4 # random.randint(1, 8)
+    C = 2
+    H = 5
+    W = 4
     input = Variable(torch.randn(N, C, H, W).cuda(), requires_grad=True)
     input_p = input.clone().data.contiguous()
    
