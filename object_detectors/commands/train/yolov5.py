@@ -22,7 +22,7 @@ from commands.train.common import (
     training_options,
 )
 from dataloaders.yolov5 import create_dataloader
-from losses.loss import build_loss
+from losses.registry import build_loss
 from models.yolov5.models.experimental import attempt_load
 
 

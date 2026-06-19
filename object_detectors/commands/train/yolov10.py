@@ -19,6 +19,7 @@ from commands.train.common import (
     training_options,
 )
 from dataloaders.yolov10 import create_dataloader
+from losses.registry import build_loss
 from models.yolov10 import YOLOV10TorchObjectDetector
 
 def _build_model(config, device):
@@ -44,7 +45,7 @@ def _build_model(config, device):
     model.requires_grad_(True)
     model.float().to(device)
     model.train()
-    return model, detector.build_loss()
+    return model, build_loss(model_cfg.get("type", "yolov10"), model, config)
 
 
 def _freeze_feature_extractor(model):
