@@ -9,7 +9,7 @@ import numpy as np
 import pandas as pd
 
 from losses.loss import evaluate_regressor
-from commands.run_train import (
+from meta_models.common import (
     FeatureSpec,
     build_feature_matrix,
     infer_feature_spec,
@@ -84,7 +84,7 @@ def run_test(config: dict[str, Any], run_dir: Path) -> Path:
     model_paths = _resolve_model_paths(model_cfg)
     train_run_root = _resolve_train_run_root(model_paths)
 
-    df, label_col, input_features, root_info = load_training_dataframe(dataset_cfg)
+    df, label_col, input_features, root_info = load_training_dataframe(dataset_cfg, task="regressor")
     y = df[label_col].astype(float).to_numpy()
     spec = _load_feature_spec_for_test(train_run_root, df, input_features)
     x = build_feature_matrix(df, spec)

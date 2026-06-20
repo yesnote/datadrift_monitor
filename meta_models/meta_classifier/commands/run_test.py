@@ -11,7 +11,7 @@ import pandas as pd
 
 from losses.loss import compute_ace, compute_ece, evaluate_classifier
 from commands.utils.plot_utils import save_eval_plots
-from commands.run_train import (
+from meta_models.common import (
     FeatureSpec,
     build_feature_matrix,
     infer_feature_spec,
@@ -86,7 +86,7 @@ def run_test(config: dict[str, Any], run_dir: Path) -> Path:
     model_paths = _resolve_model_paths(model_cfg)
     train_run_root = _resolve_train_run_root(model_paths)
 
-    df, label_col, input_features, root_info = load_training_dataframe(dataset_cfg)
+    df, label_col, input_features, root_info = load_training_dataframe(dataset_cfg, task="classifier")
     y = df[label_col].astype(int).to_numpy()
     spec = _load_feature_spec_for_test(train_run_root, df, input_features)
     x = build_feature_matrix(df, spec)

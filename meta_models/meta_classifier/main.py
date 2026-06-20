@@ -1,5 +1,4 @@
 import argparse
-import re
 import sys
 import warnings
 from pathlib import Path
@@ -8,6 +7,8 @@ import yaml
 
 PROJECT_ROOT = Path(__file__).resolve().parent
 REPO_ROOT = PROJECT_ROOT.parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
@@ -16,6 +17,7 @@ from commands.run_test import run_test
 from commands.run_compare import run_compare
 from commands.run_feature_ablation import run_feature_ablation
 from commands.utils.run_utils import create_run_dir, save_used_config
+from meta_models.common import normalize_input_roots, parse_root_info, resolve_path_value
 
 
 def resolve_config_path(raw_path: str) -> Path:
@@ -28,66 +30,6 @@ def resolve_config_path(raw_path: str) -> Path:
 def load_config(path: Path) -> dict:
     with open(path, "r", encoding="utf-8") as f:
         return yaml.safe_load(f)
-
-
-def resolve_path_value(raw_path: str) -> Path:
-    path = Path(raw_path)
-    if path.is_absolute():
-        return path.resolve()
-    return (REPO_ROOT / path).resolve()
-
-
-def normalize_input_roots(raw_value) -> list[str]:
-    if isinstance(raw_value, str):
-        value = raw_value.strip()
-        return [value] if value else []
-    if isinstance(raw_value, (list, tuple)):
-        out: list[str] = []
-        for item in raw_value:
-            if item is None:
-                continue
-            text = str(item).strip()
-            if text:
-                out.append(text)
-        return out
-    return []
-
-
-def parse_root_info(root_path: Path) -> tuple[str, str, str]:
-    # Supported formats:
-    #   .../object_detectors/runs/{time}_{cue}_{target?}
-    #   .../object_detectors/runs/{dataset}/{time}_{cue}_{target?}
-    #   .../object_detectors/runs/{mode}/{dataset}/{time}_{cue}_{target?}
-    #   .../object_detectors/runs/{model}/{mode}/{dataset}/{time}_{cue}_{target?}
-    #   .../object_detectors/runs/{model}/{mode}/{dataset}/{group}/{time}_{cue}_{target?}
-    def _parse_tail(model_group: str, run_name: str) -> tuple[str, str, str]:
-        match = re.match(r"^\d{2}-\d{2}-\d{4}_\d{2};\d{2}_(.+)$", run_name)
-        tail = match.group(1) if match else run_name
-        for cue_name in ("layer_grad", "class_probability", "mc_dropout", "meta_detect", "null_detect", "entropy", "energy", "ensemble", "score", "gt", "tp"):
-            if tail == cue_name:
-                return model_group, cue_name, ""
-            prefix = f"{cue_name}_"
-            if tail.startswith(prefix):
-                return model_group, cue_name, tail[len(prefix):]
-        return model_group, tail, ""
-
-    parent = root_path.parent
-    if parent.parent.parent.parent.name == "runs":
-        return _parse_tail(f"{parent.parent.parent.name}/{parent.name}", root_path.name)
-    if parent.parent.parent.parent.parent.name == "runs":
-        return _parse_tail(f"{parent.parent.parent.parent.name}/{parent.parent.name}", root_path.name)
-    if parent.name == "runs":
-        return _parse_tail("bbox_predictions", root_path.name)
-    if parent.parent.name == "runs":
-        return _parse_tail(parent.name, root_path.name)
-    if parent.parent.parent.name == "runs":
-        return _parse_tail(parent.name, root_path.name)
-    if parent.parent.parent.parent.name == "runs":
-        return _parse_tail(parent.parent.name, root_path.name)
-
-    raise ValueError(
-        "dataset root must follow object_detectors/runs/{mode?}/{dataset?}/{time}_{cue}_{target?} "
-    )
 
 
 def main() -> None:

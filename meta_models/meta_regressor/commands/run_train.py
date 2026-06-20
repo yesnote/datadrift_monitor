@@ -1,10 +1,7 @@
 from __future__ import annotations
 
 import json
-import pickle
-import re
 import warnings
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -14,368 +11,24 @@ from sklearn.model_selection import GridSearchCV, KFold, train_test_split
 from tqdm import tqdm
 
 from losses.loss import evaluate_regressor
+from meta_models.common import (
+    build_feature_matrix,
+    infer_feature_spec,
+    load_training_dataframe,
+    sanitize_feature_matrix,
+    save_object,
+)
 from models.meta_regressor import build_estimator, param_grid
 
-try:
-    import joblib
-except Exception:  # pragma: no cover
-    joblib = None
 
-
-PROJECT_ROOT = Path(__file__).resolve().parents[3]
-_NPZ_FEATURE_CACHE: dict[Path, Any] = {}
-
-
-@dataclass
-class FeatureSpec:
-    grad_columns: list[str]
-    dim_by_column: dict[str, int]
-
-
-def validate_unique_merge_keys(df: pd.DataFrame, keys: list[str], source_name: str) -> None:
-    duplicate_mask = df.duplicated(subset=keys, keep=False)
-    if not bool(duplicate_mask.any()):
-        return
-    examples = df.loc[duplicate_mask, keys].head(5).to_dict("records")
-    raise ValueError(
-        f"{source_name} contains duplicate merge keys {keys}. "
-        f"Examples: {examples}"
-    )
-
-
-def resolve_path_value(raw_path: str) -> Path:
-    path = Path(raw_path)
-    if path.is_absolute():
-        return path.resolve()
-    return (PROJECT_ROOT / path).resolve()
-
-
-def flatten_numeric(obj: Any) -> list[float]:
-    if obj is None:
-        return []
-    if isinstance(obj, (int, float, np.integer, np.floating)):
-        return [float(obj)]
-    if isinstance(obj, str):
-        text = obj.strip()
-        if not text:
-            return []
-        if "::" in text:
-            npz_path_raw, array_key = text.split("::", 1)
-            npz_path = Path(npz_path_raw)
-            if npz_path.is_file():
-                npz_path = npz_path.resolve()
-                data = _NPZ_FEATURE_CACHE.get(npz_path)
-                if data is None:
-                    data = np.load(npz_path, allow_pickle=False)
-                    _NPZ_FEATURE_CACHE[npz_path] = data
-                if array_key in data.files:
-                    return data[array_key].astype(np.float32, copy=False).reshape(-1).astype(float).tolist()
-            return []
-        try:
-            return flatten_numeric(json.loads(text))
-        except Exception:
-            return []
-    if isinstance(obj, dict):
-        out: list[float] = []
-        for key in sorted(obj.keys()):
-            out.extend(flatten_numeric(obj[key]))
-        return out
-    if isinstance(obj, (list, tuple)):
-        out: list[float] = []
-        for item in obj:
-            out.extend(flatten_numeric(item))
-        return out
-    return []
-
-
-def resolve_npz_feature_references(df: pd.DataFrame, feature_columns: list[str], root: Path) -> None:
-    root = Path(root)
-    for col in feature_columns:
-        def _resolve(value):
-            if not isinstance(value, str) or "::" not in value:
-                return value
-            npz_part, array_key = value.split("::", 1)
-            npz_path = Path(npz_part)
-            if not npz_path.is_absolute():
-                npz_path = (root / npz_path).resolve()
-            return f"{npz_path}::{array_key}"
-
-        df[col] = df[col].map(_resolve)
-
-
-def infer_feature_spec(df: pd.DataFrame, grad_columns: list[str]) -> FeatureSpec:
-    dim_by_column: dict[str, int] = {}
-    for col in grad_columns:
-        inferred_dim = 0
-        for value in df[col].values:
-            vec = flatten_numeric(value)
-            if vec:
-                inferred_dim = len(vec)
-                break
-        dim_by_column[col] = inferred_dim
-    return FeatureSpec(grad_columns=grad_columns, dim_by_column=dim_by_column)
-
-
-def build_feature_matrix(df: pd.DataFrame, spec: FeatureSpec) -> np.ndarray:
-    rows: list[list[float]] = []
-    for _, row in df.iterrows():
-        feature_row: list[float] = []
-        for col in spec.grad_columns:
-            vec = flatten_numeric(row[col])
-            dim = spec.dim_by_column[col]
-            if dim == 0:
-                continue
-            if len(vec) < dim:
-                vec = vec + [0.0] * (dim - len(vec))
-            elif len(vec) > dim:
-                vec = vec[:dim]
-            feature_row.extend(vec)
-        rows.append(feature_row)
-    return np.asarray(rows, dtype=np.float32)
-
-
-def sanitize_feature_matrix(x: np.ndarray) -> tuple[np.ndarray, dict[str, int]]:
-    stats = {
-        "nan_count": int(np.isnan(x).sum()),
-        "posinf_count": int(np.isposinf(x).sum()),
-        "neginf_count": int(np.isneginf(x).sum()),
-    }
-    if stats["nan_count"] == 0 and stats["posinf_count"] == 0 and stats["neginf_count"] == 0:
-        return x, stats
-    # Replace non-finite values with bounded finite numbers to keep sklearn pipeline stable.
-    x_clean = np.nan_to_num(
-        x,
-        nan=0.0,
-        posinf=1e6,
-        neginf=-1e6,
-    ).astype(np.float32, copy=False)
-    return x_clean, stats
-
-
-def save_object(obj: Any, path_without_suffix: Path) -> Path:
-    if joblib is not None:
-        out = path_without_suffix.with_suffix(".joblib")
-        joblib.dump(obj, out)
-        return out
-    out = path_without_suffix.with_suffix(".pkl")
-    with open(out, "wb") as f:
-        pickle.dump(obj, f)
-    return out
-
-
-def load_object(path: Path) -> Any:
-    suffix = path.suffix.lower()
-    if suffix == ".joblib":
-        if joblib is None:
-            raise ImportError("joblib is required to load '.joblib' model files.")
-        return joblib.load(path)
-    if suffix == ".pkl":
-        with open(path, "rb") as f:
-            return pickle.load(f)
-    raise ValueError(f"Unsupported model file suffix: {path.suffix}")
-
-
-def parse_root_info(root_path: Path) -> tuple[str, str, str]:
-    # Supported formats:
-    #   .../object_detectors/runs/{time}_{cue}_{target?}
-    #   .../object_detectors/runs/{dataset}/{time}_{cue}_{target?}
-    #   .../object_detectors/runs/{mode}/{dataset}/{time}_{cue}_{target?}
-    #   .../object_detectors/runs/{model}/{mode}/{dataset}/{time}_{cue}_{target?}
-    def _parse_tail(model_group: str, run_name: str) -> tuple[str, str, str]:
-        match = re.match(r"^\d{2}-\d{2}-\d{4}_\d{2};\d{2}_(.+)$", run_name)
-        tail = match.group(1) if match else run_name
-        for cue_name in ("layer_grad", "class_probability", "mc_dropout", "meta_detect", "null_detect", "entropy", "energy", "ensemble", "score", "gt", "tp"):
-            if tail == cue_name:
-                return model_group, cue_name, ""
-            prefix = f"{cue_name}_"
-            if tail.startswith(prefix):
-                return model_group, cue_name, tail[len(prefix):]
-        return model_group, tail, ""
-
-    parent = root_path.parent
-    if parent.parent.parent.parent.name == "runs":
-        return _parse_tail(f"{parent.parent.parent.name}/{parent.name}", root_path.name)
-    if parent.parent.parent.parent.parent.name == "runs":
-        return _parse_tail(f"{parent.parent.parent.parent.name}/{parent.parent.name}", root_path.name)
-    if parent.name == "runs":
-        return _parse_tail("bbox_predictions", root_path.name)
-    if parent.parent.name == "runs":
-        return _parse_tail(parent.name, root_path.name)
-    if parent.parent.parent.name == "runs":
-        return _parse_tail(parent.name, root_path.name)
-
-    raise ValueError(
-        "dataset root must follow object_detectors/runs/{mode?}/{dataset?}/{time}_{cue}_{target?} "
-    )
-
-
-def normalize_input_roots(raw_value: Any) -> list[str]:
-    if isinstance(raw_value, str):
-        value = raw_value.strip()
-        return [value] if value else []
-    if isinstance(raw_value, (list, tuple)):
-        out: list[str] = []
-        for item in raw_value:
-            if item is None:
-                continue
-            text = str(item).strip()
-            if text:
-                out.append(text)
-        return out
-    return []
-
-
-def load_training_dataframe(dataset_cfg: dict[str, Any]) -> tuple[pd.DataFrame, str, list[str], dict[str, Any]]:
-    input_root_raw_list = normalize_input_roots(dataset_cfg.get("input_root", ""))
-    gt_root_raw = str(dataset_cfg.get("gt_root", "")).strip()
-    if not input_root_raw_list or not gt_root_raw:
-        raise ValueError("dataset.input_root (str or list[str]) and dataset.gt_root are required.")
-
-    input_roots = [resolve_path_value(v) for v in input_root_raw_list]
-    gt_root = resolve_path_value(gt_root_raw)
-    input_infos = [parse_root_info(p) for p in input_roots]
-    input_groups = {group for group, _cue, _target in input_infos}
-    if len(input_groups) != 1:
-        msg = f"All dataset.input_root entries must share one model group, got: {sorted(input_groups)}"
-        warnings.warn(msg)
-        raise ValueError(msg)
-    input_group = next(iter(input_groups))
-
-    gt_group, _gt_cue, _gt_target = parse_root_info(gt_root)
-    if input_group != gt_group:
-        msg = (
-            "dataset.input_root and dataset.gt_root must have the same model group "
-            f"(got '{input_group}' vs '{gt_group}')."
-        )
-        warnings.warn(msg)
-        raise ValueError(msg)
-
-    cue_to_csv = {
-        "layer_grad": "layer_grad.csv",
-        "score": "score.csv",
-        "mc_dropout": "mc_dropout.csv",
-        "meta_detect": "meta_detect.csv",
-        "null_detect": "null_detect.csv",
-        "class_probability": "class_probability.csv",
-        "entropy": "entropy.csv",
-        "energy": "energy.csv",
-        "ensemble": "ensemble.csv",
-    }
-    gt_csv = gt_root / "tp.csv"
-    if not gt_csv.is_file():
-        raise FileNotFoundError(f"tp.csv not found: {gt_csv}")
-    header = pd.read_csv(gt_csv, nrows=0)
-    label_col = "gt_iou" if "gt_iou" in header.columns else "max_iou"
-    gt_df = pd.read_csv(gt_csv)
-    raw_key_set = {"image_id", "image_path", "raw_pred_idx", label_col}
-    bbox_key_set = {"image_id", "image_path", "xmin", "ymin", "xmax", "ymax", label_col}
-    has_raw_keys = raw_key_set.issubset(gt_df.columns)
-    has_bbox_keys = bbox_key_set.issubset(gt_df.columns)
-    if not has_raw_keys:
-        raise ValueError("tp.csv missing required raw_pred_idx join keys: image_id, image_path, raw_pred_idx.")
-    base_merge_keys = ["image_id", "image_path", "raw_pred_idx"]
-    validate_unique_merge_keys(gt_df, base_merge_keys, str(gt_csv))
-    keep_cols = list(base_merge_keys) + [label_col]
-    if has_bbox_keys:
-        keep_cols.extend(["image_id", "image_path", "xmin", "ymin", "xmax", "ymax"])
-    if "pred_idx" in gt_df.columns:
-        keep_cols.append("pred_idx")
-    gt_df = gt_df[list(dict.fromkeys(keep_cols))]
-
-    merged = gt_df.copy()
-    prefixed_feature_columns: list[str] = []
-    input_uncertainties: list[str] = []
-    input_targets: list[str] = []
-    prefix_seen_count: dict[str, int] = {}
-    for input_root, (_group, input_cue, input_target) in zip(input_roots, input_infos):
-        input_csv_name = cue_to_csv.get(input_cue)
-        if input_csv_name is None:
-            raise ValueError(
-                f"Unsupported input uncertainty '{input_cue}'. "
-                "Supported uncertainties: layer_grad, class_probability, score, mc_dropout, meta_detect, null_detect, entropy, energy, ensemble."
-            )
-        input_csv = input_root / input_csv_name
-        if not input_csv.is_file():
-            raise FileNotFoundError(f"{input_csv_name} not found: {input_csv}")
-        feature_df = pd.read_csv(input_csv)
-
-        raw_merge_keys = ["image_id", "image_path", "raw_pred_idx"]
-        has_feature_raw = set(raw_merge_keys).issubset(feature_df.columns)
-        has_merged_raw = set(raw_merge_keys).issubset(merged.columns)
-        if not (has_feature_raw and has_merged_raw):
-            raise ValueError(
-                f"Cannot match {input_csv_name} to tp.csv. "
-                "Both files must contain raw_pred_idx join keys: image_id, image_path, raw_pred_idx."
-            )
-        merge_keys = raw_merge_keys
-        validate_unique_merge_keys(feature_df, merge_keys, str(input_csv))
-        meta_columns = {
-            "image_id",
-            "image_path",
-            "pred_idx",
-            "raw_pred_idx",
-            "xmin",
-            "ymin",
-            "xmax",
-            "ymax",
-            "score",
-            "pred_class",
-            "max_iou",
-            label_col,
-        }
-        if input_cue == "score":
-            meta_columns.discard("score")
-
-        feature_columns = [c for c in feature_df.columns if c not in meta_columns]
-        if input_cue in {"mc_dropout", "ensemble"}:
-            feature_columns = [c for c in feature_columns if str(c).endswith("_std")]
-        if not feature_columns:
-            raise ValueError(f"No input feature columns found in {input_csv}")
-        if input_cue == "layer_grad":
-            resolve_npz_feature_references(feature_df, feature_columns, input_root)
-        suffix_target = f"_{input_target}" if input_target else ""
-        prefix_base = f"{input_cue}{suffix_target}__"
-        seen_count = int(prefix_seen_count.get(prefix_base, 0))
-        prefix_seen_count[prefix_base] = seen_count + 1
-        # When multiple input roots share the same cue/target, disambiguate feature prefixes.
-        prefix = prefix_base if seen_count == 0 else f"{input_cue}{suffix_target}__src{seen_count}__"
-        rename_map = {c: f"{prefix}{c}" for c in feature_columns}
-        tp_candidate_keys = [
-            "image_id",
-            "image_path",
-            "raw_pred_idx",
-            "pred_idx",
-            "xmin",
-            "ymin",
-            "xmax",
-            "ymax",
-        ]
-        candidate_present = [c for c in tp_candidate_keys if c in feature_df.columns]
-        feature_df = feature_df[list(dict.fromkeys(candidate_present + feature_columns))].rename(columns=rename_map)
-
-        merged_next = merged.merge(feature_df, on=merge_keys, how="inner")
-        merged = merged_next
-        prefixed_feature_columns.extend(rename_map.values())
-        input_uncertainties.append(input_cue)
-        input_targets.append(input_target)
-
-    if merged.empty:
-        raise ValueError("Merged training dataframe is empty. Check input_root and gt_root pair.")
-    if label_col not in merged.columns:
-        raise ValueError(f"Ground-truth label column '{label_col}' is missing after merge.")
-
-    input_features = [c for c in merged.columns if c in prefixed_feature_columns]
-    if not input_features:
-        raise ValueError("No input feature columns found after merge.")
-
-    root_info = {
-        "input_root": [str(p) for p in input_roots],
-        "gt_root": str(gt_root),
-        "model_group": input_group,
-        "input_uncertainty": input_uncertainties,
-        "input_target": input_targets,
-    }
-    return merged, label_col, input_features, root_info
+def _append_summary_rows(eval_rows: list[dict[str, Any]], metric_cols: list[str]) -> pd.DataFrame:
+    eval_df = pd.DataFrame(eval_rows)
+    mean_row: dict[str, Any] = {"row_type": "mean", "split_index": -1}
+    std_row: dict[str, Any] = {"row_type": "std", "split_index": -1}
+    for col in metric_cols:
+        mean_row[col] = float(eval_df[col].mean())
+        std_row[col] = float(eval_df[col].std(ddof=1))
+    return pd.concat([eval_df, pd.DataFrame([mean_row, std_row])], ignore_index=True)
 
 
 def run_train(config: dict[str, Any], run_dir: Path) -> Path:
@@ -390,7 +43,7 @@ def run_train(config: dict[str, Any], run_dir: Path) -> Path:
     results_dir.mkdir(parents=True, exist_ok=True)
     models_dir.mkdir(parents=True, exist_ok=True)
 
-    df, label_col, grad_columns, root_info = load_training_dataframe(dataset_cfg)
+    df, label_col, grad_columns, root_info = load_training_dataframe(dataset_cfg, task="regressor")
     y = df[label_col].astype(float).to_numpy()
     spec = infer_feature_spec(df, grad_columns)
     x = build_feature_matrix(df, spec)
@@ -422,7 +75,7 @@ def run_train(config: dict[str, Any], run_dir: Path) -> Path:
         best_params = dict(search.best_params_)
         estimator.set_params(**best_params)
 
-    eval_rows: list[dict[str, float]] = []
+    eval_rows: list[dict[str, Any]] = []
     process = str(exp_cfg.get("process", "kfold")).strip().lower()
     used_num_fold = None
     used_split = None
@@ -442,8 +95,8 @@ def run_train(config: dict[str, Any], run_dir: Path) -> Path:
 
             estimator.fit(x_train, y_train)
             y_pred = np.clip(estimator.predict(x_test), 0.0, 1.0)
-
-            eval_rows.append(evaluate_regressor(y_test, y_pred))
+            metrics = evaluate_regressor(y_test, y_pred)
+            eval_rows.append({"row_type": "split", "split_index": int(i), **metrics})
 
             pd.DataFrame({"y_test": y_test, "y_pred": y_pred}).to_csv(results_dir / f"eval_data_{i}.csv", index=False)
             save_object(estimator, models_dir / f"model_{i}")
@@ -469,18 +122,16 @@ def run_train(config: dict[str, Any], run_dir: Path) -> Path:
 
             estimator.fit(x_train, y_train)
             y_pred = np.clip(estimator.predict(x_test), 0.0, 1.0)
-
-            eval_rows.append(evaluate_regressor(y_test, y_pred))
+            metrics = evaluate_regressor(y_test, y_pred)
+            eval_rows.append({"row_type": "split", "split_index": int(i), **metrics})
 
             pd.DataFrame({"y_test": y_test, "y_pred": y_pred}).to_csv(results_dir / f"eval_data_{i}.csv", index=False)
             save_object(estimator, models_dir / f"model_{i}")
     else:
         raise ValueError("experiment.process must be 'kfold' or 'repeat'.")
 
-    eval_df = pd.DataFrame(eval_rows)
-    eval_df.loc["mean"] = eval_df.mean(numeric_only=True)
-    eval_df.loc["std"] = eval_df.std(numeric_only=True, ddof=1)
-    eval_df.to_csv(results_dir / "evaluation_results.csv", index=True)
+    eval_df = _append_summary_rows(eval_rows, ["r2"])
+    eval_df.to_csv(results_dir / "evaluation_results.csv", index=False)
 
     metadata = {
         "input_root": root_info["input_root"],

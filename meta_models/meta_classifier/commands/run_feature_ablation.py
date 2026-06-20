@@ -15,7 +15,7 @@ import matplotlib.pyplot as plt  # noqa: E402
 
 from losses.loss import evaluate_classifier
 from models.meta_classifier import build_estimator
-from commands.run_train import (
+from meta_models.common import (
     FeatureSpec,
     build_feature_matrix,
     load_training_dataframe,
@@ -223,7 +223,7 @@ def run_feature_ablation(config: dict[str, Any], run_dir: Path) -> Path:
     results_dir.mkdir(parents=True, exist_ok=True)
     plots_dir.mkdir(parents=True, exist_ok=True)
 
-    df, label_col, feature_columns, root_info = load_training_dataframe(dataset_cfg)
+    df, label_col, feature_columns, root_info = load_training_dataframe(dataset_cfg, task="classifier")
     if root_info.get("input_uncertainty") != ["meta_detect"]:
         raise ValueError("feature_ablation currently expects exactly one meta_detect input_root.")
 
