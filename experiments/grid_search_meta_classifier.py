@@ -12,24 +12,24 @@ import numpy as np
 import yaml
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-META_CLASSIFIER_ROOT = REPO_ROOT / "meta_models" / "meta_classifier"
+META_MODELS_ROOT = REPO_ROOT / "meta_models"
 
-for import_path in (REPO_ROOT, META_CLASSIFIER_ROOT):
+for import_path in (REPO_ROOT,):
     import_path_text = str(import_path)
     if import_path_text not in sys.path:
         sys.path.insert(0, import_path_text)
 
 from sklearn.model_selection import StratifiedKFold, train_test_split
 
-from commands.run_train import (  # noqa: E402
-    apply_augmentation,
+from meta_models.commands.common import (  # noqa: E402
     build_feature_matrix,
     infer_feature_spec,
     load_training_dataframe,
     sanitize_feature_matrix,
 )
-from losses.loss import compute_ace, compute_ece, evaluate_classifier  # noqa: E402
-from models.meta_classifier import build_estimator  # noqa: E402
+from meta_models.commands.meta_classifier.train import apply_augmentation  # noqa: E402
+from meta_models.losses.meta_classifier import compute_ace, compute_ece, evaluate_classifier  # noqa: E402
+from meta_models.models.meta_classifier import build_estimator  # noqa: E402
 
 # Edit these paths before running.
 INPUT_ROOTS = [
@@ -40,7 +40,7 @@ INPUT_ROOTS = [
 ]
 GT_ROOT = r"object_detectors/runs/faster_rcnn/predict/coco/05-27-2026_22;00_gt"
 BASE_META_CLASSIFIER_CONFIG = (
-    r"meta_models/meta_classifier/configs/train_meta_classifier.yaml"
+    r"meta_models/configs/meta_classifier/train.yaml"
 )
 
 # Set to a fixed name to resume/read beside a previous run. Empty string creates a new timestamped root.
@@ -239,8 +239,9 @@ def main() -> None:
         or f"{datetime.now().strftime('%m-%d-%Y_%H;%M')}_meta_classifier_grid"
     )
     run_dir = (
-        META_CLASSIFIER_ROOT
+        META_MODELS_ROOT
         / "runs"
+        / "meta_classifier"
         / model_name
         / "grid_search"
         / dataset_name

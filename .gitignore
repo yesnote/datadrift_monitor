@@ -1,10 +1,10 @@
-*.pt
-*.pth
 code_references/
 codex_plans/
 object_detectors/runs/
-meta_models/meta_classifier/runs/
-meta_models/meta_regressor/runs/
+meta_models/runs/
 visualizers/runs/
 __pycache__/
+*.pt
+*.pth
 *.xlsx
+*.csv
