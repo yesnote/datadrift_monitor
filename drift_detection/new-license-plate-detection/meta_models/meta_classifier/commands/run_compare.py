@@ -17,7 +17,7 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt  # noqa: E402
 
 
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
+PROJECT_ROOT = Path(__file__).resolve().parents[3]
 
 
 def _resolve_path_value(raw_path: str) -> Path:
@@ -66,22 +66,40 @@ def _extract_metric_rows(eval_df: pd.DataFrame) -> tuple[dict[str, float], dict[
         return {}, {}
     mean_row = None
     std_row = None
-    if "model_file" in eval_df.columns:
-        mean_hit = eval_df[eval_df["model_file"].astype(str).str.lower() == "mean"]
-        std_hit = eval_df[eval_df["model_file"].astype(str).str.lower() == "std"]
+    summary_mask = pd.Series(False, index=eval_df.index)
+    if "row_type" in eval_df.columns:
+        row_type = eval_df["row_type"].astype(str).str.lower()
+        mean_hit = eval_df[row_type == "mean"]
+        std_hit = eval_df[row_type == "std"]
+        summary_mask = row_type.isin({"mean", "std"})
         if not mean_hit.empty:
             mean_row = mean_hit.iloc[0]
         if not std_hit.empty:
             std_row = std_hit.iloc[0]
-    if mean_row is None and eval_df.index.dtype == object:
-        if "mean" in eval_df.index:
-            mean_row = eval_df.loc["mean"]
-        if "std" in eval_df.index:
-            std_row = eval_df.loc["std"]
+    if "model_file" in eval_df.columns:
+        mean_hit = eval_df[eval_df["model_file"].astype(str).str.lower() == "mean"]
+        std_hit = eval_df[eval_df["model_file"].astype(str).str.lower() == "std"]
+        summary_mask = summary_mask | eval_df["model_file"].astype(str).str.lower().isin({"mean", "std"})
+        if not mean_hit.empty:
+            mean_row = mean_hit.iloc[0]
+        if not std_hit.empty:
+            std_row = std_hit.iloc[0]
+    legacy_index_cols = [c for c in eval_df.columns if str(c).startswith("Unnamed")]
+    for col in legacy_index_cols:
+        values = eval_df[col].astype(str).str.lower()
+        summary_mask = summary_mask | values.isin({"mean", "std"})
+        if mean_row is None:
+            mean_hit = eval_df[values == "mean"]
+            if not mean_hit.empty:
+                mean_row = mean_hit.iloc[0]
+        if std_row is None:
+            std_hit = eval_df[values == "std"]
+            if not std_hit.empty:
+                std_row = std_hit.iloc[0]
     if mean_row is None:
-        mean_row = eval_df[numeric_cols].mean(numeric_only=True)
+        mean_row = eval_df.loc[~summary_mask, numeric_cols].mean(numeric_only=True)
     if std_row is None:
-        std_row = eval_df[numeric_cols].std(numeric_only=True, ddof=1)
+        std_row = eval_df.loc[~summary_mask, numeric_cols].std(numeric_only=True, ddof=1)
     mean_dict = {k: float(mean_row[k]) for k in numeric_cols}
     std_dict = {k: float(std_row[k]) for k in numeric_cols}
     return mean_dict, std_dict
