@@ -14,7 +14,7 @@ OBJECT_DETECTOR_CONFIG = (
     r"object_detectors/configs/faster_rcnn/predict/coco.yaml"
 )
 META_CLASSIFIER_CONFIG = (
-    r"meta_models/meta_classifier/configs/train_meta_classifier.yaml"
+    r"meta_models/configs/meta_classifier/train.yaml"
 )
 
 # If empty, dataset.gt_root is read from META_CLASSIFIER_CONFIG.
@@ -486,7 +486,7 @@ def main() -> None:
             _run(
                 [
                     sys.executable,
-                    "meta_models/meta_classifier/main.py",
+                    "meta_models/main.py",
                     "--config",
                     str(meta_config_path),
                     "--run-dir",

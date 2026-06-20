@@ -39,7 +39,7 @@ from dataloaders.yolov5 import create_dataloader  # noqa: E402
 
 OBJECT_DETECTOR_CONFIG = r"object_detectors/configs/yolov5/predict/coco.yaml"
 META_CLASSIFIER_CONFIG = (
-    r"meta_models/meta_classifier/configs/train_meta_classifier.yaml"
+    r"meta_models/configs/meta_classifier/train.yaml"
 )
 
 GT_ROOT = ""
@@ -892,7 +892,7 @@ def main() -> None:
             _run(
                 [
                     sys.executable,
-                    "meta_models/meta_classifier/main.py",
+                    "meta_models/main.py",
                     "--config",
                     str(meta_config_path_i),
                     "--run-dir",
