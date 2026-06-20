@@ -7,59 +7,6 @@ from commands.predict.yolov10.utils import (
 )
 
 
-def _parse_config(config):
-    output = config.get("output", {})
-    layer_cfg = output.get("layer_grad", {}) if isinstance(output.get("layer_grad", {}), dict) else {}
-    grad = layer_cfg.get("gradient", {}) if isinstance(layer_cfg.get("gradient", {}), dict) else {}
-    target = str(grad.get("target", "null_target")).strip().lower()
-    if target != "null_target":
-        raise NotImplementedError("YOLOv10 layer_grad supports only target=null_target.")
-    scalar = grad.get("scalar", ["bbox_loss", "cls_loss"])
-    scalar = [str(v).strip().lower() for v in (scalar if isinstance(scalar, (list, tuple)) else [scalar])]
-    if "loss" in scalar:
-        scalar = ["bbox_loss", "cls_loss"]
-    for value in scalar:
-        if value not in {"bbox_loss", "cls_loss"}:
-            raise ValueError("YOLOv10 layer_grad.gradient.scalar supports bbox_loss and cls_loss only.")
-    bbox_loss = str(grad.get("bbox_loss", "l1")).strip().lower()
-    if bbox_loss not in {"l1", "l2"}:
-        raise ValueError("YOLOv10 layer_grad.gradient.bbox_loss supports only l1 or l2.")
-    cls_loss = str(grad.get("cls_loss", "bcewithlogits")).strip().lower()
-    if cls_loss not in {"bcewithlogits", "kl"}:
-        raise ValueError("YOLOv10 layer_grad.gradient.cls_loss supports only bcewithlogits or kl.")
-    reduction = grad.get("reduction", ["l1_norm", "l2_norm", "min", "max", "mean", "std"])
-    reduction = [str(v).strip() for v in (reduction if isinstance(reduction, (list, tuple)) else [reduction]) if str(v).strip()]
-    if not reduction:
-        raise ValueError("YOLOv10 layer_grad requires reduction metrics; raw gradient saving is not supported.")
-    if "layer" in grad:
-        raise ValueError("YOLOv10 layer_grad uses scalar-specific bbox_layer and cls_layer, not gradient.layer.")
-    bbox_layers = grad.get("bbox_layer", ["model.23.one2one_cv2.0.2"])
-    cls_layers = grad.get("cls_layer", ["model.23.one2one_cv3.0.2"])
-    bbox_layer_list = [str(v).strip() for v in (bbox_layers if isinstance(bbox_layers, (list, tuple)) else [bbox_layers]) if str(v).strip()]
-    cls_layer_list = [str(v).strip() for v in (cls_layers if isinstance(cls_layers, (list, tuple)) else [cls_layers]) if str(v).strip()]
-    if "bbox_loss" in scalar and not bbox_layer_list:
-        raise ValueError("YOLOv10 layer_grad.gradient.bbox_layer must not be empty when bbox_loss is active.")
-    if "cls_loss" in scalar and not cls_layer_list:
-        raise ValueError("YOLOv10 layer_grad.gradient.cls_layer must not be empty when cls_loss is active.")
-    for layer_name in bbox_layer_list:
-        if not layer_name.startswith("model.23.one2one_cv2."):
-            raise ValueError("YOLOv10 bbox_loss layer_grad supports only one-to-one bbox head layers: model.23.one2one_cv2.*")
-    for layer_name in cls_layer_list:
-        if not layer_name.startswith("model.23.one2one_cv3."):
-            raise ValueError("YOLOv10 cls_loss layer_grad supports only one-to-one cls head layers: model.23.one2one_cv3.*")
-    return {
-        "scalar": scalar,
-        "layers_by_scalar": {
-            "bbox_loss": bbox_layer_list if "bbox_loss" in scalar else [],
-            "cls_loss": cls_layer_list if "cls_loss" in scalar else [],
-        },
-        "reduction": reduction,
-        "bbox_loss": bbox_loss,
-        "cls_loss": cls_loss,
-        "cls_direction": str(grad.get("cls_direction", "pred_to_target")).strip().lower(),
-    }
-
-
 def _bbox_offset_loss(final_xyxy, source_point, mode):
     px, py = source_point[0], source_point[1]
     offset = torch.stack([px - final_xyxy[0], py - final_xyxy[1], final_xyxy[2] - px, final_xyxy[3] - py])
@@ -79,7 +26,7 @@ def run_layer_grad_csv(config, run_dir):
     parsed = parse_yolov10_output_config(config)
     if not parsed["save_csv_enabled"]:
         return
-    layer_cfg = _parse_config(config)
+    layer_cfg = parsed["layer_grad"]
     detector, device = build_detector(config)
     params_by_scalar = {}
     for scalar_name in layer_cfg["scalar"]:

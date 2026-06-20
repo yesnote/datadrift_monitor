@@ -1,9 +1,8 @@
 from commands.predict.common import *
+from commands.utils.predict_utils import build_yolo_candidate_cache, yolo_candidate_mask_from_cache
 from commands.predict.yolov5.utils import (
-    build_yolo_candidate_cache,
     iter_yolo_detection_rows,
     run_yolo_forward_nms,
-    yolo_candidate_mask_from_cache,
 )
 
 

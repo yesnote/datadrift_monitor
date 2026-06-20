@@ -84,6 +84,17 @@ def parse_yolov10_output_config(config):
             raise ValueError(f"Unsupported YOLOv10 direction: {raw}")
         return aliases[value]
 
+    def normalize_list(raw, default=None, *, lower=False):
+        value = default if raw is None else raw
+        values = value if isinstance(value, (list, tuple)) else [value]
+        result = []
+        for item in values:
+            text = str(item).strip()
+            if not text:
+                continue
+            result.append(text.lower() if lower else text)
+        return result
+
     active = as_dict(output.get(uncertainty, {}))
     parsed = {
         "uncertainty": uncertainty,
@@ -121,8 +132,40 @@ def parse_yolov10_output_config(config):
         for forbidden in ("obj_loss", "obj_direction", "cand_score_threshold", "bbox_direction", "layer"):
             if forbidden in grad:
                 raise ValueError(f"YOLOv10 layer_grad does not support gradient.{forbidden}.")
-        normalize_loss(grad.get("bbox_loss", "l1"), "l1", {"l1", "l2"}, "layer_grad.gradient.bbox_loss")
-        normalize_loss(grad.get("cls_loss", "bcewithlogits"), "bcewithlogits", {"bcewithlogits", "kl"}, "layer_grad.gradient.cls_loss")
+        scalar = normalize_list(grad.get("scalar", ["bbox_loss", "cls_loss"]), lower=True)
+        if "loss" in scalar:
+            scalar = ["bbox_loss", "cls_loss"]
+        for value in scalar:
+            if value not in {"bbox_loss", "cls_loss"}:
+                raise ValueError("YOLOv10 layer_grad.gradient.scalar supports bbox_loss and cls_loss only.")
+        reduction = normalize_list(grad.get("reduction", ["l1_norm", "l2_norm", "min", "max", "mean", "std"]))
+        if not reduction:
+            raise ValueError("YOLOv10 layer_grad requires reduction metrics; raw gradient saving is not supported.")
+        bbox_loss = normalize_loss(grad.get("bbox_loss", "l1"), "l1", {"l1", "l2"}, "layer_grad.gradient.bbox_loss")
+        cls_loss = normalize_loss(grad.get("cls_loss", "bcewithlogits"), "bcewithlogits", {"bcewithlogits", "kl"}, "layer_grad.gradient.cls_loss")
+        bbox_layers = normalize_list(grad.get("bbox_layer", ["model.23.one2one_cv2.0.2"]))
+        cls_layers = normalize_list(grad.get("cls_layer", ["model.23.one2one_cv3.0.2"]))
+        if "bbox_loss" in scalar and not bbox_layers:
+            raise ValueError("YOLOv10 layer_grad.gradient.bbox_layer must not be empty when bbox_loss is active.")
+        if "cls_loss" in scalar and not cls_layers:
+            raise ValueError("YOLOv10 layer_grad.gradient.cls_layer must not be empty when cls_loss is active.")
+        for layer_name in bbox_layers:
+            if not layer_name.startswith("model.23.one2one_cv2."):
+                raise ValueError("YOLOv10 bbox_loss layer_grad supports only one-to-one bbox head layers: model.23.one2one_cv2.*")
+        for layer_name in cls_layers:
+            if not layer_name.startswith("model.23.one2one_cv3."):
+                raise ValueError("YOLOv10 cls_loss layer_grad supports only one-to-one cls head layers: model.23.one2one_cv3.*")
+        parsed["layer_grad"] = {
+            "scalar": scalar,
+            "layers_by_scalar": {
+                "bbox_loss": bbox_layers if "bbox_loss" in scalar else [],
+                "cls_loss": cls_layers if "cls_loss" in scalar else [],
+            },
+            "reduction": reduction,
+            "bbox_loss": bbox_loss,
+            "cls_loss": cls_loss,
+            "cls_direction": normalize_direction(grad.get("cls_direction", "pred_to_target")),
+        }
     return parsed
 
 
