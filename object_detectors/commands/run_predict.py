@@ -1,12 +1,20 @@
 import torch
 
 from commands.predict.registry import resolve_predict_runner
-from commands.utils.predict_utils import parse_output_config
+
+
+def _active_uncertainty(config):
+    raw = config.get("output", {}).get("uncertainty", "gt")
+    if isinstance(raw, (list, tuple)):
+        if len(raw) != 1:
+            raise ValueError("run_predict expects exactly one output.uncertainty value.")
+        raw = raw[0]
+    value = str(raw).strip().lower()
+    return value or "gt"
 
 
 def run_predict(config, run_dir):
-    parsed = parse_output_config(config.get("output", {}))
-    uncertainty = parsed["uncertainty"]
+    uncertainty = _active_uncertainty(config)
     model_type = str(config.get("model", {}).get("type", "yolov5")).strip().lower()
     device = str(config.get("model", {}).get("device", "cuda")).lower()
     if device == "cuda" and not torch.cuda.is_available():

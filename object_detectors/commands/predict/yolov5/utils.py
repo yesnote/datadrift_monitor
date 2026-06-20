@@ -2,8 +2,7 @@ from dataclasses import dataclass
 
 import torch
 
-from commands.predict.common import _resolve_nms_logits, _xywh_to_xyxy_tensor
-from commands.utils.predict_utils import _box_iou_1vN_tensor
+from commands.predict.common import _resolve_nms_logits
 
 
 @dataclass
@@ -124,47 +123,3 @@ def selected_class_logits(raw_logits, raw_prediction, sample_idx, raw_keep, num_
 def selected_softmax_class_probs(raw_logits, raw_prediction, sample_idx, raw_keep, num_classes, device):
     logits = selected_class_logits(raw_logits, raw_prediction, sample_idx, raw_keep, num_classes, device)
     return torch.softmax(logits, dim=-1) if logits.numel() else logits
-
-
-@dataclass
-class YoloCandidateCache:
-    raw_xyxy: torch.Tensor
-    raw_score: torch.Tensor
-    raw_cls: torch.Tensor
-    score_mask: torch.Tensor
-    class_to_indices: dict
-
-
-def build_yolo_candidate_cache(pred_img, score_threshold):
-    raw_xyxy = _xywh_to_xyxy_tensor(pred_img[:, :4].detach())
-    cls_probs = pred_img[:, 5:].detach()
-    raw_cls = torch.argmax(cls_probs, dim=1) if cls_probs.numel() else torch.zeros((pred_img.shape[0],), dtype=torch.long, device=pred_img.device)
-    obj = pred_img[:, 4].detach()
-    cls_max = cls_probs.max(dim=1).values if cls_probs.numel() else torch.ones_like(obj)
-    raw_score = obj * cls_max
-    score_mask = raw_score >= float(score_threshold)
-    class_to_indices = {}
-    for cls_id in torch.unique(raw_cls[score_mask]).detach().cpu().tolist() if bool(score_mask.any()) else []:
-        cls_id = int(cls_id)
-        class_to_indices[cls_id] = torch.nonzero(score_mask & (raw_cls == cls_id), as_tuple=False).flatten()
-    return YoloCandidateCache(
-        raw_xyxy=raw_xyxy,
-        raw_score=raw_score,
-        raw_cls=raw_cls,
-        score_mask=score_mask,
-        class_to_indices=class_to_indices,
-    )
-
-
-def yolo_candidate_mask_from_cache(cache, raw_idx, iou_threshold):
-    if raw_idx >= int(cache.raw_xyxy.shape[0]):
-        return None, None
-    pseudo_cls = int(cache.raw_cls[raw_idx].detach().cpu().item())
-    candidate_indices = cache.class_to_indices.get(pseudo_cls)
-    ious = torch.zeros((cache.raw_xyxy.shape[0],), dtype=cache.raw_xyxy.dtype, device=cache.raw_xyxy.device)
-    cand_mask = torch.zeros((cache.raw_xyxy.shape[0],), dtype=torch.bool, device=cache.raw_xyxy.device)
-    if candidate_indices is not None and int(candidate_indices.shape[0]) > 0:
-        candidate_ious = _box_iou_1vN_tensor(cache.raw_xyxy[raw_idx].view(1, 4), cache.raw_xyxy[candidate_indices])
-        ious[candidate_indices] = candidate_ious
-        cand_mask[candidate_indices] = candidate_ious > float(iou_threshold)
-    return cand_mask, ious

@@ -1,6 +1,7 @@
 ﻿import json
 import math
 import time
+from dataclasses import dataclass
 from pathlib import Path
 
 import cv2
@@ -1507,22 +1508,16 @@ def _class_loss_tensor(
     return loss.mean()
 
 
-def build_yolo_candidate_mask_for_pseudo(
-    pred_img: torch.Tensor,
-    raw_idx: int,
-    iou_threshold: float,
-    score_threshold: float = 0.01,
-):
-    if raw_idx >= pred_img.shape[0]:
-        return None
-
-    with torch.no_grad():
-        cache = _build_yolo_candidate_search_cache(pred_img, score_threshold)
-        candidate_mask = _yolo_candidate_mask_from_search_cache(cache, raw_idx, iou_threshold)
-    return candidate_mask
+@dataclass
+class YoloCandidateCache:
+    raw_xyxy: torch.Tensor
+    raw_score: torch.Tensor
+    raw_cls: torch.Tensor
+    score_mask: torch.Tensor
+    class_to_indices: dict
 
 
-def _build_yolo_candidate_search_cache(pred_img: torch.Tensor, score_threshold: float):
+def build_yolo_candidate_cache(pred_img: torch.Tensor, score_threshold: float):
     with torch.no_grad():
         raw_xyxy = _xywh_to_xyxy_tensor(pred_img[:, :4].detach())
         cls_probs = pred_img[:, 5:].detach()
@@ -1540,28 +1535,43 @@ def _build_yolo_candidate_search_cache(pred_img: torch.Tensor, score_threshold: 
             for cls_id in torch.unique(raw_cls[score_mask]).detach().cpu().tolist():
                 cls_id = int(cls_id)
                 class_to_indices[cls_id] = torch.nonzero(score_mask & (raw_cls == cls_id), as_tuple=False).flatten()
-        return {
-            "raw_xyxy": raw_xyxy,
-            "raw_cls": raw_cls,
-            "raw_score": raw_score,
-            "class_to_indices": class_to_indices,
-        }
+        return YoloCandidateCache(
+            raw_xyxy=raw_xyxy,
+            raw_score=raw_score,
+            raw_cls=raw_cls,
+            score_mask=score_mask,
+            class_to_indices=class_to_indices,
+        )
 
 
-def _yolo_candidate_mask_from_search_cache(cache, raw_idx: int, iou_threshold: float):
-    raw_xyxy = cache["raw_xyxy"]
-    raw_cls = cache["raw_cls"]
-    if raw_idx >= int(raw_xyxy.shape[0]):
-        return None
-    pseudo_cls = int(raw_cls[raw_idx].detach().cpu().item())
-    candidate_indices = cache["class_to_indices"].get(pseudo_cls)
-    candidate_mask = torch.zeros((raw_xyxy.shape[0],), dtype=torch.bool, device=raw_xyxy.device)
+def yolo_candidate_mask_from_cache(cache: YoloCandidateCache, raw_idx: int, iou_threshold: float):
+    if raw_idx >= int(cache.raw_xyxy.shape[0]):
+        return None, None
+    pseudo_cls = int(cache.raw_cls[raw_idx].detach().cpu().item())
+    candidate_indices = cache.class_to_indices.get(pseudo_cls)
+    ious = torch.zeros((cache.raw_xyxy.shape[0],), dtype=cache.raw_xyxy.dtype, device=cache.raw_xyxy.device)
+    candidate_mask = torch.zeros((cache.raw_xyxy.shape[0],), dtype=torch.bool, device=cache.raw_xyxy.device)
     if candidate_indices is None or int(candidate_indices.shape[0]) <= 0:
-        return candidate_mask
-    ious = _box_iou_1vN_tensor(raw_xyxy[raw_idx].view(1, 4), raw_xyxy[candidate_indices])
-    keep_indices = candidate_indices[ious > float(iou_threshold)]
+        return candidate_mask, ious
+    candidate_ious = _box_iou_1vN_tensor(cache.raw_xyxy[raw_idx].view(1, 4), cache.raw_xyxy[candidate_indices])
+    ious[candidate_indices] = candidate_ious
+    keep_indices = candidate_indices[candidate_ious > float(iou_threshold)]
     if keep_indices.numel() > 0:
         candidate_mask[keep_indices] = True
+    return candidate_mask, ious
+
+
+def build_yolo_candidate_mask_for_pseudo(
+    pred_img: torch.Tensor,
+    raw_idx: int,
+    iou_threshold: float,
+    score_threshold: float = 0.01,
+):
+    if raw_idx >= pred_img.shape[0]:
+        return None
+
+    cache = build_yolo_candidate_cache(pred_img, score_threshold)
+    candidate_mask, _ious = yolo_candidate_mask_from_cache(cache, raw_idx, iou_threshold)
     return candidate_mask
 
 
@@ -2670,7 +2680,7 @@ def collect_bbox_layer_grads_per_target(
             )
             if needs_candidate_cache:
                 t_candidate = _start_timing(timing_device)
-                candidate_cache = _build_yolo_candidate_search_cache(pred_img, cand_score_threshold)
+                candidate_cache = build_yolo_candidate_cache(pred_img, cand_score_threshold)
                 _add_elapsed_timing(timing_accumulator, "candidate_search_sec", t_candidate, timing_device)
 
             for bbox_idx in range(int(det.shape[0])):
@@ -2683,7 +2693,7 @@ def collect_bbox_layer_grads_per_target(
                 candidate_mask = None
                 if candidate_cache is not None:
                     t_candidate = _start_timing(timing_device)
-                    candidate_mask = _yolo_candidate_mask_from_search_cache(candidate_cache, raw_idx, iou_threshold)
+                    candidate_mask, _ious = yolo_candidate_mask_from_cache(candidate_cache, raw_idx, iou_threshold)
                     _add_elapsed_timing(timing_accumulator, "candidate_search_sec", t_candidate, timing_device)
                 grad_stats = {}
                 for target_value in target_values:

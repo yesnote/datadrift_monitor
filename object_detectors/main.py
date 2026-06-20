@@ -1,7 +1,6 @@
 import argparse
 from copy import deepcopy
 import os
-import warnings
 from datetime import datetime
 from pathlib import Path
 
@@ -13,17 +12,10 @@ os.environ.setdefault("KMP_DUPLICATE_LIB_OK", "TRUE")
 from dataloaders.core.factory import load_config
 from commands.run_predict import run_predict
 from commands.run_train import run_train
-from commands.utils.predict_utils import parse_output_config
 from commands.utils.run_utils import create_run_dir, save_run_summary
 
 PROJECT_ROOT = Path(__file__).resolve().parent
 REPO_ROOT = PROJECT_ROOT.parent
-
-warnings.filterwarnings(
-    "ignore",
-    message=r"The \.grad attribute of a Tensor that is not a leaf Tensor is being accessed\.",
-    category=UserWarning,
-)
 
 
 def _resolve_path_value(raw_path):
@@ -104,6 +96,16 @@ def _normalize_uncertainties(config):
     return values
 
 
+def _active_uncertainty(config):
+    raw = config.get("output", {}).get("uncertainty", "gt")
+    if isinstance(raw, (list, tuple)):
+        if len(raw) != 1:
+            raise ValueError("_run_one_predict_uncertainty expects exactly one output.uncertainty value.")
+        raw = raw[0]
+    value = str(raw).strip().lower()
+    return value or "gt"
+
+
 def _layer_grad_target_tag(config):
     layer_grad_cfg = config.get("output", {}).get("layer_grad", {})
     grad_cfg = layer_grad_cfg.get("gradient", {})
@@ -130,8 +132,7 @@ def _timestamped_child_dir(base_dir, uncertainty, target_tag=""):
 
 
 def _run_one_predict_uncertainty(config, config_path, args_run_dir="", force_child_dir=False):
-    parsed_output = parse_output_config(config.get("output", {}))
-    uncertainty = str(parsed_output.get("uncertainty", ""))
+    uncertainty = _active_uncertainty(config)
     target_tag = _layer_grad_target_tag(config) if uncertainty == "layer_grad" else ""
     run_base_subdir = str(Path(_model_run_subdir(config)) / "predict" / _dataset_run_subdir(config))
 
@@ -172,7 +173,7 @@ def _run_one_predict_uncertainty(config, config_path, args_run_dir="", force_chi
     run_dir.mkdir(parents=True, exist_ok=True)
     _save_effective_config(config, run_dir)
     run_predict(config, run_dir)
-    save_run_summary(run_dir, uncertainty=parsed_output.get("uncertainty", ""))
+    save_run_summary(run_dir, uncertainty=uncertainty)
 
 
 def _normalize_config_paths(config):
