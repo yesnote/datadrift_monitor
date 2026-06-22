@@ -150,31 +150,6 @@ def _matching_state_dict_count(candidate, current):
     return sum(1 for key, value in candidate.items() if key in current and tuple(current[key].shape) == tuple(value.shape))
 
 
-def _xyxy_candidate_score(boxes, input_shape):
-    if input_shape is None or boxes.numel() == 0:
-        return boxes.new_tensor(0.0)
-    h, w = float(input_shape[0]), float(input_shape[1])
-    x1, y1, x2, y2 = boxes.unbind(-1)
-    bw = x2 - x1
-    bh = y2 - y1
-    cx = 0.5 * (x1 + x2)
-    cy = 0.5 * (y1 + y2)
-    valid = (bw > 0) & (bh > 0)
-    center = (cx >= 0) & (cx <= w) & (cy >= 0) & (cy <= h)
-    size = (bw <= w * 1.25) & (bh <= h * 1.25)
-    bounds = (x2 >= 0) & (y2 >= 0) & (x1 <= w) & (y1 <= h)
-    return (valid.float() + center.float() + size.float() + bounds.float()).mean()
-
-
-def _decoded_boxes_to_xyxy(boxes, input_shape=None):
-    converted = xywh2xyxy(boxes)
-    if input_shape is None or boxes.numel() == 0:
-        return converted
-    raw_score = _xyxy_candidate_score(boxes, input_shape)
-    converted_score = _xyxy_candidate_score(converted, input_shape)
-    return boxes if raw_score > converted_score else converted
-
-
 def _select_matching_state_dict(state_dict, current):
     candidates = [
         _transform_state_dict_keys(state_dict, lambda key: key),
@@ -200,6 +175,16 @@ def _download_yolov10_weight(path):
     urlretrieve(url, path)
 
 
+def _usable_yolov10_model_object(model):
+    if not isinstance(model, nn.Module):
+        return False
+    layers = getattr(model, "model", None)
+    if not isinstance(layers, nn.Sequential) or len(layers) == 0:
+        return False
+    head = layers[-1]
+    return all(hasattr(head, name) for name in ("one2one_cv2", "one2one_cv3", "forward_feat", "inference"))
+
+
 class YOLOV10TorchObjectDetector(nn.Module):
     def __init__(
         self,
@@ -222,8 +207,13 @@ class YOLOV10TorchObjectDetector(nn.Module):
         self.num_classes = len(self.names) if self.names else 80
         preloaded_payload = None
         inferred = architecture or _infer_yolov10_architecture(model_weight)
-        if model_weight and Path(model_weight).is_file() and not inferred:
-            preloaded_payload = _torch_load(Path(model_weight), self.device)
+        if model_weight:
+            weight_path = Path(model_weight)
+            if not weight_path.is_file():
+                _download_yolov10_weight(weight_path)
+            if weight_path.is_file():
+                preloaded_payload = _torch_load(weight_path, self.device)
+        if preloaded_payload is not None and not inferred:
             inferred = _infer_yolov10_architecture_from_payload(preloaded_payload)
         self.architecture = str(inferred or DEFAULT_YOLOV10_ARCHITECTURE).lower().replace("yolov10", "")
         if not self.architecture:
@@ -232,13 +222,17 @@ class YOLOV10TorchObjectDetector(nn.Module):
             )
         self.is_yolov10 = True
         self.agnostic = False
-        cfg = load_yolov10_cfg(self.architecture)
-        self.model = YOLOv10DetectionModel(cfg, nc=self.num_classes)
+        checkpoint_model = _checkpoint_model_object(preloaded_payload)
+        if _usable_yolov10_model_object(checkpoint_model):
+            self.model = checkpoint_model.float()
+        else:
+            cfg = load_yolov10_cfg(self.architecture)
+            self.model = YOLOv10DetectionModel(cfg, nc=self.num_classes)
+            if model_weight:
+                self.load_weights(model_weight, payload=preloaded_payload)
         self.model.names = self.names or [str(i) for i in range(self.num_classes)]
         self.model.architecture = self.architecture
         self.names = self.model.names
-        if model_weight:
-            self.load_weights(model_weight, payload=preloaded_payload)
         self.model.to(self.device)
         if self.mode == "train":
             self.model.train()
@@ -288,7 +282,7 @@ class YOLOV10TorchObjectDetector(nn.Module):
     def build_loss(self):
         return V10DetectLoss(self.model)
 
-    def _decode_eval_output(self, model_output, input_shape=None, decoded_boxes_xyxy=None):
+    def _decode_eval_output(self, model_output, decoded_boxes_xyxy=None):
         one2one = model_output["one2one"]
         if not isinstance(one2one, (tuple, list)) or len(one2one) < 2:
             raise RuntimeError("YOLOv10 one2one inference output must be (decoded, raw_levels).")
@@ -300,7 +294,7 @@ class YOLOV10TorchObjectDetector(nn.Module):
             nc=self.num_classes,
         )
         if decoded_boxes_xyxy is None:
-            decoded_boxes_xyxy = _decoded_boxes_to_xyxy(decoded_bnc[..., :4], input_shape)
+            decoded_boxes_xyxy = xywh2xyxy(decoded_bnc[..., :4])
         selected_preds = []
         selected_indices = []
         for sample_idx in range(decoded_bnc.shape[0]):
@@ -314,24 +308,50 @@ class YOLOV10TorchObjectDetector(nn.Module):
             selected_indices.append(idx)
         return selected_preds, selected_indices, raw_levels, decoded_bnc
 
+    def _forward_features(self, images):
+        if hasattr(self.model, "forward_features"):
+            return self.model.forward_features(images)
+        x = images
+        y = []
+        save = set(getattr(self.model, "save", []))
+        for m in self.model.model[:-1]:
+            if m.f != -1:
+                x = y[m.f] if isinstance(m.f, int) else [x if j == -1 else y[j] for j in m.f]
+            x = m(x)
+            y.append(x if m.i in save else None)
+        head = self.model.model[-1]
+        return y[head.f] if isinstance(head.f, int) else [x if j == -1 else y[j] for j in head.f]
+
+    def _forward_one2one_from_features(self, features):
+        if hasattr(self.model, "forward_one2one_from_features"):
+            return self.model.forward_one2one_from_features(features)
+        head = self.model.model[-1]
+        if hasattr(head, "forward_one2one"):
+            return {"one2many": None, "one2one": head.forward_one2one(features)}
+        one2one = head.forward_feat([xi.detach() for xi in features], head.one2one_cv2, head.one2one_cv3)
+        return {"one2many": None, "one2one": head.inference(one2one)}
+
+    def _forward_one2one(self, images):
+        if hasattr(self.model, "forward_one2one"):
+            return self.model.forward_one2one(images)
+        return self._forward_one2one_from_features(self._forward_features(images))
+
     def prepare_feature_cache(self, images):
-        return self.model.forward_features(images)
+        return self._forward_features(images)
 
     def forward_raw(self, images=None, feature_cache=None):
         if feature_cache is not None:
-            return self.model.forward_one2one_from_features(feature_cache)
-        return self.model.forward_one2one(images)
+            return self._forward_one2one_from_features(feature_cache)
+        return self._forward_one2one(images)
 
-    def forward_raw_decoded(self, images=None, feature_cache=None, source_points=None, input_shape=None):
-        if input_shape is None and images is not None:
-            input_shape = tuple(images.shape[-2:])
+    def forward_raw_decoded(self, images=None, feature_cache=None, source_points=None):
         model_output = self.forward_raw(images, feature_cache=feature_cache)
         one2one = model_output["one2one"]
         if not isinstance(one2one, (tuple, list)) or len(one2one) < 2:
             raise RuntimeError("YOLOv10 one2one inference output must be (decoded, raw_levels).")
         decoded, raw_levels = one2one
         decoded_bnc = decoded.permute(0, 2, 1).contiguous()
-        decoded_boxes_xyxy = _decoded_boxes_to_xyxy(decoded_bnc[..., :4], input_shape)
+        decoded_boxes_xyxy = xywh2xyxy(decoded_bnc[..., :4])
         return {
             "model_output": model_output,
             "raw_levels": raw_levels,
@@ -341,18 +361,14 @@ class YOLOV10TorchObjectDetector(nn.Module):
             "source_points": source_points if source_points is not None else self.source_points(raw_levels),
         }
 
-    def forward_nms_free(self, images=None, feature_cache=None, source_points=None, input_shape=None):
-        if input_shape is None and images is not None:
-            input_shape = tuple(images.shape[-2:])
+    def forward_nms_free(self, images=None, feature_cache=None, source_points=None):
         raw_output = self.forward_raw_decoded(
             images,
             feature_cache=feature_cache,
             source_points=source_points,
-            input_shape=input_shape,
         )
         selected_preds, selected_indices, raw_levels, decoded_bnc = self._decode_eval_output(
             raw_output["model_output"],
-            input_shape=input_shape,
             decoded_boxes_xyxy=raw_output["decoded_boxes_xyxy"],
         )
         return {
@@ -370,12 +386,10 @@ class YOLOV10TorchObjectDetector(nn.Module):
         was_training = self.model.training
         self.model.eval()
         model_output = self.forward_raw(images)
-        input_shape = tuple(images.shape[-2:])
         one2one = model_output["one2one"]
-        decoded_boxes_xyxy = _decoded_boxes_to_xyxy(one2one[0].permute(0, 2, 1).contiguous()[..., :4], input_shape)
+        decoded_boxes_xyxy = xywh2xyxy(one2one[0].permute(0, 2, 1).contiguous()[..., :4])
         selected_preds, selected_indices, raw_levels, decoded_bnc = self._decode_eval_output(
             model_output,
-            input_shape=input_shape,
             decoded_boxes_xyxy=decoded_boxes_xyxy,
         )
         if was_training and self.mode == "train":
