@@ -35,13 +35,14 @@ def run_mc_dropout_csv(config, run_dir):
         for images, targets in tqdm(dataloader, desc=f"Object Detector ({mode} - {uncertainty})", total=len(dataloader)):
             image_list = _as_image_list(images)
             infer_batch, _ratios, _pads, _resized_chws = _prepare_infer_batch(detector, image_list, device, auto=False)
+            input_shape = tuple(infer_batch.shape[-2:])
             detector_inference_sec = 0.0
             feature_compute_sec = 0.0
             prediction_matching_sec = 0.0
             with torch.no_grad():
                 t_detector = timing.start()
                 feature_cache = detector.prepare_feature_cache(infer_batch)
-                base = run_yolov10_forward(detector, feature_cache=feature_cache, input_shape=infer_batch.shape[-2:])
+                base = run_yolov10_forward(detector, feature_cache=feature_cache, input_shape=input_shape)
                 source_points = base.source_points
                 detector_inference_sec += timing.elapsed(t_detector)
             base_items = list(iter_yolov10_detection_rows(detector, targets, base.selected_preds, base.selected_indices, device))
@@ -52,7 +53,13 @@ def run_mc_dropout_csv(config, run_dir):
             try:
                 with torch.no_grad():
                     for _ in range(num_runs):
-                        run = run_yolov10_raw_forward(detector, feature_cache=feature_cache, timing=timing, source_points=source_points)
+                        run = run_yolov10_raw_forward(
+                            detector,
+                            feature_cache=feature_cache,
+                            timing=timing,
+                            source_points=source_points,
+                            input_shape=input_shape,
+                        )
                         detector_inference_sec += run.detector_inference_sec
                         t_feature = timing.start()
                         for item_idx, item in enumerate(base_items):
