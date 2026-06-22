@@ -15,6 +15,7 @@ from .core import (
     v10postprocess_with_indices,
     xywh2xyxy,
 )
+from .core.utils import letterbox
 
 
 YOLOV10_WEIGHT_URLS = {
@@ -227,6 +228,10 @@ class YOLOV10TorchObjectDetector(nn.Module):
 
     def eval(self):
         return self.train(False)
+
+    @staticmethod
+    def yolo_resize(img, new_shape=(640, 640), color=(114, 114, 114), auto=True, scaleFill=False, scaleup=True):
+        return letterbox(img, new_shape=new_shape, color=color, auto=auto, scaleFill=scaleFill, scaleup=scaleup)
 
     def load_weights(self, model_weight, payload=None):
         path = Path(model_weight)
