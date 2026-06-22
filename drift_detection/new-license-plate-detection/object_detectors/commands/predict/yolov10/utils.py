@@ -194,12 +194,25 @@ class YoloV10ForwardResult:
     detector_inference_sec: float
 
 
-def run_yolov10_forward(detector, infer_batch=None, timing=None, grad=False, feature_cache=None, source_points=None):
+def run_yolov10_forward(
+    detector,
+    infer_batch=None,
+    timing=None,
+    grad=False,
+    feature_cache=None,
+    source_points=None,
+    input_shape=None,
+):
     t_detector = timing.start() if timing is not None else None
     output = (
         detector.forward_layer_grad(infer_batch, source_points=source_points)
         if grad
-        else detector.forward_nms_free(infer_batch, feature_cache=feature_cache, source_points=source_points)
+        else detector.forward_nms_free(
+            infer_batch,
+            feature_cache=feature_cache,
+            source_points=source_points,
+            input_shape=input_shape,
+        )
     )
     detector_inference_sec = timing.elapsed(t_detector) if timing is not None else 0.0
     return YoloV10ForwardResult(

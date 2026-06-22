@@ -2,6 +2,16 @@ from commands.predict.common import *
 from commands.predict.yolov10.utils import iter_yolov10_detection_rows, parse_yolov10_output_config, run_yolov10_forward
 
 
+def _clip_box_for_image(box, image_shape):
+    h, w = image_shape[:2]
+    x1, y1, x2, y2 = [float(v) for v in box]
+    x1 = max(0.0, min(float(w - 1), x1))
+    x2 = max(0.0, min(float(w - 1), x2))
+    y1 = max(0.0, min(float(h - 1), y1))
+    y2 = max(0.0, min(float(h - 1), y2))
+    return [int(round(x1)), int(round(y1)), int(round(x2)), int(round(y2))]
+
+
 def run_tp_csv(config, run_dir):
     run_dir = Path(run_dir)
     mode = str(config.get("mode", "predict"))
@@ -64,7 +74,7 @@ def run_tp_csv(config, run_dir):
                     tp_flags = [row["tp"] for row in error_rows]
                     best_ious = [row["gt_iou"] for row in error_rows]
                     for gt_box, gt_name in zip(gt_boxes, gt_class_names):
-                        x1, y1, x2, y2 = [int(v) for v in gt_box]
+                        x1, y1, x2, y2 = _clip_box_for_image(gt_box, vis_image.shape)
                         cv2.rectangle(vis_image, (x1, y1), (x2, y2), (64, 128, 255), 2)
                         cv2.putText(
                             vis_image,
@@ -77,7 +87,7 @@ def run_tp_csv(config, run_dir):
                             cv2.LINE_AA,
                         )
                     for pred_idx, (box, score, pred_class) in enumerate(zip(pred_boxes, pred_scores, pred_class_names)):
-                        x1, y1, x2, y2 = [int(v) for v in box]
+                        x1, y1, x2, y2 = _clip_box_for_image(box, vis_image.shape)
                         is_tp = int(tp_flags[pred_idx]) == 1
                         color = (0, 220, 0) if is_tp else (255, 64, 64)
                         tag = "TP" if is_tp else "FP"
