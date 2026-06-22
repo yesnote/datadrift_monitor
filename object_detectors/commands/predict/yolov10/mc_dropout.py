@@ -1,12 +1,20 @@
-from commands.predict.common import *
-from commands.predict.yolov10.utils import (
+import csv
+from pathlib import Path
+
+import torch
+from tqdm import tqdm
+
+from commands.predict.common import StageTimingProfiler, _as_image_list, _prepare_infer_batch, create_dataloader
+from commands.predict.yolov10.config import parse_yolov10_output_config
+from commands.predict.yolov10.features import (
     enable_forced_yolov10_dropout,
-    iter_yolov10_detection_rows,
-    parse_yolov10_output_config,
-    run_yolov10_forward,
-    run_yolov10_raw_forward,
-    yolov10_feature_vector,
+    gather_yolov10_feature_matrix,
 )
+from commands.predict.yolov10.forward import run_yolov10_forward, run_yolov10_raw_forward
+from commands.predict.yolov10.rows import (
+    iter_yolov10_detection_rows,
+)
+from commands.utils.predict_utils import build_detector
 
 
 def run_mc_dropout_csv(config, run_dir):
@@ -60,10 +68,9 @@ def run_mc_dropout_csv(config, run_dir):
                         )
                         detector_inference_sec += run.detector_inference_sec
                         t_feature = timing.start()
-                        for item_idx, item in enumerate(base_items):
-                            feat = yolov10_feature_vector(run, item, device)
-                            feat_sum[item_idx] += feat
-                            feat_sumsq[item_idx] += feat.pow(2)
+                        feat = gather_yolov10_feature_matrix(run, base_items, device)
+                        feat_sum += feat
+                        feat_sumsq += feat.pow(2)
                         feature_compute_sec += timing.elapsed(t_feature)
             finally:
                 restore_dropout()

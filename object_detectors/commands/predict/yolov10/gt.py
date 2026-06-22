@@ -1,5 +1,26 @@
-from commands.predict.common import *
-from commands.predict.yolov10.utils import iter_yolov10_detection_rows, parse_yolov10_output_config, run_yolov10_forward
+import csv
+from pathlib import Path
+
+import cv2
+import numpy as np
+import torch
+from tqdm import tqdm
+
+from commands.predict.common import (
+    _as_image_list,
+    _prepare_infer_batch,
+    _resolve_gt_class_names,
+    create_dataloader,
+)
+from commands.predict.yolov10.config import parse_yolov10_output_config
+from commands.predict.yolov10.forward import run_yolov10_forward
+from commands.predict.yolov10.rows import iter_yolov10_detection_rows
+from commands.utils.predict_utils import (
+    analyze_prediction_error_types,
+    build_detector,
+    load_gt_category_maps,
+    map_boxes_to_letterbox,
+)
 
 
 def run_tp_csv(config, run_dir):
@@ -27,7 +48,6 @@ def run_tp_csv(config, run_dir):
     try:
         for step_idx, (images, targets) in enumerate(tqdm(dataloader, desc=f"Object Detector ({mode} - {uncertainty})", total=len(dataloader))):
             image_list = _as_image_list(images)
-            detector.zero_grad(set_to_none=True)
             infer_batch, ratios, pads, resized_chws = _prepare_infer_batch(detector, image_list, device, auto=False)
             with torch.no_grad():
                 forward = run_yolov10_forward(detector, infer_batch)

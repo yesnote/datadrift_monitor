@@ -1,10 +1,15 @@
-from commands.predict.common import *
-from commands.predict.yolov10.utils import (
-    iter_yolov10_detection_rows,
-    parse_yolov10_output_config,
-    run_yolov10_forward,
-    yolov10_raw_logits_for_item,
-)
+import csv
+from pathlib import Path
+
+import torch
+from tqdm import tqdm
+
+from commands.predict.common import StageTimingProfiler, _as_image_list, _prepare_infer_batch, create_dataloader
+from commands.predict.yolov10.config import parse_yolov10_output_config
+from commands.predict.yolov10.features import yolov10_raw_logits_for_item
+from commands.predict.yolov10.forward import run_yolov10_forward
+from commands.predict.yolov10.rows import iter_yolov10_detection_rows
+from commands.utils.predict_utils import build_detector
 
 
 def run_energy_csv(config, run_dir):
@@ -25,7 +30,6 @@ def run_energy_csv(config, run_dir):
         writer.writeheader()
         for images, targets in tqdm(dataloader, desc=f"Object Detector ({mode} - {uncertainty})", total=len(dataloader)):
             image_list = _as_image_list(images)
-            detector.zero_grad(set_to_none=True)
             infer_batch, _ratios, _pads, _resized_chws = _prepare_infer_batch(detector, image_list, device, auto=False)
             with torch.no_grad():
                 forward = run_yolov10_forward(detector, infer_batch, timing=timing)

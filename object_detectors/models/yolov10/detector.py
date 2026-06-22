@@ -93,15 +93,6 @@ def _checkpoint_metadata(payload):
     }
 
 
-def _checkpoint_model_object(payload):
-    if isinstance(payload, dict):
-        model_payload = payload.get("ema")
-        if model_payload is None:
-            model_payload = payload.get("model")
-        return model_payload if isinstance(model_payload, nn.Module) else None
-    return payload if isinstance(payload, nn.Module) else None
-
-
 def _normalize_yolov10_architecture(value):
     if value is None:
         return None
@@ -115,31 +106,7 @@ def _normalize_yolov10_architecture(value):
 
 def _infer_yolov10_architecture_from_payload(payload):
     metadata = _checkpoint_metadata(payload)
-    inferred = _normalize_yolov10_architecture(metadata.get("architecture"))
-    if inferred:
-        return inferred
-    model_payload = _checkpoint_model_object(payload)
-    if model_payload is None:
-        return None
-    for attr in ("architecture", "yaml_file", "cfg", "model_name"):
-        inferred = _normalize_yolov10_architecture(getattr(model_payload, attr, None))
-        if inferred:
-            return inferred
-    yaml_obj = getattr(model_payload, "yaml", None)
-    if isinstance(yaml_obj, dict):
-        inferred = _normalize_yolov10_architecture(yaml_obj.get("yaml_file") or yaml_obj.get("model") or yaml_obj.get("name"))
-        if inferred:
-            return inferred
-        scale = yaml_obj.get("scale")
-        inferred = _normalize_yolov10_architecture(scale)
-        if inferred:
-            return inferred
-        scales = yaml_obj.get("scales")
-        if isinstance(scales, dict):
-            candidates = [str(k).lower() for k in scales.keys() if str(k).lower() in YOLOV10_WEIGHT_URLS]
-            if len(candidates) == 1:
-                return candidates[0]
-    return None
+    return _normalize_yolov10_architecture(metadata.get("architecture"))
 
 
 def _transform_state_dict_keys(state_dict, transform):
