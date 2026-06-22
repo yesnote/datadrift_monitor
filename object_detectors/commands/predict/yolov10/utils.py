@@ -187,6 +187,7 @@ class YoloV10ForwardResult:
     model_output: object
     raw_levels: object
     decoded_prediction: torch.Tensor
+    decoded_boxes_xyxy: torch.Tensor
     raw_logits: torch.Tensor
     selected_preds: list
     selected_indices: list
@@ -194,31 +195,21 @@ class YoloV10ForwardResult:
     detector_inference_sec: float
 
 
-def run_yolov10_forward(
-    detector,
-    infer_batch=None,
-    timing=None,
-    grad=False,
-    feature_cache=None,
-    source_points=None,
-    input_shape=None,
-):
+def run_yolov10_forward(detector, infer_batch=None, timing=None, grad=False, feature_cache=None, source_points=None, input_shape=None):
+    if input_shape is None and infer_batch is not None:
+        input_shape = tuple(infer_batch.shape[-2:])
     t_detector = timing.start() if timing is not None else None
     output = (
         detector.forward_layer_grad(infer_batch, source_points=source_points)
         if grad
-        else detector.forward_nms_free(
-            infer_batch,
-            feature_cache=feature_cache,
-            source_points=source_points,
-            input_shape=input_shape,
-        )
+        else detector.forward_nms_free(infer_batch, feature_cache=feature_cache, source_points=source_points, input_shape=input_shape)
     )
     detector_inference_sec = timing.elapsed(t_detector) if timing is not None else 0.0
     return YoloV10ForwardResult(
         model_output=output["model_output"],
         raw_levels=output["raw_levels"],
         decoded_prediction=output["decoded_prediction"],
+        decoded_boxes_xyxy=output["decoded_boxes_xyxy"],
         raw_logits=output["raw_logits"],
         selected_preds=output["selected_preds"],
         selected_indices=output["selected_indices"],
@@ -227,14 +218,17 @@ def run_yolov10_forward(
     )
 
 
-def run_yolov10_raw_forward(detector, infer_batch=None, timing=None, feature_cache=None, source_points=None):
+def run_yolov10_raw_forward(detector, infer_batch=None, timing=None, feature_cache=None, source_points=None, input_shape=None):
+    if input_shape is None and infer_batch is not None:
+        input_shape = tuple(infer_batch.shape[-2:])
     t_detector = timing.start() if timing is not None else None
-    output = detector.forward_raw_decoded(infer_batch, feature_cache=feature_cache, source_points=source_points)
+    output = detector.forward_raw_decoded(infer_batch, feature_cache=feature_cache, source_points=source_points, input_shape=input_shape)
     detector_inference_sec = timing.elapsed(t_detector) if timing is not None else 0.0
     return YoloV10ForwardResult(
         model_output=output["model_output"],
         raw_levels=output["raw_levels"],
         decoded_prediction=output["decoded_prediction"],
+        decoded_boxes_xyxy=output["decoded_boxes_xyxy"],
         raw_logits=output["raw_logits"],
         selected_preds=[],
         selected_indices=[],
@@ -320,11 +314,9 @@ def source_point_box(source_points, raw_box_idx, device):
 
 
 def yolov10_feature_vector(forward, item, device):
-    from models.yolov10.core import xywh2xyxy
-
     sample_idx = item["sample_idx"]
     raw_box_idx = item["raw_box_idx"]
-    box = xywh2xyxy(forward.decoded_prediction[sample_idx, raw_box_idx, :4].detach().float().view(1, 4))[0]
+    box = forward.decoded_boxes_xyxy[sample_idx, raw_box_idx].detach().float()
     probs = torch.sigmoid(forward.raw_logits[sample_idx, raw_box_idx].detach().float())
     return torch.cat([box.to(device=device), probs.to(device=device)], dim=0)
 
