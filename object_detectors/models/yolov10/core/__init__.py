@@ -394,6 +394,16 @@ MODULES = {
 }
 
 
+def _resolve_model_arg(d, arg):
+    if isinstance(arg, str):
+        lowered = arg.strip().lower()
+        if lowered in {"none", "null"}:
+            return None
+        if arg in d:
+            return d[arg]
+    return arg
+
+
 def parse_model(d, ch):
     depth, width, max_channels = 1.0, 1.0, float("inf")
     scales = d.get("scales")
@@ -403,7 +413,7 @@ def parse_model(d, ch):
     layers, save, c2 = [], [], ch[-1]
     for i, (f, n, m, args) in enumerate(d["backbone"] + d["head"]):
         m_cls = MODULES[m] if isinstance(m, str) else m
-        args = [d.get(arg, arg) if isinstance(arg, str) else arg for arg in list(args)]
+        args = [_resolve_model_arg(d, arg) for arg in list(args)]
         n = max(round(n * depth), 1) if n > 1 else n
         if m_cls in {Conv, C2f, SCDown, SPPF, PSA, C2fCIB}:
             c1 = ch[f] if isinstance(f, int) else sum(ch[x] for x in f)
