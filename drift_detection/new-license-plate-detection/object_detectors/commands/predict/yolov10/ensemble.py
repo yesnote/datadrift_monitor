@@ -1,14 +1,17 @@
 from pathlib import Path
 
-from commands.predict.common import *
-from commands.utils.predict_utils import resolve_project_path
-from commands.predict.yolov10.utils import (
+import csv
+import torch
+from tqdm import tqdm
+
+from commands.predict.common import StageTimingProfiler, _as_image_list, _prepare_infer_batch, create_dataloader
+from commands.predict.yolov10.config import parse_yolov10_output_config
+from commands.predict.yolov10.features import gather_yolov10_feature_matrix
+from commands.predict.yolov10.forward import run_yolov10_forward, run_yolov10_raw_forward
+from commands.predict.yolov10.rows import (
     iter_yolov10_detection_rows,
-    parse_yolov10_output_config,
-    run_yolov10_forward,
-    run_yolov10_raw_forward,
-    yolov10_feature_vector,
 )
+from commands.utils.predict_utils import build_detector, resolve_project_path
 
 
 def _resolve_path(path):
@@ -90,10 +93,9 @@ def run_ensemble_csv(config, run_dir):
                             f"{tuple(forward.decoded_prediction.shape)} != {tuple(base.decoded_prediction.shape)}"
                         )
                 t_feature = timing.start()
-                for item_idx, item in enumerate(base_items):
-                    feat = yolov10_feature_vector(forward, item, device)
-                    feat_sum[item_idx] += feat
-                    feat_sumsq[item_idx] += feat.pow(2)
+                feat = gather_yolov10_feature_matrix(forward, base_items, device)
+                feat_sum += feat
+                feat_sumsq += feat.pow(2)
                 feature_compute_sec += timing.elapsed(t_feature)
             t_feature = timing.start()
             n = float(len(detectors))

@@ -1,9 +1,19 @@
-from commands.predict.common import *
-from commands.utils.predict_utils import _class_loss_tensor, expand_layer_names, map_grad_tensor_to_numbers, resolve_layer_parameter
-from commands.predict.yolov10.utils import (
-    iter_yolov10_detection_rows,
-    parse_yolov10_output_config,
-    run_yolov10_forward,
+import csv
+from pathlib import Path
+
+import torch
+from tqdm import tqdm
+
+from commands.predict.common import StageTimingProfiler, _as_image_list, _prepare_infer_batch, create_dataloader
+from commands.predict.yolov10.config import parse_yolov10_output_config
+from commands.predict.yolov10.forward import run_yolov10_forward
+from commands.predict.yolov10.rows import iter_yolov10_detection_rows
+from commands.utils.predict_utils import (
+    _class_loss_tensor,
+    build_detector,
+    expand_layer_names,
+    map_grad_tensor_to_numbers,
+    resolve_layer_parameter,
 )
 
 
@@ -53,7 +63,6 @@ def run_layer_grad_csv(config, run_dir):
         writer.writeheader()
         for images, targets in tqdm(dataloader, desc=f"Object Detector ({mode} - {uncertainty})", total=len(dataloader)):
             image_list = _as_image_list(images)
-            detector.zero_grad(set_to_none=True)
             infer_batch, _ratios, _pads, _resized_chws = _prepare_infer_batch(detector, image_list, device, auto=False)
             forward = run_yolov10_forward(detector, infer_batch, timing=timing, grad=True)
             loss_compute_sec = 0.0
@@ -115,8 +124,6 @@ def run_layer_grad_csv(config, run_dir):
                 },
             )
             del infer_batch, forward, all_items
-            if device.type == "cuda":
-                torch.cuda.empty_cache()
     del detector
     if device.type == "cuda":
         torch.cuda.empty_cache()
