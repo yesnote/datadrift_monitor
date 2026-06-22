@@ -101,6 +101,8 @@ def parse_yolov10_output_config(config):
         "unit": "bbox",
         "save_csv_enabled": as_bool_save(active.get("save_csv", False)),
         "save_image_enabled": as_bool_save(active.get("save_image", False)),
+        "save_image_gt_step": 1,
+        "save_image_gt_max_num": 1,
         "gt_iou_match_threshold": 0.5,
         "mc_num_runs": 30,
         "mc_dropout_rate": 0.5,
@@ -110,6 +112,9 @@ def parse_yolov10_output_config(config):
     }
     if uncertainty == "gt":
         parsed["gt_iou_match_threshold"] = as_float(active.get("iou_match_threshold", 0.5), 0.5)
+        save_image_cfg = as_dict(active.get("save_image", {}))
+        parsed["save_image_gt_step"] = as_int(save_image_cfg.get("step", 1), 1)
+        parsed["save_image_gt_max_num"] = as_int(save_image_cfg.get("max_num", 1), 1)
     elif uncertainty == "mc_dropout":
         parsed["mc_num_runs"] = as_int(active.get("num_runs", 30), 30)
         parsed["mc_dropout_rate"] = as_float(active.get("dropout_rate", 0.5), 0.5)
