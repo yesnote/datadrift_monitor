@@ -489,13 +489,15 @@ class YOLOv10DetectionModel(nn.Module):
         if isinstance(m, v10Detect):
             s = 256
             was_training = self.training
-            self.eval()
+            self.train()
             with torch.no_grad():
-                out = self._forward_once(torch.zeros(1, 3, s, s))
-            raw = out["one2one"][1] if isinstance(out["one2one"], tuple) else out["one2one"]
+                raw = self._forward_once(torch.zeros(1, 3, s, s))["one2many"]
             m.stride = torch.tensor([s / x.shape[-2] for x in raw])
+            self.stride = m.stride
             m.bias_init()
-            if was_training:
+            if not was_training:
+                self.eval()
+            else:
                 self.train()
 
 
