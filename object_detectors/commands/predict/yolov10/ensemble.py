@@ -63,7 +63,7 @@ def run_ensemble_csv(config, run_dir):
             with torch.no_grad():
                 t_detector = timing.start()
                 base_cache = detectors[0].prepare_feature_cache(infer_batch)
-                base = run_yolov10_forward(detectors[0], feature_cache=base_cache)
+                base = run_yolov10_forward(detectors[0], feature_cache=base_cache, input_shape=infer_batch.shape[-2:])
                 source_points = base.source_points
                 detector_inference_sec += timing.elapsed(t_detector)
             base_items = list(iter_yolov10_detection_rows(detectors[0], targets, base.selected_preds, base.selected_indices, device))
