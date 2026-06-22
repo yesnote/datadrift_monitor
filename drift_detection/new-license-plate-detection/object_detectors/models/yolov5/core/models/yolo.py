@@ -1,46 +1,37 @@
 
-"""
-YOLO-specific modules
-
-Usage:
-    $ python path/to/models/yolov5.py --cfg yolov5s.yaml
-"""
-
-import argparse
 import contextlib
-import os
-import platform
-import sys
+import logging
+import math
 from copy import deepcopy
 from pathlib import Path
 
 import torch
+import torch.nn as nn
 
-FILE = Path(__file__).resolve()
-ROOT = FILE.parents[1]
-if str(ROOT) not in sys.path:
-    sys.path.append(str(ROOT))
-
-
-from models.yolov5.core.models.common import *
-
-from models.yolov5.core.models.experimental import *
+from models.yolov5.core.models.common import (
+    Bottleneck,
+    BottleneckCSP,
+    C3,
+    C3Ghost,
+    C3SPP,
+    C3TR,
+    Concat,
+    Contract,
+    Conv,
+    DWConv,
+    Expand,
+    Focus,
+    GhostBottleneck,
+    GhostConv,
+    SPP,
+    SPPF,
+)
+from models.yolov5.core.models.experimental import MixConv2d
 
 from models.yolov5.core.utils.autoanchor import check_anchor_order
 
-from models.yolov5.core.utils.general import LOGGER, check_version, check_yaml, make_divisible, print_args, set_logging
-
-from models.yolov5.core.utils.plots import feature_visualization
-
-from models.yolov5.core.utils.torch_utils import (fuse_conv_and_bn, initialize_weights, model_info, profile, scale_img, \
-    select_device, time_sync)
-
-
-
-try:
-    import thop
-except ImportError:
-    thop = None
+from models.yolov5.core.utils.general import check_version, colorstr, make_divisible
+from models.yolov5.core.utils.torch_utils import fuse_conv_and_bn, initialize_weights, model_info, scale_img
 
 LOGGER = logging.getLogger(__name__)
 
@@ -92,7 +83,6 @@ class Detect(nn.Module):
     def forward(self, x):
         self.inplace = False
         z = []
-        ys = []
         logits_ = []
         priors_ = []
         for i in range(self.nl):
@@ -133,53 +123,19 @@ class Detect(nn.Module):
         return grid, anchor_grid
 
 
-class Segment(Detect):
-
-    def __init__(self, nc=80, anchors=(), nm=32, npr=256, ch=(), inplace=True):
-        super().__init__(nc, anchors, ch, inplace)
-        self.nm = nm
-        self.npr = npr
-        self.no = 5 + nc + self.nm
-        self.m = nn.ModuleList(nn.Conv2d(x, self.no * self.na, 1) for x in ch)
-        self.proto = Proto(ch[0], self.npr, self.nm)
-        self.detect = Detect.forward
-
-    def forward(self, x):
-        p = self.proto(x[0])
-        x = self.detect(self, x)
-        return (x, p) if self.training else (x[0], p) if self.export else (x[0], p, x[1])
-
-
 class BaseModel(nn.Module):
 
     def forward(self, x, profile=False, visualize=False):
         return self._forward_once(x, profile, visualize)
 
     def _forward_once(self, x, profile=False, visualize=False):
-        y, dt = [], []
+        y = []
         for m in self.model:
             if m.f != -1:
                 x = y[m.f] if isinstance(m.f, int) else [x if j == -1 else y[j] for j in m.f]
-            if profile:
-                self._profile_one_layer(m, x, dt)
             x = m(x)
             y.append(x if m.i in self.save else None)
-            if visualize:
-                feature_visualization(x, m.type, m.i, save_dir=visualize)
         return x
-
-    def _profile_one_layer(self, m, x, dt):
-        c = m == self.model[-1]
-        o = thop.profile(m, inputs=(x.copy() if c else x,), verbose=False)[0] / 1E9 * 2 if thop else 0
-        t = time_sync()
-        for _ in range(10):
-            m(x.copy() if c else x)
-        dt.append((time_sync() - t) * 100)
-        if m == self.model[0]:
-            LOGGER.info(f"{'time (ms)':>10s} {'GFLOPs':>10s} {'params':>10s}  module")
-        LOGGER.info(f'{dt[-1]:10.2f} {o:10.2f} {m.np:10.0f}  {m.type}')
-        if c:
-            LOGGER.info(f"{sum(dt):10.2f} {'-':>10s} {'-':>10s}  Total")
 
     def fuse(self):
         LOGGER.info('Fusing layers... ')
@@ -198,7 +154,7 @@ class BaseModel(nn.Module):
 
         self = super()._apply(fn)
         m = self.model[-1]
-        if isinstance(m, (Detect, Segment)):
+        if isinstance(m, Detect):
             m.stride = fn(m.stride)
             m.grid = list(map(fn, m.grid))
             if isinstance(m.anchor_grid, list):
@@ -232,10 +188,10 @@ class DetectionModel(BaseModel):
 
 
         m = self.model[-1]
-        if isinstance(m, (Detect, Segment)):
+        if isinstance(m, Detect):
             s = 256
             m.inplace = self.inplace
-            forward = lambda x: self.forward(x)[0] if isinstance(m, Segment) else self.forward(x)
+            forward = self.forward
             m.stride = torch.tensor([s / x.shape[-2] for x in forward(torch.zeros(1, ch, s, s))])
             check_anchor_order(m)
             m.anchors /= m.stride.view(-1, 1, 1)
@@ -308,38 +264,6 @@ class DetectionModel(BaseModel):
 Model = DetectionModel
 
 
-class SegmentationModel(DetectionModel):
-
-    def __init__(self, cfg='yolov5s-seg.yaml', ch=3, nc=None, anchors=None):
-        super().__init__(cfg, ch, nc, anchors)
-
-
-class ClassificationModel(BaseModel):
-
-    def __init__(self, cfg=None, model=None, nc=1000, cutoff=10):
-        super().__init__()
-        self._from_detection_model(model, nc, cutoff) if model is not None else self._from_yaml(cfg)
-
-    def _from_detection_model(self, model, nc=1000, cutoff=10):
-
-        if isinstance(model, DetectMultiBackend):
-            model = model.model
-        model.model = model.model[:cutoff]
-        m = model.model[-1]
-        ch = m.conv.in_channels if hasattr(m, 'conv') else m.cv1.conv.in_channels
-        c = Classify(ch, nc)
-        c.i, c.f, c.type = m.i, m.f, 'models.yolov5.core.models.common.Classify'
-        model.model[-1] = c
-        self.model = model.model
-        self.stride = model.stride
-        self.save = []
-        self.nc = nc
-
-    def _from_yaml(self, cfg):
-
-        self.model = None
-
-
 def parse_model(d, ch):
 
     LOGGER.info(f"\n{'':>3}{'from':>18}{'n':>3}{'params':>10}  {'module':<40}{'arguments':<30}")
@@ -359,14 +283,14 @@ def parse_model(d, ch):
 
         n = n_ = max(round(n * gd), 1) if n > 1 else n
         if m in {
-                Conv, GhostConv, Bottleneck, GhostBottleneck, SPP, SPPF, DWConv, MixConv2d, Focus, CrossConv,
-                BottleneckCSP, C3, C3TR, C3SPP, C3Ghost, nn.ConvTranspose2d, DWConvTranspose2d, C3x}:
+                Conv, GhostConv, Bottleneck, GhostBottleneck, SPP, SPPF, DWConv, MixConv2d, Focus,
+                BottleneckCSP, C3, C3TR, C3SPP, C3Ghost, nn.ConvTranspose2d}:
             c1, c2 = ch[f], args[0]
             if c2 != no:
                 c2 = make_divisible(c2 * gw, 8)
 
             args = [c1, c2, *args[1:]]
-            if m in {BottleneckCSP, C3, C3TR, C3Ghost, C3x}:
+            if m in {BottleneckCSP, C3, C3TR, C3Ghost}:
                 args.insert(2, n)
                 n = 1
         elif m is nn.BatchNorm2d:
@@ -374,12 +298,10 @@ def parse_model(d, ch):
         elif m is Concat:
             c2 = sum(ch[x] for x in f)
 
-        elif m in {Detect, Segment}:
+        elif m is Detect:
             args.append([ch[x] for x in f])
             if isinstance(args[1], int):
                 args[1] = [list(range(args[1] * 2))] * len(f)
-            if m is Segment:
-                args[3] = make_divisible(args[3] * gw, 8)
         elif m is Contract:
             c2 = ch[f] * args[0] ** 2
         elif m is Expand:
@@ -398,38 +320,3 @@ def parse_model(d, ch):
             ch = []
         ch.append(c2)
     return nn.Sequential(*layers), sorted(save)
-
-
-if __name__ == '__main__':
-    parser = argparse.ArgumentParser()
-    parser.add_argument('--cfg', type=str, default='yolov5s.yaml', help='model.yaml')
-    parser.add_argument('--batch-size', type=int, default=1, help='total batch size for all GPUs')
-    parser.add_argument('--device', default='', help='cuda device, i.e. 0 or 0,1,2,3 or cpu')
-    parser.add_argument('--profile', action='store_true', help='profile model speed')
-    parser.add_argument('--line-profile', action='store_true', help='profile model speed layer by layer')
-    parser.add_argument('--test', action='store_true', help='test all yolo*.yaml')
-    opt = parser.parse_args()
-    opt.cfg = check_yaml(opt.cfg)
-    print_args(vars(opt))
-    device = select_device(opt.device)
-
-
-    im = torch.rand(opt.batch_size, 3, 640, 640).to(device)
-    model = Model(opt.cfg).to(device)
-
-
-    if opt.line_profile:
-        model(im, profile=True)
-
-    elif opt.profile:
-        results = profile(input=im, ops=[model], n=3)
-
-    elif opt.test:
-        for cfg in Path(ROOT / 'models').rglob('yolo*.yaml'):
-            try:
-                _ = Model(cfg)
-            except Exception as e:
-                print(f'Error in {cfg}: {e}')
-
-    else:
-        model.fuse()

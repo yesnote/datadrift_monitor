@@ -1,15 +1,13 @@
 import numpy as np
-
 import torch
-from models.yolov5.core.models.experimental import attempt_load
-from models.yolov5.core.utils.general import xywh2xyxy
-from models.yolov5.core.utils.general import xywh2xyxy
-from models.yolov5.core.utils.datasets import letterbox
-import cv2
+import torch.nn as nn
 import time
 import torchvision
-import torch.nn as nn
+
+from models.yolov5.core.models.experimental import attempt_load
+from models.yolov5.core.utils.general import xywh2xyxy
 from models.yolov5.core.utils.metrics import box_iou
+from models.yolov5.core.utils.preprocess import letterbox
 
 
 class YOLOV5TorchObjectDetector(nn.Module):
@@ -74,12 +72,6 @@ class YOLOV5TorchObjectDetector(nn.Module):
     @staticmethod
     def non_max_suppression(prediction, logits, conf_thres=0.6, iou_thres=0.45, classes=None, agnostic=False,
                             multi_label=False, labels=(), max_det=300, return_indices=False):
-        """Runs Non-Maximum Suppression (NMS) on inference and logits results
-
-        Returns:
-             list of detections, on (n,6) tensor per image [xyxy, conf, cls] and pruned input logits (n, number-classes)
-        """
-
         nc = prediction.shape[2] - 5
         xc = prediction[..., 4] > conf_thres
 
@@ -236,13 +228,3 @@ class YOLOV5TorchObjectDetector(nn.Module):
         x2 = int(bbox[2].detach().cpu().numpy())
         y2 = int(bbox[3].detach().cpu().numpy())
         return [x1,y1,x2,y2]
-
-
-if __name__ == '__main__':
-    model_path = 'runs/train/cart-detection/weights/best.pt'
-    img_path = './16_4322071600_101_0_4160379257.jpg'
-    model = YOLOV5TorchObjectDetector(model_path, 'cpu', img_size=(640, 640)).to('cpu')
-    img = np.expand_dims(cv2.imread(img_path)[..., ::-1], axis=0)
-    img = model.preprocessing(img)
-    a = model(img)
-    print(model._modules)
