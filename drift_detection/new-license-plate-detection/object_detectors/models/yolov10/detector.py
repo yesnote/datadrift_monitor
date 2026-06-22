@@ -175,16 +175,6 @@ def _download_yolov10_weight(path):
     urlretrieve(url, path)
 
 
-def _usable_yolov10_model_object(model):
-    if not isinstance(model, nn.Module):
-        return False
-    layers = getattr(model, "model", None)
-    if not isinstance(layers, nn.Sequential) or len(layers) == 0:
-        return False
-    head = layers[-1]
-    return all(hasattr(head, name) for name in ("one2one_cv2", "one2one_cv3", "forward_feat", "inference"))
-
-
 class YOLOV10TorchObjectDetector(nn.Module):
     def __init__(
         self,
@@ -222,14 +212,10 @@ class YOLOV10TorchObjectDetector(nn.Module):
             )
         self.is_yolov10 = True
         self.agnostic = False
-        checkpoint_model = _checkpoint_model_object(preloaded_payload)
-        if _usable_yolov10_model_object(checkpoint_model):
-            self.model = checkpoint_model.float()
-        else:
-            cfg = load_yolov10_cfg(self.architecture)
-            self.model = YOLOv10DetectionModel(cfg, nc=self.num_classes)
-            if model_weight:
-                self.load_weights(model_weight, payload=preloaded_payload)
+        cfg = load_yolov10_cfg(self.architecture)
+        self.model = YOLOv10DetectionModel(cfg, nc=self.num_classes)
+        if model_weight:
+            self.load_weights(model_weight, payload=preloaded_payload)
         self.model.names = self.names or [str(i) for i in range(self.num_classes)]
         self.model.architecture = self.architecture
         self.names = self.model.names
@@ -267,82 +253,65 @@ class YOLOV10TorchObjectDetector(nn.Module):
             print(f"[WARN] YOLOv10 checkpoint num_classes mismatch: checkpoint={metadata['num_classes']}, config={self.num_classes}")
         current = self.model.state_dict()
         state_dict = _select_matching_state_dict(_checkpoint_state_dict(payload), current)
-        filtered = {
+        matched = {
             key: value
             for key, value in state_dict.items()
             if key in current and tuple(current[key].shape) == tuple(value.shape)
         }
-        skipped = len(state_dict) - len(filtered)
-        if not filtered:
+        missing = [key for key in current if key not in state_dict]
+        unexpected = [key for key in state_dict if key not in current]
+        shape_mismatch = [
+            (key, tuple(value.shape), tuple(current[key].shape))
+            for key, value in state_dict.items()
+            if key in current and tuple(current[key].shape) != tuple(value.shape)
+        ]
+        if not matched:
             raise ValueError(f"YOLOv10 checkpoint has no matching parameters: {path}")
-        if skipped:
-            print(f"[WARN] YOLOv10 checkpoint partial load: loaded={len(filtered)}, skipped={skipped}")
-        self.model.load_state_dict(filtered, strict=False)
+        if missing or unexpected or shape_mismatch:
+            details = []
+            if missing:
+                details.append(f"missing={missing[:8]}")
+            if unexpected:
+                details.append(f"unexpected={unexpected[:8]}")
+            if shape_mismatch:
+                details.append(f"shape_mismatch={shape_mismatch[:8]}")
+            raise ValueError(f"YOLOv10 checkpoint does not strictly match model: {path}; " + "; ".join(details))
+        self.model.load_state_dict(state_dict, strict=True)
 
     def build_loss(self):
         return V10DetectLoss(self.model)
 
-    def _decode_eval_output(self, model_output, decoded_boxes_xyxy=None):
+    def _decode_eval_output(self, model_output):
         one2one = model_output["one2one"]
         if not isinstance(one2one, (tuple, list)) or len(one2one) < 2:
             raise RuntimeError("YOLOv10 one2one inference output must be (decoded, raw_levels).")
         decoded, raw_levels = one2one
         decoded_bnc = decoded.permute(0, 2, 1).contiguous()
-        _boxes, scores, labels, raw_indices = v10postprocess_with_indices(
+        boxes_xywh, scores, labels, raw_indices = v10postprocess_with_indices(
             decoded_bnc,
             max_det=self.max_det,
             nc=self.num_classes,
         )
-        if decoded_boxes_xyxy is None:
-            decoded_boxes_xyxy = xywh2xyxy(decoded_bnc[..., :4])
         selected_preds = []
         selected_indices = []
         for sample_idx in range(decoded_bnc.shape[0]):
             keep = scores[sample_idx] >= self.confidence
+            b = boxes_xywh[sample_idx][keep]
             s = scores[sample_idx][keep]
             l = labels[sample_idx][keep].float()
             idx = raw_indices[sample_idx][keep].long()
-            raw_box_idx = torch.div(idx, int(self.num_classes), rounding_mode="floor")
-            xyxy = decoded_boxes_xyxy[sample_idx, raw_box_idx]
+            xyxy = xywh2xyxy(b)
             selected_preds.append(torch.cat([xyxy, s[:, None], l[:, None]], dim=1))
             selected_indices.append(idx)
         return selected_preds, selected_indices, raw_levels, decoded_bnc
 
-    def _forward_features(self, images):
-        if hasattr(self.model, "forward_features"):
-            return self.model.forward_features(images)
-        x = images
-        y = []
-        save = set(getattr(self.model, "save", []))
-        for m in self.model.model[:-1]:
-            if m.f != -1:
-                x = y[m.f] if isinstance(m.f, int) else [x if j == -1 else y[j] for j in m.f]
-            x = m(x)
-            y.append(x if m.i in save else None)
-        head = self.model.model[-1]
-        return y[head.f] if isinstance(head.f, int) else [x if j == -1 else y[j] for j in head.f]
-
-    def _forward_one2one_from_features(self, features):
-        if hasattr(self.model, "forward_one2one_from_features"):
-            return self.model.forward_one2one_from_features(features)
-        head = self.model.model[-1]
-        if hasattr(head, "forward_one2one"):
-            return {"one2many": None, "one2one": head.forward_one2one(features)}
-        one2one = head.forward_feat([xi.detach() for xi in features], head.one2one_cv2, head.one2one_cv3)
-        return {"one2many": None, "one2one": head.inference(one2one)}
-
-    def _forward_one2one(self, images):
-        if hasattr(self.model, "forward_one2one"):
-            return self.model.forward_one2one(images)
-        return self._forward_one2one_from_features(self._forward_features(images))
-
     def prepare_feature_cache(self, images):
-        return self._forward_features(images)
+        return self.model.forward_features(images)
 
     def forward_raw(self, images=None, feature_cache=None):
         if feature_cache is not None:
-            return self._forward_one2one_from_features(feature_cache)
-        return self._forward_one2one(images)
+            return self.model.forward_one2one_from_features(feature_cache)
+        return self.model.forward_one2one(images)
 
     def forward_raw_decoded(self, images=None, feature_cache=None, source_points=None):
         model_output = self.forward_raw(images, feature_cache=feature_cache)
@@ -351,12 +320,10 @@ class YOLOV10TorchObjectDetector(nn.Module):
             raise RuntimeError("YOLOv10 one2one inference output must be (decoded, raw_levels).")
         decoded, raw_levels = one2one
         decoded_bnc = decoded.permute(0, 2, 1).contiguous()
-        decoded_boxes_xyxy = xywh2xyxy(decoded_bnc[..., :4])
         return {
             "model_output": model_output,
             "raw_levels": raw_levels,
             "decoded_prediction": decoded_bnc,
-            "decoded_boxes_xyxy": decoded_boxes_xyxy,
             "raw_logits": self.flatten_class_logits(raw_levels),
             "source_points": source_points if source_points is not None else self.source_points(raw_levels),
         }
@@ -367,15 +334,11 @@ class YOLOV10TorchObjectDetector(nn.Module):
             feature_cache=feature_cache,
             source_points=source_points,
         )
-        selected_preds, selected_indices, raw_levels, decoded_bnc = self._decode_eval_output(
-            raw_output["model_output"],
-            decoded_boxes_xyxy=raw_output["decoded_boxes_xyxy"],
-        )
+        selected_preds, selected_indices, raw_levels, decoded_bnc = self._decode_eval_output(raw_output["model_output"])
         return {
             "model_output": raw_output["model_output"],
             "raw_levels": raw_levels,
             "decoded_prediction": decoded_bnc,
-            "decoded_boxes_xyxy": raw_output["decoded_boxes_xyxy"],
             "raw_logits": raw_output["raw_logits"],
             "selected_preds": selected_preds,
             "selected_indices": selected_indices,
@@ -386,19 +349,13 @@ class YOLOV10TorchObjectDetector(nn.Module):
         was_training = self.model.training
         self.model.eval()
         model_output = self.forward_raw(images)
-        one2one = model_output["one2one"]
-        decoded_boxes_xyxy = xywh2xyxy(one2one[0].permute(0, 2, 1).contiguous()[..., :4])
-        selected_preds, selected_indices, raw_levels, decoded_bnc = self._decode_eval_output(
-            model_output,
-            decoded_boxes_xyxy=decoded_boxes_xyxy,
-        )
+        selected_preds, selected_indices, raw_levels, decoded_bnc = self._decode_eval_output(model_output)
         if was_training and self.mode == "train":
             self.model.train()
         return {
             "model_output": model_output,
             "raw_levels": raw_levels,
             "decoded_prediction": decoded_bnc,
-            "decoded_boxes_xyxy": decoded_boxes_xyxy,
             "raw_logits": self.flatten_class_logits(raw_levels),
             "selected_preds": selected_preds,
             "selected_indices": selected_indices,

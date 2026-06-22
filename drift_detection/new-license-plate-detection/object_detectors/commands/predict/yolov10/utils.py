@@ -187,7 +187,6 @@ class YoloV10ForwardResult:
     model_output: object
     raw_levels: object
     decoded_prediction: torch.Tensor
-    decoded_boxes_xyxy: torch.Tensor
     raw_logits: torch.Tensor
     selected_preds: list
     selected_indices: list
@@ -207,7 +206,6 @@ def run_yolov10_forward(detector, infer_batch=None, timing=None, grad=False, fea
         model_output=output["model_output"],
         raw_levels=output["raw_levels"],
         decoded_prediction=output["decoded_prediction"],
-        decoded_boxes_xyxy=output["decoded_boxes_xyxy"],
         raw_logits=output["raw_logits"],
         selected_preds=output["selected_preds"],
         selected_indices=output["selected_indices"],
@@ -224,7 +222,6 @@ def run_yolov10_raw_forward(detector, infer_batch=None, timing=None, feature_cac
         model_output=output["model_output"],
         raw_levels=output["raw_levels"],
         decoded_prediction=output["decoded_prediction"],
-        decoded_boxes_xyxy=output["decoded_boxes_xyxy"],
         raw_logits=output["raw_logits"],
         selected_preds=[],
         selected_indices=[],
@@ -310,9 +307,11 @@ def source_point_box(source_points, raw_box_idx, device):
 
 
 def yolov10_feature_vector(forward, item, device):
+    from models.yolov10.core import xywh2xyxy
+
     sample_idx = item["sample_idx"]
     raw_box_idx = item["raw_box_idx"]
-    box = forward.decoded_boxes_xyxy[sample_idx, raw_box_idx].detach().float()
+    box = xywh2xyxy(forward.decoded_prediction[sample_idx, raw_box_idx, :4].detach().float().view(1, 4))[0]
     probs = torch.sigmoid(forward.raw_logits[sample_idx, raw_box_idx].detach().float())
     return torch.cat([box.to(device=device), probs.to(device=device)], dim=0)
 
