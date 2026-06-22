@@ -147,7 +147,20 @@ def _transform_state_dict_keys(state_dict, transform):
 
 
 def _matching_state_dict_count(candidate, current):
-    return sum(1 for key, value in candidate.items() if key in current and tuple(current[key].shape) == tuple(value.shape))
+    return sum(
+        1
+        for key, value in candidate.items()
+        if key in current
+        and hasattr(value, "shape")
+        and tuple(current[key].shape) == tuple(value.shape)
+    )
+
+
+def _short_key_list(keys, limit=12):
+    keys = list(keys)
+    if len(keys) <= limit:
+        return keys
+    return keys[:limit] + [f"... (+{len(keys) - limit} more)"]
 
 
 def _select_matching_state_dict(state_dict, current):
@@ -248,17 +261,31 @@ class YOLOV10TorchObjectDetector(nn.Module):
             print(f"[WARN] YOLOv10 checkpoint num_classes mismatch: checkpoint={metadata['num_classes']}, config={self.num_classes}")
         current = self.model.state_dict()
         state_dict = _select_matching_state_dict(_checkpoint_state_dict(payload), current)
-        filtered = {
-            key: value
-            for key, value in state_dict.items()
-            if key in current and tuple(current[key].shape) == tuple(value.shape)
+        current_keys = set(current.keys())
+        state_keys = set(state_dict.keys())
+        matching_keys = {
+            key
+            for key in current_keys & state_keys
+            if tuple(current[key].shape) == tuple(state_dict[key].shape)
         }
-        skipped = len(state_dict) - len(filtered)
-        if not filtered:
+        if not matching_keys:
             raise ValueError(f"YOLOv10 checkpoint has no matching parameters: {path}")
-        if skipped:
-            print(f"[WARN] YOLOv10 checkpoint partial load: loaded={len(filtered)}, skipped={skipped}")
-        self.model.load_state_dict(filtered, strict=False)
+        missing_keys = sorted(current_keys - matching_keys)
+        unexpected_keys = sorted(state_keys - current_keys)
+        shape_mismatch_keys = sorted(
+            key
+            for key in current_keys & state_keys
+            if tuple(current[key].shape) != tuple(state_dict[key].shape)
+        )
+        if missing_keys or unexpected_keys or shape_mismatch_keys:
+            raise ValueError(
+                "YOLOv10 checkpoint is not fully compatible with the local model. "
+                f"loaded={len(matching_keys)}, model_keys={len(current_keys)}, checkpoint_keys={len(state_keys)}, "
+                f"missing={_short_key_list(missing_keys)}, "
+                f"unexpected={_short_key_list(unexpected_keys)}, "
+                f"shape_mismatch={_short_key_list(shape_mismatch_keys)}"
+            )
+        self.model.load_state_dict(state_dict, strict=True)
 
     def build_loss(self):
         return V10DetectLoss(self.model)
@@ -280,6 +307,71 @@ class YOLOV10TorchObjectDetector(nn.Module):
         clipped[:, [1, 3]] = clipped[:, [1, 3]].clamp(0, max(0, h - 1))
         return clipped
 
+    @staticmethod
+    def _xyxy_validity_score(boxes, input_shape, source_points=None):
+        if boxes.numel() == 0:
+            return 1.0
+        h, w = float(input_shape[0]), float(input_shape[1])
+        x1, y1, x2, y2 = boxes.unbind(-1)
+        bw = x2 - x1
+        bh = y2 - y1
+        finite = torch.isfinite(boxes).all(dim=-1)
+        ordered = (bw >= 0) & (bh >= 0)
+        margin_w = max(w, 1.0) * 0.5
+        margin_h = max(h, 1.0) * 0.5
+        not_far = (x2 >= -margin_w) & (y2 >= -margin_h) & (x1 <= w + margin_w) & (y1 <= h + margin_h)
+        not_huge = (bw <= max(w, 1.0) * 2.5) & (bh <= max(h, 1.0) * 2.5)
+        valid = finite & ordered & not_far & not_huge
+        if source_points is not None and source_points.numel() > 0:
+            px, py = source_points.unbind(-1)
+            contains_source = (px >= x1) & (px <= x2) & (py >= y1) & (py <= y2)
+            valid = valid & contains_source
+        return float(valid.float().mean().detach().cpu().item())
+
+    def _canonical_xyxy_from_postprocess_boxes(self, boxes, input_shape, context, source_points=None):
+        xywh_as_xyxy = xywh2xyxy(boxes)
+        xyxy_as_xyxy = boxes.clone()
+        xywh_score = self._xyxy_validity_score(xywh_as_xyxy, input_shape, source_points=source_points)
+        xyxy_score = self._xyxy_validity_score(xyxy_as_xyxy, input_shape, source_points=source_points)
+        h, w = float(input_shape[0]), float(input_shape[1])
+        scale = boxes.new_tensor([max(w, 1.0), max(h, 1.0), max(w, 1.0), max(h, 1.0)])
+        format_delta = 0.0
+        if boxes.numel() > 0:
+            format_delta = float(((xywh_as_xyxy - xyxy_as_xyxy).abs() / scale).mean().detach().cpu().item())
+        if xywh_score >= 0.75 and xywh_score >= xyxy_score + 0.25:
+            chosen = xywh_as_xyxy
+        elif xyxy_score >= 0.75 and xyxy_score >= xywh_score + 0.25:
+            chosen = xyxy_as_xyxy
+            if not getattr(self, "_warned_yolov10_xyxy_postprocess", False):
+                print(
+                    "[WARN] YOLOv10 postprocess boxes look like xyxy, not xywh; "
+                    "using xyxy interpretation for selected predictions."
+                )
+                self._warned_yolov10_xyxy_postprocess = True
+        elif xywh_score >= 0.75 and xyxy_score >= 0.75 and format_delta > 0.2:
+            raise RuntimeError(
+                "YOLOv10 decoded box format is ambiguous; refusing to save potentially mis-scaled boxes. "
+                f"context={context}, input_shape={tuple(int(v) for v in input_shape)}, "
+                f"xywh_score={xywh_score:.3f}, xyxy_score={xyxy_score:.3f}, format_delta={format_delta:.3f}"
+            )
+        elif xywh_score >= 0.75:
+            chosen = xywh_as_xyxy
+        elif xyxy_score >= 0.75:
+            chosen = xyxy_as_xyxy
+            if not getattr(self, "_warned_yolov10_xyxy_postprocess", False):
+                print(
+                    "[WARN] YOLOv10 postprocess boxes look like xyxy, not xywh; "
+                    "using xyxy interpretation for selected predictions."
+                )
+                self._warned_yolov10_xyxy_postprocess = True
+        else:
+            raise RuntimeError(
+                "YOLOv10 decoded boxes are not plausible in either xywh or xyxy interpretation. "
+                f"context={context}, input_shape={tuple(int(v) for v in input_shape)}, "
+                f"xywh_score={xywh_score:.3f}, xyxy_score={xyxy_score:.3f}, format_delta={format_delta:.3f}"
+            )
+        return self._clip_xyxy_to_shape(chosen, input_shape)
+
     def _decode_eval_output(self, model_output, input_shape=None):
         one2one = model_output["one2one"]
         if not isinstance(one2one, (tuple, list)) or len(one2one) < 2:
@@ -293,13 +385,21 @@ class YOLOV10TorchObjectDetector(nn.Module):
         )
         selected_preds = []
         selected_indices = []
+        source_points = self.source_points(raw_levels)
         for sample_idx in range(decoded_bnc.shape[0]):
             keep = scores[sample_idx] >= self.confidence
             b = boxes_xywh[sample_idx][keep]
             s = scores[sample_idx][keep]
             l = labels[sample_idx][keep].float()
             idx = raw_indices[sample_idx][keep].long()
-            xyxy = self._clip_xyxy_to_shape(xywh2xyxy(b), input_shape)
+            raw_box_idx = torch.div(idx, self.num_classes, rounding_mode="floor")
+            selected_source_points = source_points[raw_box_idx]
+            xyxy = self._canonical_xyxy_from_postprocess_boxes(
+                b,
+                input_shape,
+                context=f"sample_idx={sample_idx}",
+                source_points=selected_source_points,
+            )
             selected_preds.append(torch.cat([xyxy, s[:, None], l[:, None]], dim=1))
             selected_indices.append(idx)
         return selected_preds, selected_indices, raw_levels, decoded_bnc
