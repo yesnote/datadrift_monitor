@@ -116,6 +116,16 @@ class Conv(nn.Module):
         return self.act(self.conv(x))
 
 
+def initialize_yolov10_weights(model):
+    for module in model.modules():
+        module_type = type(module)
+        if module_type is nn.BatchNorm2d:
+            module.eps = 1e-3
+            module.momentum = 0.03
+        elif module_type in {nn.Hardswish, nn.LeakyReLU, nn.ReLU, nn.ReLU6, nn.SiLU}:
+            module.inplace = True
+
+
 def fuse_conv_and_bn(conv, bn):
     fused = nn.Conv2d(
         conv.in_channels,
@@ -453,8 +463,10 @@ class YOLOv10DetectionModel(nn.Module):
         self.model, self.save = parse_model(self.yaml, ch=[3])
         self.names = [str(i) for i in range(int(nc))]
         self.nc = int(nc)
+        self.inplace = self.yaml.get("inplace", True)
         self.args = type("Args", (), {"box": 7.5, "cls": 0.5, "dfl": 1.5})()
         self._initialize_strides()
+        initialize_yolov10_weights(self)
 
     def _forward_once(self, x):
         y = []
@@ -488,6 +500,7 @@ class YOLOv10DetectionModel(nn.Module):
         m = self.model[-1]
         if isinstance(m, v10Detect):
             s = 256
+            m.inplace = self.inplace
             was_training = self.training
             self.train()
             with torch.no_grad():
