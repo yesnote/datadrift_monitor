@@ -19,7 +19,13 @@ from meta_models.commands.common import (
     sanitize_feature_matrix,
 )
 from meta_models.commands.utils.plot import save_eval_plots
-from meta_models.losses.meta_classifier import compute_ace, compute_ece, evaluate_classifier
+from meta_models.losses.meta_classifier import (
+    CLASSIFIER_METRIC_COLUMNS,
+    compute_ace,
+    compute_ece,
+    compute_fpr_at_tpr,
+    evaluate_classifier,
+)
 
 
 def _parse_model_index(path: Path) -> int:
@@ -72,6 +78,18 @@ def _load_feature_spec_for_test(train_run_root: Path, df: pd.DataFrame, current_
             return FeatureSpec(grad_columns=[str(c) for c in input_features], dim_by_column=dim_dict)
     return infer_feature_spec(df, current_features)
 
+
+def _compute_metrics(y_true: np.ndarray, y_score: np.ndarray) -> dict[str, float]:
+    auroc, ap = evaluate_classifier(y_true, y_score)
+    return {
+        "auroc": float(auroc),
+        "ap": float(ap),
+        "fpr95": float(compute_fpr_at_tpr(y_true, y_score)),
+        "ece": float(compute_ece(y_true, y_score)),
+        "ace": float(compute_ace(y_true, y_score)),
+    }
+
+
 def run_test(config: dict[str, Any], run_dir: Path) -> Path:
     dataset_cfg = config["dataset"]
     model_cfg = config["model"]
@@ -97,18 +115,13 @@ def run_test(config: dict[str, Any], run_dir: Path) -> Path:
     for model_path in model_paths:
         estimator = load_object(model_path)
         y_pred = estimator.predict_proba(x)[:, 1]
-        auroc, ap = evaluate_classifier(y, y_pred)
-        ece = compute_ece(y, y_pred)
-        ace = compute_ace(y, y_pred)
+        metrics = _compute_metrics(y, y_pred)
         model_name = model_path.stem
         eval_rows.append(
             {
                 "model_file": model_path.name,
                 "model_index": int(_parse_model_index(model_path)) if _parse_model_index(model_path) < 10**9 else -1,
-                "auroc": float(auroc),
-                "ap": float(ap),
-                "ece": float(ece),
-                "ace": float(ace),
+                **metrics,
             }
         )
         make_eval_dataframe(df, y, y_pred).to_csv(
@@ -122,18 +135,12 @@ def run_test(config: dict[str, Any], run_dir: Path) -> Path:
     summary = {
         "model_file": "mean",
         "model_index": -1,
-        "auroc": float(eval_df["auroc"].mean()),
-        "ap": float(eval_df["ap"].mean()),
-        "ece": float(eval_df["ece"].mean()),
-        "ace": float(eval_df["ace"].mean()),
+        **{col: float(eval_df[col].mean()) for col in CLASSIFIER_METRIC_COLUMNS},
     }
     summary_std = {
         "model_file": "std",
         "model_index": -1,
-        "auroc": float(eval_df["auroc"].std(ddof=1)),
-        "ap": float(eval_df["ap"].std(ddof=1)),
-        "ece": float(eval_df["ece"].std(ddof=1)),
-        "ace": float(eval_df["ace"].std(ddof=1)),
+        **{col: float(eval_df[col].std(ddof=1)) for col in CLASSIFIER_METRIC_COLUMNS},
     }
     eval_df = pd.concat([eval_df, pd.DataFrame([summary, summary_std])], ignore_index=True)
     eval_df.to_csv(results_dir / "evaluation_results.csv", index=False)

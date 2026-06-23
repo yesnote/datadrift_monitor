@@ -28,7 +28,7 @@ from meta_models.commands.common import (  # noqa: E402
     sanitize_feature_matrix,
 )
 from meta_models.commands.meta_classifier.train import apply_augmentation  # noqa: E402
-from meta_models.losses.meta_classifier import compute_ace, compute_ece, evaluate_classifier  # noqa: E402
+from meta_models.losses.meta_classifier import compute_ace, compute_ece, compute_fpr_at_tpr, evaluate_classifier  # noqa: E402
 from meta_models.models.meta_classifier import build_estimator  # noqa: E402
 
 # Edit these paths before running.
@@ -213,13 +213,14 @@ def _evaluate_params(x: np.ndarray, y: np.ndarray, params: dict, config: dict) -
             {
                 "auroc": float(auroc),
                 "ap": float(ap),
+                "fpr95": float(compute_fpr_at_tpr(y_test, y_pred)),
                 "ece": float(compute_ece(y_test, y_pred)),
                 "ace": float(compute_ace(y_test, y_pred)),
             }
         )
 
     out = {}
-    for key in ("auroc", "ap", "ece", "ace"):
+    for key in ("auroc", "ap", "fpr95", "ece", "ace"):
         values = np.asarray([row[key] for row in eval_rows], dtype=np.float64)
         out[f"mean_{key}"] = float(np.mean(values))
         out[f"std_{key}"] = float(np.std(values, ddof=1)) if len(values) > 1 else 0.0

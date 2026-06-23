@@ -249,7 +249,7 @@ def _read_mean_metrics(eval_csv: Path) -> dict:
     if mean_row is None and rows:
         mean_row = rows[-1]
     out = {}
-    for key in ("auroc", "ap", "ece", "ace"):
+    for key in ("auroc", "ap", "fpr95", "ece", "ace"):
         try:
             out[key] = float(mean_row.get(key, "nan"))
         except Exception:
@@ -433,6 +433,7 @@ def _write_results(out_dir: Path, rows: list[dict]) -> None:
         "cls_direction",
         "auroc",
         "ap",
+        "fpr95",
         "ece",
         "ace",
         "bbox_term_root",
@@ -496,6 +497,7 @@ def main() -> None:
                 "cls_direction": combo["cls_direction"],
                 "auroc": metrics.get("auroc", ""),
                 "ap": metrics.get("ap", ""),
+                "fpr95": metrics.get("fpr95", ""),
                 "ece": metrics.get("ece", ""),
                 "ace": metrics.get("ace", ""),
                 "bbox_term_root": str(combo["bbox_term_root"]),

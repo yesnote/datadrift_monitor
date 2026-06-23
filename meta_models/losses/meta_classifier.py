@@ -1,11 +1,26 @@
 from __future__ import annotations
 
 import numpy as np
-from sklearn.metrics import average_precision_score, roc_auc_score
+from sklearn.metrics import average_precision_score, roc_auc_score, roc_curve
+
+
+CLASSIFIER_METRIC_COLUMNS = ["auroc", "ap", "fpr95", "ece", "ace"]
 
 
 def evaluate_classifier(y_true: np.ndarray, y_score: np.ndarray) -> tuple[float, float]:
     return roc_auc_score(y_true, y_score), average_precision_score(y_true, y_score)
+
+
+def compute_fpr_at_tpr(y_true: np.ndarray, y_score: np.ndarray, target_tpr: float = 0.95) -> float:
+    y_true = np.asarray(y_true).astype(np.int64).reshape(-1)
+    y_score = np.asarray(y_score).astype(np.float64).reshape(-1)
+    if y_true.size == 0 or not np.any(y_true == 1) or not np.any(y_true == 0):
+        return float("nan")
+    fpr, tpr, _thresholds = roc_curve(y_true, y_score, pos_label=1)
+    mask = tpr >= float(target_tpr)
+    if not np.any(mask):
+        return float("nan")
+    return float(np.min(fpr[mask]))
 
 
 def compute_ece(y_true: np.ndarray, y_score: np.ndarray, n_bins: int = 10) -> float:
