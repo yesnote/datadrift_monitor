@@ -166,7 +166,7 @@ def load_eval_metrics(meta_run, label, grid_filter=None):
     if not eval_path.exists():
         raise FileNotFoundError(f"{label}: missing evaluation_results.csv: {eval_path}")
     rows = read_csv_rows(eval_path)
-    index_key = next((key for key in rows[0].keys() if key not in {"auroc", "ap", "ece", "ace"}), None) if rows else None
+    index_key = next((key for key in rows[0].keys() if key not in {"auroc", "ap", "fpr95", "ece", "ace"}), None) if rows else None
     if index_key is not None:
         for row in rows:
             if str(row.get(index_key, "")).strip().lower() == "mean":

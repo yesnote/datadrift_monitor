@@ -19,7 +19,13 @@ from meta_models.commands.common import (
     save_object,
 )
 from meta_models.commands.utils.plot import save_eval_plots
-from meta_models.losses.meta_classifier import compute_ace, compute_ece, evaluate_classifier
+from meta_models.losses.meta_classifier import (
+    CLASSIFIER_METRIC_COLUMNS,
+    compute_ace,
+    compute_ece,
+    compute_fpr_at_tpr,
+    evaluate_classifier,
+)
 from meta_models.models.meta_classifier import build_estimator, param_grid
 
 try:
@@ -99,6 +105,17 @@ def _append_summary_rows(eval_rows: list[dict[str, Any]], metric_cols: list[str]
     return pd.concat([eval_df, pd.DataFrame([mean_row, std_row])], ignore_index=True)
 
 
+def _compute_metrics(y_true: np.ndarray, y_score: np.ndarray) -> dict[str, float]:
+    auroc, ap = evaluate_classifier(y_true, y_score)
+    return {
+        "auroc": float(auroc),
+        "ap": float(ap),
+        "fpr95": float(compute_fpr_at_tpr(y_true, y_score)),
+        "ece": float(compute_ece(y_true, y_score)),
+        "ace": float(compute_ace(y_true, y_score)),
+    }
+
+
 def run_train(config: dict[str, Any], run_dir: Path) -> Path:
     dataset_cfg = config["dataset"]
     model_cfg = config["model"]
@@ -166,17 +183,12 @@ def run_train(config: dict[str, Any], run_dir: Path) -> Path:
             estimator.fit(x_train, y_train)
             y_pred = estimator.predict_proba(x_test)[:, 1]
 
-            auroc, ap = evaluate_classifier(y_test, y_pred)
-            ece = compute_ece(y_test, y_pred)
-            ace = compute_ace(y_test, y_pred)
+            metrics = _compute_metrics(y_test, y_pred)
             eval_rows.append(
                 {
                     "row_type": "split",
                     "split_index": int(i),
-                    "auroc": float(auroc),
-                    "ap": float(ap),
-                    "ece": float(ece),
-                    "ace": float(ace),
+                    **metrics,
                 }
             )
 
@@ -210,17 +222,12 @@ def run_train(config: dict[str, Any], run_dir: Path) -> Path:
             estimator.fit(x_train, y_train)
             y_pred = estimator.predict_proba(x_test)[:, 1]
 
-            auroc, ap = evaluate_classifier(y_test, y_pred)
-            ece = compute_ece(y_test, y_pred)
-            ace = compute_ace(y_test, y_pred)
+            metrics = _compute_metrics(y_test, y_pred)
             eval_rows.append(
                 {
                     "row_type": "split",
                     "split_index": int(i),
-                    "auroc": float(auroc),
-                    "ap": float(ap),
-                    "ece": float(ece),
-                    "ace": float(ace),
+                    **metrics,
                 }
             )
 
@@ -230,7 +237,7 @@ def run_train(config: dict[str, Any], run_dir: Path) -> Path:
     else:
         raise ValueError("experiment.process must be 'kfold' or 'repeat'.")
 
-    eval_df = _append_summary_rows(eval_rows, ["auroc", "ap", "ece", "ace"])
+    eval_df = _append_summary_rows(eval_rows, CLASSIFIER_METRIC_COLUMNS)
     eval_df.to_csv(results_dir / "evaluation_results.csv", index=False)
 
     metadata = {

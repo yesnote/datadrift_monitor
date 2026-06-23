@@ -11,7 +11,7 @@ import pandas as pd
 import seaborn as sns
 from sklearn.metrics import average_precision_score, precision_recall_curve, roc_auc_score, roc_curve
 
-from meta_models.losses.meta_classifier import compute_ace, compute_ece
+from meta_models.losses.meta_classifier import CLASSIFIER_METRIC_COLUMNS, compute_ace, compute_ece, compute_fpr_at_tpr
 
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt  # noqa: E402
@@ -61,7 +61,7 @@ def _read_eval_data(results_dir: Path) -> tuple[np.ndarray, np.ndarray]:
 
 
 def _extract_metric_rows(eval_df: pd.DataFrame) -> tuple[dict[str, float], dict[str, float]]:
-    numeric_cols = [c for c in ("auroc", "ap", "ece", "ace") if c in eval_df.columns]
+    numeric_cols = [c for c in CLASSIFIER_METRIC_COLUMNS if c in eval_df.columns]
     if not numeric_cols:
         return {}, {}
     mean_row = None
@@ -128,10 +128,12 @@ def _load_run_bundle(run_root: Path, name: str) -> RunBundle:
         mean_dict = {
             "auroc": float(roc_auc_score(y_true, y_score)),
             "ap": float(average_precision_score(y_true, y_score)),
+            "fpr95": float(compute_fpr_at_tpr(y_true, y_score)),
             "ece": float(compute_ece(y_true, y_score)),
             "ace": float(compute_ace(y_true, y_score)),
         }
     for k, v in {
+        "fpr95": float(compute_fpr_at_tpr(y_true, y_score)),
         "ece": float(compute_ece(y_true, y_score)),
         "ace": float(compute_ace(y_true, y_score)),
     }.items():
@@ -340,7 +342,14 @@ def run_compare(config: dict[str, Any], run_dir: Path) -> Path:
     results_dir.mkdir(parents=True, exist_ok=True)
     plots_dir.mkdir(parents=True, exist_ok=True)
 
-    metric_keys = sorted(set(bundle_a.metrics_mean.keys()) | set(bundle_b.metrics_mean.keys()))
+    metric_keys = [
+        key
+        for key in CLASSIFIER_METRIC_COLUMNS
+        if key in bundle_a.metrics_mean or key in bundle_b.metrics_mean
+    ]
+    metric_keys.extend(
+        sorted((set(bundle_a.metrics_mean.keys()) | set(bundle_b.metrics_mean.keys())) - set(metric_keys))
+    )
     rows = []
     for key in metric_keys:
         a_mean = float(bundle_a.metrics_mean.get(key, np.nan))
