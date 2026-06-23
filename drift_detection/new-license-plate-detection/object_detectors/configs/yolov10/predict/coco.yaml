@@ -85,6 +85,10 @@ output:
   ensemble:
     weights:
       - object_detectors/models/yolov10/weights/coco/yolov10x.pt
+      - object_detectors/runs/yolov10/train/coco/06-22-2026_22;54_yolov10_seed42/weights/last.pt
+      - object_detectors/runs/yolov10/train/coco/06-22-2026_22;54_yolov10_seed43/weights/last.pt
+      - object_detectors/runs/yolov10/train/coco/06-22-2026_22;54_yolov10_seed44/weights/last.pt
+      - object_detectors/runs/yolov10/train/coco/06-22-2026_22;54_yolov10_seed45/weights/last.pt
     save_csv:
       enabled: true
 
