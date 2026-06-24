@@ -72,6 +72,12 @@ output:
     save_csv:
       enabled: false
 
+  meta_detect:
+    score_threshold: 0.0
+    iou_threshold: 0.45
+    save_csv:
+      enabled: true
+
   null_detect:
     cls_loss: kl  # bcewithlogits | kl
     cls_direction: pred_to_target  # pred_to_target | target_to_pred, only for cls_loss: kl
@@ -81,14 +87,19 @@ output:
 
   layer_grad:
     gradient:
-      # null_target only:
+      # null_target:
       #   bbox_loss l1/l2: loss(final detection box source-point offset, zero offset)
       #   cls_loss: loss(source class logits, uniform/null class target)
+      # cand_target:
+      #   bbox_loss l1/l2: loss(candidate box source-point offset, final box source-point offset)
+      #   cls_loss: loss(candidate class logits, final class target)
       scalar: [bbox_loss, cls_loss]
       bbox_layer: ["model.23.one2one_cv2.0.2"]
       cls_layer: ["model.23.one2one_cv3.0.2"]
       reduction: [l1_norm, l2_norm, min, max, mean, std]
-      target: null_target
+      target: null_target  # cand_target | null_target
+      cand_score_threshold: 0.0
+      cand_iou_threshold: 0.45
       bbox_loss: l1  # l1 | l2
       cls_loss: bcewithlogits  # bcewithlogits | kl
       cls_direction: pred_to_target
