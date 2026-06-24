@@ -16,6 +16,7 @@ from commands.train.common import (
     count_trainable_params,
     load_matching_state_dict,
     make_grad_scaler,
+    map_coco91_to_80,
     merge_epoch_timing,
     resolve_train_class_names,
     torch_load,
@@ -60,11 +61,17 @@ def _target_to_faster_rcnn(target, device):
     labels = target.get("labels", torch.zeros((0,), dtype=torch.int64)).to(device=device, dtype=torch.int64)
     dataset_name = str(target.get("dataset_name", "")).lower()
     if dataset_name == "coco":
-        labels = labels.clamp(min=1)
+        mapped, keep = map_coco91_to_80(labels, offset=1)
+        if keep.any():
+            boxes = boxes[keep]
+            labels = mapped.to(dtype=torch.int64, device=device)
+        else:
+            boxes = boxes[:0]
+            labels = labels[:0]
     else:
         labels = labels + 1
     valid = (
-        (boxes[:, 2] > boxes[:, 0]) & (boxes[:, 3] > boxes[:, 1])
+        (boxes[:, 2] > boxes[:, 0]) & (boxes[:, 3] > boxes[:, 1]) & (labels > 0)
         if boxes.numel()
         else torch.zeros((0,), dtype=torch.bool, device=device)
     )
