@@ -13,13 +13,12 @@ def parse_yolov10_output_config(config):
         "energy",
         "mc_dropout",
         "ensemble",
+        "meta_detect",
         "null_detect",
         "layer_grad",
     }
-    if uncertainty not in supported and uncertainty != "meta_detect":
+    if uncertainty not in supported:
         raise ValueError(f"Unsupported YOLOv10 uncertainty: {uncertainty}")
-    if uncertainty == "meta_detect":
-        raise NotImplementedError("YOLOv10 does not support meta_detect because it is NMS-free.")
 
     def as_dict(value):
         return value if isinstance(value, dict) else {}
@@ -99,6 +98,8 @@ def parse_yolov10_output_config(config):
         "gt_iou_match_threshold": 0.5,
         "mc_num_runs": 30,
         "mc_dropout_rate": 0.5,
+        "meta_detect_score_threshold": 0.0,
+        "meta_detect_iou_threshold": 0.45,
         "null_detect_cls_loss": "kl",
         "null_detect_cls_direction": "pred_to_target",
         "null_detect_feature_set": "full",
@@ -111,6 +112,9 @@ def parse_yolov10_output_config(config):
     elif uncertainty == "mc_dropout":
         parsed["mc_num_runs"] = as_int(active.get("num_runs", 30), 30)
         parsed["mc_dropout_rate"] = as_float(active.get("dropout_rate", 0.5), 0.5)
+    elif uncertainty == "meta_detect":
+        parsed["meta_detect_score_threshold"] = as_float(active.get("score_threshold", 0.0), 0.0)
+        parsed["meta_detect_iou_threshold"] = as_float(active.get("iou_threshold", 0.45), 0.45)
     elif uncertainty == "null_detect":
         for forbidden in ("obj_loss", "bbox_loss", "bbox_direction"):
             if forbidden in active:
@@ -125,9 +129,9 @@ def parse_yolov10_output_config(config):
         layer_cfg = as_dict(output.get("layer_grad", {}))
         grad = as_dict(layer_cfg.get("gradient", {}))
         target = str(grad.get("target", "null_target")).strip().lower()
-        if target != "null_target":
-            raise NotImplementedError("YOLOv10 layer_grad supports only target=null_target.")
-        for forbidden in ("obj_loss", "obj_direction", "cand_score_threshold", "bbox_direction", "layer"):
+        if target not in {"null_target", "cand_target"}:
+            raise ValueError("YOLOv10 layer_grad.gradient.target must be null_target or cand_target.")
+        for forbidden in ("obj_loss", "obj_direction", "bbox_direction", "layer"):
             if forbidden in grad:
                 raise ValueError(f"YOLOv10 layer_grad does not support gradient.{forbidden}.")
         scalar = normalize_list(grad.get("scalar", ["bbox_loss", "cls_loss"]), lower=True)
@@ -163,6 +167,9 @@ def parse_yolov10_output_config(config):
             "bbox_loss": bbox_loss,
             "cls_loss": cls_loss,
             "cls_direction": normalize_direction(grad.get("cls_direction", "pred_to_target")),
+            "target": target,
+            "cand_score_threshold": as_float(grad.get("cand_score_threshold", 0.0), 0.0),
+            "cand_iou_threshold": as_float(grad.get("cand_iou_threshold", active.get("iou_threshold", 0.45)), 0.45),
         }
     return parsed
 

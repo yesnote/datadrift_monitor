@@ -63,6 +63,7 @@ _SUPPORTED = {
         "deterministic",
         "mc_dropout",
         "ensemble",
+        "meta_detect",
         "layer_grad",
         "null_detect",
     },
