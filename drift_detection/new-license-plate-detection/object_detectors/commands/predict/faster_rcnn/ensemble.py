@@ -1,16 +1,54 @@
-from commands.predict.common import *
+import csv
+from pathlib import Path
+
+import torch
+from tqdm import tqdm
+
+from commands.predict.common import StageTimingProfiler, _resolve_detector_nms_kwargs, create_dataloader
+from commands.predict.faster_rcnn.candidates import build_faster_rcnn_roi_candidate_cache, match_same_class_highest_iou
+from commands.predict.faster_rcnn.config import parse_faster_rcnn_output_config
+from commands.predict.faster_rcnn.features import roi_feature_vector_from_cache
+from commands.predict.faster_rcnn.rows import iter_faster_rcnn_detection_rows
+from commands.utils.predict_utils import build_detector, resolve_project_path
+
+
+def _normalize_weight_path(value, key):
+    text = str(value or "").strip()
+    if not text:
+        raise ValueError(f"{key} must be a non-empty string for Faster R-CNN ensemble row alignment.")
+    return Path(resolve_project_path(text)).resolve()
+
+
+def _feature_dim(class_count):
+    return 5 + int(class_count)
+
+
+def _run_raw_from_roi_cache(detector, image_list, timing):
+    t_detector = timing.start()
+    with torch.no_grad():
+        roi_cache = detector.prepare_roi_cache(image_list)
+        model_output = detector.forward_from_roi_cache(roi_cache)
+        raw_prediction = model_output[0] if isinstance(model_output, (tuple, list)) else model_output
+        raw_logits = model_output[1] if isinstance(model_output, (tuple, list)) and len(model_output) > 1 else None
+    del roi_cache
+    return raw_prediction, raw_logits, timing.elapsed(t_detector)
+
+
+def _feature_from_match(cache, row, class_count, device):
+    matched_idx = match_same_class_highest_iou(row.box[:4], row.cls_idx, cache)
+    if matched_idx is None:
+        return None
+    return roi_feature_vector_from_cache(cache, int(matched_idx.detach().cpu().item()), class_count, device)
+
 
 def run_ensemble_csv(config, run_dir):
     run_dir = Path(run_dir)
     mode = str(config.get("mode", "predict"))
     uncertainty = "ensemble"
-
-    dataset_cfg = config.get("dataset", {})
-    split = dataset_cfg.get("split", "val")
-    parsed = parse_output_config(config.get("output", {}))
+    split = config.get("dataset", {}).get("split", "val")
+    parsed = parse_faster_rcnn_output_config(config.get("output", {}))
     save_csv = parsed["save_csv_enabled"]
     unit = parsed["unit"]
-
     if not save_csv:
         return
 
@@ -25,15 +63,23 @@ def run_ensemble_csv(config, run_dir):
     if not weight_paths:
         raise ValueError("output.uncertainty='ensemble' requires output.ensemble.weights to be a non-empty string/list.")
 
+    model_weights = config.get("model", {}).get("weights", "")
+    if isinstance(model_weights, (list, tuple)):
+        raise ValueError("model.weights must be a single weight path when running Faster R-CNN ensemble.")
+    model_weight_path = _normalize_weight_path(model_weights, "model.weights")
+    first_weight_path = _normalize_weight_path(weight_paths[0], "output.ensemble.weights[0]")
+    if model_weight_path != first_weight_path:
+        raise ValueError(
+            "Faster R-CNN ensemble requires output.ensemble.weights[0] to match model.weights. "
+            f"model.weights={model_weight_path}; output.ensemble.weights[0]={first_weight_path}"
+        )
+
     dataloader = create_dataloader(config, split=split)
     if len(dataloader.dataset) == 0:
         raise ValueError("Loaded 0 images. Check dataset root/image_dir/split configuration in YAML.")
 
     output_csv = run_dir / "ensemble.csv"
-
-    n_classes_hint = None
-    class_names_hint = None
-    n_classes_actual = None
+    detectors = []
     device = torch.device("cpu")
     timing = StageTimingProfiler(
         run_dir=run_dir,
@@ -42,238 +88,146 @@ def run_ensemble_csv(config, run_dir):
         stages=["detector_inference_sec", "prediction_matching_sec", "feature_compute_sec"],
         device=device,
     )
-
-    detectors = []
     try:
+        class_count = None
         for model_weight in weight_paths:
             detector, device = build_detector(config, model_weight=model_weight)
-            if n_classes_hint is None:
-                n_classes_hint = len(detector.names) if detector.names is not None else 80
-                class_names_hint = detector.names
+            current_class_count = len(detector.names) if detector.names is not None else int(config.get("model", {}).get("num_classes", 80))
+            if class_count is None:
+                class_count = current_class_count
+            elif int(current_class_count) != int(class_count):
+                raise ValueError(f"All ensemble weights must have the same class count: {class_count} vs {current_class_count}.")
             detectors.append(detector)
         timing.device = device
-
-        if n_classes_hint is None:
-            n_classes_hint = 80
-
         fieldnames = [
-            "image_id", "image_path", "pred_idx", "raw_pred_idx",
-            "xmin", "ymin", "xmax", "ymax", "score", "pred_class",
-            "xmin_mean", "ymin_mean", "xmax_mean", "ymax_mean", "score_mean",
-            "xmin_std", "ymin_std", "xmax_std", "ymax_std", "score_std",
+            "image_id",
+            "image_path",
+            "pred_idx",
+            "raw_pred_idx",
+            "xmin",
+            "ymin",
+            "xmax",
+            "ymax",
+            "score",
+            "pred_class",
+            "xmin_mean",
+            "ymin_mean",
+            "xmax_mean",
+            "ymax_mean",
+            "score_mean",
+            "xmin_std",
+            "ymin_std",
+            "xmax_std",
+            "ymax_std",
+            "score_std",
         ]
-        for class_idx in range(n_classes_hint):
+        for class_idx in range(class_count):
             fieldnames.append(f"prob_{class_idx}_mean")
             fieldnames.append(f"prob_{class_idx}_std")
 
         with open(output_csv, "w", newline="", encoding="utf-8") as output_file:
             writer = csv.DictWriter(output_file, fieldnames=fieldnames)
             writer.writeheader()
-            for images, targets in tqdm(
-                dataloader,
-                desc=f"Object Detector ({mode} - {uncertainty})",
-                total=len(dataloader),
-            ):
-                base_detector = detectors[0]
-                infer_batch, _ratios, _pads, _resized_chws = _prepare_infer_batch(
-                    base_detector, images, device, auto=False
-                )
-                fcos_preprocessed = (
-                    base_detector.preprocess_images(infer_batch)
-                    if bool(getattr(base_detector, "is_fcos", False)) and hasattr(base_detector, "preprocess_images")
-                    else None
-                )
-                batch_size = len(infer_batch) if isinstance(infer_batch, list) else int(infer_batch.shape[0])
-                image_ids = [int(targets[i]["image_id"][0].item()) for i in range(batch_size)]
-                image_paths = [targets[i]["path"] for i in range(batch_size)]
-
-                feature_runs = []
-                variable_candidate_runs = False
-                det_boxes = None
-                raw_keep_indices = None
-                detector_inference_total_sec = 0.0
+            for images, targets in tqdm(dataloader, desc=f"Object Detector ({mode} - {uncertainty})", total=len(dataloader)):
+                image_list = images if isinstance(images, list) else [images[i] for i in range(images.shape[0])]
+                detector_inference_sec = 0.0
                 prediction_matching_sec = 0.0
                 feature_compute_sec = 0.0
-                for det_idx, detector in enumerate(detectors):
-                    t_detector = timing.start()
-                    with torch.no_grad():
-                        if fcos_preprocessed is not None and bool(getattr(detector, "is_fcos", False)) and hasattr(detector, "forward_preprocessed"):
-                            det_output = detector.forward_preprocessed(fcos_preprocessed)
-                        else:
-                            det_output = detector.model(infer_batch, augment=False)
-                        det_raw_pred = det_output[0] if isinstance(det_output, (tuple, list)) else det_output
-                        det_raw_logits = det_output[1] if isinstance(det_output, (tuple, list)) and len(det_output) > 1 else None
-                        nms_logits = _resolve_nms_logits(det_raw_pred, det_raw_logits, num_classes_hint=n_classes_hint)
-                        nms_kwargs = _resolve_detector_nms_kwargs(detector)
-                        selected_preds, _selected_logits, _selected_objectness, selected_indices = detector.non_max_suppression(
-                            det_raw_pred,
-                            nms_logits,
-                            conf_thres=nms_kwargs["conf_thres"],
-                            iou_thres=nms_kwargs["iou_thres"],
-                            classes=nms_kwargs["classes"],
-                            agnostic=nms_kwargs["agnostic"],
-                            max_det=nms_kwargs["max_det"],
-                            return_indices=True,
-                        )
-                    detector_inference_total_sec += timing.elapsed(t_detector)
+                base_detector = detectors[0]
+                base_raw_prediction, base_raw_logits, elapsed = _run_raw_from_roi_cache(base_detector, image_list, timing)
+                detector_inference_sec += elapsed
+                nms_kwargs = _resolve_detector_nms_kwargs(base_detector)
+                t_detector = timing.start()
+                with torch.no_grad():
+                    selected_preds, _selected_logits, _selected_objectness, selected_indices = base_detector.non_max_suppression(
+                        prediction=base_raw_prediction,
+                        logits=base_raw_logits,
+                        conf_thres=nms_kwargs["conf_thres"],
+                        iou_thres=nms_kwargs["iou_thres"],
+                        classes=nms_kwargs["classes"],
+                        agnostic=nms_kwargs["agnostic"],
+                        max_det=nms_kwargs["max_det"],
+                        return_indices=True,
+                    )
+                detector_inference_sec += timing.elapsed(t_detector)
+                rows = list(iter_faster_rcnn_detection_rows(base_detector, targets, selected_preds, selected_indices, device))
+                sums = [torch.zeros((_feature_dim(class_count),), dtype=torch.float32, device=device) for _ in rows]
+                sums_sq = [torch.zeros_like(v) for v in sums]
+                counts = [0 for _ in rows]
 
+                member_outputs = [(base_detector, base_raw_prediction, base_raw_logits)]
+                for detector in detectors[1:]:
+                    raw_prediction, raw_logits, elapsed = _run_raw_from_roi_cache(detector, image_list, timing)
+                    detector_inference_sec += elapsed
+                    member_outputs.append((detector, raw_prediction, raw_logits))
+
+                for detector, raw_prediction, raw_logits in member_outputs:
                     t_feature = timing.start()
-                    if isinstance(det_raw_pred, list):
-                        variable_candidate_runs = True
-                        run_features = []
-                        class_count = None
-                        for pred_img in det_raw_pred:
-                            pred_img = pred_img.detach().float()
-                            bbox_xyxy = _xywh_to_xyxy_tensor(pred_img[:, :4])
-                            score_vec = pred_img[:, 4:5]
-                            prob_mat = get_prediction_class_probs(detector, pred_img).detach().float()
-                            run_features.append(torch.cat([bbox_xyxy, score_vec, prob_mat], dim=1).detach())
-                            if class_count is None:
-                                class_count = int(prob_mat.shape[-1])
-                        if class_count is None:
-                            class_count = 0
-                    else:
-                        pred_batch = det_raw_pred.detach().float()
-                        bbox_xyxy = _xywh_to_xyxy_tensor(pred_batch[..., :4])
-                        score_vec = pred_batch[..., 4].unsqueeze(-1)
-                        prob_mat = get_prediction_class_probs(detector, pred_batch).detach().float()
-                        if prob_mat.numel() == 0 and det_raw_logits is not None:
-                            prob_mat = torch.sigmoid(det_raw_logits.detach().float())
-                        run_features = torch.cat([bbox_xyxy, score_vec, prob_mat], dim=2).detach()
-                        class_count = int(run_features.shape[2] - 5)
-                    if n_classes_actual is None:
-                        n_classes_actual = class_count
-                    elif n_classes_actual != class_count:
-                        raise ValueError(
-                            f"All ensemble weights must have the same class count: {n_classes_actual} vs {class_count}."
-                        )
-                    feature_runs.append(run_features)
+                    caches = []
+                    for sample_idx in range(len(image_list)):
+                        logits = raw_logits[sample_idx] if raw_logits is not None and sample_idx < len(raw_logits) else None
+                        caches.append(build_faster_rcnn_roi_candidate_cache(raw_prediction[sample_idx], logits, detach=True))
                     feature_compute_sec += timing.elapsed(t_feature)
-
-                    if det_idx == 0:
-                        t_matching = timing.start()
-                        det_boxes = []
-                        raw_keep_indices = []
-                        for b in range(batch_size):
-                            det_b = selected_preds[b] if selected_preds and b < len(selected_preds) else torch.zeros((0, 6), device=device)
-                            raw_keep_b = (
-                                selected_indices[b]
-                                if selected_indices and b < len(selected_indices)
-                                else torch.zeros((0,), dtype=torch.long, device=device)
-                            )
-                            det_boxes.append(det_b.detach().cpu())
-                            raw_keep_indices.append([int(v) for v in raw_keep_b.detach().cpu().tolist()])
-                        prediction_matching_sec += timing.elapsed(t_matching)
+                    t_matching = timing.start()
+                    for row_idx, row in enumerate(rows):
+                        if detector is base_detector:
+                            vec = roi_feature_vector_from_cache(caches[row.sample_idx], row.raw_pred_idx, class_count, device)
+                        else:
+                            vec = _feature_from_match(caches[row.sample_idx], row, class_count, device)
+                        if vec is None:
+                            continue
+                        sums[row_idx] += vec
+                        sums_sq[row_idx] += vec * vec
+                        counts[row_idx] += 1
+                    prediction_matching_sec += timing.elapsed(t_matching)
 
                 t_feature = timing.start()
-                mean = None
-                std = None
-                if not variable_candidate_runs:
-                    runs_tensor = torch.stack(feature_runs, dim=0)
-                    mean = runs_tensor.mean(dim=0)
-                    std = runs_tensor.std(dim=0, unbiased=False)
-                    del runs_tensor
+                for row_idx, row in enumerate(rows):
+                    if counts[row_idx] <= 0:
+                        continue
+                    mean_vec = sums[row_idx] / float(counts[row_idx])
+                    var_vec = (sums_sq[row_idx] / float(counts[row_idx]) - mean_vec * mean_vec).clamp(min=0.0)
+                    std_vec = torch.sqrt(var_vec)
+                    mean_cpu = mean_vec.detach().float().cpu()
+                    std_cpu = std_vec.detach().float().cpu()
+                    out = {
+                        **row.base,
+                        "xmin_mean": float(mean_cpu[0].item()),
+                        "ymin_mean": float(mean_cpu[1].item()),
+                        "xmax_mean": float(mean_cpu[2].item()),
+                        "ymax_mean": float(mean_cpu[3].item()),
+                        "score_mean": float(mean_cpu[4].item()),
+                        "xmin_std": float(std_cpu[0].item()),
+                        "ymin_std": float(std_cpu[1].item()),
+                        "xmax_std": float(std_cpu[2].item()),
+                        "ymax_std": float(std_cpu[3].item()),
+                        "score_std": float(std_cpu[4].item()),
+                    }
+                    for class_idx in range(class_count):
+                        out[f"prob_{class_idx}_mean"] = float(mean_cpu[5 + class_idx].item())
+                        out[f"prob_{class_idx}_std"] = float(std_cpu[5 + class_idx].item())
+                    writer.writerow(out)
                 feature_compute_sec += timing.elapsed(t_feature)
-                del infer_batch
-                if fcos_preprocessed is not None:
-                    del fcos_preprocessed
-
-                batch_items = 0
-                t_matching = timing.start()
-                mean_cpu = mean.detach().float().cpu() if mean is not None else None
-                std_cpu = std.detach().float().cpu() if std is not None else None
-                for b in range(len(image_ids)):
-                    image_id = int(image_ids[b])
-                    image_path = str(image_paths[b])
-                    if not variable_candidate_runs:
-                        mean_b = mean_cpu[b]
-                        std_b = std_cpu[b]
-                        n_candidates = int(mean_b.shape[0])
-
-                    det_b = det_boxes[b]
-                    raw_keep_b = [int(v) for v in raw_keep_indices[b]]
-                    num_final = int(det_b.shape[0])
-                    for pred_idx in range(num_final):
-                        if pred_idx >= len(raw_keep_b):
-                            continue
-                        raw_idx = int(raw_keep_b[pred_idx])
-                        if variable_candidate_runs:
-                            per_model_values = []
-                            for run_features in feature_runs:
-                                if b < len(run_features) and 0 <= raw_idx < int(run_features[b].shape[0]):
-                                    per_model_values.append(run_features[b][raw_idx])
-                            if not per_model_values:
-                                continue
-                            values = torch.stack(per_model_values, dim=0)
-                            mean_vec = values.mean(dim=0).detach().float().cpu()
-                            std_vec = values.std(dim=0, unbiased=False).detach().float().cpu()
-                        else:
-                            if raw_idx < 0 or raw_idx >= n_candidates:
-                                continue
-                            mean_vec = mean_b[raw_idx]
-                            std_vec = std_b[raw_idx]
-                        cls_idx = int(det_b[pred_idx, 5].item()) if det_b.shape[1] > 5 else -1
-                        row = {
-                            "image_id": image_id,
-                            "image_path": image_path,
-                            "pred_idx": pred_idx,
-                            "raw_pred_idx": raw_idx,
-                            "xmin": float(det_b[pred_idx, 0].item()),
-                            "ymin": float(det_b[pred_idx, 1].item()),
-                            "xmax": float(det_b[pred_idx, 2].item()),
-                            "ymax": float(det_b[pred_idx, 3].item()),
-                            "score": float(det_b[pred_idx, 4].item()) if det_b.shape[1] > 4 else 0.0,
-                            "pred_class": (
-                                class_names_hint[cls_idx]
-                                if (class_names_hint is not None and cls_idx >= 0 and cls_idx < len(class_names_hint))
-                                else int(cls_idx)
-                            ),
-                            "xmin_mean": float(mean_vec[0].item()),
-                            "ymin_mean": float(mean_vec[1].item()),
-                            "xmax_mean": float(mean_vec[2].item()),
-                            "ymax_mean": float(mean_vec[3].item()),
-                            "score_mean": float(mean_vec[4].item()),
-                            "xmin_std": float(std_vec[0].item()),
-                            "ymin_std": float(std_vec[1].item()),
-                            "xmax_std": float(std_vec[2].item()),
-                            "ymax_std": float(std_vec[3].item()),
-                            "score_std": float(std_vec[4].item()),
-                        }
-                        for class_idx in range(n_classes_hint):
-                            if class_idx < n_classes_actual:
-                                row[f"prob_{class_idx}_mean"] = float(mean_vec[5 + class_idx].item())
-                                row[f"prob_{class_idx}_std"] = float(std_vec[5 + class_idx].item())
-                            else:
-                                row[f"prob_{class_idx}_mean"] = 0.0
-                                row[f"prob_{class_idx}_std"] = 0.0
-                        writer.writerow(row)
-                    batch_items += int(num_final)
-                prediction_matching_sec += timing.elapsed(t_matching)
                 timing.record(
-                    num_images=batch_size,
-                    num_predictions=batch_items,
+                    num_images=len(image_list),
+                    num_predictions=len(rows),
                     stage_seconds={
-                        "detector_inference_sec": detector_inference_total_sec,
+                        "detector_inference_sec": detector_inference_sec,
                         "prediction_matching_sec": prediction_matching_sec,
                         "feature_compute_sec": feature_compute_sec,
                     },
                 )
-                del feature_runs
-                if mean is not None:
-                    del mean, std, mean_cpu, std_cpu
-    except Exception:
-        raise
+                del base_raw_prediction, base_raw_logits, selected_preds, selected_indices, rows
     finally:
         for detector in detectors:
             del detector
         if device.type == "cuda":
             torch.cuda.empty_cache()
 
-    if device.type == "cuda":
-        torch.cuda.empty_cache()
     timing_csv, timing_json = timing.save()
     print(f"Saved results CSV: {output_csv}")
     print(f"Saved timing: {timing_csv}")
     print(f"Saved timing summary: {timing_json}")
+
 
 __all__ = ["run_ensemble_csv"]

@@ -1,4 +1,43 @@
-from commands.predict.common import *
+import csv
+import json
+from pathlib import Path
+
+import cv2
+import numpy as np
+import torch
+from tqdm import tqdm
+
+from commands.predict.common import (
+    _as_image_list,
+    _build_summary,
+    _prepare_infer_batch,
+    _resolve_gt_class_names,
+    analyze_prediction_error_types,
+    create_dataloader,
+    draw_predictions,
+    get_fn_gt_indices,
+    has_fn_for_image,
+    load_gt_category_maps,
+    map_boxes_to_letterbox,
+)
+from commands.predict.faster_rcnn.config import parse_faster_rcnn_output_config
+from commands.predict.faster_rcnn.forward import run_faster_rcnn_forward
+from commands.utils.predict_utils import build_detector
+
+
+class _NullTiming:
+    def __init__(self, device):
+        self.device = device
+
+    def start(self):
+        if torch.cuda.is_available() and torch.device(self.device).type == "cuda":
+            torch.cuda.synchronize(self.device)
+        return 0.0
+
+    def elapsed(self, _start_t):
+        if torch.cuda.is_available() and torch.device(self.device).type == "cuda":
+            torch.cuda.synchronize(self.device)
+        return 0.0
 
 def run_fn_csv(config, run_dir):
     run_dir = Path(run_dir)
@@ -7,7 +46,7 @@ def run_fn_csv(config, run_dir):
 
     dataset_cfg = config.get("dataset", {})
     split = dataset_cfg.get("split", "val")
-    parsed = parse_output_config(config.get("output", {}))
+    parsed = parse_faster_rcnn_output_config(config.get("output", {}))
     save_csv = parsed["save_csv_enabled"]
     iou_match_threshold = parsed["gt_iou_match_threshold"]
     save_image = parsed["save_image_enabled"]
@@ -44,7 +83,6 @@ def run_fn_csv(config, run_dir):
             if should_save_step:
                 step_dir.mkdir(parents=True, exist_ok=True)
 
-            detector.zero_grad(set_to_none=True)
             infer_batch, ratios, pads, resized_chws = _prepare_infer_batch(detector, image_list, device, auto=False)
             with torch.no_grad():
                 preds, _logits, _objectness, _features = detector(infer_batch)
@@ -131,7 +169,7 @@ def run_tp_csv(config, run_dir):
 
     dataset_cfg = config.get("dataset", {})
     split = dataset_cfg.get("split", "val")
-    parsed = parse_output_config(config.get("output", {}))
+    parsed = parse_faster_rcnn_output_config(config.get("output", {}))
     save_csv = parsed["save_csv_enabled"]
     save_image = parsed["save_image_enabled"]
     image_step = max(1, int(parsed["save_image_gt_step"]))
@@ -165,8 +203,6 @@ def run_tp_csv(config, run_dir):
         raise ValueError("Loaded 0 images. Check dataset root/image_dir/split configuration in YAML.")
 
     detector, device = build_detector(config)
-    nms_kwargs = _resolve_detector_nms_kwargs(detector)
-
     output_file = open(output_csv, "w", newline="", encoding="utf-8") if save_csv else None
     writer = csv.DictWriter(output_file, fieldnames=fieldnames) if output_file is not None else None
     if writer is not None:
@@ -177,28 +213,12 @@ def run_tp_csv(config, run_dir):
             dataloader, desc=f"Object Detector ({mode} - {uncertainty})", total=len(dataloader)
         )):
             image_list = _as_image_list(images)
-            detector.zero_grad(set_to_none=True)
-            if bool(getattr(detector, "is_faster_rcnn", False)):
-                infer_batch = image_list
-                ratios = [(1.0, 1.0) for _ in image_list]
-                pads = [(0.0, 0.0) for _ in image_list]
-                resized_chws = None
-            else:
-                infer_batch, ratios, pads, resized_chws = _prepare_infer_batch(detector, image_list, device, auto=False)
-            with torch.no_grad():
-                model_output = detector.model(infer_batch, augment=False)
-                raw_prediction = model_output[0] if isinstance(model_output, (tuple, list)) else model_output
-                raw_logits = model_output[1] if isinstance(model_output, (tuple, list)) and len(model_output) > 1 else None
-                selected_preds, _selected_logits, _selected_objectness, selected_indices = detector.non_max_suppression(
-                    prediction=raw_prediction,
-                    logits=raw_logits,
-                    conf_thres=nms_kwargs["conf_thres"],
-                    iou_thres=nms_kwargs["iou_thres"],
-                    classes=nms_kwargs["classes"],
-                    agnostic=nms_kwargs["agnostic"],
-                    max_det=nms_kwargs["max_det"],
-                    return_indices=True,
-                )
+            ratios = [(1.0, 1.0) for _ in image_list]
+            pads = [(0.0, 0.0) for _ in image_list]
+            resized_chws = None
+            result = run_faster_rcnn_forward(detector, image_list, device, _NullTiming(device))
+            selected_preds = result.selected_preds
+            selected_indices = result.selected_indices
 
             for sample_idx in range(len(image_list)):
                 target = targets[sample_idx]
@@ -304,7 +324,7 @@ def run_tp_csv(config, run_dir):
                                 "error_type": error_row["error_type"],
                             }
                         )
-            del infer_batch, model_output, raw_prediction, raw_logits, selected_preds, selected_indices
+            del result, selected_preds, selected_indices
     finally:
         if output_file is not None:
             output_file.close()

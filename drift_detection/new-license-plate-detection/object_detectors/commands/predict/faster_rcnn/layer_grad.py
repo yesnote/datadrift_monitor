@@ -1,4 +1,14 @@
-from commands.predict.common import *
+import csv
+from pathlib import Path
+
+import numpy as np
+import torch
+from tqdm import tqdm
+
+from commands.predict.common import StageTimingProfiler, _as_image_list, _prepare_infer_batch, create_dataloader
+from commands.predict.faster_rcnn.config import parse_faster_rcnn_output_config
+from commands.predict.faster_rcnn.layer_grad_utils import collect_faster_rcnn_roi_layer_grads_per_target
+from commands.utils.predict_utils import build_detector, expand_layer_names, map_grad_tensor_to_numbers
 
 
 def _safe_npz_key(value):
@@ -68,7 +78,7 @@ def run_layer_grad_csv(config, run_dir):
 
     dataset_cfg = config.get("dataset", {})
     split = dataset_cfg.get("split", "val")
-    parsed = parse_output_config(config.get("output", {}))
+    parsed = parse_faster_rcnn_output_config(config.get("output", {}))
     save_csv = parsed["save_csv_enabled"]
     unit = parsed["unit"]
     target_values = [str(v) for v in parsed["layer_target_values"]]

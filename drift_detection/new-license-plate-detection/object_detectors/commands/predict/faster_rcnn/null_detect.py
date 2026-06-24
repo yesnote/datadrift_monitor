@@ -1,10 +1,15 @@
-from commands.predict.common import *
-from commands.utils.predict_utils import (
-    _concat_rpn_prediction_layers,
-    _filter_rpn_proposals_with_indices,
-    _resize_boxes_xyxy_tensor,
-    build_faster_rcnn_null_losses_by_stage,
-)
+import csv
+from pathlib import Path
+
+import torch
+from tqdm import tqdm
+
+from commands.predict.common import StageTimingProfiler, create_dataloader
+from commands.predict.faster_rcnn.config import parse_faster_rcnn_output_config
+from commands.predict.faster_rcnn.forward import run_faster_rcnn_intermediate_forward
+from commands.predict.faster_rcnn.features import tensor_to_float
+from commands.predict.faster_rcnn.rows import pred_class_name
+from commands.utils.predict_utils import _resize_boxes_xyxy_tensor, build_detector, build_faster_rcnn_null_losses_by_stage
 
 
 def _zero(device, dtype=torch.float32):
@@ -25,7 +30,7 @@ def run_null_detect_csv(config, run_dir):
 
     dataset_cfg = config.get("dataset", {})
     split = dataset_cfg.get("split", "val")
-    parsed = parse_output_config(config.get("output", {}))
+    parsed = parse_faster_rcnn_output_config(config.get("output", {}))
     save_csv = parsed["save_csv_enabled"]
     unit = parsed["unit"]
     null_cfg = config.get("output", {}).get("null_detect", {}) or {}
@@ -42,11 +47,6 @@ def run_null_detect_csv(config, run_dir):
     if not save_csv:
         return
 
-    def _to_float(value):
-        if isinstance(value, torch.Tensor):
-            return float(value.detach().cpu().item())
-        return float(value)
-
     dataloader = create_dataloader(config, split=split)
     if len(dataloader.dataset) == 0:
         raise ValueError("Loaded 0 images. Check dataset root/image_dir/split configuration in YAML.")
@@ -55,7 +55,6 @@ def run_null_detect_csv(config, run_dir):
     if not bool(getattr(detector, "is_faster_rcnn", False)):
         raise NotImplementedError("faster_rcnn null_detect runner requires a Faster R-CNN detector.")
 
-    nms_kwargs = _resolve_detector_nms_kwargs(detector)
     num_classes = len(detector.names) if detector.names is not None else int(config.get("model", {}).get("num_classes", 0))
     output_feature_names = [] if feature_set == "losses_only" else ["prob_sum"] + [f"prob_{i}" for i in range(max(0, num_classes))]
     null_feature_names = (
@@ -81,95 +80,16 @@ def run_null_detect_csv(config, run_dir):
         device=device,
     )
 
-    model = detector.detector_model
     with open(output_csv, "w", newline="", encoding="utf-8") as output_file:
         writer = csv.DictWriter(output_file, fieldnames=fieldnames)
         writer.writeheader()
         for images, targets in tqdm(
             dataloader, desc=f"Object Detector ({mode} - {uncertainty})", total=len(dataloader)
         ):
-            image_list = _as_image_list(images)
-            infer_batch, _ratios, _pads, _resized_chws = _prepare_infer_batch(detector, image_list, device, auto=False)
-
-            was_training = model.training
-            model.eval()
-            with torch.no_grad():
-                image_list = [
-                    img.to(detector.device, non_blocking=True) if img.device != detector.device else img
-                    for img in infer_batch
-                ]
-                original_image_sizes = [(int(img.shape[-2]), int(img.shape[-1])) for img in image_list]
-                transformed_images, _targets = model.transform(image_list, None)
-                t_detector = timing.start()
-                features = model.backbone(transformed_images.tensors)
-                if isinstance(features, torch.Tensor):
-                    features = {"0": features}
-                features_list = list(features.values())
-                rpn_objectness_list, rpn_bbox_delta_list = model.rpn.head(features_list)
-                num_anchors_per_level = [
-                    int(obj_per_level.shape[1] * obj_per_level.shape[2] * obj_per_level.shape[3])
-                    for obj_per_level in rpn_objectness_list
-                ]
-                rpn_anchors = model.rpn.anchor_generator(transformed_images, features_list)
-                rpn_objectness_flat, rpn_bbox_deltas_flat = _concat_rpn_prediction_layers(
-                    rpn_objectness_list,
-                    rpn_bbox_delta_list,
-                )
-                rpn_decoded_for_roi = model.rpn.box_coder.decode(rpn_bbox_deltas_flat.detach(), rpn_anchors).view(
-                    len(image_list), -1, 4
-                )
-                proposals, _proposal_scores, proposal_to_rpn_raw_indices = _filter_rpn_proposals_with_indices(
-                    model.rpn,
-                    rpn_decoded_for_roi,
-                    rpn_objectness_flat.detach(),
-                    transformed_images.image_sizes,
-                    num_anchors_per_level,
-                )
-                proposal_offsets = []
-                running_proposal_offset = 0
-                for proposal_img in proposals:
-                    proposal_offsets.append(running_proposal_offset)
-                    running_proposal_offset += int(proposal_img.shape[0])
-
-                roi_heads = model.roi_heads
-                box_features = roi_heads.box_roi_pool(features, proposals, transformed_images.image_sizes)
-                box_features = roi_heads.box_head(box_features)
-                class_logits, box_regression = roi_heads.box_predictor(box_features)
-                detections = detector._pre_nms_detections_with_logits(
-                    class_logits=class_logits,
-                    box_regression=box_regression,
-                    proposals=proposals,
-                    image_shapes=transformed_images.image_sizes,
-                )
-                detections = model.transform.postprocess(detections, transformed_images.image_sizes, original_image_sizes)
-
-                proposal_indices_by_img = []
-                labels_internal_by_img = []
-                for det_img in detections:
-                    labels_internal_all = det_img["labels"].to(detector.device)
-                    _labels_out, valid = detector._map_labels_to_output(labels_internal_all)
-                    valid &= det_img["scores"].to(detector.device) > 0.0
-                    proposal_indices_by_img.append(det_img["proposal_indices"].to(detector.device)[valid])
-                    labels_internal_by_img.append(labels_internal_all[valid])
-
-                raw_prediction, raw_logits = detector._detections_to_contract(
-                    detections,
-                    detector.device,
-                    include_class_features=True,
-                )
-                selected_preds, _selected_logits, _selected_objectness, selected_indices = detector.non_max_suppression(
-                    prediction=raw_prediction,
-                    logits=raw_logits,
-                    conf_thres=nms_kwargs["conf_thres"],
-                    iou_thres=nms_kwargs["iou_thres"],
-                    classes=nms_kwargs["classes"],
-                    agnostic=nms_kwargs["agnostic"],
-                    max_det=nms_kwargs["max_det"],
-                    return_indices=True,
-                )
-            if was_training:
-                model.train()
-            detector_inference_sec = timing.elapsed(t_detector)
+            image_list = images if isinstance(images, list) else [images[i] for i in range(images.shape[0])]
+            result = run_faster_rcnn_intermediate_forward(detector, image_list, device, timing)
+            model = detector.detector_model
+            roi_heads = model.roi_heads
 
             feature_compute_sec = 0.0
             batch_items = 0
@@ -177,26 +97,26 @@ def run_null_detect_csv(config, run_dir):
                 target = targets[sample_idx]
                 image_id = int(target["image_id"][0].item())
                 image_path = target["path"]
-                det_b = selected_preds[sample_idx] if selected_preds and sample_idx < len(selected_preds) else torch.zeros((0, 6), device=device)
-                raw_keep_b = selected_indices[sample_idx] if selected_indices and sample_idx < len(selected_indices) else torch.zeros((0,), dtype=torch.long, device=device)
-                pred_img = raw_prediction[sample_idx]
-                logit_img = raw_logits[sample_idx] if raw_logits is not None else None
+                det_b = result.selected_preds[sample_idx] if result.selected_preds and sample_idx < len(result.selected_preds) else torch.zeros((0, 6), device=device)
+                raw_keep_b = result.selected_indices[sample_idx] if result.selected_indices and sample_idx < len(result.selected_indices) else torch.zeros((0,), dtype=torch.long, device=device)
+                pred_img = result.raw_prediction[sample_idx]
+                logit_img = result.raw_logits[sample_idx] if result.raw_logits is not None else None
                 proposals_img = _resize_boxes_xyxy_tensor(
-                    proposals[sample_idx],
-                    transformed_images.image_sizes[sample_idx],
-                    original_image_sizes[sample_idx],
+                    result.proposals[sample_idx],
+                    result.transformed_images.image_sizes[sample_idx],
+                    result.original_image_sizes[sample_idx],
                 )
                 proposal_to_rpn_raw_idx_img = (
-                    proposal_to_rpn_raw_indices[sample_idx]
-                    if proposal_to_rpn_raw_indices and sample_idx < len(proposal_to_rpn_raw_indices)
+                    result.proposal_to_rpn_raw_indices[sample_idx]
+                    if result.proposal_to_rpn_raw_indices and sample_idx < len(result.proposal_to_rpn_raw_indices)
                     else None
                 )
-                proposal_indices_img = proposal_indices_by_img[sample_idx] if sample_idx < len(proposal_indices_by_img) else None
-                labels_internal_img = labels_internal_by_img[sample_idx] if sample_idx < len(labels_internal_by_img) else None
-                proposal_offset_img = proposal_offsets[sample_idx] if sample_idx < len(proposal_offsets) else 0
-                rpn_objectness_img = rpn_objectness_flat[sample_idx]
-                rpn_bbox_deltas_img = rpn_bbox_deltas_flat[sample_idx]
-                rpn_anchors_img = rpn_anchors[sample_idx]
+                proposal_indices_img = result.proposal_indices_by_img[sample_idx] if sample_idx < len(result.proposal_indices_by_img) else None
+                labels_internal_img = result.labels_internal_by_img[sample_idx] if sample_idx < len(result.labels_internal_by_img) else None
+                proposal_offset_img = result.proposal_offsets[sample_idx] if sample_idx < len(result.proposal_offsets) else 0
+                rpn_objectness_img = result.rpn_objectness_flat[sample_idx]
+                rpn_bbox_deltas_img = result.rpn_bbox_deltas_flat[sample_idx]
+                rpn_anchors_img = result.rpn_anchors[sample_idx]
 
                 batch_items += int(det_b.shape[0])
                 for pred_idx, box in enumerate(det_b):
@@ -234,7 +154,7 @@ def run_null_detect_csv(config, run_dir):
                         roi_box_coder=roi_heads.box_coder,
                         rpn_bbox_deltas=rpn_bbox_deltas_img,
                         rpn_anchors=rpn_anchors_img,
-                        box_regression=box_regression,
+                        box_regression=result.box_regression,
                         pred_img=pred_img,
                         logit_img=logit_img,
                         raw_idx=raw_pred_idx,
@@ -245,8 +165,8 @@ def run_null_detect_csv(config, run_dir):
                         proposal_to_rpn_raw_idx=proposal_to_rpn_raw_idx_img,
                         rpn_objectness_logits=rpn_objectness_img,
                         final_box_xyxy=box[:4],
-                        from_size=transformed_images.image_sizes[sample_idx],
-                        to_size=original_image_sizes[sample_idx],
+                        from_size=result.transformed_images.image_sizes[sample_idx],
+                        to_size=result.original_image_sizes[sample_idx],
                         rpn_bbox_loss=rpn_bbox_loss,
                         rpn_obj_loss=rpn_obj_loss,
                         roi_bbox_loss=roi_bbox_loss,
@@ -265,12 +185,7 @@ def run_null_detect_csv(config, run_dir):
                     feature_compute_sec += timing.elapsed(t_feature)
 
                     cls_idx = int(box[5].detach().cpu().item()) if box.shape[0] > 5 else 0
-                    if isinstance(detector.names, dict):
-                        pred_class = detector.names.get(cls_idx, str(cls_idx))
-                    elif isinstance(detector.names, list) and 0 <= cls_idx < len(detector.names):
-                        pred_class = detector.names[cls_idx]
-                    else:
-                        pred_class = str(cls_idx)
+                    pred_class = pred_class_name(detector, cls_idx)
 
                     writer.writerow(
                         {
@@ -278,18 +193,18 @@ def run_null_detect_csv(config, run_dir):
                             "image_path": image_path,
                             "pred_idx": pred_idx,
                             "raw_pred_idx": raw_pred_idx,
-                            "xmin": _to_float(box[0]),
-                            "ymin": _to_float(box[1]),
-                            "xmax": _to_float(box[2]),
-                            "ymax": _to_float(box[3]),
-                            "score": _to_float(box[4]),
+                            "xmin": tensor_to_float(box[0]),
+                            "ymin": tensor_to_float(box[1]),
+                            "xmax": tensor_to_float(box[2]),
+                            "ymax": tensor_to_float(box[3]),
+                            "score": tensor_to_float(box[4]),
                             "pred_class": pred_class,
-                            **{key: _to_float(value) for key, value in prob_values.items()},
-                            **{key: _to_float(value) for key, value in shape_values.items()},
-                            "rpn_bbox_loss": _to_float(rpn_bbox_loss_value),
-                            "rpn_obj_loss": _to_float(rpn_obj_loss_value),
-                            "roi_bbox_loss": _to_float(roi_bbox_loss_value),
-                            "roi_cls_loss": _to_float(roi_cls_loss_value),
+                            **{key: tensor_to_float(value) for key, value in prob_values.items()},
+                            **{key: tensor_to_float(value) for key, value in shape_values.items()},
+                            "rpn_bbox_loss": tensor_to_float(rpn_bbox_loss_value),
+                            "rpn_obj_loss": tensor_to_float(rpn_obj_loss_value),
+                            "roi_bbox_loss": tensor_to_float(roi_bbox_loss_value),
+                            "roi_cls_loss": tensor_to_float(roi_cls_loss_value),
                         }
                     )
 
@@ -297,12 +212,12 @@ def run_null_detect_csv(config, run_dir):
                 num_images=len(image_list),
                 num_predictions=batch_items,
                 stage_seconds={
-                    "detector_inference_sec": detector_inference_sec,
+                    "detector_inference_sec": result.detector_inference_sec,
                     "feature_compute_sec": feature_compute_sec,
                 },
             )
             output_file.flush()
-            del infer_batch, raw_prediction, raw_logits, selected_preds, selected_indices
+            del result
 
     del detector
     if device.type == "cuda":

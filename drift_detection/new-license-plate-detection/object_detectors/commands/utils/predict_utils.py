@@ -1706,20 +1706,22 @@ def build_faster_rcnn_roi_candidate_losses(
 
     t_candidate = _start_timing(timing_device)
     with torch.no_grad():
+        from commands.predict.faster_rcnn.candidates import (
+            build_faster_rcnn_roi_candidate_cache,
+            faster_rcnn_roi_candidate_mask_from_cache,
+        )
+
         pseudo_row = pred_img[raw_idx].detach()
         pseudo_cls = int(pseudo_row[5].detach().long().item())
         pseudo_box_xyxy = _xywh_to_xyxy_tensor(pseudo_row[:4].view(1, 4))
-        pred_cls = pred_img[:, 5].detach().long()
-        score = pred_img[:, 4].detach()
-        pre_mask = (score >= float(score_threshold)) & (pred_cls == pseudo_cls)
-        candidate_mask = torch.zeros_like(pred_cls, dtype=torch.bool)
-        if bool(pre_mask.any()):
-            pre_indices = torch.where(pre_mask)[0]
-            pred_boxes_xyxy = _xywh_to_xyxy_tensor(pred_img[pre_indices, :4].detach())
-            ious = _box_iou_1vN_tensor(pseudo_box_xyxy, pred_boxes_xyxy)
-            keep_indices = pre_indices[ious > float(iou_threshold)]
-            if keep_indices.numel() > 0:
-                candidate_mask[keep_indices] = True
+        candidate_cache = build_faster_rcnn_roi_candidate_cache(pred_img, logit_img, detach=True)
+        candidate_mask, _ious = faster_rcnn_roi_candidate_mask_from_cache(
+            candidate_cache,
+            pseudo_box_xyxy,
+            pseudo_cls,
+            score_threshold,
+            iou_threshold,
+        )
     _add_elapsed_timing(timing_accumulator, "candidate_search_sec", t_candidate, timing_device)
 
     t_loss = _start_timing(timing_device)
@@ -1897,24 +1899,30 @@ def build_faster_rcnn_rpn_candidate_losses(
 
     t_candidate = _start_timing(timing_device)
     with torch.no_grad():
+        from commands.predict.faster_rcnn.candidates import (
+            build_faster_rcnn_rpn_candidate_cache,
+            faster_rcnn_rpn_candidate_mask_from_cache,
+        )
+
         target_box = final_box_xyxy if final_box_xyxy is not None else source_proposal_xyxy
         source_proposal = target_box.detach().view(1, 4)
-        scores = torch.sigmoid(rpn_objectness_logits.detach().reshape(-1))
-        score_mask = scores >= float(obj_threshold)
-        candidate_mask = torch.zeros_like(scores, dtype=torch.bool)
-        search_boxes = rpn_search_boxes_xyxy.detach()
-        if bool(score_mask.any()):
-            score_indices = torch.where(score_mask)[0]
-            ious = _box_iou_1vN_tensor(source_proposal, search_boxes[score_indices])
-            keep_indices = score_indices[ious > float(iou_threshold)]
-            if keep_indices.numel() > 0:
-                candidate_mask[keep_indices] = True
-        if not bool(candidate_mask.any()):
-            ious = _box_iou_1vN_tensor(source_proposal, search_boxes)
-            best_idx = torch.argmax(ious)
-            candidate_mask = torch.zeros_like(scores, dtype=torch.bool)
-            candidate_mask[best_idx] = True
+        candidate_cache = build_faster_rcnn_rpn_candidate_cache(
+            rpn_search_boxes_xyxy,
+            rpn_objectness_logits,
+            rpn_anchors,
+            rpn_bbox_deltas,
+            detach=True,
+        )
+        candidate_mask, _ious = faster_rcnn_rpn_candidate_mask_from_cache(
+            candidate_cache,
+            source_proposal,
+            obj_threshold,
+            iou_threshold,
+        )
     _add_elapsed_timing(timing_accumulator, "candidate_search_sec", t_candidate, timing_device)
+
+    if not bool(candidate_mask.any()):
+        return None
 
     t_loss = _start_timing(timing_device)
     selected_deltas = rpn_bbox_deltas[candidate_mask]
