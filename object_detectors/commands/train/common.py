@@ -1,3 +1,4 @@
+import os
 import random
 from collections import OrderedDict
 from contextlib import nullcontext
@@ -203,6 +204,7 @@ def set_seed(seed):
     if seed is None:
         return
     seed = int(seed)
+    os.environ.setdefault("CUBLAS_WORKSPACE_CONFIG", ":4096:8")
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
@@ -211,9 +213,9 @@ def set_seed(seed):
     torch.backends.cudnn.deterministic = True
     torch.backends.cudnn.benchmark = False
     try:
+        torch.use_deterministic_algorithms(True, warn_only=True)
+    except TypeError:
         torch.use_deterministic_algorithms(True)
-    except Exception:
-        pass
 
 
 def resolve_device(device_str):
