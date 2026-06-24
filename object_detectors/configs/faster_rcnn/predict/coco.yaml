@@ -69,7 +69,8 @@ output:
       enabled: true
   
   ensemble:
-    weights: []
+    weights:
+      - object_detectors/models/faster_rcnn/weights/coco/fasterrcnn_resnet50_fpn_coco.pth
     save_csv:
       enabled: true
   
