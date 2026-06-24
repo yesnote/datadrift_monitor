@@ -16,11 +16,11 @@ if str(OBJECT_DETECTORS_ROOT) not in sys.path:
 
 from commands.predict.common import StageTimingProfiler, _as_image_list, _prepare_infer_batch  # noqa: E402
 from commands.predict.yolov10.config import parse_yolov10_output_config  # noqa: E402
+from commands.predict.yolov10.features import build_yolov10_candidate_cache, yolov10_candidate_mask_from_cache  # noqa: E402
 from commands.predict.yolov10.forward import run_yolov10_forward  # noqa: E402
-from commands.predict.yolov10.layer_grad import _bbox_offset_loss  # noqa: E402
+from commands.predict.yolov10.layer_grad import _build_candidate_scalar_terms, _build_null_scalar_terms  # noqa: E402
 from commands.predict.yolov10.rows import iter_yolov10_detection_rows  # noqa: E402
 from commands.utils.predict_utils import (  # noqa: E402
-    _class_loss_tensor,
     build_detector,
     expand_layer_names,
     map_grad_tensor_to_numbers,
@@ -40,7 +40,7 @@ REUSE_EXISTING = False
 
 MAX_COMBINATIONS = None
 
-TARGET = "null_target"
+TARGETS = ["cand_target", "null_target"]
 BBOX_LOSSES = ["l1", "l2"]
 CLS_COMBOS = [
     ("bcewithlogits", "pred_to_target"),
@@ -123,22 +123,23 @@ def _timestamped_meta_dir(root: Path, slug: str) -> Path:
 
 
 def iter_term_combinations():
-    for bbox_loss in BBOX_LOSSES:
-        yield {
-            "target": TARGET,
-            "term": "bbox_loss",
-            "bbox_loss": bbox_loss,
-            "cls_loss": "bcewithlogits",
-            "cls_direction": "pred_to_target",
-        }
-    for cls_loss, cls_direction in CLS_COMBOS:
-        yield {
-            "target": TARGET,
-            "term": "cls_loss",
-            "bbox_loss": "l1",
-            "cls_loss": cls_loss,
-            "cls_direction": cls_direction,
-        }
+    for target in TARGETS:
+        for bbox_loss in BBOX_LOSSES:
+            yield {
+                "target": target,
+                "term": "bbox_loss",
+                "bbox_loss": bbox_loss,
+                "cls_loss": "bcewithlogits",
+                "cls_direction": "pred_to_target",
+            }
+        for cls_loss, cls_direction in CLS_COMBOS:
+            yield {
+                "target": target,
+                "term": "cls_loss",
+                "bbox_loss": "l1",
+                "cls_loss": cls_loss,
+                "cls_direction": cls_direction,
+            }
 
 
 def _term_combo_key(combo: dict) -> tuple:
@@ -156,25 +157,26 @@ def _meta_combo_slug(combo: dict) -> str:
 def iter_meta_combinations(term_run_dirs: dict[tuple, Path]):
     count = 0
     term_combos = list(iter_term_combinations())
-    bbox_combos = [combo for combo in term_combos if combo["term"] == "bbox_loss"]
-    cls_combos = [combo for combo in term_combos if combo["term"] == "cls_loss"]
-    for bbox_combo in bbox_combos:
-        for cls_combo in cls_combos:
-            yield {
-                "target": TARGET,
-                "bbox_loss": bbox_combo["bbox_loss"],
-                "cls_loss": cls_combo["cls_loss"],
-                "cls_direction": cls_combo["cls_direction"],
-                "bbox_term_root": term_run_dirs[_term_combo_key(bbox_combo)],
-                "cls_term_root": term_run_dirs[_term_combo_key(cls_combo)],
-                "input_roots": [
-                    term_run_dirs[_term_combo_key(bbox_combo)],
-                    term_run_dirs[_term_combo_key(cls_combo)],
-                ],
-            }
-            count += 1
-            if MAX_COMBINATIONS is not None and count >= int(MAX_COMBINATIONS):
-                return
+    for target in TARGETS:
+        bbox_combos = [combo for combo in term_combos if combo["target"] == target and combo["term"] == "bbox_loss"]
+        cls_combos = [combo for combo in term_combos if combo["target"] == target and combo["term"] == "cls_loss"]
+        for bbox_combo in bbox_combos:
+            for cls_combo in cls_combos:
+                yield {
+                    "target": target,
+                    "bbox_loss": bbox_combo["bbox_loss"],
+                    "cls_loss": cls_combo["cls_loss"],
+                    "cls_direction": cls_combo["cls_direction"],
+                    "bbox_term_root": term_run_dirs[_term_combo_key(bbox_combo)],
+                    "cls_term_root": term_run_dirs[_term_combo_key(cls_combo)],
+                    "input_roots": [
+                        term_run_dirs[_term_combo_key(bbox_combo)],
+                        term_run_dirs[_term_combo_key(cls_combo)],
+                    ],
+                }
+                count += 1
+                if MAX_COMBINATIONS is not None and count >= int(MAX_COMBINATIONS):
+                    return
 
 
 def _run(cmd: list[str]) -> None:
@@ -189,14 +191,18 @@ def _prepare_layer_grad_config(base_config: dict, combo: dict) -> dict:
     layer_grad_cfg = output_cfg.setdefault("layer_grad", {})
     layer_grad_cfg.setdefault("save_csv", {})["enabled"] = True
     grad_cfg = layer_grad_cfg.setdefault("gradient", {})
+    cand_score_threshold = combo.get("cand_score_threshold", grad_cfg.get("cand_score_threshold", 0.0))
+    cand_iou_threshold = combo.get("cand_iou_threshold", grad_cfg.get("cand_iou_threshold", 0.45))
     grad_cfg = {key: value for key, value in grad_cfg.items() if key in {"bbox_layer", "cls_layer", "reduction"}}
     grad_cfg.update(
         {
-            "target": TARGET,
+            "target": combo["target"],
             "scalar": [combo["term"]],
             "bbox_loss": combo["bbox_loss"],
             "cls_loss": combo["cls_loss"],
             "cls_direction": combo["cls_direction"],
+            "cand_score_threshold": cand_score_threshold,
+            "cand_iou_threshold": cand_iou_threshold,
         }
     )
     layer_grad_cfg["gradient"] = grad_cfg
@@ -323,11 +329,15 @@ def _run_yolov10_layer_grad_terms_once(base_config: dict, combo_dirs: list[tuple
             )
             writer.writeheader()
             handles[key] = combo, run_dir, csv_file, writer
+            stages = ["detector_inference_sec"]
+            if layer_cfg["target"] == "cand_target":
+                stages.append("candidate_search_sec")
+            stages.extend(["loss_compute_sec", "backpropagation_sec", "feature_compute_sec"])
             profilers[key] = StageTimingProfiler(
                 run_dir=run_dir,
                 uncertainty="layer_grad",
                 unit=parsed["unit"],
-                stages=["detector_inference_sec", "loss_compute_sec", "backpropagation_sec", "feature_compute_sec"],
+                stages=stages,
                 device=device,
             )
 
@@ -346,29 +356,78 @@ def _run_yolov10_layer_grad_terms_once(base_config: dict, combo_dirs: list[tuple
                 }
                 for key in handles
             }
-            total_grad_calls = len(all_items) * len(handles)
+            cand_keys = [key for key in handles if parsed_by_key[key]["layer_grad"]["target"] == "cand_target"]
+            if cand_keys:
+                for key in cand_keys:
+                    stage_by_key[key]["candidate_search_sec"] = 0.0
+            candidate_caches = {}
+            candidate_indices_by_context = {}
+            if cand_keys:
+                for sample_idx in range(len(image_list)):
+                    t_candidate = first_profiler.start()
+                    candidate_caches[sample_idx] = build_yolov10_candidate_cache(forward, sample_idx)
+                    elapsed = first_profiler.elapsed(t_candidate)
+                    for key in cand_keys:
+                        stage_by_key[key]["candidate_search_sec"] += elapsed
+                for item_idx, item in enumerate(all_items):
+                    grouped_keys = {}
+                    for key in cand_keys:
+                        layer_cfg = parsed_by_key[key]["layer_grad"]
+                        group_key = (
+                            float(layer_cfg["cand_score_threshold"]),
+                            float(layer_cfg["cand_iou_threshold"]),
+                        )
+                        grouped_keys.setdefault(group_key, []).append(key)
+                    for (score_threshold, iou_threshold), keys in grouped_keys.items():
+                        cache = candidate_caches[item["sample_idx"]]
+                        t_candidate = first_profiler.start()
+                        cand_mask, _ious = yolov10_candidate_mask_from_cache(
+                            cache,
+                            item["box"][:4],
+                            item["raw_class_idx"],
+                            score_threshold,
+                            iou_threshold,
+                        )
+                        elapsed = first_profiler.elapsed(t_candidate)
+                        candidate_indices = torch.where(cand_mask)[0]
+                        for key in keys:
+                            stage_by_key[key]["candidate_search_sec"] += elapsed
+                            candidate_indices_by_context[(item_idx, key)] = candidate_indices
+            total_grad_calls = 0
+            for item_idx, _item in enumerate(all_items):
+                for key in handles:
+                    layer_cfg = parsed_by_key[key]["layer_grad"]
+                    if layer_cfg["target"] == "cand_target" and candidate_indices_by_context[(item_idx, key)].numel() == 0:
+                        continue
+                    total_grad_calls += 1
             grad_call_idx = 0
-            for item in all_items:
-                raw_box_idx = item["raw_box_idx"]
+            for item_idx, item in enumerate(all_items):
                 for key, (combo, _run_dir, _csv_file, writer) in handles.items():
                     layer_cfg = parsed_by_key[key]["layer_grad"]
                     scalar_name = combo["term"]
+                    row = dict(item["base_row"])
+                    if layer_cfg["target"] == "cand_target" and candidate_indices_by_context[(item_idx, key)].numel() == 0:
+                        t_feature = profilers[key].start()
+                        for layer_name, _param in params_by_key[key][scalar_name]:
+                            safe = layer_name.replace(".", "_")
+                            for metric in layer_cfg["reduction"]:
+                                row[f"{safe}_{scalar_name}_{metric}"] = 0.0
+                        stage_by_key[key]["feature_compute_sec"] += profilers[key].elapsed(t_feature)
+                        writer.writerow(row)
+                        continue
                     t_loss = profilers[key].start()
-                    if scalar_name == "bbox_loss":
-                        source_point = forward.source_points[raw_box_idx].to(device=device, dtype=torch.float32)
-                        target_scalar = _bbox_offset_loss(item["box"][:4].float(), source_point, layer_cfg["bbox_loss"])
-                    elif scalar_name == "cls_loss":
-                        cls_logits = forward.raw_logits[item["sample_idx"], raw_box_idx]
-                        target_value = 0.5 if layer_cfg["cls_loss"] == "bcewithlogits" else 1.0 / float(max(1, cls_logits.numel()))
-                        cls_target = torch.full_like(cls_logits, target_value)
-                        target_scalar = _class_loss_tensor(
-                            cls_logits,
-                            cls_target,
-                            class_idx=None,
-                            mode=layer_cfg["cls_loss"],
-                            direction=layer_cfg["cls_direction"],
-                            reduction="sum",
+                    if layer_cfg["target"] == "cand_target":
+                        scalar_terms = _build_candidate_scalar_terms(
+                            forward,
+                            item,
+                            candidate_indices_by_context[(item_idx, key)],
+                            layer_cfg,
+                            device,
                         )
+                    else:
+                        scalar_terms = _build_null_scalar_terms(forward, item, layer_cfg, device)
+                    if scalar_name in scalar_terms:
+                        target_scalar = scalar_terms[scalar_name]
                     else:
                         raise ValueError(f"Unsupported YOLOv10 layer_grad term: {scalar_name}")
                     stage_by_key[key]["loss_compute_sec"] += profilers[key].elapsed(t_loss)
@@ -383,7 +442,6 @@ def _run_yolov10_layer_grad_terms_once(base_config: dict, combo_dirs: list[tuple
                     )
                     stage_by_key[key]["backpropagation_sec"] += profilers[key].elapsed(t_back)
 
-                    row = dict(item["base_row"])
                     t_feature = profilers[key].start()
                     for (layer_name, _param), grad in zip(params_by_key[key][scalar_name], grads):
                         safe = layer_name.replace(".", "_")
@@ -398,7 +456,7 @@ def _run_yolov10_layer_grad_terms_once(base_config: dict, combo_dirs: list[tuple
             for key, (_combo, _run_dir, csv_file, _writer) in handles.items():
                 csv_file.flush()
                 profilers[key].record(len(image_list), len(all_items), stage_by_key[key])
-            del infer_batch, forward, all_items
+            del infer_batch, forward, all_items, candidate_caches, candidate_indices_by_context
     finally:
         for param_id, param in unique_params.items():
             param.requires_grad_(original_requires_grad[param_id])
