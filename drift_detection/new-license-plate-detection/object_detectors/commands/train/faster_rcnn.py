@@ -1,19 +1,26 @@
 import json
+import time
 from datetime import datetime
 from pathlib import Path
 
 import torch
+import torch.nn as nn
 from torchvision.models.detection import FasterRCNN_ResNet50_FPN_Weights, fasterrcnn_resnet50_fpn
 from torchvision.models.detection.faster_rcnn import FastRCNNPredictor
 from tqdm import tqdm
 
 from commands.train.common import (
     active_dataset_names,
+    autocast_context,
     count_total_params,
     count_trainable_params,
     load_matching_state_dict,
+    make_grad_scaler,
+    merge_epoch_timing,
     resolve_train_class_names,
     torch_load,
+    trainable_parameters,
+    training_options,
 )
 from dataloaders.faster_rcnn import create_dataloader
 
@@ -107,38 +114,131 @@ def _build_model(config, device):
     return model, use_finetune, class_names
 
 
-def _run_one_epoch(model, dataloader, optimizer, device, train_mode=True):
+def _freeze_feature_extractor(model):
+    model.backbone.requires_grad_(False)
+    model.backbone.eval()
+    model.rpn.requires_grad_(True)
+    model.rpn.train()
+    model.roi_heads.requires_grad_(True)
+    model.roi_heads.train()
+
+
+def _apply_frozen_module_modes(model, freeze_feature_extractor):
+    if not freeze_feature_extractor:
+        return
+    model.backbone.eval()
+    model.rpn.train()
+    model.roi_heads.train()
+
+
+def _set_norm_eval(model):
+    for module in model.modules():
+        if isinstance(module, (nn.BatchNorm1d, nn.BatchNorm2d, nn.BatchNorm3d, nn.SyncBatchNorm)):
+            module.eval()
+
+
+def _raise_if_nonfinite_loss(loss, loss_dict):
+    if torch.isfinite(loss).all():
+        return
+    values = {key: float(value.detach().cpu()) for key, value in loss_dict.items()}
+    raise FloatingPointError(f"Non-finite Faster R-CNN loss encountered: {values}")
+
+
+def _run_one_epoch(
+    model,
+    dataloader,
+    optimizer,
+    device,
+    train_mode=True,
+    amp=False,
+    scaler=None,
+    freeze_feature_extractor=False,
+    log_timing=False,
+    grad_clip_norm=0.0,
+    grad_params=None,
+):
+    was_training = model.training
     model.train()
+    _apply_frozen_module_modes(model, freeze_feature_extractor)
+    if not train_mode:
+        _set_norm_eval(model)
+
+    timing = {"data_sec": 0.0, "target_sec": 0.0, "forward_loss_sec": 0.0, "backward_step_sec": 0.0}
     total_loss = 0.0
     total_steps = 0
     pbar = tqdm(dataloader, total=len(dataloader), desc="train" if train_mode else "val")
-    for images, targets in pbar:
-        image_list = [img.to(device=device, dtype=torch.float32) for img in images]
-        target_list = [_target_to_faster_rcnn(t, device) for t in targets]
-        if train_mode:
-            optimizer.zero_grad(set_to_none=True)
-            loss_dict = model(image_list, target_list)
-            loss = sum(v for v in loss_dict.values())
-            loss.backward()
-            optimizer.step()
-        else:
-            with torch.no_grad():
-                loss_dict = model(image_list, target_list)
-                loss = sum(v for v in loss_dict.values())
-        loss_value = float(loss.detach().cpu().item())
-        total_loss += loss_value
-        total_steps += 1
-        pbar.set_postfix(loss=f"{loss_value:.4f}")
-        del image_list, target_list, loss_dict, loss
-    return (total_loss / total_steps) if total_steps else 0.0
+    next_data_start = time.perf_counter()
+
+    try:
+        for images, targets in pbar:
+            if log_timing:
+                timing["data_sec"] += time.perf_counter() - next_data_start
+
+            t_target = time.perf_counter()
+            image_list = [img.to(device=device, dtype=torch.float32, non_blocking=True) for img in images]
+            target_list = [_target_to_faster_rcnn(t, device) for t in targets]
+            if log_timing:
+                timing["target_sec"] += time.perf_counter() - t_target
+
+            if train_mode:
+                optimizer.zero_grad(set_to_none=True)
+                t_forward = time.perf_counter()
+                with autocast_context(device, amp):
+                    loss_dict = model(image_list, target_list)
+                    loss = sum(v for v in loss_dict.values())
+                _raise_if_nonfinite_loss(loss, loss_dict)
+                if log_timing:
+                    timing["forward_loss_sec"] += time.perf_counter() - t_forward
+
+                t_backward = time.perf_counter()
+                if scaler is not None and scaler.is_enabled():
+                    scaler.scale(loss).backward()
+                    if grad_clip_norm > 0.0:
+                        scaler.unscale_(optimizer)
+                        torch.nn.utils.clip_grad_norm_(grad_params, grad_clip_norm)
+                    scaler.step(optimizer)
+                    scaler.update()
+                else:
+                    loss.backward()
+                    if grad_clip_norm > 0.0:
+                        torch.nn.utils.clip_grad_norm_(grad_params, grad_clip_norm)
+                    optimizer.step()
+                if log_timing:
+                    timing["backward_step_sec"] += time.perf_counter() - t_backward
+            else:
+                with torch.no_grad():
+                    t_forward = time.perf_counter()
+                    with autocast_context(device, amp):
+                        loss_dict = model(image_list, target_list)
+                        loss = sum(v for v in loss_dict.values())
+                    _raise_if_nonfinite_loss(loss, loss_dict)
+                    if log_timing:
+                        timing["forward_loss_sec"] += time.perf_counter() - t_forward
+
+            loss_value = float(loss.detach().cpu().item())
+            total_loss += loss_value
+            total_steps += 1
+            pbar.set_postfix(loss=f"{loss_value:.4f}")
+            del image_list, target_list, loss_dict, loss
+            next_data_start = time.perf_counter()
+    finally:
+        if not train_mode:
+            model.train(was_training)
+            if was_training:
+                _apply_frozen_module_modes(model, freeze_feature_extractor)
+
+    mean_loss = (total_loss / total_steps) if total_steps else 0.0
+    if log_timing:
+        return mean_loss, {key: value / max(total_steps, 1) for key, value in timing.items()}
+    return mean_loss, {}
 
 
-def _save_ckpt(path, epoch, model, optimizer, train_loss, val_loss, class_names):
+def _save_ckpt(path, epoch, model, optimizer, train_loss, val_loss, class_names, save_optimizer=True):
     torch.save(
         {
             "epoch": int(epoch),
             "model_state_dict": model.state_dict(),
-            "optimizer_state_dict": optimizer.state_dict(),
+            "optimizer_state_dict": optimizer.state_dict() if save_optimizer else None,
             "train_loss": float(train_loss),
             "val_loss": None if val_loss is None else float(val_loss),
             "class_names": list(class_names),
@@ -153,6 +253,7 @@ def run_train(config, run_dir, device, epochs, lr, weight_decay):
     run_dir = Path(run_dir)
     weights_dir = run_dir / "weights"
     training_cfg = config.get("training", {})
+    options = training_options(config, device)
 
     train_loader = create_dataloader(config, split="train")
     try:
@@ -160,29 +261,89 @@ def run_train(config, run_dir, device, epochs, lr, weight_decay):
     except Exception:
         val_loader = None
     model, use_finetune, class_names = _build_model(config, device)
-    optimizer = torch.optim.AdamW([p for p in model.parameters() if p.requires_grad], lr=lr, weight_decay=weight_decay)
-    print(f"[train] trainable_params={count_trainable_params(model)} total_params={count_total_params(model)}")
+    if options["freeze_feature_extractor"]:
+        _freeze_feature_extractor(model)
+    trainable_params = trainable_parameters(model)
+    if not trainable_params:
+        raise ValueError("No trainable Faster R-CNN parameters remain after applying freeze settings.")
+
+    print(
+        f"[train] trainable_params={count_trainable_params(model)} total_params={count_total_params(model)} "
+        f"amp={options['amp']} freeze_feature_extractor={options['freeze_feature_extractor']}"
+    )
+    optimizer = torch.optim.AdamW(trainable_params, lr=lr, weight_decay=weight_decay)
+    scaler = make_grad_scaler(device, options["amp"])
 
     best_metric = float("inf")
     history = []
     for epoch in range(1, epochs + 1):
-        train_loss = _run_one_epoch(model, train_loader, optimizer, device, train_mode=True)
-        val_loss = None
-        if val_loader is not None:
-            val_loss = _run_one_epoch(model, val_loader, optimizer, device, train_mode=False)
-        metric = val_loss if val_loss is not None else train_loss
-        _save_ckpt(weights_dir / "last.pt", epoch, model, optimizer, train_loss, val_loss, class_names)
-        if metric <= best_metric:
-            best_metric = metric
-            _save_ckpt(weights_dir / "best.pt", epoch, model, optimizer, train_loss, val_loss, class_names)
-        history.append(
-            {
-                "epoch": int(epoch),
-                "train_loss": float(train_loss),
-                "val_loss": None if val_loss is None else float(val_loss),
-                "best_metric": float(best_metric),
-            }
+        train_loss, train_timing = _run_one_epoch(
+            model=model,
+            dataloader=train_loader,
+            optimizer=optimizer,
+            device=device,
+            train_mode=True,
+            amp=options["amp"],
+            scaler=scaler,
+            freeze_feature_extractor=options["freeze_feature_extractor"],
+            log_timing=options["log_timing"],
+            grad_clip_norm=options["grad_clip_norm"],
+            grad_params=trainable_params,
         )
+        val_loss = None
+        val_timing = {}
+        do_val = val_loader is not None and (epoch % options["val_interval"] == 0 or epoch == epochs)
+        if do_val:
+            val_loss, val_timing = _run_one_epoch(
+                model=model,
+                dataloader=val_loader,
+                optimizer=optimizer,
+                device=device,
+                train_mode=False,
+                amp=options["amp"],
+                scaler=None,
+                freeze_feature_extractor=options["freeze_feature_extractor"],
+                log_timing=options["log_timing"],
+                grad_clip_norm=0.0,
+                grad_params=trainable_params,
+            )
+        metric = val_loss if val_loss is not None else train_loss
+        can_update_best = val_loss is not None or val_loader is None
+        if epoch % options["save_last_interval"] == 0 or epoch == epochs:
+            _save_ckpt(
+                weights_dir / "last.pt",
+                epoch,
+                model,
+                optimizer,
+                train_loss,
+                val_loss,
+                class_names,
+                save_optimizer=options["save_optimizer"],
+            )
+        is_best = can_update_best and metric <= best_metric
+        if is_best:
+            best_metric = metric
+        if options["save_best"] and is_best:
+            _save_ckpt(
+                weights_dir / "best.pt",
+                epoch,
+                model,
+                optimizer,
+                train_loss,
+                val_loss,
+                class_names,
+                save_optimizer=options["save_optimizer"],
+            )
+        row = {
+            "epoch": int(epoch),
+            "train_loss": float(train_loss),
+            "val_loss": None if val_loss is None else float(val_loss),
+            "best_metric": float(best_metric),
+        }
+        if options["log_timing"]:
+            row = merge_epoch_timing(row, {f"train_{k}": v for k, v in train_timing.items()})
+            row = merge_epoch_timing(row, {f"val_{k}": v for k, v in val_timing.items()})
+        history.append(row)
         print(
             f"[train] epoch={epoch}/{epochs} train_loss={train_loss:.6f} "
             f"val_loss={'none' if val_loss is None else f'{val_loss:.6f}'}"
@@ -200,11 +361,12 @@ def run_train(config, run_dir, device, epochs, lr, weight_decay):
         "class_names": list(class_names),
         "history": history,
         "best_metric": float(best_metric),
+        "training_options": options,
         "trainable_params": count_trainable_params(model),
         "total_params": count_total_params(model),
         "weights": {
             "last": str((weights_dir / "last.pt").resolve()),
-            "best": str((weights_dir / "best.pt").resolve()),
+            "best": str((weights_dir / "best.pt").resolve()) if options["save_best"] else None,
         },
     }
     with open(run_dir / "train_summary.json", "w", encoding="utf-8") as f:
