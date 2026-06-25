@@ -11,6 +11,15 @@ from commands.predict.faster_rcnn.rows import iter_faster_rcnn_detection_rows
 from commands.utils.predict_utils import build_detector
 
 
+def _save_csv_enabled(config, uncertainty):
+    output = config.get("output", {})
+    cfg = output.get(uncertainty, {}) if isinstance(output, dict) else {}
+    save_cfg = cfg.get("save_csv", {}) if isinstance(cfg, dict) else {}
+    if isinstance(save_cfg, bool):
+        return save_cfg
+    return bool(save_cfg.get("enabled", False)) if isinstance(save_cfg, dict) else False
+
+
 def _class_tensor(num_rows, num_classes, device):
     return torch.zeros((int(num_rows), int(num_classes)), dtype=torch.float32, device=device)
 
@@ -50,16 +59,13 @@ def run_deterministic_uncertainties_csv(config, run_dir, uncertainties=None):
     run_dirs = {str(k): Path(v) for k, v in run_dir.items()} if isinstance(run_dir, dict) else {str(u): Path(run_dir) for u in uncertainties}
     mode = str(config.get("mode", "predict"))
     requested = [str(u).strip().lower() for u in uncertainties]
-    active = [u for u in ["score", "class_probability", "entropy", "energy"] if u in requested]
+    active = [u for u in ["score", "class_probability", "entropy", "energy"] if u in requested and _save_csv_enabled(config, u)]
     if not active:
         return
 
     split = config.get("dataset", {}).get("split", "val")
     parsed = parse_faster_rcnn_output_config(config.get("output", {}))
-    save_csv = parsed["save_csv_enabled"]
     unit = parsed["unit"]
-    if not save_csv:
-        return
     dataloader = create_dataloader(config, split=split)
     if len(dataloader.dataset) == 0:
         raise ValueError("Loaded 0 images. Check dataset root/image_dir/split configuration in YAML.")
