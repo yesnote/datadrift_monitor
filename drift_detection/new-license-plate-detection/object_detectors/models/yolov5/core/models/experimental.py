@@ -3,6 +3,7 @@
 Experimental modules
 """
 import math
+import sys
 
 import numpy as np
 import torch
@@ -71,6 +72,16 @@ class Ensemble(nn.ModuleList):
         return y, None
 
 
+def _register_legacy_yolov5_pickle_modules():
+    from models.yolov5.core.models import common as yolov5_common
+    from models.yolov5.core.models import experimental as yolov5_experimental
+    from models.yolov5.core.models import yolo as yolov5_yolo
+
+    sys.modules.setdefault("models.common", yolov5_common)
+    sys.modules.setdefault("models.experimental", yolov5_experimental)
+    sys.modules.setdefault("models.yolo", yolov5_yolo)
+
+
 def attempt_load(weights, device=None, inplace=True, fuse=True):
 
 
@@ -80,6 +91,7 @@ def attempt_load(weights, device=None, inplace=True, fuse=True):
 
 
         ckpt_path = attempt_download(w)
+        _register_legacy_yolov5_pickle_modules()
         try:
             ckpt = torch.load(ckpt_path, map_location=device, weights_only=False)
         except TypeError:
