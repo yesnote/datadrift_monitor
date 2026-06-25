@@ -71,6 +71,10 @@ output:
   ensemble:
     weights:
       - object_detectors/models/faster_rcnn/weights/coco/fasterrcnn_resnet50_fpn_coco.pth
+      - object_detectors/runs/faster_rcnn/train/coco/06-24-2026_22;06_faster_rcnn_seed42/weights/last.pt
+      - object_detectors/runs/faster_rcnn/train/coco/06-24-2026_22;06_faster_rcnn_seed43/weights/last.pt
+      - object_detectors/runs/faster_rcnn/train/coco/06-24-2026_22;06_faster_rcnn_seed44/weights/last.pt
+      - object_detectors/runs/faster_rcnn/train/coco/06-24-2026_22;06_faster_rcnn_seed45/weights/last.pt
     save_csv:
       enabled: true
   
