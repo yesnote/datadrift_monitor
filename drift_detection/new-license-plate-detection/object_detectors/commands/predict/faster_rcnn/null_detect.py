@@ -7,9 +7,14 @@ from tqdm import tqdm
 from commands.predict.common import StageTimingProfiler, create_dataloader
 from commands.predict.faster_rcnn.config import parse_faster_rcnn_output_config
 from commands.predict.faster_rcnn.forward import run_faster_rcnn_intermediate_forward
-from commands.predict.faster_rcnn.features import tensor_to_float
+from commands.predict.faster_rcnn.features import (
+    faster_rcnn_null_reference_boxes,
+    shape_diff_features,
+    tensor_to_float,
+    zero_shape_diff_features,
+)
 from commands.predict.faster_rcnn.rows import pred_class_name
-from commands.utils.predict_utils import _resize_boxes_xyxy_tensor, build_detector, build_faster_rcnn_null_losses_by_stage
+from commands.utils.predict_utils import _class_loss_tensor, _objectness_loss_tensor, _resize_boxes_xyxy_tensor, build_detector
 
 
 def _zero(device, dtype=torch.float32):
@@ -34,13 +39,9 @@ def run_null_detect_csv(config, run_dir):
     save_csv = parsed["save_csv_enabled"]
     unit = parsed["unit"]
     null_cfg = config.get("output", {}).get("null_detect", {}) or {}
-    rpn_bbox_loss = str(_loss_cfg(null_cfg, "rpn", "bbox_loss", "offset_l1")).strip().lower()
     rpn_obj_loss = str(_loss_cfg(null_cfg, "rpn", "obj_loss", parsed["null_detect_obj_loss"])).strip().lower()
-    rpn_bbox_direction = str(_loss_cfg(null_cfg, "rpn", "bbox_direction", "pred_to_target")).strip().lower()
     rpn_obj_direction = str(_loss_cfg(null_cfg, "rpn", "obj_direction", parsed["null_detect_obj_direction"])).strip().lower()
-    roi_bbox_loss = str(_loss_cfg(null_cfg, "roi", "bbox_loss", parsed["null_detect_bbox_loss"])).strip().lower()
     roi_cls_loss = str(_loss_cfg(null_cfg, "roi", "cls_loss", parsed["null_detect_cls_loss"])).strip().lower()
-    roi_bbox_direction = str(_loss_cfg(null_cfg, "roi", "bbox_direction", parsed["null_detect_bbox_direction"])).strip().lower()
     roi_cls_direction = str(_loss_cfg(null_cfg, "roi", "cls_direction", parsed["null_detect_cls_direction"])).strip().lower()
     feature_set = parsed["null_detect_feature_set"]
 
@@ -57,12 +58,26 @@ def run_null_detect_csv(config, run_dir):
 
     num_classes = len(detector.names) if detector.names is not None else int(config.get("model", {}).get("num_classes", 0))
     output_feature_names = [] if feature_set == "losses_only" else ["prob_sum"] + [f"prob_{i}" for i in range(max(0, num_classes))]
+    rpn_xywh_names = ["rpn_x_loss", "rpn_y_loss", "rpn_w_loss", "rpn_h_loss"]
+    roi_xywh_names = ["roi_x_loss", "roi_y_loss", "roi_w_loss", "roi_h_loss"]
+    rpn_shape_diff_names = ["rpn_size_diff", "rpn_circum_diff", "rpn_size_circum_diff"]
+    roi_shape_diff_names = ["roi_size_diff", "roi_circum_diff", "roi_size_circum_diff"]
     null_feature_names = (
-        ["rpn_bbox_loss", "rpn_obj_loss", "roi_bbox_loss", "roi_cls_loss"]
+        [
+            *rpn_xywh_names,
+            "rpn_obj_loss",
+            *roi_xywh_names,
+            "roi_cls_loss",
+        ]
         if feature_set == "losses_only"
         else [
             "final_score", "size", "circum", "size_circum",
-            "rpn_bbox_loss", "rpn_obj_loss", "roi_bbox_loss", "roi_cls_loss",
+            *rpn_shape_diff_names,
+            *rpn_xywh_names,
+            "rpn_obj_loss",
+            *roi_shape_diff_names,
+            *roi_xywh_names,
+            "roi_cls_loss",
         ]
     )
     fieldnames = [
@@ -88,9 +103,6 @@ def run_null_detect_csv(config, run_dir):
         ):
             image_list = images if isinstance(images, list) else [images[i] for i in range(images.shape[0])]
             result = run_faster_rcnn_intermediate_forward(detector, image_list, device, timing)
-            model = detector.detector_model
-            roi_heads = model.roi_heads
-
             feature_compute_sec = 0.0
             batch_items = 0
             for sample_idx in range(len(image_list)):
@@ -112,10 +124,7 @@ def run_null_detect_csv(config, run_dir):
                     else None
                 )
                 proposal_indices_img = result.proposal_indices_by_img[sample_idx] if sample_idx < len(result.proposal_indices_by_img) else None
-                labels_internal_img = result.labels_internal_by_img[sample_idx] if sample_idx < len(result.labels_internal_by_img) else None
-                proposal_offset_img = result.proposal_offsets[sample_idx] if sample_idx < len(result.proposal_offsets) else 0
                 rpn_objectness_img = result.rpn_objectness_flat[sample_idx]
-                rpn_bbox_deltas_img = result.rpn_bbox_deltas_flat[sample_idx]
                 rpn_anchors_img = result.rpn_anchors[sample_idx]
 
                 batch_items += int(det_b.shape[0])
@@ -148,40 +157,49 @@ def run_null_detect_csv(config, run_dir):
                             "circum": circum,
                             "size_circum": size / circum.clamp(min=1e-12),
                         }
-
-                    losses = build_faster_rcnn_null_losses_by_stage(
-                        rpn_box_coder=model.rpn.box_coder,
-                        roi_box_coder=roi_heads.box_coder,
-                        rpn_bbox_deltas=rpn_bbox_deltas_img,
-                        rpn_anchors=rpn_anchors_img,
-                        box_regression=result.box_regression,
-                        pred_img=pred_img,
-                        logit_img=logit_img,
-                        raw_idx=raw_pred_idx,
-                        labels_internal_img=labels_internal_img,
+                    rpn_reference, roi_reference, rpn_raw_idx = faster_rcnn_null_reference_boxes(
+                        raw_pred_idx=raw_pred_idx,
                         proposal_indices_img=proposal_indices_img,
-                        proposal_offset=proposal_offset_img,
-                        proposals_xyxy=proposals_img,
                         proposal_to_rpn_raw_idx=proposal_to_rpn_raw_idx_img,
-                        rpn_objectness_logits=rpn_objectness_img,
-                        final_box_xyxy=box[:4],
+                        proposals_xyxy=proposals_img,
+                        rpn_anchors=rpn_anchors_img,
                         from_size=result.transformed_images.image_sizes[sample_idx],
                         to_size=result.original_image_sizes[sample_idx],
-                        rpn_bbox_loss=rpn_bbox_loss,
-                        rpn_obj_loss=rpn_obj_loss,
-                        roi_bbox_loss=roi_bbox_loss,
-                        roi_cls_loss=roi_cls_loss,
-                        rpn_bbox_direction=rpn_bbox_direction,
-                        rpn_obj_direction=rpn_obj_direction,
-                        roi_bbox_direction=roi_bbox_direction,
-                        roi_cls_direction=roi_cls_direction,
+                        device=device,
                     )
-                    if losses is None:
-                        losses = {}
-                    rpn_bbox_loss_value = losses.get("rpn_bbox_loss", _zero(device))
-                    rpn_obj_loss_value = losses.get("rpn_obj_loss", _zero(device))
-                    roi_bbox_loss_value = losses.get("roi_bbox_loss", _zero(device))
-                    roi_cls_loss_value = losses.get("roi_cls_loss", _zero(device))
+                    rpn_shape_values = shape_diff_features(box[:4], rpn_reference, "rpn", device)
+                    roi_shape_values = shape_diff_features(box[:4], roi_reference, "roi", device)
+
+                    rpn_obj_loss_value = _zero(device)
+                    if rpn_raw_idx is not None:
+                        rpn_objectness_flat = rpn_objectness_img.reshape(-1)
+                        if 0 <= int(rpn_raw_idx) < int(rpn_objectness_flat.shape[0]):
+                            selected_obj_logit = rpn_objectness_flat[int(rpn_raw_idx)]
+                            obj_target = torch.full_like(selected_obj_logit, 0.5)
+                            rpn_obj_loss_value = _objectness_loss_tensor(
+                                selected_obj_logit,
+                                obj_target,
+                                mode=rpn_obj_loss,
+                                direction=rpn_obj_direction,
+                                reduction="sum",
+                            )
+                    roi_cls_loss_value = _zero(device)
+                    if logit_img is not None and 0 <= raw_pred_idx < int(logit_img.shape[0]):
+                        cls_logits = logit_img[raw_pred_idx]
+                        target_value = 0.5 if str(roi_cls_loss).strip().lower() == "bcewithlogits" else 1.0 / float(max(1, cls_logits.numel()))
+                        cls_target = torch.full_like(cls_logits, target_value)
+                        roi_cls_loss_value = _class_loss_tensor(
+                            cls_logits,
+                            cls_target,
+                            class_idx=None,
+                            mode=roi_cls_loss,
+                            direction=roi_cls_direction,
+                            reduction="sum",
+                        )
+                    if rpn_reference is None:
+                        rpn_shape_values = zero_shape_diff_features("rpn", device)
+                    if roi_reference is None:
+                        roi_shape_values = zero_shape_diff_features("roi", device)
                     feature_compute_sec += timing.elapsed(t_feature)
 
                     cls_idx = int(box[5].detach().cpu().item()) if box.shape[0] > 5 else 0
@@ -201,9 +219,12 @@ def run_null_detect_csv(config, run_dir):
                             "pred_class": pred_class,
                             **{key: tensor_to_float(value) for key, value in prob_values.items()},
                             **{key: tensor_to_float(value) for key, value in shape_values.items()},
-                            "rpn_bbox_loss": tensor_to_float(rpn_bbox_loss_value),
+                            **{
+                                key: tensor_to_float(value)
+                                for key, value in {**rpn_shape_values, **roi_shape_values}.items()
+                                if feature_set != "losses_only" or key in set(rpn_xywh_names + roi_xywh_names)
+                            },
                             "rpn_obj_loss": tensor_to_float(rpn_obj_loss_value),
-                            "roi_bbox_loss": tensor_to_float(roi_bbox_loss_value),
                             "roi_cls_loss": tensor_to_float(roi_cls_loss_value),
                         }
                     )
