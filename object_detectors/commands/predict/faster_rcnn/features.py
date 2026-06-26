@@ -1,5 +1,7 @@
 import torch
 
+from commands.utils.predict_utils import _resize_boxes_xyxy_tensor
+
 
 def stats_tensor(values, device):
     if values is None or values.numel() == 0:
@@ -39,6 +41,80 @@ def roi_feature_vector_from_cache(cache, raw_idx, class_count, device):
         if n > 0:
             probs[:n] = raw_probs[:n].to(device=device)
     return torch.cat([bbox_score.to(device=device), probs], dim=0)
+
+
+def _xyxy_to_shape(box):
+    box = box.detach().float().view(4)
+    x = 0.5 * (box[0] + box[2])
+    y = 0.5 * (box[1] + box[3])
+    w = torch.abs(box[2] - box[0])
+    h = torch.abs(box[3] - box[1])
+    size = w * h
+    circum = w + h
+    return x, y, w, h, size, circum, size / circum.clamp(min=1e-12)
+
+
+def zero_shape_diff_features(prefix, device):
+    zero = torch.zeros((), dtype=torch.float32, device=device)
+    return {
+        f"{prefix}_size_diff": zero,
+        f"{prefix}_circum_diff": zero,
+        f"{prefix}_size_circum_diff": zero,
+        f"{prefix}_x_loss": zero,
+        f"{prefix}_y_loss": zero,
+        f"{prefix}_w_loss": zero,
+        f"{prefix}_h_loss": zero,
+    }
+
+
+def shape_diff_features(final_xyxy, reference_xyxy, prefix, device):
+    if reference_xyxy is None:
+        return zero_shape_diff_features(prefix, device)
+    final_x, final_y, final_w, final_h, final_size, final_circum, final_size_circum = _xyxy_to_shape(
+        final_xyxy.to(device=device)
+    )
+    ref_x, ref_y, ref_w, ref_h, ref_size, ref_circum, ref_size_circum = _xyxy_to_shape(
+        reference_xyxy.to(device=device)
+    )
+    return {
+        f"{prefix}_size_diff": torch.abs(final_size - ref_size),
+        f"{prefix}_circum_diff": torch.abs(final_circum - ref_circum),
+        f"{prefix}_size_circum_diff": torch.abs(final_size_circum - ref_size_circum),
+        f"{prefix}_x_loss": torch.abs(final_x - ref_x),
+        f"{prefix}_y_loss": torch.abs(final_y - ref_y),
+        f"{prefix}_w_loss": torch.abs(final_w - ref_w),
+        f"{prefix}_h_loss": torch.abs(final_h - ref_h),
+    }
+
+
+def faster_rcnn_null_reference_boxes(
+    raw_pred_idx,
+    proposal_indices_img,
+    proposal_to_rpn_raw_idx,
+    proposals_xyxy,
+    rpn_anchors,
+    from_size,
+    to_size,
+    device,
+):
+    raw_pred_idx = int(raw_pred_idx)
+    if proposal_indices_img is None or raw_pred_idx < 0 or raw_pred_idx >= int(proposal_indices_img.shape[0]):
+        return None, None, None
+    proposal_idx = int(proposal_indices_img[raw_pred_idx].detach().cpu().item())
+    if proposal_idx < 0 or proposal_idx >= int(proposals_xyxy.shape[0]):
+        return None, None, None
+    roi_reference = proposals_xyxy[proposal_idx].detach().float().to(device=device)
+    if proposal_to_rpn_raw_idx is None or proposal_idx >= int(proposal_to_rpn_raw_idx.shape[0]):
+        return None, roi_reference, None
+    rpn_raw_idx = int(proposal_to_rpn_raw_idx[proposal_idx].detach().cpu().item())
+    if rpn_raw_idx < 0 or rpn_raw_idx >= int(rpn_anchors.shape[0]):
+        return None, roi_reference, None
+    rpn_reference = _resize_boxes_xyxy_tensor(
+        rpn_anchors[rpn_raw_idx].detach().view(1, 4),
+        from_size,
+        to_size,
+    )[0].float().to(device=device)
+    return rpn_reference, roi_reference, rpn_raw_idx
 
 
 def build_meta_feature_values(candidate_boxes, candidate_scores, candidate_ious, final_xyxy, device):
@@ -160,9 +236,12 @@ def meta_feature_names():
 
 __all__ = [
     "build_meta_feature_values",
+    "faster_rcnn_null_reference_boxes",
     "meta_feature_names",
     "roi_feature_vector_from_cache",
     "selected_probs_from_cache",
+    "shape_diff_features",
     "stats_tensor",
     "tensor_to_float",
+    "zero_shape_diff_features",
 ]
