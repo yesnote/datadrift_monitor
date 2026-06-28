@@ -2357,10 +2357,7 @@ def collect_faster_rcnn_candidate_layer_grads_per_target(
     box_features = roi_heads.box_roi_pool(features, proposals, transformed_images.image_sizes)
     box_features = roi_heads.box_head(box_features)
     class_logits, box_regression = roi_heads.box_predictor(box_features)
-    roi_pre_nms_threshold = float(getattr(detector, "confidence", getattr(detector, "conf_thresh", 0.25)))
-    if target_mode == "cand":
-        roi_pre_nms_threshold = min(roi_pre_nms_threshold, float(roi_cand_score_threshold))
-    with detector.temporary_roi_score_threshold(roi_pre_nms_threshold):
+    with detector.temporary_roi_score_threshold(0.0):
         detections = detector._pre_nms_detections_with_logits(
             class_logits=class_logits,
             box_regression=box_regression,
