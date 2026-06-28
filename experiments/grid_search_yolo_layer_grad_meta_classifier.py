@@ -41,6 +41,9 @@ OBJECT_DETECTOR_CONFIG = r"object_detectors/configs/yolov5/predict/coco.yaml"
 META_CLASSIFIER_CONFIG = (
     r"meta_models/configs/meta_classifier/train.yaml"
 )
+META_REGRESSOR_CONFIG = (
+    r"meta_models/configs/meta_regressor/train.yaml"
+)
 
 GT_ROOT = "object_detectors/runs/yolov5/predict/coco/06-15-2026_18;54_gt"
 
@@ -48,6 +51,7 @@ GRID_NAME = "06-16-2026_06;46_layer_grad_grid"
 
 RUN_LAYER_GRAD = True
 RUN_META_CLASSIFIER = True
+RUN_META_REGRESSOR = True
 REUSE_EXISTING = True
 
 MAX_COMBINATIONS = None
@@ -852,7 +856,7 @@ def _prepare_meta_config(
     return config
 
 
-def _read_mean_metrics(eval_csv: Path) -> dict:
+def _read_mean_metrics(eval_csv: Path, metric_keys=("auroc", "ap", "fpr95", "ece", "ace")) -> dict:
     if not eval_csv.is_file():
         return {}
     with open(eval_csv, "r", encoding="utf-8", newline="") as f:
@@ -867,7 +871,7 @@ def _read_mean_metrics(eval_csv: Path) -> dict:
     if mean_row is None and rows:
         mean_row = rows[-1]
     out = {}
-    for key in ("auroc", "ap", "fpr95", "ece", "ace"):
+    for key in metric_keys:
         try:
             out[key] = float(mean_row.get(key, "nan"))
         except Exception:
@@ -897,8 +901,10 @@ def _comparison_key(row: dict) -> tuple:
 def main() -> None:
     od_config_path = _resolve_path(OBJECT_DETECTOR_CONFIG)
     meta_config_path = _resolve_path(META_CLASSIFIER_CONFIG)
+    meta_regressor_config_path = _resolve_path(META_REGRESSOR_CONFIG)
     od_base_config = _load_yaml(od_config_path)
     meta_base_config = _load_yaml(meta_config_path)
+    meta_regressor_base_config = _load_yaml(meta_regressor_config_path)
     dataset = _dataset_name(od_base_config)
     model = _model_name(od_base_config)
 
@@ -925,8 +931,19 @@ def main() -> None:
         / dataset
         / grid_name
     )
+    meta_regressor_grid_root = (
+        REPO_ROOT
+        / "meta_models"
+        / "runs"
+        / "meta_regressor"
+        / model
+        / "train"
+        / dataset
+        / grid_name
+    )
     od_grid_root.mkdir(parents=True, exist_ok=True)
     meta_grid_root.mkdir(parents=True, exist_ok=True)
+    meta_regressor_grid_root.mkdir(parents=True, exist_ok=True)
 
     gt_root = (
         GT_ROOT.strip()
@@ -1001,6 +1018,53 @@ def main() -> None:
     print(f"Saved pair comparison: {meta_grid_root / 'target_pair_comparison.csv'}")
     print(f"Saved null comparison: {meta_grid_root / 'better_null_results.csv'}")
     print(f"Saved three-way comparison: {meta_grid_root / 'target_three_way_comparison.csv'}")
+
+    regressor_rows = []
+    print(f"Meta-regressor combinations: {len(meta_combo_list)}", flush=True)
+    for idx, combo in enumerate(meta_combo_list, start=1):
+        slug = _meta_combo_slug(combo)
+        print(f"[REG {idx}/{len(meta_combo_list)}] {slug}", flush=True)
+
+        meta_regressor_dir = _timestamped_combo_dir(meta_regressor_grid_root, slug)
+        eval_csv = meta_regressor_dir / "results" / "evaluation_results.csv"
+
+        if RUN_META_REGRESSOR and not (REUSE_EXISTING and eval_csv.is_file()):
+            meta_regressor_config = _prepare_meta_config(
+                meta_regressor_base_config, combo["input_roots"], gt_root
+            )
+            meta_regressor_config_path_i = meta_regressor_dir / "grid_meta_regressor_config.yaml"
+            _save_yaml(meta_regressor_config, meta_regressor_config_path_i)
+            _run(
+                [
+                    sys.executable,
+                    "meta_models/main.py",
+                    "--config",
+                    str(meta_regressor_config_path_i),
+                    "--run-dir",
+                    str(meta_regressor_dir),
+                ]
+            )
+
+        metrics = _read_mean_metrics(eval_csv, ("r2",))
+        regressor_rows.append(
+            {
+                "target": combo["target"],
+                "bbox_loss": combo["bbox_loss"],
+                "bbox_direction": combo["bbox_direction"],
+                "cls_loss": combo["cls_loss"],
+                "cls_direction": combo["cls_direction"],
+                "obj_loss": combo["obj_loss"],
+                "obj_direction": combo["obj_direction"],
+                "r2": metrics.get("r2", ""),
+            }
+        )
+        _write_regressor_results(meta_regressor_grid_root, regressor_rows)
+
+    print(f"Saved regressor grid results: {meta_regressor_grid_root / 'grid_results.csv'}")
+    print(
+        "Saved regressor three-way comparison: "
+        f"{meta_regressor_grid_root / 'target_three_way_comparison.csv'}"
+    )
 
 
 def _write_results(out_dir: Path, rows: list[dict]) -> None:
@@ -1121,6 +1185,63 @@ def _write_results(out_dir: Path, rows: list[dict]) -> None:
     for target in TARGETS:
         prefix = _abbr(target)
         three_way_fields.extend(f"{prefix}_{metric}" for metric in metrics)
+    _write_csv(
+        out_dir / "target_three_way_comparison.csv",
+        three_way_rows,
+        three_way_fields,
+    )
+
+
+def _write_regressor_results(out_dir: Path, rows: list[dict]) -> None:
+    fields = [
+        "target",
+        "bbox_loss",
+        "bbox_direction",
+        "cls_loss",
+        "cls_direction",
+        "obj_loss",
+        "obj_direction",
+        "r2",
+    ]
+    _write_csv(out_dir / "grid_results.csv", rows, fields)
+
+    by_key = {}
+    for row in rows:
+        by_key.setdefault(_comparison_key(row), {})[row["target"]] = row
+
+    three_way_rows = []
+    for key, grouped in by_key.items():
+        if not all(target in grouped for target in TARGETS):
+            continue
+        row = {
+            "bbox_loss": key[0],
+            "bbox_direction": key[1],
+            "cls_loss": key[2],
+            "cls_direction": key[3],
+            "obj_loss": key[4],
+            "obj_direction": key[5],
+        }
+        for target in TARGETS:
+            row[f"{_abbr(target)}_r2"] = grouped[target].get("r2", "")
+        three_way_rows.append(row)
+    three_way_rows.sort(
+        key=lambda r: (
+            r["bbox_loss"],
+            r["cls_loss"],
+            r["cls_direction"],
+            r["obj_loss"],
+            r["obj_direction"],
+        )
+    )
+    three_way_fields = [
+        "bbox_loss",
+        "bbox_direction",
+        "cls_loss",
+        "cls_direction",
+        "obj_loss",
+        "obj_direction",
+    ]
+    three_way_fields.extend(f"{_abbr(target)}_r2" for target in TARGETS)
     _write_csv(
         out_dir / "target_three_way_comparison.csv",
         three_way_rows,
