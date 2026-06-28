@@ -16,7 +16,7 @@ dataset:
     - train
     # - val
   used_ratio:
-    - 0.1
+    - 1.0
     # - 1.0
 
   coco:
@@ -124,10 +124,10 @@ output:
       scalar: [loss]
       layer: ["model.24.m.0", "model.24.m.1", "model.24.m.2"]
       reduction: [l1_norm, l2_norm, min, max, mean, std]  # [] saves raw gradient vectors
-      target: cand_target # cand_target | null_target
+      target: cand_target # cand_target | null_target | delta_target
       cand_score_threshold: 0.0
       bbox_loss: box_l1  # box_l1 | box_l2 | offset_l1 | offset_l2
-      cls_loss: bcewithlogits  # bcewithlogits | kl
+      cls_loss: kl  # bcewithlogits | kl
       obj_loss: bcewithlogits  # bcewithlogits | abs_diff | signed_diff
       bbox_direction: pred_to_target  # fixed; reverse is redundant for box_l1/box_l2/offset_l1/offset_l2
       cls_direction: pred_to_target  # pred_to_target | target_to_pred, only for cls_loss: kl
