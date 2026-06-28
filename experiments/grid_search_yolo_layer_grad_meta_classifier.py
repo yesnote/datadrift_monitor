@@ -42,21 +42,22 @@ META_CLASSIFIER_CONFIG = (
     r"meta_models/configs/meta_classifier/train.yaml"
 )
 
-GT_ROOT = ""
+GT_ROOT = "object_detectors/runs/yolov5/predict/coco/06-15-2026_18;54_gt"
 
-GRID_NAME = ""
+GRID_NAME = "06-16-2026_06;46_layer_grad_grid"
 
 RUN_LAYER_GRAD = True
 RUN_META_CLASSIFIER = True
-REUSE_EXISTING = False
+REUSE_EXISTING = True
 
 MAX_COMBINATIONS = None
 
 
-TARGETS = ["cand_target", "null_target"]
+TARGETS = ["cand_target", "null_target", "delta_target"]
 BBOX_LOSSES_BY_TARGET = {
     "cand_target": ["box_l1", "box_l2"],
     "null_target": ["box_l1", "box_l2"],
+    "delta_target": ["box_l1", "box_l2"],
 }
 CLS_LOSSES = ["bcewithlogits", "kl"]
 OBJ_LOSSES = ["bcewithlogits", "abs_diff"]
@@ -110,6 +111,7 @@ def _abbr(value: str) -> str:
     aliases = {
         "cand_target": "cand",
         "null_target": "null",
+        "delta_target": "delta",
         "pred_to_target": "pred",
         "target_to_pred": "rev",
         "bcewithlogits": "bce",
@@ -345,7 +347,7 @@ def _timing_stages_for_target(target: str) -> list[str]:
         "backpropagation_sec",
         "feature_compute_sec",
     ]
-    if target == "cand_target":
+    if target in {"cand_target", "delta_target"}:
         stages.insert(1, "candidate_search_sec")
     return stages
 
@@ -359,7 +361,7 @@ def _empty_stage_seconds(
         "backpropagation_sec": 0.0,
         "feature_compute_sec": 0.0,
     }
-    if target == "cand_target":
+    if target in {"cand_target", "delta_target"}:
         stages["candidate_search_sec"] = 0.0
     return stages
 
@@ -532,7 +534,7 @@ def _run_yolo_layer_grad_terms_once(
 
             batch_size = int(raw_prediction.shape[0]) if raw_prediction.ndim >= 3 else 1
             iou_threshold = float(getattr(detector, "iou_thresh", 0.45))
-            cand_keys = [
+            candidate_keys = [
                 key
                 for key, (
                     combo,
@@ -540,7 +542,7 @@ def _run_yolo_layer_grad_terms_once(
                     _csv_file,
                     _writer,
                 ) in handles.items()
-                if combo["target"] == "cand_target"
+                if combo["target"] in {"cand_target", "delta_target"}
             ]
             for sample_idx in range(batch_size):
                 target = targets[sample_idx]
@@ -579,7 +581,7 @@ def _run_yolo_layer_grad_terms_once(
                     )
                 )
                 candidate_cache = None
-                if cand_keys:
+                if candidate_keys:
                     t_candidate = _start_timing(device)
                     candidate_cache = build_yolo_candidate_cache(
                         pred_img,
@@ -592,8 +594,8 @@ def _run_yolo_layer_grad_terms_once(
                         t_candidate,
                         device,
                     )
-                    for cand_key in cand_keys:
-                        stage_by_key[cand_key]["candidate_search_sec"] += cache_timing["candidate_search_sec"]
+                    for candidate_key in candidate_keys:
+                        stage_by_key[candidate_key]["candidate_search_sec"] += cache_timing["candidate_search_sec"]
 
                 batch_items += int(det.shape[0])
                 for bbox_idx in range(int(det.shape[0])):
@@ -625,10 +627,10 @@ def _run_yolo_layer_grad_terms_once(
                         if (anchor_img is not None and raw_idx < anchor_img.shape[0])
                         else None
                     )
-                    cand_candidate_mask = None
+                    candidate_mask = None
                     if candidate_cache is not None:
                         t_candidate = _start_timing(device)
-                        cand_candidate_mask, _candidate_ious = yolo_candidate_mask_from_cache(
+                        candidate_mask, _candidate_ious = yolo_candidate_mask_from_cache(
                             candidate_cache,
                             raw_idx,
                             iou_threshold,
@@ -640,47 +642,123 @@ def _run_yolo_layer_grad_terms_once(
                             t_candidate,
                             device,
                         )
-                        for cand_key in cand_keys:
-                            stage_by_key[cand_key][
+                        for candidate_key in candidate_keys:
+                            stage_by_key[candidate_key][
                                 "candidate_search_sec"
                             ] += candidate_timing["candidate_search_sec"]
 
                     for key, (combo, _run_dir, _csv_file, _writer) in handles.items():
-                        target_scalar = build_layer_target_scalar_bbox(
-                            target_value=combo["term"],
-                            pred_img=pred_img,
-                            logit_img=logit_img,
-                            raw_img=raw_img,
-                            raw_idx=raw_idx,
-                            iou_threshold=iou_threshold,
-                            pseudo_gt=(
-                                "uniform"
-                                if combo["target"] == "null_target"
-                                else "cand"
-                            ),
-                            anchor_xywh=anchor_row,
-                            cand_score_threshold=cand_score_threshold,
-                            bbox_loss=combo["bbox_loss"],
-                            cls_loss=combo["cls_loss"],
-                            obj_loss=combo["obj_loss"],
-                            bbox_direction=combo["bbox_direction"],
-                            cls_direction=combo["cls_direction"],
-                            obj_direction=combo["obj_direction"],
-                            candidate_mask=(
-                                cand_candidate_mask
-                                if combo["target"] == "cand_target"
-                                else None
-                            ),
-                            timing_accumulator=stage_by_key[key],
-                            timing_device=device,
-                        )
+                        if combo["target"] == "delta_target":
+                            candidate_count = (
+                                int(candidate_mask.sum().detach().cpu().item())
+                                if candidate_mask is not None
+                                else 0
+                            )
+                            if candidate_count <= 0:
+                                target_scalar = None
+                            else:
+                                cand_scalar = build_layer_target_scalar_bbox(
+                                    target_value=combo["term"],
+                                    pred_img=pred_img,
+                                    logit_img=logit_img,
+                                    raw_img=raw_img,
+                                    raw_idx=raw_idx,
+                                    iou_threshold=iou_threshold,
+                                    pseudo_gt="cand",
+                                    anchor_xywh=anchor_row,
+                                    cand_score_threshold=cand_score_threshold,
+                                    bbox_loss=combo["bbox_loss"],
+                                    cls_loss=combo["cls_loss"],
+                                    obj_loss=combo["obj_loss"],
+                                    bbox_direction=combo["bbox_direction"],
+                                    cls_direction=combo["cls_direction"],
+                                    obj_direction=combo["obj_direction"],
+                                    candidate_mask=candidate_mask,
+                                    timing_accumulator=stage_by_key[key],
+                                    timing_device=device,
+                                )
+                                ref_scalar = build_layer_target_scalar_bbox(
+                                    target_value=combo["term"],
+                                    pred_img=pred_img,
+                                    logit_img=logit_img,
+                                    raw_img=raw_img,
+                                    raw_idx=raw_idx,
+                                    iou_threshold=iou_threshold,
+                                    pseudo_gt="uniform",
+                                    anchor_xywh=anchor_row,
+                                    cand_score_threshold=cand_score_threshold,
+                                    bbox_loss=combo["bbox_loss"],
+                                    cls_loss=combo["cls_loss"],
+                                    obj_loss=combo["obj_loss"],
+                                    bbox_direction=combo["bbox_direction"],
+                                    cls_direction=combo["cls_direction"],
+                                    obj_direction=combo["obj_direction"],
+                                    candidate_mask=None,
+                                    timing_accumulator=stage_by_key[key],
+                                    timing_device=device,
+                                )
+                                target_scalar = cand_scalar
+                                if ref_scalar is not None:
+                                    ref_term = float(candidate_count) * ref_scalar
+                                    target_scalar = (
+                                        -ref_term
+                                        if target_scalar is None
+                                        else target_scalar - ref_term
+                                    )
+                        else:
+                            target_scalar = build_layer_target_scalar_bbox(
+                                target_value=combo["term"],
+                                pred_img=pred_img,
+                                logit_img=logit_img,
+                                raw_img=raw_img,
+                                raw_idx=raw_idx,
+                                iou_threshold=iou_threshold,
+                                pseudo_gt=(
+                                    "uniform"
+                                    if combo["target"] == "null_target"
+                                    else "cand"
+                                ),
+                                anchor_xywh=anchor_row,
+                                cand_score_threshold=cand_score_threshold,
+                                bbox_loss=combo["bbox_loss"],
+                                cls_loss=combo["cls_loss"],
+                                obj_loss=combo["obj_loss"],
+                                bbox_direction=combo["bbox_direction"],
+                                cls_direction=combo["cls_direction"],
+                                obj_direction=combo["obj_direction"],
+                                candidate_mask=(
+                                    candidate_mask
+                                    if combo["target"] == "cand_target"
+                                    else None
+                                ),
+                                timing_accumulator=stage_by_key[key],
+                                timing_device=device,
+                            )
 
                         row = dict(base_row)
                         if target_scalar is None:
                             for layer_name in target_layers:
                                 grad_name = f"{combo['term']}_{layer_name}"
                                 if save_raw_gradients:
-                                    row[grad_name] = ""
+                                    if combo["target"] == "delta_target":
+                                        layer_idx = target_layers.index(layer_name)
+                                        grad_value = format_gradient_output(
+                                            torch.zeros_like(layer_params[layer_idx]),
+                                            vector_reduction=layer_gradient_reduction,
+                                            map_reduction=layer_map_reduction,
+                                        )
+                                        array_key = (
+                                            f"s{sample_idx:03d}_p{int(bbox_idx):06d}_"
+                                            f"r{int(raw_idx):06d}_{_safe_npz_key(grad_name)}"
+                                        )
+                                        grad_arrays_by_key[key][array_key] = (
+                                            _gradient_to_np_array(grad_value)
+                                        )
+                                        row[grad_name] = (
+                                            f"gradients/layer_grad_batch_{batch_idx:06d}.npz::{array_key}"
+                                        )
+                                    else:
+                                        row[grad_name] = ""
                                 else:
                                     for metric in layer_gradient_reduction:
                                         row[f"{grad_name}_{metric}"] = 0.0
@@ -840,8 +918,8 @@ def main() -> None:
     meta_grid_root = (
         REPO_ROOT
         / "meta_models"
-        / "meta_classifier"
         / "runs"
+        / "meta_classifier"
         / model
         / "train"
         / dataset
@@ -922,6 +1000,7 @@ def main() -> None:
     print(f"Saved grid results: {meta_grid_root / 'grid_results.csv'}")
     print(f"Saved pair comparison: {meta_grid_root / 'target_pair_comparison.csv'}")
     print(f"Saved null comparison: {meta_grid_root / 'better_null_results.csv'}")
+    print(f"Saved three-way comparison: {meta_grid_root / 'target_three_way_comparison.csv'}")
 
 
 def _write_results(out_dir: Path, rows: list[dict]) -> None:
@@ -1002,6 +1081,50 @@ def _write_results(out_dir: Path, rows: list[dict]) -> None:
         out_dir / "better_null_results.csv",
         [row for row in compare_rows if row["null_better_auroc"]],
         comparison_fields,
+    )
+
+    metrics = ["auroc", "ap", "fpr95", "ece", "ace"]
+    three_way_rows = []
+    for key, grouped in by_key.items():
+        if not all(target in grouped for target in TARGETS):
+            continue
+        row = {
+            "bbox_loss": key[0],
+            "bbox_direction": key[1],
+            "cls_loss": key[2],
+            "cls_direction": key[3],
+            "obj_loss": key[4],
+            "obj_direction": key[5],
+        }
+        for target in TARGETS:
+            prefix = _abbr(target)
+            for metric in metrics:
+                row[f"{prefix}_{metric}"] = grouped[target].get(metric, "")
+        three_way_rows.append(row)
+    three_way_rows.sort(
+        key=lambda r: (
+            r["bbox_loss"],
+            r["cls_loss"],
+            r["cls_direction"],
+            r["obj_loss"],
+            r["obj_direction"],
+        )
+    )
+    three_way_fields = [
+        "bbox_loss",
+        "bbox_direction",
+        "cls_loss",
+        "cls_direction",
+        "obj_loss",
+        "obj_direction",
+    ]
+    for target in TARGETS:
+        prefix = _abbr(target)
+        three_way_fields.extend(f"{prefix}_{metric}" for metric in metrics)
+    _write_csv(
+        out_dir / "target_three_way_comparison.csv",
+        three_way_rows,
+        three_way_fields,
     )
 
 
