@@ -512,8 +512,12 @@ def parse_output_config(output_cfg):
             null_scalar_probe = [str(v).strip().lower() for v in normalize_to_list(null_target_cfg.get("scalar", []))]
             has_faster_rcnn_null_cfg = bool(rpn_null_cfg or roi_null_cfg or any(str(v).startswith(("rpn_", "roi_")) for v in null_scalar_probe))
             layer_pseudo_gt = "frcnn_null" if has_faster_rcnn_null_cfg else "uniform"
-        else:
+        elif t_policy in {"delta_target", "delta"}:
+            layer_pseudo_gt = "delta"
+        elif t_policy in {"cand_target", "cand"}:
             layer_pseudo_gt = "cand"
+        else:
+            raise ValueError("Unsupported layer_grad.gradient.target. Supported values: cand_target, null_target, delta_target.")
         if layer_pseudo_gt == "frcnn_null":
             raw_scalar_cfg = null_target_cfg.get(
                 "scalar",
@@ -534,6 +538,13 @@ def parse_output_config(output_cfg):
                 else:
                     exp.extend(["obj_loss", "cls_loss", "bbox_loss"])
             layer_target_values = list(dict.fromkeys(exp))
+        if layer_pseudo_gt == "delta":
+            unsupported_delta_values = [v for v in layer_target_values if v not in {"bbox_loss", "obj_loss", "cls_loss"}]
+            if unsupported_delta_values:
+                raise ValueError(
+                    "YOLOv5 layer_grad delta_target supports only loss scalars: "
+                    "bbox_loss, obj_loss, cls_loss, or loss."
+                )
 
         nested_layer_cfg = {}
         active_rpn_cfg = unified_rpn_cfg or (
@@ -2657,6 +2668,20 @@ def collect_bbox_layer_grads_per_target(
     raw_flat = _flatten_raw_prediction_layers(pred_layers)
     _add_elapsed_timing(timing_accumulator, "loss_compute_sec", t_loss_prep, timing_device)
 
+    def add_zero_target_stats(grad_stats, target_value, raw_zero_tensor=False):
+        for layer_idx, layer_name in enumerate(target_layers):
+            key = f"{target_value}_{layer_name}"
+            if vector_reduction:
+                grad_stats[key] = {metric: 0.0 for metric in vector_reduction}
+            elif not raw_zero_tensor:
+                grad_stats[key] = []
+            else:
+                grad_stats[key] = format_gradient_output(
+                    torch.zeros_like(layer_params[layer_idx]),
+                    vector_reduction=vector_reduction,
+                    map_reduction=map_reduction,
+                )
+
     rows = []
     batch_size = int(raw_prediction.shape[0]) if raw_prediction.ndim >= 3 else 1
     iou_threshold = float(getattr(detector, "iou_thresh", 0.45))
@@ -2707,32 +2732,87 @@ def collect_bbox_layer_grads_per_target(
                 for target_value in target_values:
                     anchor_row = anchor_img[raw_idx] if (anchor_img is not None and raw_idx < anchor_img.shape[0]) else None
 
-                    target_scalar = build_layer_target_scalar_bbox(
-                        target_value=target_value,
-                        pred_img=pred_img,
-                        logit_img=logit_img,
-                        raw_img=raw_img,
-                        raw_idx=raw_idx,
-                        iou_threshold=iou_threshold,
-                        pseudo_gt=pseudo_gt,
-                        anchor_xywh=anchor_row,
-                        cand_score_threshold=cand_score_threshold,
-                        bbox_loss=bbox_loss,
-                        cls_loss=cls_loss,
-                        obj_loss=obj_loss,
-                        bbox_direction=bbox_direction,
-                        cls_direction=cls_direction,
-                        obj_direction=obj_direction,
-                        candidate_mask=candidate_mask,
-                        timing_accumulator=timing_accumulator,
-                        timing_device=timing_device,
-                    )
+                    if pseudo_gt == "delta":
+                        candidate_count = (
+                            int(candidate_mask.sum().detach().cpu().item())
+                            if candidate_mask is not None
+                            else 0
+                        )
+                        if candidate_count <= 0:
+                            add_zero_target_stats(grad_stats, target_value, raw_zero_tensor=True)
+                            continue
+                        cand_scalar = build_layer_target_scalar_bbox(
+                            target_value=target_value,
+                            pred_img=pred_img,
+                            logit_img=logit_img,
+                            raw_img=raw_img,
+                            raw_idx=raw_idx,
+                            iou_threshold=iou_threshold,
+                            pseudo_gt="cand",
+                            anchor_xywh=anchor_row,
+                            cand_score_threshold=cand_score_threshold,
+                            bbox_loss=bbox_loss,
+                            cls_loss=cls_loss,
+                            obj_loss=obj_loss,
+                            bbox_direction=bbox_direction,
+                            cls_direction=cls_direction,
+                            obj_direction=obj_direction,
+                            candidate_mask=candidate_mask,
+                            timing_accumulator=timing_accumulator,
+                            timing_device=timing_device,
+                        )
+                        ref_scalar = build_layer_target_scalar_bbox(
+                            target_value=target_value,
+                            pred_img=pred_img,
+                            logit_img=logit_img,
+                            raw_img=raw_img,
+                            raw_idx=raw_idx,
+                            iou_threshold=iou_threshold,
+                            pseudo_gt="uniform",
+                            anchor_xywh=anchor_row,
+                            cand_score_threshold=cand_score_threshold,
+                            bbox_loss=bbox_loss,
+                            cls_loss=cls_loss,
+                            obj_loss=obj_loss,
+                            bbox_direction=bbox_direction,
+                            cls_direction=cls_direction,
+                            obj_direction=obj_direction,
+                            candidate_mask=None,
+                            timing_accumulator=timing_accumulator,
+                            timing_device=timing_device,
+                        )
+                        target_scalar = cand_scalar
+                        if ref_scalar is not None:
+                            ref_term = float(candidate_count) * ref_scalar
+                            target_scalar = -ref_term if target_scalar is None else target_scalar - ref_term
+                    else:
+                        target_scalar = build_layer_target_scalar_bbox(
+                            target_value=target_value,
+                            pred_img=pred_img,
+                            logit_img=logit_img,
+                            raw_img=raw_img,
+                            raw_idx=raw_idx,
+                            iou_threshold=iou_threshold,
+                            pseudo_gt=pseudo_gt,
+                            anchor_xywh=anchor_row,
+                            cand_score_threshold=cand_score_threshold,
+                            bbox_loss=bbox_loss,
+                            cls_loss=cls_loss,
+                            obj_loss=obj_loss,
+                            bbox_direction=bbox_direction,
+                            cls_direction=cls_direction,
+                            obj_direction=obj_direction,
+                            candidate_mask=candidate_mask,
+                            timing_accumulator=timing_accumulator,
+                            timing_device=timing_device,
+                        )
 
                     if target_scalar is None:
-                        for layer_name in target_layers:
-                            grad_stats[f"{target_value}_{layer_name}"] = (
-                                {metric: 0.0 for metric in vector_reduction} if vector_reduction else []
-                            )
+                        add_zero_target_stats(
+                            grad_stats,
+                            target_value,
+                            raw_zero_tensor=(pseudo_gt == "delta"),
+                        )
                         continue
 
                     t_backprop = _start_timing(timing_device)
