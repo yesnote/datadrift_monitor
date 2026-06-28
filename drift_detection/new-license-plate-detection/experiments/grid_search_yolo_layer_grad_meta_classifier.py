@@ -26,13 +26,11 @@ from commands.utils.predict_utils import (  # noqa: E402
     _start_timing,
     build_detector,
     build_layer_target_scalar_bbox,
+    build_yolo_candidate_cache,
     expand_layer_names,
     format_gradient_output,
     parse_output_config,
     resolve_layer_parameter,
-)
-from commands.predict.yolov5.utils import (  # noqa: E402
-    build_yolo_candidate_cache,
     yolo_candidate_mask_from_cache,
 )
 from dataloaders.yolov5 import create_dataloader  # noqa: E402
