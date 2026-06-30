@@ -4,6 +4,7 @@ Experimental modules
 """
 import math
 import sys
+import types
 
 import numpy as np
 import torch
@@ -79,7 +80,34 @@ def _register_legacy_yolov5_pickle_modules():
 
     sys.modules.setdefault("models.common", yolov5_common)
     sys.modules.setdefault("models.experimental", yolov5_experimental)
-    sys.modules.setdefault("models.yolo", yolov5_yolo)
+
+    legacy_yolo_pkg = sys.modules.get("models.yolo")
+    if legacy_yolo_pkg is None or not hasattr(legacy_yolo_pkg, "__path__"):
+        legacy_yolo_pkg = types.ModuleType("models.yolo")
+        legacy_yolo_pkg.__path__ = []
+        sys.modules["models.yolo"] = legacy_yolo_pkg
+    for attr_name in dir(yolov5_yolo):
+        if not attr_name.startswith("__"):
+            setattr(legacy_yolo_pkg, attr_name, getattr(yolov5_yolo, attr_name))
+    legacy_yolo_pkg.common = yolov5_common
+    legacy_yolo_pkg.experimental = yolov5_experimental
+    legacy_yolo_pkg.yolo = yolov5_yolo
+
+    legacy_models_pkg = sys.modules.get("models.yolo.models")
+    if legacy_models_pkg is None or not hasattr(legacy_models_pkg, "__path__"):
+        legacy_models_pkg = types.ModuleType("models.yolo.models")
+        legacy_models_pkg.__path__ = []
+        sys.modules["models.yolo.models"] = legacy_models_pkg
+    legacy_yolo_pkg.models = legacy_models_pkg
+    legacy_models_pkg.common = yolov5_common
+    legacy_models_pkg.experimental = yolov5_experimental
+    legacy_models_pkg.yolo = yolov5_yolo
+    sys.modules.setdefault("models.yolo.common", yolov5_common)
+    sys.modules.setdefault("models.yolo.experimental", yolov5_experimental)
+    sys.modules.setdefault("models.yolo.yolo", yolov5_yolo)
+    sys.modules.setdefault("models.yolo.models.common", yolov5_common)
+    sys.modules.setdefault("models.yolo.models.experimental", yolov5_experimental)
+    sys.modules.setdefault("models.yolo.models.yolo", yolov5_yolo)
 
 
 def attempt_load(weights, device=None, inplace=True, fuse=True):
