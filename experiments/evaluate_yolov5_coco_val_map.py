@@ -60,8 +60,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--conf-thres", type=float, default=0.001)
     parser.add_argument("--nms-iou", type=float, default=0.60)
     parser.add_argument("--max-det", type=int, default=300)
+    parser.add_argument("--coco-max-dets", default="1,10,100")
     parser.add_argument("--batch-size", type=int, default=4)
     parser.add_argument("--auto-letterbox", action="store_true")
+    parser.add_argument("--agnostic-nms", action="store_true")
+    parser.add_argument("--category-map", choices=["name", "coco80"], default="name")
     return parser.parse_args()
 
 
@@ -82,6 +85,22 @@ def configure_detector(config: dict[str, Any], conf_thres: float, nms_iou: float
     model_cfg["iou_threshold"] = float(nms_iou)
     model_cfg["max_det"] = int(max_det)
     return cfg
+
+
+def parse_int_list(text: str) -> list[int]:
+    values = [int(x.strip()) for x in str(text).split(",") if x.strip()]
+    if not values:
+        raise ValueError("Expected at least one integer.")
+    return values
+
+
+def coco80_to_coco91_class() -> list[int]:
+    return [
+        1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25,
+        27, 28, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 46, 47, 48, 49,
+        50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61, 62, 63, 64, 65, 67, 70, 72, 73,
+        74, 75, 76, 77, 78, 79, 80, 81, 82, 84, 85, 86, 87, 88, 89, 90,
+    ]
 
 
 def image_root_candidates(config: dict[str, Any], annotation: Path, explicit: str) -> list[Path]:
@@ -213,6 +232,8 @@ def predict_batch(
     nms_iou: float,
     max_det: int,
     auto_letterbox: bool,
+    agnostic_nms: bool,
+    category_map: str,
 ) -> list[dict[str, Any]]:
     infer_parts, ratios, pads = [], [], []
     for record in records:
@@ -243,7 +264,7 @@ def predict_batch(
             conf_thres=float(conf_thres),
             iou_thres=float(nms_iou),
             classes=None,
-            agnostic=False,
+            agnostic=bool(agnostic_nms),
             max_det=int(max_det),
             return_indices=True,
         )
@@ -253,8 +274,11 @@ def predict_batch(
         detections = selected_preds[sample_idx] if sample_idx < len(selected_preds) else torch.zeros((0, 6), device=device)
         for det in detections:
             cls_idx = int(det[5].detach().cpu().item()) if det.shape[0] > 5 else 0
-            name = class_name(detector, cls_idx)
-            category_id = cat_name_to_id.get(name)
+            if category_map == "coco80":
+                category_id = coco80_to_coco91_class()[cls_idx] if 0 <= cls_idx < 80 else None
+            else:
+                name = class_name(detector, cls_idx)
+                category_id = cat_name_to_id.get(name)
             if category_id is None:
                 continue
             x1, y1, x2, y2 = restore_box(det[:4].detach().cpu(), ratios[sample_idx], pads[sample_idx], record.width, record.height)
@@ -273,14 +297,14 @@ def predict_batch(
     return results
 
 
-def evaluate_coco(coco: COCO, image_ids: list[int], predictions: list[dict[str, Any]]) -> dict[str, float]:
+def evaluate_coco(coco: COCO, image_ids: list[int], predictions: list[dict[str, Any]], max_dets: list[int]) -> dict[str, float]:
     if not predictions:
         return {name: 0.0 for name in metric_names()}
     detections = coco.loadRes(predictions)
     evaluator = COCOeval(coco, detections, "bbox")
     evaluator.params.imgIds = list(map(int, image_ids))
     evaluator.params.iouThrs = np.asarray(IOU_THRESHOLDS, dtype=np.float64)
-    evaluator.params.maxDets = [1, 10, 100]
+    evaluator.params.maxDets = list(max_dets)
     evaluator.evaluate()
     evaluator.accumulate()
     evaluator.summarize()
@@ -322,6 +346,7 @@ def main() -> None:
     annotation_path = resolve_path(args.annotation)
     output_dir = resolve_path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
+    coco_max_dets = parse_int_list(args.coco_max_dets)
 
     config = configure_detector(load_yaml(config_path), args.conf_thres, args.nms_iou, args.max_det)
     coco = COCO(str(annotation_path))
@@ -342,17 +367,22 @@ def main() -> None:
                 nms_iou=args.nms_iou,
                 max_det=args.max_det,
                 auto_letterbox=args.auto_letterbox,
+                agnostic_nms=args.agnostic_nms,
+                category_map=args.category_map,
             )
         )
 
-    metrics = evaluate_coco(coco, image_ids, predictions)
+    metrics = evaluate_coco(coco, image_ids, predictions, coco_max_dets)
     summary = {
         "num_images": len(image_ids),
         "num_detections": len(predictions),
         "conf_thres": float(args.conf_thres),
         "nms_iou": float(args.nms_iou),
         "max_det": int(args.max_det),
+        "coco_max_dets": ",".join(map(str, coco_max_dets)),
         "auto_letterbox": bool(args.auto_letterbox),
+        "agnostic_nms": bool(args.agnostic_nms),
+        "category_map": str(args.category_map),
         "config": str(config_path),
         "annotation": str(annotation_path),
         **metrics,
@@ -369,7 +399,8 @@ def main() -> None:
     print(
         f"images={len(image_ids)} detections={len(predictions)} "
         f"conf={args.conf_thres} nms_iou={args.nms_iou} max_det={args.max_det} "
-        f"auto_letterbox={bool(args.auto_letterbox)}"
+        f"coco_max_dets={coco_max_dets} auto_letterbox={bool(args.auto_letterbox)} "
+        f"agnostic_nms={bool(args.agnostic_nms)} category_map={args.category_map}"
     )
     for key in metric_names():
         print(f"{key}: {summary[key]:.3f}")
