@@ -57,7 +57,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--sample-images", default="documents/figures/figure 3/figure4_sample_images.csv")
     parser.add_argument("--num-images", type=int, default=1000)
     parser.add_argument("--limit-images", type=int, default=None)
-    parser.add_argument("--annotation", default="D:/DataDrift/datasets/COCO/annotations/instances_train2017.json")
+    parser.add_argument("--annotation", default="D:/SEONGJIN/datasets/COCO/annotations/instances_train2017.json")
     parser.add_argument("--image-root", default="")
     parser.add_argument("--output-dir", default="documents/figures/figure 3/yolov5_official_map_check")
     parser.add_argument("--conf-thres", type=float, default=0.001)
