@@ -38,6 +38,7 @@ class DatasetConfig:
 @dataclass
 class EvalResult:
     dataset: str
+    group: str
     name: str
     num_rows: int
     num_features: int
@@ -57,8 +58,28 @@ DATASET_CONFIGS = {
     'coco': DatasetConfig('coco', 'MS COCO', 'MS COCO train2017', PROJECT_ROOT / 'object_detectors/runs/yolov5/predict/coco/06-15-2026_18;54_gt', PROJECT_ROOT / 'object_detectors/runs/yolov5/predict/coco/06-16-2026_04;47_null_detect', PROJECT_ROOT / 'object_detectors/runs/yolov5/predict/coco/06-16-2026_06;46_layer_grad_grid'),
     'voc': DatasetConfig('voc', 'Pascal VOC', 'Pascal VOC 2012 train', PROJECT_ROOT / 'object_detectors/runs/yolov5/predict/voc/06-14-2026_13;36_gt', PROJECT_ROOT / 'object_detectors/runs/yolov5/predict/voc/06-14-2026_15;54_null_detect', PROJECT_ROOT / 'object_detectors/runs/yolov5/predict/voc/06-14-2026_17;09_layer_grad_grid'),
 }
-UNTO_O_ORDER = ['Full UnTO-O', 'Final-detection only', 'Target-relative only', 'Final class+score', 'Final localization', 'Target class', 'Target score', 'Target localization']
-GRAD_COMPONENTS = {'Localization gradient only': 't-null__term-bbox__b-box_l1-pred', 'Classification gradient only': 't-null__term-cls__c-kl-pred', 'Detection-score gradient only': 't-null__term-obj__o-bce-pred'}
+UNTO_O_VARIANTS = [
+    ('Final-detection', 'Class', 'Final class'),
+    ('Final-detection', 'Score', 'Final score'),
+    ('Final-detection', 'Localization', 'Final localization'),
+    ('Final-detection', 'Full', 'Final-detection only'),
+    ('Target-relative', 'Class', 'Target class'),
+    ('Target-relative', 'Score', 'Target score'),
+    ('Target-relative', 'Localization', 'Target localization'),
+    ('Target-relative', 'Full', 'Target-relative only'),
+    ('Full UnTO-O', 'Full', 'Full UnTO-O'),
+]
+GRAD_COMPONENTS = {
+    'Class': ('Classification gradient only', 't-null__term-cls__c-kl-pred'),
+    'Score': ('Detection-score gradient only', 't-null__term-obj__o-bce-pred'),
+    'Localization': ('Localization gradient only', 't-null__term-bbox__b-box_l1-pred'),
+}
+UNTO_G_VARIANTS = [
+    ('Class', 'Classification gradient only'),
+    ('Score', 'Detection-score gradient only'),
+    ('Localization', 'Localization gradient only'),
+    ('Full', 'All components'),
+]
 GRAD_LAYER_ROWS = [('YOLOv5', 'All components', 'model.24.m.0, model.24.m.1, model.24.m.2'), ('FCOS', 'Localization', 'detector_model.rpn.head.bbox_pred'), ('FCOS', 'Classification', 'detector_model.rpn.head.cls_logits'), ('FCOS', 'Detection score', 'detector_model.rpn.head.centerness'), ('Faster R-CNN', 'RPN objectness', 'rpn.head.conv, rpn.head.cls_logits'), ('Faster R-CNN', 'RPN box', 'rpn.head.conv, rpn.head.bbox_pred'), ('Faster R-CNN', 'RoI class', 'roi_heads.box_head.fc7, roi_heads.box_predictor.cls_score'), ('Faster R-CNN', 'RoI box', 'roi_heads.box_head.fc7, roi_heads.box_predictor.bbox_pred')]
 
 def resolve_path(raw: str | Path) -> Path:
@@ -111,7 +132,17 @@ def unto_o_feature_sets(cols: list[str]) -> dict[str, list[str]]:
     target_class = ['cls_loss'] if 'cls_loss' in cols else []
     target_score = ['obj_loss'] if 'obj_loss' in cols else []
     target_loc = [c for c in ['x_loss', 'y_loss', 'w_loss', 'h_loss', 'size_diff', 'circum_diff', 'size_circum_diff'] if c in cols]
-    return {'Full UnTO-O': native_features(cols, 'null_detect'), 'Final-detection only': final_class + final_score + final_loc, 'Target-relative only': target_class + target_score + target_loc, 'Final class+score': final_class + final_score, 'Final localization': final_loc, 'Target class': target_class, 'Target score': target_score, 'Target localization': target_loc}
+    return {
+        'Full UnTO-O': native_features(cols, 'null_detect'),
+        'Final-detection only': final_class + final_score + final_loc,
+        'Final class': final_class,
+        'Final score': final_score,
+        'Final localization': final_loc,
+        'Target-relative only': target_class + target_score + target_loc,
+        'Target class': target_class,
+        'Target score': target_score,
+        'Target localization': target_loc,
+    }
 
 def slug(text: str) -> str:
     return re.sub(r'[^a-z0-9]+', '_', text.lower().replace('+', 'plus')).strip('_') or 'variant'
@@ -164,44 +195,69 @@ def summary_rows(run_dir: Path) -> tuple[dict[str, Any], dict[str, Any], dict[st
         meta = json.load(f)
     return mean.iloc[0].to_dict(), std.iloc[0].to_dict(), meta
 
-def run_variant(dataset: DatasetConfig, variant: str, group: str, input_roots: Path | list[Path], classifier_base: dict[str, Any], regressor_base: dict[str, Any], output_dir: Path) -> EvalResult:
-    run_root = output_dir / 'runs' / dataset.key / slug(group) / slug(variant)
+def has_train_outputs(run_dir: Path) -> bool:
+    return (run_dir / 'results/evaluation_results.csv').is_file() and (run_dir / 'metadata.json').is_file()
+
+def variant_run_root(output_dir: Path, dataset: DatasetConfig, run_group: str, run_name: str) -> Path:
+    return output_dir / 'runs' / dataset.key / slug(run_group) / slug(run_name)
+
+def has_variant_outputs(output_dir: Path, dataset: DatasetConfig, run_group: str, run_name: str) -> bool:
+    run_root = variant_run_root(output_dir, dataset, run_group, run_name)
+    return has_train_outputs(run_root / 'meta_classifier') and has_train_outputs(run_root / 'meta_regressor')
+
+def run_variant(dataset: DatasetConfig, table_group: str, table_name: str, run_name: str, run_group: str, input_roots: Path | list[Path], classifier_base: dict[str, Any], regressor_base: dict[str, Any], output_dir: Path) -> EvalResult:
+    run_root = variant_run_root(output_dir, dataset, run_group, run_name)
     cls_dir = run_root / 'meta_classifier'
     reg_dir = run_root / 'meta_regressor'
     cls_cfg = train_config(classifier_base, input_roots, dataset.gt_root, regressor=False)
     reg_cfg = train_config(regressor_base, input_roots, dataset.gt_root, regressor=True)
-    print(f'[{dataset.display_name}][{group}] {variant}: classifier')
-    run_classifier_train(cls_cfg, cls_dir)
-    print(f'[{dataset.display_name}][{group}] {variant}: regressor')
-    run_regressor_train(reg_cfg, reg_dir)
+    if has_train_outputs(cls_dir):
+        print(f'[{dataset.display_name}][{run_group}] {run_name}: reuse classifier')
+    else:
+        print(f'[{dataset.display_name}][{run_group}] {run_name}: classifier')
+        run_classifier_train(cls_cfg, cls_dir)
+    if has_train_outputs(reg_dir):
+        print(f'[{dataset.display_name}][{run_group}] {run_name}: reuse regressor')
+    else:
+        print(f'[{dataset.display_name}][{run_group}] {run_name}: regressor')
+        run_regressor_train(reg_cfg, reg_dir)
     cls_mean, cls_std, cls_meta = summary_rows(cls_dir)
     reg_mean, reg_std, _reg_meta = summary_rows(reg_dir)
     rows = int(cls_meta.get('num_rows', 0))
     tp = int(cls_meta.get('num_positive_tp', 0))
-    return EvalResult(dataset.display_name, variant, rows, int(cls_meta.get('feature_dimension', 0)), float(tp / rows) if rows else 0.0, float(cls_mean['auroc']), float(cls_std['auroc']), float(cls_mean['ap']), float(cls_std['ap']), float(cls_mean['fpr95']), float(cls_std['fpr95']), float(reg_mean['r2']), float(reg_std['r2']), rel(cls_dir), rel(reg_dir))
+    return EvalResult(dataset.display_name, table_group, table_name, rows, int(cls_meta.get('feature_dimension', 0)), float(tp / rows) if rows else 0.0, float(cls_mean['auroc']), float(cls_std['auroc']), float(cls_mean['ap']), float(cls_std['ap']), float(cls_mean['fpr95']), float(cls_std['fpr95']), float(reg_mean['r2']), float(reg_std['r2']), rel(cls_dir), rel(reg_dir))
 
 def evaluate_unto_o(dataset: DatasetConfig, classifier_base: dict[str, Any], regressor_base: dict[str, Any], output_dir: Path, limit_rows: int | None) -> list[EvalResult]:
     sets = unto_o_feature_sets(header(dataset.unto_o_root / 'null_detect.csv'))
     results = []
-    for variant in UNTO_O_ORDER:
-        features = sets[variant]
+    run_group = 'UnTO-O ablation'
+    for table_group, table_name, run_name in UNTO_O_VARIANTS:
+        features = sets[run_name]
         if not features:
-            raise ValueError(f'Empty UnTO-O subset: {dataset.display_name} / {variant}')
-        if variant == 'Full UnTO-O' and limit_rows is None:
+            raise ValueError(f'Empty UnTO-O subset: {dataset.display_name} / {run_name}')
+        if has_variant_outputs(output_dir, dataset, run_group, run_name):
+            root = dataset.unto_o_root
+        elif run_name == 'Full UnTO-O' and limit_rows is None:
             root = dataset.unto_o_root
         else:
-            root = materialize_root(dataset.unto_o_root, 'null_detect.csv', 'null_detect', dataset.key, slug(variant), output_dir, None if variant == 'Full UnTO-O' else features, limit_rows)
-        results.append(run_variant(dataset, variant, 'UnTO-O ablation', root, classifier_base, regressor_base, output_dir))
+            root = materialize_root(dataset.unto_o_root, 'null_detect.csv', 'null_detect', dataset.key, slug(run_name), output_dir, None if run_name == 'Full UnTO-O' else features, limit_rows)
+        results.append(run_variant(dataset, table_group, table_name, run_name, run_group, root, classifier_base, regressor_base, output_dir))
     return results
 
 def evaluate_unto_g(dataset: DatasetConfig, classifier_base: dict[str, Any], regressor_base: dict[str, Any], output_dir: Path, limit_rows: int | None) -> list[EvalResult]:
     roots = {}
-    for name, suffix in GRAD_COMPONENTS.items():
+    for _table_name, (run_name, suffix) in GRAD_COMPONENTS.items():
         root = find_component_root(dataset.grad_grid_root, suffix)
-        roots[name] = maybe_limit_root(root, 'layer_grad.csv', 'layer_grad', dataset.key, suffix, output_dir, limit_rows)
-    roots['All components'] = [roots[name] for name in GRAD_COMPONENTS]
-    order = ['Localization gradient only', 'Classification gradient only', 'Detection-score gradient only', 'All components']
-    return [run_variant(dataset, name, 'UnTO-G component ablation', roots[name], classifier_base, regressor_base, output_dir) for name in order]
+        roots[run_name] = maybe_limit_root(root, 'layer_grad.csv', 'layer_grad', dataset.key, suffix, output_dir, limit_rows)
+    roots['All components'] = [
+        roots['Localization gradient only'],
+        roots['Classification gradient only'],
+        roots['Detection-score gradient only'],
+    ]
+    return [
+        run_variant(dataset, '', table_name, run_name, 'UnTO-G component ablation', roots[run_name], classifier_base, regressor_base, output_dir)
+        for table_name, run_name in UNTO_G_VARIANTS
+    ]
 
 def result_dict(result: EvalResult) -> dict[str, Any]:
     return result.__dict__.copy()
@@ -216,20 +272,99 @@ def esc(text: str) -> str:
         text = text.replace(old, new)
     return text
 
-def write_ablation_table(path: Path, label: str, caption: str, results: list[EvalResult]) -> None:
-    lines = [r'\begin{table}[t]', r'\centering', rf'\caption{{{caption}}}', rf'\label{{{label}}}', r'\begin{tabular}{L{0.13\linewidth}L{0.24\linewidth}ccccc}', r'\toprule', r'Dataset & Variant & \# Feat. & AUROC & AP & FPR95 & $R^2$ \\', r'\midrule']
-    prev = None
-    for r in results:
-        ds = esc(r.dataset) if r.dataset != prev else ''
-        prev = r.dataset
-        lines.append(f'{ds} & {esc(r.name)} & {r.num_features} & {fmt(r.auroc_mean, r.auroc_std)} & {fmt(r.ap_mean, r.ap_std)} & {fmt(r.fpr95_mean, r.fpr95_std)} & {fmt(r.r2_mean, r.r2_std, False)} \\\\')
-    lines.extend([r'\bottomrule', r'\end{tabular}', r'\end{table}'])
+def appendix_dataset_name(name: str) -> str:
+    return 'Pascal VOC 2012' if name == 'Pascal VOC' else name
+
+def dataset_header(row: dict[str, Any]) -> str:
+    name = appendix_dataset_name(str(row['display_name']))
+    detections = int(row['detections'])
+    tp_ratio = float(row['tp_ratio']) * 100.0
+    return rf'\shortstack{{{esc(name)}\\\scriptsize \(\#\) Det. {detections:,}, TP ratio: {tp_ratio:.2f}\%}}'
+
+def metric_cells(result: EvalResult | None) -> list[str]:
+    if result is None:
+        return ['--', '--', '--', '--']
+    return [
+        fmt(result.auroc_mean, result.auroc_std),
+        fmt(result.ap_mean, result.ap_std),
+        fmt(result.fpr95_mean, result.fpr95_std),
+        fmt(result.r2_mean, result.r2_std, False),
+    ]
+
+def wide_table_start(caption: str, label: str, title: str, left_headers: list[str], dataset_rows: list[dict[str, Any]], column_spec: str) -> list[str]:
+    lines = [
+        r'\begin{table}[t]',
+        r'\centering',
+        rf'\caption{{{caption}}}',
+        rf'\label{{{label}}}',
+        r'\scriptsize',
+        r'\setlength{\tabcolsep}{2pt}',
+        r'\renewcommand{\arraystretch}{1.0}',
+        r'\resizebox{\textwidth}{!}{%',
+        rf'\begin{{tabular}}{{{column_spec}}}',
+        r'\toprule',
+    ]
+    left_count = len(left_headers)
+    left = rf'\multicolumn{{{left_count}}}{{@{{}}c|}}{{\rule[-0.7ex]{{0pt}}{{3.8ex}}\raisebox{{1.2ex}}{{\textbf{{{esc(title)}}}}}}}'
+    headers = [rf'\multicolumn{{4}}{{c}}{{{dataset_header(row)}}}' for row in dataset_rows]
+    lines.append(left + ' & ' + ' & '.join(headers) + r' \\')
+    cmidrules = []
+    start = left_count + 1
+    for idx, _row in enumerate(dataset_rows):
+        end = start + 3
+        trim = 'l' if idx == len(dataset_rows) - 1 else 'lr'
+        cmidrules.append(rf'\cmidrule({trim}){{{start}-{end}}}')
+        start = end + 1
+    lines.append(''.join(cmidrules))
+    metric_headers = [r'AUROC~$\uparrow$', r'AP~$\uparrow$', r'FPR95~$\downarrow$', r'\(R^2\uparrow\)']
+    lines.append(' & '.join(left_headers + metric_headers * len(dataset_rows)) + r' \\')
+    lines.append(r'\midrule')
+    return lines
+
+def wide_table_end(lines: list[str], path: Path) -> None:
+    lines.extend([r'\bottomrule', r'\end{tabular}%', r'}', r'\end{table}'])
     path.write_text('\n'.join(lines) + '\n', encoding='utf-8')
+
+def write_unto_o_table(path: Path, dataset_rows: list[dict[str, Any]], results: list[EvalResult]) -> None:
+    caption = 'UnTO-O indicator ablation on YOLOv5 using MS COCO and Pascal VOC. Values are means with standard deviations over repeated splits.'
+    column_spec = '@{}ll|' + 'c' * (4 * len(dataset_rows)) + '@{}'
+    lines = wide_table_start(caption, 'tab:app_unto_o_ablation', 'UnTO-O', ['Group', 'Variant'], dataset_rows, column_spec)
+    by_key = {(r.dataset, r.group, r.name): r for r in results}
+    prev_group = None
+    for group, name, _run_name in UNTO_O_VARIANTS:
+        if prev_group is not None and group != prev_group:
+            lines.append(r'\specialrule{\cmidrulewidth}{\aboverulesep}{\belowrulesep}')
+        group_cell = esc(group) if group != prev_group else ''
+        cells = [group_cell, esc(name)]
+        for row in dataset_rows:
+            cells.extend(metric_cells(by_key.get((str(row['display_name']), group, name))))
+        lines.append(' & '.join(cells) + r' \\')
+        prev_group = group
+    wide_table_end(lines, path)
+
+def write_unto_g_table(path: Path, dataset_rows: list[dict[str, Any]], results: list[EvalResult]) -> None:
+    caption = 'UnTO-G component-gradient ablation on YOLOv5 using MS COCO and Pascal VOC. Values are means with standard deviations over repeated splits.'
+    column_spec = '@{}l|' + 'c' * (4 * len(dataset_rows)) + '@{}'
+    lines = wide_table_start(caption, 'tab:app_unto_g_component_ablation', 'UnTO-G', ['Variant'], dataset_rows, column_spec)
+    by_key = {(r.dataset, r.name): r for r in results}
+    for idx, (name, _run_name) in enumerate(UNTO_G_VARIANTS):
+        if idx > 0 and name == 'Full':
+            lines.append(r'\specialrule{\cmidrulewidth}{\aboverulesep}{\belowrulesep}')
+        cells = [esc(name)]
+        for row in dataset_rows:
+            cells.extend(metric_cells(by_key.get((str(row['display_name']), name))))
+        lines.append(' & '.join(cells) + r' \\')
+    wide_table_end(lines, path)
 
 def write_gradient_layers_table(path: Path) -> None:
     lines = [r'\begin{table}[t]', r'\centering', r'\caption{Gradient extraction layers used for UnTO-G.}', r'\label{tab:app_gradient_layers}', r'\begin{tabular}{L{0.18\linewidth}L{0.28\linewidth}L{0.44\linewidth}}', r'\toprule', r'Detector & Component & Layers \\', r'\midrule']
+    prev_detector = None
     for detector, component, layers in GRAD_LAYER_ROWS:
-        lines.append(f'{esc(detector)} & {esc(component)} & {esc(layers)} ' + r'\\')
+        if prev_detector is not None and detector != prev_detector:
+            lines.append(r'\specialrule{\cmidrulewidth}{\aboverulesep}{\belowrulesep}')
+        detector_cell = esc(detector) if detector != prev_detector else ''
+        lines.append(f'{detector_cell} & {esc(component)} & {esc(layers)} ' + r'\\')
+        prev_detector = detector
     lines.extend([r'\bottomrule', r'\end{tabular}', r'\end{table}'])
     path.write_text('\n'.join(lines) + '\n', encoding='utf-8')
 
@@ -258,14 +393,6 @@ def write_hyperparameters(path: Path, rows: list[dict[str, str]]) -> None:
     lines = [r'\begin{table}[t]', r'\centering', r'\caption{Meta-model and split settings used for appendix ablations.}', r'\label{tab:app_hyperparameters}', r'\begin{tabular}{L{0.28\linewidth}L{0.62\linewidth}}', r'\toprule', r'Item & Setting \\', r'\midrule']
     for row in rows:
         lines.append(f'{esc(row["item"])} & {esc(row["setting"])} ' + r'\\')
-    lines.extend([r'\bottomrule', r'\end{tabular}', r'\end{table}'])
-    path.write_text('\n'.join(lines) + '\n', encoding='utf-8')
-
-def write_dataset_summary(path: Path, rows: list[dict[str, Any]], limit_rows: int | None) -> None:
-    suffix = ' on the loaded evaluation rows' + (f' (limited to {limit_rows:,} rows for a dry run)' if limit_rows else '')
-    lines = [r'\begin{table}[t]', r'\centering', rf'\caption{{YOLOv5 appendix ablation data summary{suffix}.}}', r'\label{tab:app_dataset_summary}', r'\begin{tabular}{lccc}', r'\toprule', r'Dataset & Detections & TP Ratio & Regression Target \\', r'\midrule']
-    for row in rows:
-        lines.append(f'{esc(str(row["display_name"]))} & {int(row["detections"]):,} & {float(row["tp_ratio"]) * 100:.2f}\\% & best same-class IoU ' + r'\\')
     lines.extend([r'\bottomrule', r'\end{tabular}', r'\end{table}'])
     path.write_text('\n'.join(lines) + '\n', encoding='utf-8')
 
@@ -333,13 +460,13 @@ def main() -> None:
             dataset_rows.append({'detector': 'YOLOv5', 'dataset': dataset.summary_name, 'display_name': dataset.display_name, 'detections': first.num_rows, 'tp_ratio': first.tp_ratio, 'regression_target': 'best same-class IoU', 'limit_rows': args.limit_rows or ''})
         metadata['datasets'][dataset.key] = {'display_name': dataset.display_name, 'gt_root': str(dataset.gt_root), 'unto_o_root': str(dataset.unto_o_root), 'grad_grid_root': str(dataset.grad_grid_root)}
     pd.DataFrame(dataset_rows).to_csv(output_dir / 'dataset_summary.csv', index=False)
-    write_dataset_summary(output_dir / 'dataset_summary_table.tex', dataset_rows, args.limit_rows)
+    (output_dir / 'dataset_summary_table.tex').unlink(missing_ok=True)
     if unto_o_results:
         pd.DataFrame([result_dict(r) for r in unto_o_results]).to_csv(output_dir / 'unto_o_ablation_results.csv', index=False)
-        write_ablation_table(output_dir / 'unto_o_ablation_table.tex', 'tab:app_unto_o_ablation', 'UnTO-O indicator ablation on YOLOv5 using MS COCO and Pascal VOC.', unto_o_results)
+        write_unto_o_table(output_dir / 'unto_o_ablation_table.tex', dataset_rows, unto_o_results)
     if unto_g_results:
         pd.DataFrame([result_dict(r) for r in unto_g_results]).to_csv(output_dir / 'unto_g_component_ablation_results.csv', index=False)
-        write_ablation_table(output_dir / 'unto_g_component_table.tex', 'tab:app_unto_g_component_ablation', 'UnTO-G component-gradient ablation on YOLOv5 using MS COCO and Pascal VOC.', unto_g_results)
+        write_unto_g_table(output_dir / 'unto_g_component_table.tex', dataset_rows, unto_g_results)
     metadata['unto_o_results'] = [result_dict(r) for r in unto_o_results]
     metadata['unto_g_results'] = [result_dict(r) for r in unto_g_results]
     (output_dir / 'run_metadata.json').write_text(json.dumps(metadata, indent=2), encoding='utf-8')
