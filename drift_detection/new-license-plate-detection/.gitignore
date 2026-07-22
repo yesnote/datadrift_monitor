@@ -1,4 +1,6 @@
+*.log
 .agents/
+.texlive-cache/
 code_references/
 codex_plans/
 documents/
