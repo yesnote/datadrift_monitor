@@ -87,10 +87,12 @@ Run one PAL round:
 python -B tools/run_active_learning.py --method pal --detector retinanet --dataset voc --rounds 1 --gpus 1
 ```
 
-The default terminal output is concise. It prints the resolved run, output
-directory, round progress, step status, and short result paths. Detailed command
-arguments, MMDetection training logs, inference logs, and acquisition details are
-saved under the run directory instead of being streamed to the terminal.
+The default terminal output is concise. It prints the resolved run and output
+directory, then shows separate progress bars for the current round's train,
+eval, and method inference steps. Acquisition is printed as a short result line.
+Detailed command arguments, MMDetection logs, inference logs, and acquisition
+details are saved under the run directory instead of being streamed to the
+terminal.
 
 Important output files:
 
