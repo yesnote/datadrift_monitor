@@ -29,57 +29,48 @@ class MethodSpec:
     aliases: Tuple[str, ...]
     description: str
     output_name: str
-    smoke_output_name: str
     cfg_overrides: Dict[str, object] = field(default_factory=dict)
     round_num: int = 7
-    smoke_round_num: int = 1
     budget: int = 414
-    smoke_budget: int = 2
 
     def default_alias(self) -> str:
         if self.method == 'pal' and self.cfg_overrides.get('pal_mode') == 'lius':
             return 'pal:lius'
         return self.method
 
-    def output_dir(self, smoke: bool) -> str:
-        return 'work_dirs/%s' % (self.smoke_output_name if smoke else self.output_name)
+    def output_dir(self) -> str:
+        return 'work_dirs/%s' % self.output_name
 
-    def to_config(self, dataset: DatasetSpec, smoke: bool, gpus: int) -> Dict[str, object]:
-        budget = self.smoke_budget if smoke else self.budget
+    def to_config(self, dataset: DatasetSpec, gpus: int) -> Dict[str, object]:
+        budget = self.budget
         cfg: Dict[str, object] = {
-            'round_num': self.smoke_round_num if smoke else self.round_num,
+            'round_num': self.round_num,
             'budget': budget,
-            'output_dir': self.output_dir(smoke),
+            'output_dir': self.output_dir(),
         }
         if self.key == 'ppal':
-            cfg.update(_ppal_config(dataset, budget=budget, smoke=smoke, gpus=gpus))
+            cfg.update(_ppal_config(dataset, budget=budget, gpus=gpus))
         elif self.key == 'pal_full':
-            cfg.update(_pal_config(mode='full', smoke=smoke))
+            cfg.update(_pal_config(mode='full'))
         elif self.key == 'pal_lius':
-            cfg.update(_pal_config(mode='lius', smoke=smoke))
+            cfg.update(_pal_config(mode='lius'))
         cfg.update(self.cfg_overrides)
         return cfg
 
 
-def _ppal_config(dataset: DatasetSpec, budget: int, smoke: bool, gpus: int) -> Dict[str, object]:
-    if smoke:
-        uncertainty_pool_size = 4
-        score_thr = 0.0
-        cfg: Dict[str, object] = {'uncertainty_pool_size': uncertainty_pool_size}
-    else:
-        budget_expand_ratio = 4
-        uncertainty_pool_size = _uncertainty_pool_size(budget, budget_expand_ratio, gpus)
-        score_thr = 0.05
-        cfg = {
-            'budget_expand_ratio': budget_expand_ratio,
-            'uncertainty_pool_size': uncertainty_pool_size,
-        }
+def _ppal_config(dataset: DatasetSpec, budget: int, gpus: int) -> Dict[str, object]:
+    budget_expand_ratio = 4
+    uncertainty_pool_size = _uncertainty_pool_size(budget, budget_expand_ratio, gpus)
+    cfg: Dict[str, object] = {
+        'budget_expand_ratio': budget_expand_ratio,
+        'uncertainty_pool_size': uncertainty_pool_size,
+    }
     cfg.update({
         'uncertainty_sampler_config': dict(
             type='DCUSSampler',
             n_sample_images=uncertainty_pool_size,
             oracle_annotation_path=dataset.oracle_path,
-            score_thr=score_thr,
+            score_thr=0.05,
             class_weight_ub=0.2,
             class_weight_alpha=0.3,
             dataset_type=dataset.dataset_type,
@@ -94,30 +85,24 @@ def _ppal_config(dataset: DatasetSpec, budget: int, smoke: bool, gpus: int) -> D
     return cfg
 
 
-def _pal_config(mode: str, smoke: bool) -> Dict[str, object]:
+def _pal_config(mode: str) -> Dict[str, object]:
     cfg: Dict[str, object] = {
         'pal_mode': mode,
         'pal_iou_threshold': 0.5,
         'pal_labeled_detections': 'pal_labeled_detections.bbox.json',
         'pal_unlabeled_detections': 'pal_unlabeled_detections.bbox.json',
     }
-    if smoke:
-        cfg['pal_cfg_options'] = {
-            'model.test_cfg.score_thr': 0.0,
-            'model.test_cfg.max_per_img': 50,
-        }
     if mode == 'full':
         cfg.update({
             'pal_alpha': 0.9,
             'pal_beta': 0.04,
             'pal_gamma': 0.02,
-            'pal_embedding_source': 'detection' if smoke else 'external',
+            'pal_embedding_source': 'external',
             'pal_diagnostics_file': 'pal_diagnostics.json',
         })
-        if not smoke:
-            embedding_path = 'work_dirs/pal_embeddings/voc_google_vit_embeddings.npy'
-            cfg['pal_embedding_path'] = embedding_path
-            cfg['required_files'] = [embedding_path]
+        embedding_path = 'work_dirs/pal_embeddings/voc_google_vit_embeddings.npy'
+        cfg['pal_embedding_path'] = embedding_path
+        cfg['required_files'] = [embedding_path]
     return cfg
 
 
@@ -128,7 +113,6 @@ METHODS = (
         aliases=PPAL_ALIASES,
         description='PPAL DCUS+CCMS acquisition.',
         output_name='retinanet_voc_ppal_7rounds_5percent_to_20percent',
-        smoke_output_name='smoke_retinanet_voc_ppal_1round',
     ),
     MethodSpec(
         key='pal_full',
@@ -136,7 +120,6 @@ METHODS = (
         aliases=PAL_FULL_ALIASES,
         description='PAL full LIUS+GUIDE acquisition.',
         output_name='retinanet_voc_pal_7rounds_5percent_to_20percent',
-        smoke_output_name='smoke_retinanet_voc_pal_guide_1round',
         cfg_overrides={'pal_mode': 'full'},
     ),
     MethodSpec(
@@ -145,7 +128,6 @@ METHODS = (
         aliases=PAL_LIUS_ALIASES,
         description='PAL LIUS-only acquisition.',
         output_name='retinanet_voc_pal_lius_7rounds_5percent_to_20percent',
-        smoke_output_name='smoke_retinanet_voc_pal_lius_1round',
         cfg_overrides={'pal_mode': 'lius'},
     ),
     MethodSpec(
@@ -154,7 +136,6 @@ METHODS = (
         aliases=('random',),
         description='Random acquisition baseline.',
         output_name='retinanet_voc_random_7rounds_5percent_to_20percent',
-        smoke_output_name='smoke_retinanet_voc_random_1round',
     ),
     MethodSpec(
         key='entropy',
@@ -162,7 +143,6 @@ METHODS = (
         aliases=('entropy',),
         description='Entropy acquisition baseline.',
         output_name='retinanet_voc_entropy_7rounds_5percent_to_20percent',
-        smoke_output_name='smoke_retinanet_voc_entropy_1round',
     ),
 )
 

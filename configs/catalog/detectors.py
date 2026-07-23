@@ -14,15 +14,14 @@ class DetectorSpec:
     aliases: Tuple[str, ...]
     model_name: str
     train_config: str
-    smoke_train_config: str
     uncertainty_infer_config: str
     diversity_infer_config: str
     pal_infer_config: str
     required_files: Tuple[str, ...] = ()
 
-    def to_config(self, smoke: bool = False) -> Dict[str, object]:
+    def to_config(self) -> Dict[str, object]:
         return {
-            'train_config': self.smoke_train_config if smoke else self.train_config,
+            'train_config': self.train_config,
             'uncertainty_infer_config': self.uncertainty_infer_config,
             'diversity_infer_config': self.diversity_infer_config,
             'pal_infer_config': self.pal_infer_config,
@@ -36,7 +35,6 @@ RETINANET = DetectorSpec(
     aliases=('retinanet', 'retina-net', 'retina_net'),
     model_name='retinanet',
     train_config='configs/alod_mmdet/retinanet_voc_train_26e.py',
-    smoke_train_config='configs/alod_mmdet/retinanet_voc_train_smoke_1e.py',
     uncertainty_infer_config='configs/alod_mmdet/retinanet_voc_uncertainty.py',
     diversity_infer_config='configs/alod_mmdet/retinanet_voc_diversity.py',
     pal_infer_config='configs/alod_mmdet/retinanet_voc_pal.py',

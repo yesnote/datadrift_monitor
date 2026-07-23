@@ -1,9 +1,8 @@
 import unittest
-from argparse import Namespace
 from pathlib import Path
 
 from configs.catalog import build_experiment_config, resolve_experiment, resolve_method_alias
-from tools.run_active_learning import build_round_plan, resolve_runner_selection
+from tools.run_active_learning import build_round_plan
 
 
 class CatalogResolutionTest(unittest.TestCase):
@@ -46,8 +45,8 @@ class CatalogResolutionTest(unittest.TestCase):
         self.assertEqual(cfg['output_dir'], 'work_dirs/retinanet_voc_pal_lius_7rounds_5percent_to_20percent')
 
     def test_preset_uses_own_default_method_alias(self):
-        full = resolve_experiment(preset='pal-retinanet-voc-smoke')
-        lius = resolve_experiment(preset='pal-lius-retinanet-voc-smoke')
+        full = resolve_experiment(preset='pal-retinanet-voc')
+        lius = resolve_experiment(preset='pal-lius-retinanet-voc')
 
         self.assertIsNotNone(full)
         self.assertIsNotNone(lius)
@@ -71,34 +70,26 @@ class CatalogResolutionTest(unittest.TestCase):
         self.assertEqual(cfg['diversity_sampler_config']['type'], 'DiversitySampler')
         self.assertEqual(cfg['uncertainty_sampler_config']['oracle_annotation_path'], cfg['oracle_path'])
 
-    def test_runner_catalog_selection_does_not_use_config_file_as_primary_source(self):
-        args = Namespace(
-            config=None,
-            method='pal:guide',
-            detector='retinanet',
-            dataset='voc',
-            preset=None,
-            smoke=False,
-        )
-        runner_selection = resolve_runner_selection(args)
-
-        self.assertIsNotNone(runner_selection['catalog_selection'])
-        self.assertEqual(runner_selection['selection_args'], ['--preset', 'pal-retinanet-voc'])
-
-        cfg = build_experiment_config(runner_selection['catalog_selection'])
+    def test_pal_round_plan_contains_expected_steps(self):
+        selection = resolve_experiment(method='pal:guide', detector='retinanet', dataset='voc')
+        cfg = build_experiment_config(selection)
         plans = build_round_plan(
             cfg,
-            runner_selection['selection_args'],
             Path(cfg['output_dir']),
-            runner_selection['method'],
+            selection.method,
             round_index=1,
-            dry_run=True,
         )
-        acquisition = plans[-1]
 
-        self.assertIn('--preset', acquisition.argv)
-        self.assertIn('pal-retinanet-voc', acquisition.argv)
-        self.assertEqual(acquisition.argv[2:4], ['--preset', 'pal-retinanet-voc'])
+        self.assertEqual(
+            [plan.name for plan in plans],
+            [
+                'train_round_01',
+                'eval_round_01',
+                'pal_labeled_inference_round_01',
+                'pal_unlabeled_inference_round_01',
+                'pal_acquisition_round_01',
+            ],
+        )
 
 
 if __name__ == '__main__':

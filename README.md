@@ -28,7 +28,7 @@ source tree, not from `code_refs/`.
 
 ## Repository Layout
 
-- `tools/run_active_learning.py`: main runner for planning or executing AL rounds.
+- `tools/run_active_learning.py`: main runner for executing AL rounds.
 - `configs/catalog/`: supported method/detector/dataset presets.
 - `configs/alod_mmdet/`: minimal MMDetection configs used by ALOD runs.
 - `methods/ppal/`: PPAL method implementation.
@@ -81,16 +81,10 @@ List supported presets:
 python -B tools/run_active_learning.py --list-presets
 ```
 
-Plan a run without launching training or inference:
+Run one PAL round:
 
 ```powershell
-python -B tools/run_active_learning.py --method pal --detector retinanet --dataset voc --rounds 1 --gpus 1 --dry-run
-```
-
-Execute one PAL round:
-
-```powershell
-python -B tools/run_active_learning.py --method pal --detector retinanet --dataset voc --rounds 1 --gpus 1 --execute
+python -B tools/run_active_learning.py --method pal --detector retinanet --dataset voc --rounds 1 --gpus 1
 ```
 
 Useful method aliases:
@@ -100,9 +94,3 @@ Useful method aliases:
 - `pal:lius`: PAL LIUS only.
 - `random`: random acquisition baseline.
 - `entropy`: entropy acquisition baseline.
-
-Use `--smoke` only for lightweight plumbing checks:
-
-```powershell
-python -B tools/run_active_learning.py --method pal --detector retinanet --dataset voc --smoke --dry-run
-```

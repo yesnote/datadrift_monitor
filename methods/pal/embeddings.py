@@ -280,7 +280,7 @@ class VitEmbeddingBackend(ImageEmbeddingBackend):
         raise NotImplementedError(
             'Direct ViT embedding extraction is handled by '
             'tools/build_pal_vit_embeddings.py. Use backend="detection" for '
-            'deterministic detector-record smoke embeddings, or set '
+            'deterministic detector-record fallback embeddings, or set '
             'pal_embedding_source="external" with a generated cache.')
 
 

@@ -1,4 +1,4 @@
-"""Windows-safe active learning runner scaffold for ALOD."""
+"""Windows-safe active learning runner for ALOD."""
 
 from __future__ import annotations
 
@@ -11,7 +11,7 @@ import subprocess
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional
+from typing import Any, Dict, Iterable, List, Optional, Union
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
@@ -27,17 +27,10 @@ PRETRAIN_PREP_HINT = (
     'prepare pretrained weights with: python -B tools/prepare_pretrain_models.py '
     '--output-dir data/pretrain_models'
 )
-SMOKE_PREP_HINT = (
-    'prepare smoke VOC pools with: python -B datasets/prepare_voc_smoke_active_learning.py '
-    '--oracle-input data/VOC0712/annotations/trainval_0712.json '
-    '--vocdevkit data/VOCdevkit --n-labeled 8 --n-unlabeled 8 --n-test 8 --seed 0'
-)
-
 from methods.common.coco_pool import update_labeled_unlabeled_from_oracle
 from methods.common.diagnostics import print_acquisition_summary, write_diagnostics
 from methods.entropy.sampler import sample as entropy_sample
 from methods.pal.acquisition import sample_pal_from_files
-from methods.ppal.acquisition import describe_steps as describe_ppal_steps
 from methods.ppal.acquisition import run_diversity_acquisition, run_uncertainty_acquisition
 from methods.random.sampler import sample as random_sample
 
@@ -57,6 +50,31 @@ class CommandPlan:
         if self.note:
             data['note'] = self.note
         return data
+
+
+@dataclass
+class AcquisitionPlan:
+    name: str
+    method: str
+    round_index: int
+    ppal_stage: Optional[str] = None
+    note: str = ''
+
+    def to_dict(self) -> Dict[str, Any]:
+        data = {
+            'name': self.name,
+            'type': 'acquisition',
+            'method': self.method,
+            'round_index': self.round_index,
+        }
+        if self.ppal_stage:
+            data['ppal_stage'] = self.ppal_stage
+        if self.note:
+            data['note'] = self.note
+        return data
+
+
+PlanStep = Union[CommandPlan, AcquisitionPlan]
 
 
 def _is_relative_to(path: Path, parent: Path) -> bool:
@@ -453,73 +471,47 @@ def _pal_infer_plan(
         str(ROOT))
 
 
-def _acquisition_plan(
-    cfg: Dict[str, Any],
-    selection_args: List[str],
-    method: str,
-    round_index: int,
-    dry_run: bool,
-    ppal_stage: Optional[str] = None,
-) -> CommandPlan:
-    argv = [
-        str(cfg.get('python_path', 'python')),
-        'tools/run_active_learning.py',
-    ] + list(selection_args) + [
-        '--acquisition-only',
-        '--round-index',
-        str(round_index),
-    ]
-    if ppal_stage:
-        argv += ['--ppal-stage', ppal_stage]
-    argv += [
-        '--gpus',
-        str(int(cfg.get('gpus', 1))),
-        '--port',
-        str(int(cfg.get('port', 29500))),
-        '--python-path',
-        str(cfg.get('python_path', 'python')),
-    ]
-    argv.append('--dry-run' if dry_run else '--execute')
-    name_parts = [method]
-    if ppal_stage:
-        name_parts.append(ppal_stage)
-    name_parts.append('acquisition_round_%02d' % round_index)
-    return CommandPlan('_'.join(name_parts), argv, str(ROOT))
-
-
 def build_round_plan(
     cfg: Dict[str, Any],
-    selection_args: List[str],
     output_dir: Path,
     method: str,
     round_index: int,
-    dry_run: bool,
-) -> List[CommandPlan]:
+) -> List[PlanStep]:
     input_paths = _input_pool_paths(output_dir, round_index)
-    plan = [
+    plan: List[PlanStep] = [
         _train_plan(cfg, output_dir, round_index, input_paths),
         _eval_plan(cfg, output_dir, round_index),
     ]
     if method == 'random':
-        plan.append(_acquisition_plan(cfg, selection_args, method, round_index, dry_run))
+        plan.append(AcquisitionPlan('random_acquisition_round_%02d' % round_index, method, round_index))
     elif method == 'entropy':
         plan.append(_uncertainty_infer_plan(cfg, output_dir, round_index, input_paths))
-        plan.append(_acquisition_plan(cfg, selection_args, method, round_index, dry_run))
+        plan.append(AcquisitionPlan('entropy_acquisition_round_%02d' % round_index, method, round_index))
     elif method == 'ppal':
         plan.append(_uncertainty_infer_plan(cfg, output_dir, round_index, input_paths))
-        plan.append(_acquisition_plan(cfg, selection_args, method, round_index, dry_run, 'uncertainty'))
+        plan.append(AcquisitionPlan(
+            'ppal_uncertainty_acquisition_round_%02d' % round_index,
+            method,
+            round_index,
+            ppal_stage='uncertainty',
+        ))
         plan.append(_diversity_infer_plan(cfg, output_dir, round_index))
-        plan.append(_acquisition_plan(cfg, selection_args, method, round_index, dry_run, 'diversity'))
+        plan.append(AcquisitionPlan(
+            'ppal_diversity_acquisition_round_%02d' % round_index,
+            method,
+            round_index,
+            ppal_stage='diversity',
+        ))
     elif method == 'pal':
         plan.append(_pal_infer_plan(cfg, output_dir, round_index, input_paths, 'labeled'))
         plan.append(_pal_infer_plan(cfg, output_dir, round_index, input_paths, 'unlabeled'))
-        plan.append(_acquisition_plan(cfg, selection_args, method, round_index, dry_run))
+        plan.append(AcquisitionPlan('pal_acquisition_round_%02d' % round_index, method, round_index))
     else:
         raise ValueError('Unsupported method: %s' % method)
     return plan
 
 
-def _write_plan_log(output_dir: Path, plan: List[CommandPlan]) -> Path:
+def _write_plan_log(output_dir: Path, plan: List[PlanStep]) -> Path:
     output_dir.mkdir(parents=True, exist_ok=True)
     path = output_dir / 'active_learning_plan.json'
     _assert_not_code_refs(path)
@@ -528,7 +520,7 @@ def _write_plan_log(output_dir: Path, plan: List[CommandPlan]) -> Path:
     return path
 
 
-def _print_plan(plan: Iterable[CommandPlan]) -> None:
+def _print_plan(plan: Iterable[PlanStep]) -> None:
     for step in plan:
         print(json.dumps(step.to_dict(), indent=2))
 
@@ -556,9 +548,6 @@ def _execute_lightweight_acquisition(
     round_index: int,
     seed: int,
 ) -> List[Any]:
-    if method == 'ppal':
-        raise NotImplementedError('PPAL sampler execution is intentionally deferred in Phase 2.')
-
     input_paths = _input_pool_paths(output_dir, round_index)
     round_work_dir = _round_dir(output_dir, round_index)
     annotations = _round_annotations(output_dir, round_index)
@@ -648,104 +637,139 @@ def _execute_lightweight_acquisition(
     return selected
 
 
-def _handle_acquisition_only(args: argparse.Namespace, cfg: Dict[str, Any], output_dir: Path) -> None:
-    round_index = args.round_index
-    if round_index is None:
-        raise ValueError('--round-index is required with --acquisition-only')
+def _load_ppal_diagnostic_stages(diagnostics_path: Path) -> List[Dict[str, Any]]:
+    if not diagnostics_path.exists():
+        return []
+    with diagnostics_path.open('r', encoding='utf-8') as handle:
+        payload = json.load(handle)
+    return list(payload.get('stages', []))
 
-    if args.method == 'ppal':
-        if args.dry_run:
-            print('PPAL acquisition stage: %s' % (args.ppal_stage or 'all'))
-            print(json.dumps(describe_ppal_steps(), indent=2))
-            return
 
-        input_paths = _input_pool_paths(output_dir, round_index)
-        round_work_dir = _round_dir(output_dir, round_index)
-        annotations = _round_annotations(output_dir, round_index)
-        result_json = round_work_dir / 'unlabeled_inference_result.bbox.json'
+def _execute_ppal_acquisition(
+    cfg: Dict[str, Any],
+    output_dir: Path,
+    round_index: int,
+    ppal_stage: str,
+) -> Dict[str, Any]:
+    if ppal_stage not in ('uncertainty', 'diversity'):
+        raise ValueError('Unsupported PPAL acquisition stage: %s' % ppal_stage)
 
-        outputs = []
-        if args.ppal_stage in (None, 'uncertainty'):
-            outputs.append(run_uncertainty_acquisition(
-                cfg=cfg,
-                repo_root=ROOT,
-                round_index=round_index,
-                result_json=result_json,
-                last_labeled_json=input_paths['labeled'],
-                out_labeled_json=annotations['uncertainty_labeled'],
-                out_unlabeled_json=annotations['uncertainty_unlabeled'],
-            ))
-        if args.ppal_stage in (None, 'diversity'):
-            outputs.append(run_diversity_acquisition(
-                cfg=cfg,
-                repo_root=ROOT,
-                round_index=round_index,
-                result_json=result_json,
-                image_distance_npy=round_work_dir / 'image_dis.npy',
-                last_labeled_json=input_paths['labeled'],
-                out_labeled_json=annotations['labeled'],
-                out_unlabeled_json=annotations['unlabeled'],
-            ))
-        final_output = outputs[-1]
-        diagnostics_path = round_work_dir / 'ppal_diagnostics.json'
-        diagnostics_payload = {
-            'method': 'ppal',
-            'stage': args.ppal_stage or 'all',
-            'round_index': round_index,
-            'budget': int(cfg.get('budget', 0)),
-            'selected_image_ids': final_output.get('selected_image_ids', []),
-            'selected_count': int(final_output.get('selected_count', 0)),
-            'inputs': {
-                'labeled_pool_json': str(input_paths['labeled']),
-                'unlabeled_pool_json': str(input_paths['unlabeled']),
-                'uncertainty_result_json': str(result_json),
-                'image_distance_npy': str(round_work_dir / 'image_dis.npy'),
-            },
-            'outputs': {
-                'labeled_pool_json': final_output.get('outputs', {}).get('labeled_pool_json'),
-                'unlabeled_pool_json': final_output.get('outputs', {}).get('unlabeled_pool_json'),
-                'diagnostics_json': str(diagnostics_path),
-            },
-            'stages': outputs,
-        }
-        write_diagnostics(diagnostics_path, diagnostics_payload)
-        print_acquisition_summary(
-            'ppal',
-            round_index,
-            int(final_output.get('selected_count', 0)),
-            diagnostics_path,
-            stage=args.ppal_stage or 'all',
-            labeled_json=Path(final_output.get('outputs', {}).get('labeled_pool_json')),
-            unlabeled_json=Path(final_output.get('outputs', {}).get('unlabeled_pool_json')),
+    input_paths = _input_pool_paths(output_dir, round_index)
+    round_work_dir = _round_dir(output_dir, round_index)
+    annotations = _round_annotations(output_dir, round_index)
+    result_json = round_work_dir / 'unlabeled_inference_result.bbox.json'
+
+    if ppal_stage == 'uncertainty':
+        output = run_uncertainty_acquisition(
+            cfg=cfg,
+            repo_root=ROOT,
+            round_index=round_index,
+            result_json=result_json,
+            last_labeled_json=input_paths['labeled'],
+            out_labeled_json=annotations['uncertainty_labeled'],
+            out_unlabeled_json=annotations['uncertainty_unlabeled'],
         )
-        return
+    else:
+        output = run_diversity_acquisition(
+            cfg=cfg,
+            repo_root=ROOT,
+            round_index=round_index,
+            result_json=result_json,
+            image_distance_npy=round_work_dir / 'image_dis.npy',
+            last_labeled_json=input_paths['labeled'],
+            out_labeled_json=annotations['labeled'],
+            out_unlabeled_json=annotations['unlabeled'],
+        )
 
-    if args.dry_run:
-        print('%s acquisition dry-run for round_%02d' % (args.method, round_index))
+    diagnostics_path = round_work_dir / 'ppal_diagnostics.json'
+    stages = _load_ppal_diagnostic_stages(diagnostics_path)
+    runner_stage = str(output.get('runner_stage', ppal_stage))
+    stages = [stage for stage in stages if stage.get('runner_stage') != runner_stage]
+    stages.append(output)
+    stage_names = {str(stage.get('runner_stage')) for stage in stages}
+    summary_stage = 'all' if {'uncertainty', 'diversity'}.issubset(stage_names) else ppal_stage
+    diagnostics_payload = {
+        'method': 'ppal',
+        'stage': summary_stage,
+        'round_index': round_index,
+        'budget': int(output.get('budget', cfg.get('budget', 0))),
+        'selected_image_ids': output.get('selected_image_ids', []),
+        'selected_count': int(output.get('selected_count', 0)),
+        'inputs': {
+            'labeled_pool_json': str(input_paths['labeled']),
+            'unlabeled_pool_json': str(input_paths['unlabeled']),
+            'uncertainty_result_json': str(result_json),
+            'image_distance_npy': str(round_work_dir / 'image_dis.npy'),
+        },
+        'outputs': {
+            'labeled_pool_json': output.get('outputs', {}).get('labeled_pool_json'),
+            'unlabeled_pool_json': output.get('outputs', {}).get('unlabeled_pool_json'),
+            'diagnostics_json': str(diagnostics_path),
+        },
+        'stages': stages,
+    }
+    write_diagnostics(diagnostics_path, diagnostics_payload)
+    print_acquisition_summary(
+        'ppal',
+        round_index,
+        int(output.get('selected_count', 0)),
+        diagnostics_path,
+        stage=ppal_stage,
+        labeled_json=Path(output.get('outputs', {}).get('labeled_pool_json')),
+        unlabeled_json=Path(output.get('outputs', {}).get('unlabeled_pool_json')),
+    )
+    return output
+
+
+def _run_acquisition_plan(
+    step: AcquisitionPlan,
+    cfg: Dict[str, Any],
+    output_dir: Path,
+    seed: int,
+) -> None:
+    if step.method == 'ppal':
+        if step.ppal_stage is None:
+            raise ValueError('PPAL acquisition step requires ppal_stage')
+        _execute_ppal_acquisition(cfg, output_dir, step.round_index, step.ppal_stage)
         return
 
     selected = _execute_lightweight_acquisition(
         cfg,
         output_dir,
-        args.method,
-        round_index,
-        seed=args.seed,
+        step.method,
+        step.round_index,
+        seed=seed,
     )
-    if args.method != 'pal':
+    if step.method != 'pal':
         print(json.dumps({'selected_image_ids': selected}, indent=2))
+
+
+def _run_plan_step(
+    step: PlanStep,
+    cfg: Dict[str, Any],
+    output_dir: Path,
+    seed: int,
+) -> None:
+    if isinstance(step, CommandPlan):
+        _run_subprocess_plan(step)
+        return
+    if isinstance(step, AcquisitionPlan):
+        _run_acquisition_plan(step, cfg, output_dir, seed)
+        return
+    raise TypeError('Unsupported plan step: %r' % (step,))
 
 
 def _catalog_epilog() -> str:
     lines = [
         'Examples:',
-        '  python -B tools/run_active_learning.py --method pal --detector retinanet --dataset voc --rounds 1 --gpus 1 --dry-run',
-        '  python -B tools/run_active_learning.py --preset pal-retinanet-voc-smoke --dry-run',
+        '  python -B tools/run_active_learning.py --method pal --detector retinanet --dataset voc --rounds 1 --gpus 1',
+        '  python -B tools/run_active_learning.py --preset ppal-retinanet-voc --rounds 1 --gpus 1',
         '',
         'Catalog presets:',
     ]
     for preset in list_presets():
         lines.append(
-        '  {name}: method={method}, detector={detector}, dataset={dataset}'.format(
+            '  {name}: method={method}, detector={detector}, dataset={dataset}'.format(
                 name=preset.name,
                 method=preset.method,
                 detector=preset.detector,
@@ -788,7 +812,6 @@ def resolve_runner_selection(args: argparse.Namespace) -> Dict[str, Any]:
             detector=args.detector,
             dataset=args.dataset,
             preset=args.preset,
-            smoke=args.smoke,
         )
         if selection is None:
             raise SystemExit(_unsupported_catalog_message())
@@ -799,7 +822,6 @@ def resolve_runner_selection(args: argparse.Namespace) -> Dict[str, Any]:
             'method_arg': selection.method_alias,
             'cfg_overrides': dict(selection.cfg_overrides),
             'preset_name': selection.preset.name,
-            'selection_args': ['--preset', selection.preset.name],
         }
 
     requested_method = args.method or 'ppal'
@@ -808,7 +830,6 @@ def resolve_runner_selection(args: argparse.Namespace) -> Dict[str, Any]:
         raise SystemExit('Unsupported method: %s' % requested_method)
     method, cfg_overrides = method_selection
     config_path = args.config if args.config.is_absolute() else ROOT / args.config
-    display_config = str(args.config)
     return {
         'config_path': config_path.resolve(),
         'catalog_selection': None,
@@ -816,13 +837,12 @@ def resolve_runner_selection(args: argparse.Namespace) -> Dict[str, Any]:
         'method_arg': requested_method,
         'cfg_overrides': dict(cfg_overrides),
         'preset_name': None,
-        'selection_args': [display_config, '--method', requested_method],
     }
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description='ALOD active learning runner scaffold',
+        description='ALOD active learning runner',
         formatter_class=argparse.RawTextHelpFormatter,
         epilog=_catalog_epilog(),
     )
@@ -840,19 +860,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument('--detector', default=None, help='Catalog detector, e.g. retinanet')
     parser.add_argument('--dataset', default=None, help='Catalog dataset, e.g. voc')
     parser.add_argument('--preset', default=None, help='Catalog preset name, e.g. pal-retinanet-voc')
-    parser.add_argument('--smoke', action='store_true', help='Resolve method/detector/dataset to a smoke preset')
     parser.add_argument('--list-presets', action='store_true', help='List supported catalog presets and exit')
-    parser.add_argument('--rounds', type=int, default=None, help='Number of AL rounds to plan')
-    parser.add_argument('--start-round', type=int, default=1, help='First AL round index to plan')
+    parser.add_argument('--rounds', type=int, default=None, help='Number of AL rounds to execute')
+    parser.add_argument('--start-round', type=int, default=1, help='First AL round index to execute')
     parser.add_argument('--seed', type=int, default=0, help='Sampler seed for deterministic methods')
     parser.add_argument('--gpus', type=int, default=None, help='Override config gpus for command planning/execution')
     parser.add_argument('--port', type=int, default=None, help='Override distributed master port')
     parser.add_argument('--python-path', default=None, help='Override config python executable')
-    parser.add_argument('--dry-run', dest='dry_run', action='store_true', default=True)
-    parser.add_argument('--execute', dest='dry_run', action='store_false')
-    parser.add_argument('--acquisition-only', action='store_true')
-    parser.add_argument('--round-index', type=int, default=None)
-    parser.add_argument('--ppal-stage', choices=('uncertainty', 'diversity'), default=None)
     return parser.parse_args()
 
 
@@ -879,13 +893,8 @@ def main() -> None:
     if selection['preset_name']:
         print('resolved catalog preset: %s' % selection['preset_name'])
 
-    if args.acquisition_only:
-        _handle_acquisition_only(args, cfg, output_dir)
-        return
-
-    if not args.dry_run:
-        validate_required_files(cfg)
-        validate_initial_pool_files(cfg)
+    validate_required_files(cfg)
+    validate_initial_pool_files(cfg)
 
     init_actions = initialize_round_zero(cfg, output_dir)
     for action in init_actions:
@@ -895,21 +904,16 @@ def main() -> None:
     if total_rounds < 1:
         raise ValueError('round count must be positive')
 
-    plan = []
-    selection_args = selection['selection_args']
+    plan: List[PlanStep] = []
     for round_index in range(args.start_round, args.start_round + total_rounds):
-        plan.extend(build_round_plan(cfg, selection_args, output_dir, args.method, round_index, args.dry_run))
+        plan.extend(build_round_plan(cfg, output_dir, args.method, round_index))
 
     plan_log = _write_plan_log(output_dir, plan)
     print('wrote command plan: %s' % _display_path(plan_log))
     _print_plan(plan)
 
-    if args.dry_run:
-        print('dry-run enabled; no train/test/acquisition subprocesses were launched')
-        return
-
     for step in plan:
-        _run_subprocess_plan(step)
+        _run_plan_step(step, cfg, output_dir, seed=args.seed)
 
 
 if __name__ == '__main__':

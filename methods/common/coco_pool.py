@@ -1,7 +1,7 @@
 """Small COCO-style annotation pool helpers.
 
 These utilities intentionally avoid MMDetection imports so they can be used by
-dry-run tooling and lightweight samplers before detector dependencies load.
+lightweight samplers before detector dependencies load.
 """
 
 from __future__ import annotations
