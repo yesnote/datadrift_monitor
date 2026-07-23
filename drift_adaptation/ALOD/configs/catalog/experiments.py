@@ -22,7 +22,6 @@ class ExperimentPreset:
     description: str
     aliases: Tuple[str, ...] = ()
     cfg_overrides: Dict[str, object] = field(default_factory=dict)
-    smoke: bool = False
 
 
 @dataclass(frozen=True)
@@ -37,48 +36,34 @@ class CatalogSelection:
 
 
 _PRESET_NAMES = {
-    ('ppal', False): 'ppal-retinanet-voc',
-    ('ppal', True): 'ppal-retinanet-voc-smoke',
-    ('pal_full', False): 'pal-retinanet-voc',
-    ('pal_full', True): 'pal-retinanet-voc-smoke',
-    ('pal_lius', False): 'pal-lius-retinanet-voc',
-    ('pal_lius', True): 'pal-lius-retinanet-voc-smoke',
-    ('random', False): 'random-retinanet-voc',
-    ('random', True): 'random-retinanet-voc-smoke',
-    ('entropy', False): 'entropy-retinanet-voc',
-    ('entropy', True): 'entropy-retinanet-voc-smoke',
+    'ppal': 'ppal-retinanet-voc',
+    'pal_full': 'pal-retinanet-voc',
+    'pal_lius': 'pal-lius-retinanet-voc',
+    'random': 'random-retinanet-voc',
+    'entropy': 'entropy-retinanet-voc',
 }
 
 
-def _preset_aliases(method: MethodSpec, smoke: bool) -> Tuple[str, ...]:
-    if smoke:
-        return tuple('smoke:' + value for value in method.aliases)
-    return method.aliases
-
-
-def _build_preset(method: MethodSpec, detector: DetectorSpec, dataset: DatasetSpec, smoke: bool) -> ExperimentPreset:
-    key = (method.key, smoke)
+def _build_preset(method: MethodSpec, detector: DetectorSpec, dataset: DatasetSpec) -> ExperimentPreset:
     method_description = method.description.rstrip('.')
     return ExperimentPreset(
-        name=_PRESET_NAMES[key],
+        name=_PRESET_NAMES[method.key],
         method_key=method.key,
         method=method.method,
         detector=detector.name,
         dataset=dataset.name,
         description='%s on %s/%s.' % (method_description, detector.name, dataset.name.upper()),
-        aliases=_preset_aliases(method, smoke),
+        aliases=method.aliases,
         cfg_overrides=dict(method.cfg_overrides),
-        smoke=smoke,
     )
 
 
 def list_presets() -> List[ExperimentPreset]:
     presets = []
-    for smoke in (False, True):
-        for detector in list_detectors():
-            for dataset in list_datasets(smoke=smoke):
-                for method in list_methods():
-                    presets.append(_build_preset(method, detector, dataset, smoke=smoke))
+    for detector in list_detectors():
+        for dataset in list_datasets():
+            for method in list_methods():
+                presets.append(_build_preset(method, detector, dataset))
     return presets
 
 
@@ -100,19 +85,19 @@ def _find_preset_by_name(name: str) -> Optional[ExperimentPreset]:
     return None
 
 
-def _find_preset_by_combo(method: str, detector: str, dataset: str, smoke: bool) -> Optional[ExperimentPreset]:
+def _find_preset_by_combo(method: str, detector: str, dataset: str) -> Optional[ExperimentPreset]:
     method_spec = resolve_method_spec(method)
     detector_spec = resolve_detector(detector)
-    dataset_spec = resolve_dataset(dataset, smoke=smoke)
+    dataset_spec = resolve_dataset(dataset)
     if method_spec is None or detector_spec is None or dataset_spec is None:
         return None
-    return _build_preset(method_spec, detector_spec, dataset_spec, smoke=smoke)
+    return _build_preset(method_spec, detector_spec, dataset_spec)
 
 
 def _selection_from_preset(preset: ExperimentPreset, method_alias: Optional[str] = None) -> Optional[CatalogSelection]:
     method_spec = resolve_method_spec(method_alias or preset.method_key)
     detector_spec = resolve_detector(preset.detector)
-    dataset_spec = resolve_dataset(preset.dataset, smoke=preset.smoke)
+    dataset_spec = resolve_dataset(preset.dataset)
     if method_spec is None or detector_spec is None or dataset_spec is None:
         return None
     return CatalogSelection(
@@ -131,7 +116,6 @@ def resolve_experiment(
     detector: Optional[str] = None,
     dataset: Optional[str] = None,
     preset: Optional[str] = None,
-    smoke: bool = False,
 ) -> Optional[CatalogSelection]:
     """Resolve a user-facing selection to an experiment config and base method."""
 
@@ -144,7 +128,7 @@ def resolve_experiment(
     if not method or not detector or not dataset:
         return None
 
-    matched = _find_preset_by_combo(method, detector, dataset, smoke)
+    matched = _find_preset_by_combo(method, detector, dataset)
     if matched is None:
         return None
 
@@ -169,18 +153,17 @@ def build_experiment_config(selection: CatalogSelection) -> Dict[str, object]:
     if selection.method_spec is None or selection.detector_spec is None or selection.dataset_spec is None:
         raise ValueError('Catalog selection is missing resolved specs.')
 
-    smoke = selection.preset.smoke
-    gpus = 1 if smoke else 8
+    gpus = 8
     cfg: Dict[str, object] = {
         'python_path': 'python',
         'port': 29500,
         'gpus': gpus,
     }
     cfg.update(selection.dataset_spec.to_config())
-    detector_cfg = selection.detector_spec.to_config(smoke=smoke)
+    detector_cfg = selection.detector_spec.to_config()
     detector_required = detector_cfg.pop('required_files', [])
     cfg.update(detector_cfg)
-    method_cfg = selection.method_spec.to_config(selection.dataset_spec, smoke=smoke, gpus=gpus)
+    method_cfg = selection.method_spec.to_config(selection.dataset_spec, gpus=gpus)
     method_required = method_cfg.pop('required_files', [])
     cfg.update(method_cfg)
     cfg.update(selection.cfg_overrides)

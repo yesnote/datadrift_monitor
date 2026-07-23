@@ -4,7 +4,7 @@ The preferred input is a list of per-detection dictionaries containing
 ``image_id`` and an uncertainty-like field such as ``cls_uncertainty``. If only
 ``score`` is available, the sampler uses binary entropy of the confidence as a
 detector-agnostic fallback. If no result file is available, it falls back to a
-seeded random sample so dry-runs can still exercise the loop deterministically.
+seeded random sample so the acquisition loop remains deterministic.
 """
 
 from __future__ import annotations
