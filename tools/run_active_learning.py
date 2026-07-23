@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import runpy
 import shutil
 import subprocess
@@ -614,42 +615,225 @@ def _subprocess_env() -> Dict[str, str]:
     env = os.environ.copy()
     existing = env.get('PYTHONPATH')
     env['PYTHONPATH'] = str(ROOT) if not existing else str(ROOT) + os.pathsep + existing
+    env.setdefault('PYTHONUNBUFFERED', '1')
     return env
 
 
-def _run_subprocess_plan(step: CommandPlan, verbose: bool = False) -> None:
+_TRAIN_ITER_RE = re.compile(r'Iter \[(\d+)/(\d+)\]')
+_PROGRESS_COUNT_RE = re.compile(r'(\d+)\s*/\s*(\d+)')
+_LOSS_RE = re.compile(r'(?:^|,\s)loss:\s*([0-9.eE+-]+)')
+_ETA_RE = re.compile(r'eta:\s*([^,]+)')
+
+
+def _count_coco_images(path: Path) -> Optional[int]:
+    if not path.exists():
+        return None
+    try:
+        with path.open('r', encoding='utf-8') as handle:
+            data = json.load(handle)
+        return len(data.get('images', []))
+    except (OSError, ValueError, TypeError):
+        return None
+
+
+def _count_nonempty_lines(path: Path) -> Optional[int]:
+    if not path.exists():
+        return None
+    try:
+        with path.open('r', encoding='utf-8') as handle:
+            return sum(1 for line in handle if line.strip())
+    except OSError:
+        return None
+
+
+def _count_annotation_items(path: Path) -> Optional[int]:
+    if path.suffix.lower() == '.json':
+        return _count_coco_images(path)
+    return _count_nonempty_lines(path)
+
+
+def _train_max_epochs(cfg: Dict[str, Any]) -> Optional[int]:
+    train_config = cfg.get('train_config')
+    if not train_config:
+        return None
+    try:
+        raw = runpy.run_path(str(_resolve_repo_path(str(train_config))))
+    except Exception:
+        return None
+    runner = raw.get('runner')
+    if isinstance(runner, dict) and runner.get('max_epochs') is not None:
+        return int(runner['max_epochs'])
+    return None
+
+
+def _progress_kind(step: CommandPlan) -> str:
+    if step.name.startswith('train'):
+        return 'train'
+    if (
+        step.name.startswith('eval')
+        or step.name.startswith('pal_labeled_inference')
+        or step.name.startswith('pal_unlabeled_inference')
+        or step.name.startswith('uncertainty_inference')
+        or step.name.startswith('diversity_inference')
+    ):
+        return 'test'
+    return 'command'
+
+
+def _progress_total_for_step(
+    step: CommandPlan,
+    cfg: Dict[str, Any],
+    output_dir: Path,
+) -> Optional[int]:
+    round_index = step.round_index
+    input_paths = _input_pool_paths(output_dir, round_index)
+    annotations = _round_annotations(output_dir, round_index)
+
+    if step.name.startswith('train'):
+        image_count = _count_annotation_items(input_paths['labeled'])
+        max_epochs = _train_max_epochs(cfg)
+        if image_count is not None and max_epochs is not None:
+            return image_count * max_epochs
+        return image_count
+    if step.name.startswith('eval'):
+        eval_options = cfg.get('eval_cfg_options', {})
+        ann_file = eval_options.get('data.test.ann_file') if isinstance(eval_options, dict) else None
+        if ann_file:
+            return _count_annotation_items(_resolve_repo_path(str(ann_file)))
+        return None
+    if step.name.startswith('pal_labeled_inference'):
+        return _count_annotation_items(input_paths['labeled'])
+    if step.name.startswith('pal_unlabeled_inference'):
+        return _count_annotation_items(input_paths['unlabeled'])
+    if step.name.startswith('uncertainty_inference'):
+        return _count_annotation_items(input_paths['unlabeled'])
+    if step.name.startswith('diversity_inference'):
+        total = _count_annotation_items(annotations['uncertainty_labeled'])
+        if total is not None:
+            return total
+        if cfg.get('uncertainty_pool_size') is not None:
+            return int(cfg['uncertainty_pool_size'])
+    return None
+
+
+def _new_step_progress(
+    step: CommandPlan,
+    cfg: Dict[str, Any],
+    output_dir: Path,
+) -> Optional[Dict[str, Any]]:
+    if tqdm is None:
+        return None
+    kind = _progress_kind(step)
+    unit = 'iter' if kind == 'train' else 'img'
+    bar = tqdm(
+        total=_progress_total_for_step(step, cfg, output_dir),
+        desc=_step_label(step),
+        unit=unit,
+        leave=True,
+    )
+    return {'bar': bar, 'kind': kind, 'last': 0}
+
+
+def _set_progress_total(progress: Dict[str, Any], total: int) -> None:
+    bar = progress['bar']
+    if bar.total != total:
+        bar.total = total
+        bar.refresh()
+
+
+def _advance_progress(progress: Dict[str, Any], current: int) -> None:
+    bar = progress['bar']
+    current = max(current, int(progress.get('last', 0)))
+    if bar.total is not None:
+        current = min(current, int(bar.total))
+    delta = current - int(progress.get('last', 0))
+    if delta > 0:
+        bar.update(delta)
+        progress['last'] = current
+
+
+def _update_progress_from_record(progress: Optional[Dict[str, Any]], record: str) -> None:
+    if progress is None:
+        return
+    kind = progress['kind']
+    if kind == 'train':
+        match = _TRAIN_ITER_RE.search(record)
+    else:
+        match = _PROGRESS_COUNT_RE.search(record)
+    if not match:
+        return
+    current = int(match.group(1))
+    total = int(match.group(2))
+    _set_progress_total(progress, total)
+    _advance_progress(progress, current)
+    if kind == 'train':
+        details = []
+        loss = _LOSS_RE.search(record)
+        eta = _ETA_RE.search(record)
+        if loss:
+            details.append('loss=%s' % loss.group(1))
+        if eta:
+            details.append('eta=%s' % eta.group(1).strip())
+        if details:
+            progress['bar'].set_postfix_str(' '.join(details))
+
+
+def _finish_progress(progress: Optional[Dict[str, Any]]) -> None:
+    if progress is None:
+        return
+    bar = progress['bar']
+    if bar.total is not None:
+        _advance_progress(progress, int(bar.total))
+    bar.close()
+
+
+def _run_subprocess_plan(
+    step: CommandPlan,
+    cfg: Dict[str, Any],
+    output_dir: Path,
+    verbose: bool = False,
+) -> None:
     stdout_handle = None
+    progress = None
     try:
         if step.log_path:
             log_path = Path(step.log_path)
             log_path.parent.mkdir(parents=True, exist_ok=True)
             stdout_handle = log_path.open('w', encoding='utf-8')
-        if verbose and stdout_handle is not None:
-            process = subprocess.Popen(
-                step.argv,
-                cwd=step.cwd,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                text=True,
-                errors='replace',
-                env=_subprocess_env(),
-            )
-            assert process.stdout is not None
-            for line in process.stdout:
-                stdout_handle.write(line)
-                print(line, end='')
-            return_code = process.wait()
-            if return_code:
-                raise subprocess.CalledProcessError(return_code, step.argv)
-        else:
-            subprocess.run(
-                step.argv,
-                cwd=step.cwd,
-                check=True,
-                stdout=stdout_handle if stdout_handle is not None else None,
-                stderr=subprocess.STDOUT if stdout_handle is not None else None,
-                env=_subprocess_env(),
-            )
+        if not verbose:
+            progress = _new_step_progress(step, cfg, output_dir)
+        process = subprocess.Popen(
+            step.argv,
+            cwd=step.cwd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            errors='replace',
+            env=_subprocess_env(),
+        )
+        assert process.stdout is not None
+        record = ''
+        while True:
+            chunk = process.stdout.read(1)
+            if not chunk:
+                break
+            if stdout_handle is not None:
+                stdout_handle.write(chunk)
+            if verbose:
+                print(chunk, end='')
+            if chunk in ('\r', '\n'):
+                if record:
+                    _update_progress_from_record(progress, record)
+                    record = ''
+            else:
+                record += chunk
+        if record:
+            _update_progress_from_record(progress, record)
+        return_code = process.wait()
+        if return_code:
+            raise subprocess.CalledProcessError(return_code, step.argv)
+        _finish_progress(progress)
+        progress = None
     except subprocess.CalledProcessError as exc:
         log_text = _display_path(Path(step.log_path)) if step.log_path else 'terminal'
         raise RunnerStepError(
@@ -657,6 +841,8 @@ def _run_subprocess_plan(step: CommandPlan, verbose: bool = False) -> None:
             % (step.round_index or '?', _step_label(step), exc.returncode, log_text)
         ) from exc
     finally:
+        if progress is not None:
+            progress['bar'].close()
         if stdout_handle is not None:
             stdout_handle.close()
 
@@ -877,7 +1063,7 @@ def _run_plan_step(
         result['type'] = 'command'
         if step.log_path:
             result['log_path'] = str(step.log_path)
-        _run_subprocess_plan(step, verbose=verbose)
+        _run_subprocess_plan(step, cfg, output_dir, verbose=verbose)
     elif isinstance(step, AcquisitionPlan):
         result['type'] = 'acquisition'
         result.update(_run_acquisition_plan(step, cfg, output_dir, seed))
@@ -927,6 +1113,20 @@ def _format_step_result(index: int, total: int, result: Dict[str, Any]) -> str:
         parts.append('selected=%s' % result['selected_count'])
     if result.get('log_path'):
         parts.append('log=%s' % _display_path(Path(str(result['log_path']))))
+    return ' '.join(parts)
+
+
+def _format_acquisition_result(result: Dict[str, Any]) -> str:
+    parts = ['%s result:' % result['label']]
+    if result.get('selected_count') is not None:
+        parts.append('selected=%s' % result['selected_count'])
+    if result.get('diagnostics_path'):
+        parts.append('diagnostics=%s' % _display_path(Path(str(result['diagnostics_path']))))
+    outputs = result.get('outputs') if isinstance(result.get('outputs'), dict) else {}
+    if outputs.get('labeled_pool_json'):
+        parts.append('labeled=%s' % _display_path(Path(str(outputs['labeled_pool_json']))))
+    if outputs.get('unlabeled_pool_json'):
+        parts.append('unlabeled=%s' % _display_path(Path(str(outputs['unlabeled_pool_json']))))
     return ' '.join(parts)
 
 
@@ -1188,17 +1388,11 @@ def main() -> None:
     for round_offset, round_index in enumerate(range(args.start_round, args.start_round + total_rounds), start=1):
         round_plan = [step for step in plan if step.round_index == round_index]
         round_results: List[Dict[str, Any]] = []
-        progress = None
-        if tqdm is not None and not args.verbose:
-            progress = tqdm(total=len(round_plan), desc='Round %d/%d' % (round_offset, total_rounds), unit='step')
-        else:
-            print('')
-            print('Round %d/%d' % (round_offset, total_rounds))
+        print('')
+        print('Round %d/%d' % (round_offset, total_rounds))
         for step_index, step in enumerate(round_plan, start=1):
             label = _step_label(step)
-            if progress is not None:
-                progress.set_postfix_str('%s running' % label)
-            else:
+            if args.verbose or (tqdm is None and isinstance(step, CommandPlan)):
                 print('[%d/%d] %-26s running...' % (step_index, len(round_plan), label), flush=True)
             started = time.time()
             try:
@@ -1215,19 +1409,14 @@ def main() -> None:
                 run_summary['round_summaries'].append(str(round_summary_path))
                 run_summary['rounds_detail'].append(round_payload)
                 _write_json(_run_summary_path(output_dir), run_summary)
-                if progress is not None:
-                    progress.close()
                 if isinstance(exc, RunnerStepError):
                     raise SystemExit(str(exc))
                 raise
             round_results.append(result)
-            if progress is not None:
-                progress.update(1)
-                tqdm.write(_format_step_result(step_index, len(round_plan), result))
-            else:
+            if isinstance(step, AcquisitionPlan) and not args.verbose:
+                print(_format_acquisition_result(result), flush=True)
+            elif args.verbose or tqdm is None:
                 print(_format_step_result(step_index, len(round_plan), result), flush=True)
-        if progress is not None:
-            progress.close()
 
         round_payload = _round_summary_payload(cfg, output_dir, round_index, 'done', round_results)
         round_summary_path = _round_summary_path(output_dir, round_index)
