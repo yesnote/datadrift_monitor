@@ -9,9 +9,15 @@ import runpy
 import shutil
 import subprocess
 import sys
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Union
+
+try:
+    from tqdm import tqdm
+except ImportError:  # pragma: no cover - exercised only when tqdm is absent.
+    tqdm = None
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
@@ -28,7 +34,7 @@ PRETRAIN_PREP_HINT = (
     '--output-dir data/pretrain_models'
 )
 from methods.common.coco_pool import update_labeled_unlabeled_from_oracle
-from methods.common.diagnostics import print_acquisition_summary, write_diagnostics
+from methods.common.diagnostics import write_diagnostics
 from methods.entropy.sampler import sample as entropy_sample
 from methods.pal.acquisition import sample_pal_from_files
 from methods.ppal.acquisition import run_diversity_acquisition, run_uncertainty_acquisition
@@ -40,11 +46,14 @@ class CommandPlan:
     name: str
     argv: List[str]
     cwd: str
+    round_index: int = 0
     log_path: Optional[str] = None
     note: str = ''
 
     def to_dict(self) -> Dict[str, Any]:
         data = {'name': self.name, 'argv': self.argv, 'cwd': self.cwd}
+        if self.round_index:
+            data['round_index'] = self.round_index
         if self.log_path:
             data['log_path'] = self.log_path
         if self.note:
@@ -222,6 +231,10 @@ def _round_dir(output_dir: Path, round_index: int) -> Path:
     return output_dir / ('round_%02d' % round_index)
 
 
+def _round_log_path(output_dir: Path, round_index: int, filename: str) -> Path:
+    return _round_dir(output_dir, round_index) / 'logs' / filename
+
+
 def _round_annotations(output_dir: Path, round_index: int) -> Dict[str, Path]:
     ann_dir = _round_dir(output_dir, round_index) / 'annotations'
     if round_index == 0:
@@ -299,13 +312,18 @@ def _train_plan(
     if not _use_distributed(cfg):
         argv += ['--gpus', str(int(cfg.get('gpus', 1)))]
     argv += ['--cfg-options'] + _cfg_options(options)
-    return CommandPlan('train_round_%02d' % round_index, argv, str(ROOT))
+    return CommandPlan(
+        'train_round_%02d' % round_index,
+        argv,
+        str(ROOT),
+        round_index=round_index,
+        log_path=str(_round_log_path(output_dir, round_index, 'train.log')),
+    )
 
 
 def _eval_plan(cfg: Dict[str, Any], output_dir: Path, round_index: int) -> CommandPlan:
     round_work_dir = _round_dir(output_dir, round_index)
     latest_ckpt = round_work_dir / 'latest.pth'
-    eval_log = round_work_dir / 'eval.txt'
     options = cfg.get('eval_cfg_options', {})
     argv = (
         _command_prefix(cfg)
@@ -323,7 +341,13 @@ def _eval_plan(cfg: Dict[str, Any], output_dir: Path, round_index: int) -> Comma
     )
     if options:
         argv += ['--cfg-options'] + _cfg_options(options)
-    return CommandPlan('eval_round_%02d' % round_index, argv, str(ROOT), log_path=str(eval_log))
+    return CommandPlan(
+        'eval_round_%02d' % round_index,
+        argv,
+        str(ROOT),
+        round_index=round_index,
+        log_path=str(_round_log_path(output_dir, round_index, 'eval.log')),
+    )
 
 
 def _uncertainty_infer_plan(
@@ -357,7 +381,13 @@ def _uncertainty_infer_plan(
         ]
         + _cfg_options(options)
     )
-    return CommandPlan('uncertainty_inference_round_%02d' % round_index, argv, str(ROOT))
+    return CommandPlan(
+        'uncertainty_inference_round_%02d' % round_index,
+        argv,
+        str(ROOT),
+        round_index=round_index,
+        log_path=str(_round_log_path(output_dir, round_index, 'uncertainty_inference.log')),
+    )
 
 
 def _diversity_infer_plan(cfg: Dict[str, Any], output_dir: Path, round_index: int) -> CommandPlan:
@@ -392,7 +422,13 @@ def _diversity_infer_plan(cfg: Dict[str, Any], output_dir: Path, round_index: in
         ]
         + _cfg_options(options)
     )
-    return CommandPlan('diversity_inference_round_%02d' % round_index, argv, str(ROOT))
+    return CommandPlan(
+        'diversity_inference_round_%02d' % round_index,
+        argv,
+        str(ROOT),
+        round_index=round_index,
+        log_path=str(_round_log_path(output_dir, round_index, 'diversity_inference.log')),
+    )
 
 
 def _round_relative_file(round_work_dir: Path, value: str) -> Path:
@@ -468,7 +504,10 @@ def _pal_infer_plan(
     return CommandPlan(
         'pal_%s_inference_round_%02d' % (pool_name, round_index),
         argv,
-        str(ROOT))
+        str(ROOT),
+        round_index=round_index,
+        log_path=str(_round_log_path(output_dir, round_index, 'pal_%s_inference.log' % pool_name)),
+    )
 
 
 def build_round_plan(
@@ -520,22 +559,103 @@ def _write_plan_log(output_dir: Path, plan: List[PlanStep]) -> Path:
     return path
 
 
+def _write_json(path: Path, payload: Dict[str, Any]) -> None:
+    _assert_not_code_refs(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open('w', encoding='utf-8') as handle:
+        json.dump(_jsonable(payload), handle, indent=2)
+
+
+def _jsonable(value: Any) -> Any:
+    if isinstance(value, Path):
+        return str(value)
+    if isinstance(value, dict):
+        return {str(key): _jsonable(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_jsonable(item) for item in value]
+    if hasattr(value, 'tolist'):
+        return _jsonable(value.tolist())
+    if hasattr(value, 'item'):
+        return value.item()
+    return value
+
+
 def _print_plan(plan: Iterable[PlanStep]) -> None:
     for step in plan:
         print(json.dumps(step.to_dict(), indent=2))
 
 
-def _run_subprocess_plan(step: CommandPlan) -> None:
+def _step_label(step: PlanStep) -> str:
+    name = step.name
+    labels = (
+        ('pal_labeled_inference', 'pal labeled inference'),
+        ('pal_unlabeled_inference', 'pal unlabeled inference'),
+        ('uncertainty_inference', 'uncertainty inference'),
+        ('diversity_inference', 'diversity inference'),
+        ('ppal_uncertainty_acquisition', 'ppal uncertainty acquisition'),
+        ('ppal_diversity_acquisition', 'ppal diversity acquisition'),
+        ('pal_acquisition', 'pal acquisition'),
+        ('random_acquisition', 'random acquisition'),
+        ('entropy_acquisition', 'entropy acquisition'),
+        ('train', 'train'),
+        ('eval', 'eval'),
+    )
+    for prefix, label in labels:
+        if name.startswith(prefix):
+            return label
+    return name
+
+
+class RunnerStepError(RuntimeError):
+    pass
+
+
+def _subprocess_env() -> Dict[str, str]:
+    env = os.environ.copy()
+    existing = env.get('PYTHONPATH')
+    env['PYTHONPATH'] = str(ROOT) if not existing else str(ROOT) + os.pathsep + existing
+    return env
+
+
+def _run_subprocess_plan(step: CommandPlan, verbose: bool = False) -> None:
     stdout_handle = None
     try:
         if step.log_path:
             log_path = Path(step.log_path)
             log_path.parent.mkdir(parents=True, exist_ok=True)
             stdout_handle = log_path.open('w', encoding='utf-8')
-        env = os.environ.copy()
-        existing = env.get('PYTHONPATH')
-        env['PYTHONPATH'] = str(ROOT) if not existing else str(ROOT) + os.pathsep + existing
-        subprocess.run(step.argv, cwd=step.cwd, check=True, stdout=stdout_handle, env=env)
+        if verbose and stdout_handle is not None:
+            process = subprocess.Popen(
+                step.argv,
+                cwd=step.cwd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                errors='replace',
+                env=_subprocess_env(),
+            )
+            assert process.stdout is not None
+            for line in process.stdout:
+                stdout_handle.write(line)
+                print(line, end='')
+            return_code = process.wait()
+            if return_code:
+                raise subprocess.CalledProcessError(return_code, step.argv)
+        else:
+            subprocess.run(
+                step.argv,
+                cwd=step.cwd,
+                check=True,
+                stdout=stdout_handle if stdout_handle is not None else None,
+                stderr=subprocess.STDOUT if stdout_handle is not None else None,
+                env=_subprocess_env(),
+            )
+    except subprocess.CalledProcessError as exc:
+        log_text = _display_path(Path(step.log_path)) if step.log_path else 'terminal'
+        raise RunnerStepError(
+            'step failed: round=%s step=%s exit_code=%s log=%s'
+            % (step.round_index or '?', _step_label(step), exc.returncode, log_text)
+        ) from exc
     finally:
         if stdout_handle is not None:
             stdout_handle.close()
@@ -547,7 +667,7 @@ def _execute_lightweight_acquisition(
     method: str,
     round_index: int,
     seed: int,
-) -> List[Any]:
+) -> Dict[str, Any]:
     input_paths = _input_pool_paths(output_dir, round_index)
     round_work_dir = _round_dir(output_dir, round_index)
     annotations = _round_annotations(output_dir, round_index)
@@ -624,17 +744,15 @@ def _execute_lightweight_acquisition(
         annotations['labeled'],
         annotations['unlabeled'],
     )
-    if diagnostics_path is not None:
-        print_acquisition_summary(
-            method,
-            round_index,
-            len(selected),
-            diagnostics_path,
-            stage=diagnostics_stage,
-            labeled_json=annotations['labeled'],
-            unlabeled_json=annotations['unlabeled'],
-        )
-    return selected
+    return {
+        'selected_count': len(selected),
+        'diagnostics_path': str(diagnostics_path) if diagnostics_path is not None else None,
+        'stage': diagnostics_stage,
+        'outputs': {
+            'labeled_pool_json': str(annotations['labeled']),
+            'unlabeled_pool_json': str(annotations['unlabeled']),
+        },
+    }
 
 
 def _load_ppal_diagnostic_stages(diagnostics_path: Path) -> List[Dict[str, Any]]:
@@ -709,15 +827,7 @@ def _execute_ppal_acquisition(
         'stages': stages,
     }
     write_diagnostics(diagnostics_path, diagnostics_payload)
-    print_acquisition_summary(
-        'ppal',
-        round_index,
-        int(output.get('selected_count', 0)),
-        diagnostics_path,
-        stage=ppal_stage,
-        labeled_json=Path(output.get('outputs', {}).get('labeled_pool_json')),
-        unlabeled_json=Path(output.get('outputs', {}).get('unlabeled_pool_json')),
-    )
+    output['diagnostics_path'] = str(diagnostics_path)
     return output
 
 
@@ -726,22 +836,25 @@ def _run_acquisition_plan(
     cfg: Dict[str, Any],
     output_dir: Path,
     seed: int,
-) -> None:
+) -> Dict[str, Any]:
     if step.method == 'ppal':
         if step.ppal_stage is None:
             raise ValueError('PPAL acquisition step requires ppal_stage')
-        _execute_ppal_acquisition(cfg, output_dir, step.round_index, step.ppal_stage)
-        return
+        output = _execute_ppal_acquisition(cfg, output_dir, step.round_index, step.ppal_stage)
+        return {
+            'selected_count': int(output.get('selected_count', 0)),
+            'diagnostics_path': output.get('diagnostics_path'),
+            'stage': step.ppal_stage,
+            'outputs': output.get('outputs', {}),
+        }
 
-    selected = _execute_lightweight_acquisition(
+    return _execute_lightweight_acquisition(
         cfg,
         output_dir,
         step.method,
         step.round_index,
         seed=seed,
     )
-    if step.method != 'pal':
-        print(json.dumps({'selected_image_ids': selected}, indent=2))
 
 
 def _run_plan_step(
@@ -749,14 +862,169 @@ def _run_plan_step(
     cfg: Dict[str, Any],
     output_dir: Path,
     seed: int,
-) -> None:
+    verbose: bool = False,
+) -> Dict[str, Any]:
+    started = time.time()
+    started_at = time.strftime('%Y-%m-%dT%H:%M:%S')
+    result: Dict[str, Any] = {
+        'name': step.name,
+        'label': _step_label(step),
+        'round_index': step.round_index,
+        'status': 'running',
+        'started_at': started_at,
+    }
     if isinstance(step, CommandPlan):
-        _run_subprocess_plan(step)
-        return
-    if isinstance(step, AcquisitionPlan):
-        _run_acquisition_plan(step, cfg, output_dir, seed)
-        return
-    raise TypeError('Unsupported plan step: %r' % (step,))
+        result['type'] = 'command'
+        if step.log_path:
+            result['log_path'] = str(step.log_path)
+        _run_subprocess_plan(step, verbose=verbose)
+    elif isinstance(step, AcquisitionPlan):
+        result['type'] = 'acquisition'
+        result.update(_run_acquisition_plan(step, cfg, output_dir, seed))
+    else:
+        raise TypeError('Unsupported plan step: %r' % (step,))
+    result['status'] = 'done'
+    result['duration_sec'] = round(time.time() - started, 3)
+    result['finished_at'] = time.strftime('%Y-%m-%dT%H:%M:%S')
+    return result
+
+
+def _failed_step_result(step: PlanStep, exc: BaseException, started: float) -> Dict[str, Any]:
+    result: Dict[str, Any] = {
+        'name': step.name,
+        'label': _step_label(step),
+        'round_index': step.round_index,
+        'status': 'failed',
+        'duration_sec': round(time.time() - started, 3),
+        'finished_at': time.strftime('%Y-%m-%dT%H:%M:%S'),
+        'error': str(exc),
+    }
+    if isinstance(step, CommandPlan) and step.log_path:
+        result['type'] = 'command'
+        result['log_path'] = str(step.log_path)
+    elif isinstance(step, AcquisitionPlan):
+        result['type'] = 'acquisition'
+    return result
+
+
+def _format_duration(seconds: float) -> str:
+    seconds = int(round(seconds))
+    hours, remainder = divmod(seconds, 3600)
+    minutes, seconds = divmod(remainder, 60)
+    if hours:
+        return '%d:%02d:%02d' % (hours, minutes, seconds)
+    return '%02d:%02d' % (minutes, seconds)
+
+
+def _format_step_result(index: int, total: int, result: Dict[str, Any]) -> str:
+    parts = [
+        '[%d/%d]' % (index, total),
+        '%-26s' % result['label'],
+        result['status'],
+        _format_duration(float(result.get('duration_sec', 0))),
+    ]
+    if result.get('selected_count') is not None:
+        parts.append('selected=%s' % result['selected_count'])
+    if result.get('log_path'):
+        parts.append('log=%s' % _display_path(Path(str(result['log_path']))))
+    return ' '.join(parts)
+
+
+def _round_summary_path(output_dir: Path, round_index: int) -> Path:
+    return _round_dir(output_dir, round_index) / 'round_summary.json'
+
+
+def _run_summary_path(output_dir: Path) -> Path:
+    return output_dir / 'run_summary.json'
+
+
+def _latest_acquisition_result(round_results: List[Dict[str, Any]]) -> Dict[str, Any]:
+    acquisitions = [
+        result for result in round_results
+        if result.get('type') == 'acquisition' and result.get('status') == 'done'
+    ]
+    return acquisitions[-1] if acquisitions else {}
+
+
+def _round_summary_payload(
+    cfg: Dict[str, Any],
+    output_dir: Path,
+    round_index: int,
+    status: str,
+    round_results: List[Dict[str, Any]],
+) -> Dict[str, Any]:
+    annotations = _round_annotations(output_dir, round_index)
+    acquisition = _latest_acquisition_result(round_results)
+    outputs = dict(acquisition.get('outputs', {}))
+    outputs.setdefault('labeled_pool_json', str(annotations['labeled']))
+    outputs.setdefault('unlabeled_pool_json', str(annotations['unlabeled']))
+    if acquisition.get('diagnostics_path'):
+        outputs['diagnostics_json'] = acquisition.get('diagnostics_path')
+    return {
+        'round_index': round_index,
+        'status': status,
+        'budget': int(cfg.get('budget', 0)),
+        'selected_count': acquisition.get('selected_count'),
+        'outputs': outputs,
+        'steps': round_results,
+    }
+
+
+def _config_path_summary(cfg: Dict[str, Any]) -> Dict[str, Optional[str]]:
+    keys = (
+        'train_config',
+        'uncertainty_infer_config',
+        'diversity_infer_config',
+        'pal_infer_config',
+        'pal_embedding_path',
+    )
+    return {key: str(cfg.get(key)) if cfg.get(key) else None for key in keys}
+
+
+def _run_summary_base(
+    args: argparse.Namespace,
+    cfg: Dict[str, Any],
+    selection: Dict[str, Any],
+    output_dir: Path,
+    plan_log: Path,
+    total_rounds: int,
+) -> Dict[str, Any]:
+    catalog_selection = selection.get('catalog_selection')
+    detector = None
+    dataset = None
+    if catalog_selection is not None:
+        detector = catalog_selection.preset.detector
+        dataset = catalog_selection.preset.dataset
+    return {
+        'status': 'running',
+        'method': args.method,
+        'method_arg': cfg.get('_method_arg'),
+        'detector': detector,
+        'dataset': dataset,
+        'preset': selection.get('preset_name'),
+        'rounds': total_rounds,
+        'start_round': args.start_round,
+        'budget': int(cfg.get('budget', 0)),
+        'seed': args.seed,
+        'gpus': int(cfg.get('gpus', 1)),
+        'output_dir': str(output_dir),
+        'plan_path': str(plan_log),
+        'config_paths': _config_path_summary(cfg),
+        'round_summaries': [],
+        'rounds_detail': [],
+    }
+
+
+def _print_run_header(summary: Dict[str, Any]) -> None:
+    detector = summary.get('detector') or 'custom'
+    dataset = summary.get('dataset') or 'custom'
+    print('ALOD run: %s / %s / %s' % (summary['method'], detector, dataset))
+    print(
+        'rounds=%s budget=%s seed=%s gpus=%s'
+        % (summary['rounds'], summary['budget'], summary['seed'], summary['gpus'])
+    )
+    print('output=%s' % _display_path(Path(str(summary['output_dir']))))
+    print('plan=%s' % _display_path(Path(str(summary['plan_path']))))
 
 
 def _catalog_epilog() -> str:
@@ -867,6 +1135,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument('--gpus', type=int, default=None, help='Override config gpus for command planning/execution')
     parser.add_argument('--port', type=int, default=None, help='Override distributed master port')
     parser.add_argument('--python-path', default=None, help='Override config python executable')
+    parser.add_argument('--verbose', action='store_true', help='Print the full plan and stream subprocess output')
     return parser.parse_args()
 
 
@@ -890,15 +1159,11 @@ def main() -> None:
     validate_experiment_config_paths(cfg)
     output_default = Path('work_dirs') / (config_path.stem if config_path is not None else selection['preset_name'])
     output_dir = _resolve_repo_path(str(cfg.get('output_dir', output_default)))
-    if selection['preset_name']:
-        print('resolved catalog preset: %s' % selection['preset_name'])
 
     validate_required_files(cfg)
     validate_initial_pool_files(cfg)
 
     init_actions = initialize_round_zero(cfg, output_dir)
-    for action in init_actions:
-        print(action)
 
     total_rounds = int(args.rounds if args.rounds is not None else cfg.get('round_num', 1))
     if total_rounds < 1:
@@ -909,11 +1174,73 @@ def main() -> None:
         plan.extend(build_round_plan(cfg, output_dir, args.method, round_index))
 
     plan_log = _write_plan_log(output_dir, plan)
-    print('wrote command plan: %s' % _display_path(plan_log))
-    _print_plan(plan)
+    run_summary = _run_summary_base(args, cfg, selection, output_dir, plan_log, total_rounds)
+    _write_json(_run_summary_path(output_dir), run_summary)
+    _print_run_header(run_summary)
+    if args.verbose:
+        for action in init_actions:
+            print(action)
+        print('active learning plan:')
+        _print_plan(plan)
+    elif init_actions:
+        print('initial pools: round_00 annotations ready')
 
-    for step in plan:
-        _run_plan_step(step, cfg, output_dir, seed=args.seed)
+    for round_offset, round_index in enumerate(range(args.start_round, args.start_round + total_rounds), start=1):
+        round_plan = [step for step in plan if step.round_index == round_index]
+        round_results: List[Dict[str, Any]] = []
+        progress = None
+        if tqdm is not None and not args.verbose:
+            progress = tqdm(total=len(round_plan), desc='Round %d/%d' % (round_offset, total_rounds), unit='step')
+        else:
+            print('')
+            print('Round %d/%d' % (round_offset, total_rounds))
+        for step_index, step in enumerate(round_plan, start=1):
+            label = _step_label(step)
+            if progress is not None:
+                progress.set_postfix_str('%s running' % label)
+            else:
+                print('[%d/%d] %-26s running...' % (step_index, len(round_plan), label), flush=True)
+            started = time.time()
+            try:
+                result = _run_plan_step(step, cfg, output_dir, seed=args.seed, verbose=args.verbose)
+            except Exception as exc:
+                result = _failed_step_result(step, exc, started)
+                round_results.append(result)
+                round_payload = _round_summary_payload(cfg, output_dir, round_index, 'failed', round_results)
+                round_summary_path = _round_summary_path(output_dir, round_index)
+                _write_json(round_summary_path, round_payload)
+                run_summary['status'] = 'failed'
+                run_summary['failed_round'] = round_index
+                run_summary['failed_step'] = result
+                run_summary['round_summaries'].append(str(round_summary_path))
+                run_summary['rounds_detail'].append(round_payload)
+                _write_json(_run_summary_path(output_dir), run_summary)
+                if progress is not None:
+                    progress.close()
+                if isinstance(exc, RunnerStepError):
+                    raise SystemExit(str(exc))
+                raise
+            round_results.append(result)
+            if progress is not None:
+                progress.update(1)
+                tqdm.write(_format_step_result(step_index, len(round_plan), result))
+            else:
+                print(_format_step_result(step_index, len(round_plan), result), flush=True)
+        if progress is not None:
+            progress.close()
+
+        round_payload = _round_summary_payload(cfg, output_dir, round_index, 'done', round_results)
+        round_summary_path = _round_summary_path(output_dir, round_index)
+        _write_json(round_summary_path, round_payload)
+        run_summary['round_summaries'].append(str(round_summary_path))
+        run_summary['rounds_detail'].append(round_payload)
+        _write_json(_run_summary_path(output_dir), run_summary)
+
+    run_summary['status'] = 'done'
+    _write_json(_run_summary_path(output_dir), run_summary)
+    print('')
+    print('ALOD run complete')
+    print('summary=%s' % _display_path(_run_summary_path(output_dir)))
 
 
 if __name__ == '__main__':
