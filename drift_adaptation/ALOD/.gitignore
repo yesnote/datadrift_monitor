@@ -1,4 +1,12 @@
+.agents/
 code_refs/
+data/
+docs/
+work_dirs/
+__pycache__/
+*.pyc
+*.egg-info/
+mmdet/.mim/
 *.sh
 *.zip
 AGENTS.md
