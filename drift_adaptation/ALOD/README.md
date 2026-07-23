@@ -87,6 +87,32 @@ Run one PAL round:
 python -B tools/run_active_learning.py --method pal --detector retinanet --dataset voc --rounds 1 --gpus 1
 ```
 
+The default terminal output is concise. It prints the resolved run, output
+directory, round progress, step status, and short result paths. Detailed command
+arguments, MMDetection training logs, inference logs, and acquisition details are
+saved under the run directory instead of being streamed to the terminal.
+
+Important output files:
+
+- `work_dirs/.../active_learning_plan.json`: full command/acquisition plan.
+- `work_dirs/.../run_summary.json`: resolved method, detector, dataset, rounds,
+  budget, output directory, and round summary paths.
+- `work_dirs/.../round_XX/round_summary.json`: per-round step status, durations,
+  logs, and acquisition outputs.
+- `work_dirs/.../round_XX/logs/train.log`: training stdout/stderr.
+- `work_dirs/.../round_XX/logs/eval.log`: evaluation stdout/stderr.
+- `work_dirs/.../round_XX/logs/*_inference.log`: method inference stdout/stderr.
+- `work_dirs/.../round_XX/pal_diagnostics.json` or
+  `work_dirs/.../round_XX/ppal_diagnostics.json`: method-specific acquisition
+  diagnostics.
+
+Use `--verbose` when debugging to print the full plan and stream subprocess
+output:
+
+```powershell
+python -B tools/run_active_learning.py --method pal --detector retinanet --dataset voc --rounds 1 --gpus 1 --verbose
+```
+
 Useful method aliases:
 
 - `ppal`: PPAL DCUS + CCMS.

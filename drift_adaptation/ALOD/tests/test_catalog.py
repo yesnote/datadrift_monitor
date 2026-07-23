@@ -1,3 +1,5 @@
+import subprocess
+import sys
 import unittest
 from pathlib import Path
 
@@ -90,6 +92,51 @@ class CatalogResolutionTest(unittest.TestCase):
                 'pal_acquisition_round_01',
             ],
         )
+
+    def test_pal_round_plan_command_steps_have_round_log_paths(self):
+        selection = resolve_experiment(method='pal:guide', detector='retinanet', dataset='voc')
+        cfg = build_experiment_config(selection)
+        output_dir = Path(cfg['output_dir'])
+        plans = build_round_plan(
+            cfg,
+            output_dir,
+            selection.method,
+            round_index=1,
+        )
+
+        command_logs = {
+            plan.name: Path(plan.log_path)
+            for plan in plans
+            if getattr(plan, 'log_path', None)
+        }
+
+        self.assertEqual(
+            command_logs,
+            {
+                'train_round_01': output_dir / 'round_01' / 'logs' / 'train.log',
+                'eval_round_01': output_dir / 'round_01' / 'logs' / 'eval.log',
+                'pal_labeled_inference_round_01': (
+                    output_dir / 'round_01' / 'logs' / 'pal_labeled_inference.log'
+                ),
+                'pal_unlabeled_inference_round_01': (
+                    output_dir / 'round_01' / 'logs' / 'pal_unlabeled_inference.log'
+                ),
+            },
+        )
+
+    def test_cli_help_exposes_verbose(self):
+        root = Path(__file__).resolve().parents[1]
+        result = subprocess.run(
+            [sys.executable, '-B', 'tools/run_active_learning.py', '--help'],
+            cwd=str(root),
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+        )
+
+        self.assertEqual(result.returncode, 0, msg=result.stderr)
+        self.assertIn('--verbose', result.stdout)
 
 
 if __name__ == '__main__':
