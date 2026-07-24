@@ -14,11 +14,12 @@ The loaders here keep that backend boundary explicit so ``dcus.py`` and
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
 
 import numpy as np
+
+from methods.common.detections import load_detection_records
 
 
 UNCERTAINTY_RESULT_KEYS = ('image_id', 'category_id', 'bbox', 'score', 'cls_uncertainty')
@@ -39,31 +40,11 @@ def load_uncertainty_detections(path: Any) -> List[Dict[str, Any]]:
     """Load and validate PPAL uncertainty detections."""
 
     result_path = _as_path(path)
-    with result_path.open('r', encoding='utf-8') as handle:
-        data = json.load(handle)
-
-    if isinstance(data, list):
-        records = data
-    elif isinstance(data, dict):
-        records = None
-        for key in ('detections', 'annotations', 'results'):
-            if isinstance(data.get(key), list):
-                records = data[key]
-                break
-        if records is None:
-            raise ValueError('Unsupported PPAL uncertainty JSON schema: %s' % result_path)
-    else:
-        raise ValueError('Unsupported PPAL uncertainty JSON schema: %s' % result_path)
-
-    normalized = []
-    for index, record in enumerate(records):
-        missing = [key for key in UNCERTAINTY_RESULT_KEYS if key not in record]
-        if missing:
-            raise KeyError(
-                'PPAL uncertainty record %d in %s is missing keys: %s'
-                % (index, result_path, ', '.join(missing)))
-        normalized.append(dict(record))
-    return normalized
+    return load_detection_records(
+        result_path,
+        required_keys=UNCERTAINTY_RESULT_KEYS,
+        schema_name='PPAL uncertainty',
+    )
 
 
 def load_class_quality(checkpoint_path: Any) -> np.ndarray:

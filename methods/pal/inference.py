@@ -7,21 +7,14 @@ schema consumed by the sampler.
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Tuple
 
+from methods.common.detections import load_detection_records as load_common_detection_records
+
 
 def load_detection_records(path: Path) -> List[Dict[str, Any]]:
-    with path.open('r', encoding='utf-8') as handle:
-        data = json.load(handle)
-    if isinstance(data, list):
-        return [dict(record) for record in data]
-    if isinstance(data, dict):
-        for key in ('detections', 'annotations', 'results'):
-            if isinstance(data.get(key), list):
-                return [dict(record) for record in data[key]]
-    raise ValueError('Unsupported PAL detection JSON schema: %s' % path)
+    return load_common_detection_records(path, schema_name='PAL detection')
 
 
 def detection_confidence(det: Dict[str, Any]) -> float:

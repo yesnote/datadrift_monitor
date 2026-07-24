@@ -2,14 +2,13 @@
 
 from __future__ import annotations
 
-import math
 from collections import defaultdict
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Sequence
 
-from methods.common.coco_pool import image_ids, read_coco_json
+from methods.common.coco_pool import category_counts, image_ids, read_coco_json
 from methods.common.matching import match_detections_to_ground_truth
-from methods.common.selection import deterministic_random_sample
+from methods.common.selection import fill_to_budget, ranked_ids_by_score, unique_in_order
 from methods.pal.embeddings import build_image_embeddings, read_embedding_cache
 from methods.pal.guide import (
     allocate_class_budgets as allocate_guide_class_budgets,
@@ -38,43 +37,7 @@ __all__ = [
 ]
 
 
-def _sort_image_id(image_id: Any) -> tuple:
-    if isinstance(image_id, int):
-        return (0, image_id)
-    return (1, str(image_id))
-
-
-def _category_counts_from_annotations(annotations: Iterable[Dict[str, Any]]) -> Dict[Any, int]:
-    counts: Dict[Any, int] = defaultdict(int)
-    for ann in annotations:
-        if ann.get('category_id') is not None:
-            counts[ann['category_id']] += 1
-    return counts
-
-
-def _category_counts_from_detections(detections: Iterable[Dict[str, Any]]) -> Dict[Any, int]:
-    counts: Dict[Any, int] = defaultdict(int)
-    for det in detections:
-        if det.get('category_id') is not None:
-            counts[det['category_id']] += 1
-    return counts
-
-
-def compute_class_weights(
-    labeled_counts: Dict[Any, int],
-    unlabeled_counts: Dict[Any, int],
-    categories: Iterable[Any],
-) -> Dict[Any, float]:
-    """Compute PAL rarity weights from labelled and unlabelled class counts."""
-
-    total_labeled = float(sum(labeled_counts.values()))
-    total_unlabeled = float(sum(unlabeled_counts.values()))
-    weights = {}
-    for category_id in categories:
-        labeled_ratio = labeled_counts.get(category_id, 0) / total_labeled if total_labeled else 0.0
-        unlabeled_ratio = unlabeled_counts.get(category_id, 0) / total_unlabeled if total_unlabeled else 0.0
-        weights[category_id] = max(1.0 - 0.5 * (labeled_ratio + unlabeled_ratio), 0.0)
-    return weights
+compute_class_weights = compute_guide_class_weights
 
 
 def _candidate_image_scores_by_class(
@@ -124,66 +87,14 @@ def allocate_class_budgets(
     unlabeled_counts: Dict[Any, int],
     class_capacities: Dict[Any, int],
 ) -> Dict[Any, int]:
-    """Allocate PAL class budgets with largest-remainder rounding."""
+    """Compatibility wrapper for PAL class-budget allocation."""
 
-    if budget <= 0:
-        return {category_id: 0 for category_id in class_capacities}
-
-    categories = sorted(class_capacities, key=lambda item: str(item))
-    rarity = compute_class_weights(labeled_counts, unlabeled_counts, categories)
-    total_rarity = sum(rarity.values())
-    if total_rarity <= 0.0:
-        rarity = {category_id: 1.0 for category_id in categories}
-        total_rarity = float(len(categories))
-
-    raw = {
-        category_id: budget * rarity[category_id] / total_rarity
-        for category_id in categories
-    }
-    budgets = {
-        category_id: min(int(math.floor(raw[category_id])), class_capacities[category_id])
-        for category_id in categories
-    }
-
-    remaining = budget - sum(budgets.values())
-    ranked = sorted(
-        categories,
-        key=lambda category_id: (
-            -(raw[category_id] - math.floor(raw[category_id])),
-            -rarity[category_id],
-            str(category_id),
-        ),
+    class_weights = compute_class_weights(
+        labeled_counts,
+        unlabeled_counts,
+        class_capacities,
     )
-    while remaining > 0:
-        progressed = False
-        for category_id in ranked:
-            if budgets[category_id] < class_capacities[category_id]:
-                budgets[category_id] += 1
-                remaining -= 1
-                progressed = True
-                if remaining == 0:
-                    break
-        if not progressed:
-            break
-    return budgets
-
-
-def _rank_image_scores(image_scores: Dict[Any, float]) -> List[Any]:
-    ranked = sorted(
-        image_scores.items(),
-        key=lambda item: (-float(item[1]), _sort_image_id(item[0])),
-    )
-    return [image_id for image_id, _ in ranked]
-
-
-def _unique_values(values: Iterable[Any]) -> List[Any]:
-    seen = set()
-    unique = []
-    for value in values:
-        if value not in seen:
-            unique.append(value)
-            seen.add(value)
-    return unique
+    return allocate_guide_class_budgets(class_weights, class_capacities, budget)
 
 
 def _load_candidate_embeddings(
@@ -260,8 +171,8 @@ def select_lius_images(
     scored = score_unlabeled_detections(unlabeled_dets, models)
 
     class_image_scores = _candidate_image_scores_by_class(scored)
-    labeled_counts = _category_counts_from_annotations(labeled_pool.get('annotations', []))
-    unlabeled_counts = _category_counts_from_detections(unlabeled_dets)
+    labeled_counts = category_counts(labeled_pool.get('annotations', []))
+    unlabeled_counts = category_counts(unlabeled_dets)
     class_capacities = {
         category_id: len(image_scores)
         for category_id, image_scores in class_image_scores.items()
@@ -277,28 +188,27 @@ def select_lius_images(
     for category_id, class_budget in class_budgets.items():
         if class_budget <= 0:
             continue
-        class_candidates = _rank_image_scores(class_image_scores.get(category_id, {}))
+        class_candidates = ranked_ids_by_score(class_image_scores.get(category_id, {}))
         for image_id in class_candidates[:2 * class_budget]:
             score = class_image_scores[category_id][image_id]
             if image_id not in candidate_scores or score > candidate_scores[image_id]:
                 candidate_scores[image_id] = score
 
-    selected = _rank_image_scores(candidate_scores)[:budget]
+    selected = ranked_ids_by_score(candidate_scores)[:budget]
     if len(selected) < budget:
         global_scores: Dict[Any, float] = defaultdict(float)
         for det in scored:
             image_id = det.get('image_id')
             if image_id is not None:
                 global_scores[image_id] = max(global_scores[image_id], float(det.get('lius_score', 0.0)))
-        for image_id in _rank_image_scores(global_scores):
+        for image_id in ranked_ids_by_score(global_scores):
             if image_id not in selected:
                 selected.append(image_id)
             if len(selected) == budget:
                 break
 
     if len(selected) < budget:
-        remaining = [image_id for image_id in unlabeled_ids if image_id not in set(selected)]
-        selected.extend(deterministic_random_sample(remaining, budget - len(selected), seed=seed))
+        selected = fill_to_budget(selected, unlabeled_ids, budget, seed=seed)
 
     return {
         'selected_image_ids': selected[:budget],
@@ -337,8 +247,8 @@ def select_full_pal_images(
     models = train_classwise_models(matched)
     scored = score_unlabeled_detections(unlabeled_dets, models)
 
-    labeled_counts = _category_counts_from_annotations(labeled_pool.get('annotations', []))
-    unlabeled_counts = _category_counts_from_detections(unlabeled_dets)
+    labeled_counts = category_counts(labeled_pool.get('annotations', []))
+    unlabeled_counts = category_counts(unlabeled_dets)
     class_candidates = _candidate_records_by_class(scored)
     class_capacities = {
         category_id: len(image_records)
@@ -359,7 +269,7 @@ def select_full_pal_images(
         for candidates in candidates_by_class.values()
         for candidate in candidates
     ]
-    unique_candidate_image_ids = _unique_values(candidate_image_ids)
+    unique_candidate_image_ids = unique_in_order(candidate_image_ids)
     embeddings = _load_candidate_embeddings(
         embedding_source,
         embedding_path,
@@ -400,7 +310,7 @@ def select_full_pal_images(
             image_id = det.get('image_id')
             if image_id is not None:
                 global_scores[image_id] = max(global_scores[image_id], float(det.get('lius_score', 0.0)))
-        for image_id in _rank_image_scores(global_scores):
+        for image_id in ranked_ids_by_score(global_scores):
             if image_id in selected_set:
                 continue
             record = {
@@ -414,8 +324,8 @@ def select_full_pal_images(
                 break
 
     if len(selected) < budget:
-        remaining = [image_id for image_id in unlabeled_ids if image_id not in selected_set]
-        for image_id in deterministic_random_sample(remaining, budget - len(selected), seed=seed):
+        refilled = fill_to_budget(selected, unlabeled_ids, budget, seed=seed)
+        for image_id in refilled[len(selected):]:
             record = {
                 'image_id': image_id,
                 'category_id': None,

@@ -7,6 +7,8 @@ from importlib.util import find_spec
 from pathlib import Path
 from typing import Any, Dict, Iterable, List
 
+from methods.common.results import acquisition_result
+
 
 @dataclass(frozen=True)
 class PPALStep:
@@ -102,27 +104,29 @@ def run_uncertainty_acquisition(
         str(out_unlabeled_json),
     )
     metrics = dict(result.get('metrics', {}))
-    return {
-        'method': 'ppal',
-        'stage': 'dcus',
-        'runner_stage': 'uncertainty',
-        'round_index': round_index,
-        'budget': int(cfg['uncertainty_sampler_config'].get('n_sample_images', 0)),
-        'selected_image_ids': result.get('selected_image_ids', []),
-        'selected_count': int(result.get('selected_count', 0)),
-        'inputs': {
+    selected = result.get('selected_image_ids', [])
+    out_labeled = str(out_labeled_json)
+    out_unlabeled = str(out_unlabeled_json)
+    return acquisition_result(
+        method='ppal',
+        stage='dcus',
+        runner_stage='uncertainty',
+        round_index=round_index,
+        budget=int(cfg['uncertainty_sampler_config'].get('n_sample_images', 0)),
+        selected_image_ids=selected,
+        inputs={
             'labeled_pool_json': str(last_labeled_json),
             'uncertainty_result_json': str(result_json),
             'class_quality_checkpoint': str(result_json.parent / 'latest.pth'),
         },
-        'outputs': {
-            'labeled_pool_json': str(out_labeled_json),
-            'unlabeled_pool_json': str(out_unlabeled_json),
+        outputs={
+            'labeled_pool_json': out_labeled,
+            'unlabeled_pool_json': out_unlabeled,
         },
-        'metrics': metrics,
-        'out_labeled_json': str(out_labeled_json),
-        'out_unlabeled_json': str(out_unlabeled_json),
-    }
+        metrics=metrics,
+        out_labeled_json=out_labeled,
+        out_unlabeled_json=out_unlabeled,
+    )
 
 
 def run_diversity_acquisition(
@@ -153,24 +157,26 @@ def run_diversity_acquisition(
         str(out_unlabeled_json),
     )
     metrics = dict(result.get('metrics', {}))
-    return {
-        'method': 'ppal',
-        'stage': 'ccms',
-        'runner_stage': 'diversity',
-        'round_index': round_index,
-        'budget': int(cfg['diversity_sampler_config'].get('n_sample_images', 0)),
-        'selected_image_ids': result.get('selected_image_ids', []),
-        'selected_count': int(result.get('selected_count', 0)),
-        'inputs': {
+    selected = result.get('selected_image_ids', [])
+    out_labeled = str(out_labeled_json)
+    out_unlabeled = str(out_unlabeled_json)
+    return acquisition_result(
+        method='ppal',
+        stage='ccms',
+        runner_stage='diversity',
+        round_index=round_index,
+        budget=int(cfg['diversity_sampler_config'].get('n_sample_images', 0)),
+        selected_image_ids=selected,
+        inputs={
             'labeled_pool_json': str(last_labeled_json),
             'uncertainty_result_json': str(result_json),
             'image_distance_npy': str(image_distance_npy),
         },
-        'outputs': {
-            'labeled_pool_json': str(out_labeled_json),
-            'unlabeled_pool_json': str(out_unlabeled_json),
+        outputs={
+            'labeled_pool_json': out_labeled,
+            'unlabeled_pool_json': out_unlabeled,
         },
-        'metrics': metrics,
-        'out_labeled_json': str(out_labeled_json),
-        'out_unlabeled_json': str(out_unlabeled_json),
-    }
+        metrics=metrics,
+        out_labeled_json=out_labeled,
+        out_unlabeled_json=out_unlabeled,
+    )

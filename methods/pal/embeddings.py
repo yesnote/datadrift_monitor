@@ -14,6 +14,9 @@ from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence
 
 import numpy as np
 
+from methods.common.io import read_json, write_json
+from methods.common.selection import image_id_sort_key
+from methods.common.vectors import l2_normalize
 from methods.pal.inference import detection_confidence, detection_pre_nms_count
 
 
@@ -27,10 +30,7 @@ def _normalize_image_id(image_id: Any) -> Any:
 
 
 def _sort_image_id(image_id: Any) -> tuple:
-    image_id = _normalize_image_id(image_id)
-    if isinstance(image_id, int):
-        return (0, image_id)
-    return (1, str(image_id))
+    return image_id_sort_key(_normalize_image_id(image_id))
 
 
 def _json_image_id(image_id: Any) -> str:
@@ -52,13 +52,6 @@ def _as_float_vector(values: Sequence[Any], dim: int) -> np.ndarray:
     width = min(dim, raw.shape[0])
     vector[:width] = raw[:width]
     return vector
-
-
-def _l2_normalize(vector: np.ndarray) -> np.ndarray:
-    norm = float(np.linalg.norm(vector))
-    if norm <= 0.0 or not math.isfinite(norm):
-        return vector.astype(np.float32, copy=False)
-    return (vector / norm).astype(np.float32, copy=False)
 
 
 class ImageEmbeddingBackend:
@@ -140,7 +133,7 @@ class DetectionEmbeddingBackend(ImageEmbeddingBackend):
                 class_dim=class_dim,
                 embedding_dim=embedding_dim,
             )
-            embeddings[image_id] = _l2_normalize(vector) if self.normalize else vector
+            embeddings[image_id] = l2_normalize(vector) if self.normalize else vector
         return embeddings
 
     def _ordered_image_ids(
@@ -328,16 +321,12 @@ def write_embeddings_json(embeddings: Mapping[Any, np.ndarray], path: Path) -> N
             for image_id in sorted(normalized, key=_sort_image_id)
         ],
     }
-    path = Path(path)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open('w', encoding='utf-8') as handle:
-        json.dump(payload, handle)
+    write_json(Path(path), payload)
 
 
 def read_embeddings_json(path: Path) -> EmbeddingMap:
     path = Path(path)
-    with path.open('r', encoding='utf-8') as handle:
-        payload = json.load(handle)
+    payload = read_json(path)
     if isinstance(payload, dict) and isinstance(payload.get('embeddings'), list):
         records = payload['embeddings']
     elif isinstance(payload, list):

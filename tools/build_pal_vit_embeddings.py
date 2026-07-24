@@ -11,6 +11,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from methods.pal.embeddings import write_embedding_cache
+from methods.common.paths import is_relative_to
 from methods.pal.vit_embeddings import (
     DEFAULT_GOOGLE_VIT_MODEL,
     EMBEDDING_OUTPUTS,
@@ -20,14 +21,6 @@ from methods.pal.vit_embeddings import (
     read_coco_image_paths,
     write_metadata,
 )
-
-
-def _is_relative_to(path: Path, parent: Path) -> bool:
-    try:
-        path.relative_to(parent)
-        return True
-    except ValueError:
-        return False
 
 
 def _resolve_path(value: Path) -> Path:
@@ -40,7 +33,7 @@ def _resolve_path(value: Path) -> Path:
 def _assert_not_code_refs(path: Path) -> None:
     resolved = path.resolve()
     code_refs = (ROOT / 'code_refs').resolve()
-    if _is_relative_to(resolved, code_refs):
+    if is_relative_to(resolved, code_refs):
         raise ValueError('Refusing to use code_refs as PAL embedding input/output: %s' % path)
 
 

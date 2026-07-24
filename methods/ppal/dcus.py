@@ -1,8 +1,9 @@
-import json
 from collections import OrderedDict
+from pathlib import Path
 
 import numpy as np
 
+from methods.common.coco_pool import image_ids, read_coco_json, write_coco_pool_split
 from methods.ppal.base import BaseALSampler
 from methods.ppal.inference import (
     class_quality_checkpoint_path,
@@ -51,9 +52,8 @@ class DCUSSampler(BaseALSampler):
         class_weights = self._get_classwise_weight(class_qualities)
         results = load_uncertainty_detections(result_json)
 
-        with open(last_label_path, encoding='utf-8') as f:
-            last_labeled_data = json.load(f)
-            last_labeled_img_ids = [x['id'] for x in last_labeled_data['images']]
+        last_labeled_data = read_coco_json(Path(last_label_path))
+        last_labeled_img_ids = image_ids(last_labeled_data)
 
         image_hit = dict()
         for img_id in self.oracle_data.keys():
@@ -133,27 +133,22 @@ class DCUSSampler(BaseALSampler):
         }
 
     def create_jsons(self, sampled_img_ids, unsampled_img_ids, last_labeled_json, out_label_path, out_unlabeled_path):
-        with open(last_labeled_json, encoding='utf-8') as f:
-            last_labeled_data = json.load(f)
+        last_labeled_data = read_coco_json(Path(last_labeled_json))
 
-        last_labeled_img_ids = [x['id'] for x in last_labeled_data['images']]
+        last_labeled_img_ids = image_ids(last_labeled_data)
         all_labeled_img_ids = last_labeled_img_ids + sampled_img_ids
         assert len(set(all_labeled_img_ids)) == len(last_labeled_img_ids) + len(sampled_img_ids)
         assert len(all_labeled_img_ids) + len(unsampled_img_ids) == self.image_pool_size
 
-        labeled_data = dict(images=[], annotations=[], categories=self.categories)
-        unlabeled_data = dict(images=[], categories=self.categories)
-
-        for img_id in sampled_img_ids:
-            # no annotation here because the annotating happens in the diversity step
-            labeled_data['images'].append(self.oracle_data[img_id]['image'])
-        for img_id in unsampled_img_ids:
-            unlabeled_data['images'].append(self.oracle_data[img_id]['image'])
-
-        with open(out_label_path, 'w', encoding='utf-8') as f:
-            json.dump(labeled_data, f)
-        with open(out_unlabeled_path, 'w', encoding='utf-8') as f:
-            json.dump(unlabeled_data, f)
+        # No annotation here because the annotating happens in the diversity step.
+        write_coco_pool_split(
+            self.oracle_json,
+            sampled_img_ids,
+            unsampled_img_ids,
+            Path(out_label_path),
+            Path(out_unlabeled_path),
+            labeled_include_annotations=False,
+        )
 
         self.latest_labeled = out_label_path
         return {
