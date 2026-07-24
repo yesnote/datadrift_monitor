@@ -9,12 +9,12 @@ seeded random sample so the acquisition loop remains deterministic.
 
 from __future__ import annotations
 
-import json
 import math
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Union
 
-from methods.common.coco_pool import image_ids, read_coco_json
+from methods.common.coco_pool import image_ids, load_coco_pool
+from methods.common.detections import load_detection_records
 from methods.common.selection import (
     deterministic_random_sample,
     ordered_scores_for_ids,
@@ -22,12 +22,6 @@ from methods.common.selection import (
 )
 
 PoolInput = Union[Path, Dict[str, Any]]
-
-
-def _load_pool(pool: PoolInput) -> Dict[str, Any]:
-    if isinstance(pool, Path):
-        return read_coco_json(pool)
-    return pool
 
 
 def _binary_entropy(probability: float) -> float:
@@ -57,20 +51,14 @@ def _detection_uncertainty(det: Dict[str, Any]) -> float:
 def _load_results(results_json: Optional[Path]) -> Optional[List[Dict[str, Any]]]:
     if results_json is None or not results_json.exists():
         return None
-    with results_json.open('r', encoding='utf-8') as handle:
-        results = json.load(handle)
-    if isinstance(results, list):
-        return results
-    if isinstance(results, dict) and isinstance(results.get('annotations'), list):
-        return results['annotations']
-    return None
+    return load_detection_records(results_json, schema_name='entropy result')
 
 
 def aggregate_image_scores(
     pool: PoolInput,
     results_json: Optional[Path],
 ) -> Optional[Dict[Any, float]]:
-    pool_ids = image_ids(_load_pool(pool))
+    pool_ids = image_ids(load_coco_pool(pool))
     pool_id_set = set(pool_ids)
     results = _load_results(results_json)
     if results is None:
@@ -92,5 +80,5 @@ def sample(
 ) -> List[Any]:
     scores = aggregate_image_scores(pool, results_json)
     if scores is None:
-        return deterministic_random_sample(image_ids(_load_pool(pool)), budget, seed=seed)
+        return deterministic_random_sample(image_ids(load_coco_pool(pool)), budget, seed=seed)
     return top_k_by_score(scores, budget)

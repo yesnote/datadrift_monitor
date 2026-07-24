@@ -1,9 +1,10 @@
 """PPAL CCMS/diversity acquisition step."""
 
-import json
+from pathlib import Path
 
 import numpy as np
 
+from methods.common.coco_pool import image_ids, read_coco_json
 from methods.ppal.base import BaseALSampler
 from methods.ppal.inference import load_image_distance_cache
 
@@ -74,10 +75,9 @@ class DiversitySampler(BaseALSampler):
             n_iter=self.kmeans_iterations,
         )
 
-        with open(last_label_path, encoding='utf-8') as f:
-            results = json.load(f)
+        results = read_coco_json(Path(last_label_path))
 
-        last_labeled_img_ids = [x['id'] for x in results['images']]
+        last_labeled_img_ids = image_ids(results)
         image_hit = dict()
         for img_id in self.oracle_data.keys():
             image_hit[img_id] = 0

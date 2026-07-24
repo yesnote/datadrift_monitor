@@ -36,6 +36,9 @@ PRETRAIN_PREP_HINT = (
 )
 from methods.common.coco_pool import update_labeled_unlabeled_from_oracle
 from methods.common.diagnostics import write_diagnostics
+from methods.common.io import read_json, write_json as write_common_json
+from methods.common.paths import is_relative_to
+from methods.common.results import acquisition_result
 from methods.entropy.sampler import sample as entropy_sample
 from methods.pal.acquisition import sample_pal_from_files
 from methods.ppal.acquisition import run_diversity_acquisition, run_uncertainty_acquisition
@@ -87,18 +90,10 @@ class AcquisitionPlan:
 PlanStep = Union[CommandPlan, AcquisitionPlan]
 
 
-def _is_relative_to(path: Path, parent: Path) -> bool:
-    try:
-        path.relative_to(parent)
-        return True
-    except ValueError:
-        return False
-
-
 def _assert_not_code_refs(path: Path) -> None:
     resolved = path.resolve()
     code_refs = (ROOT / 'code_refs').resolve()
-    if _is_relative_to(resolved, code_refs):
+    if is_relative_to(resolved, code_refs):
         raise ValueError('Refusing to read/write runtime output under code_refs: %s' % path)
 
 
@@ -108,7 +103,7 @@ def _resolve_repo_path(value: str, must_be_relative: bool = True) -> Path:
         raise ValueError('Config path must be relative to the repo root: %s' % value)
     resolved = (ROOT / path).resolve() if not path.is_absolute() else path.resolve()
     root = ROOT.resolve()
-    if not _is_relative_to(resolved, root):
+    if not is_relative_to(resolved, root):
         raise ValueError('Config path must stay inside the repo root: %s' % value)
     _assert_not_code_refs(resolved)
     return resolved
@@ -437,7 +432,7 @@ def _round_relative_file(round_work_dir: Path, value: str) -> Path:
     if path.is_absolute():
         raise ValueError('Round output file must be relative: %s' % value)
     resolved = (round_work_dir / path).resolve()
-    if not _is_relative_to(resolved, round_work_dir.resolve()):
+    if not is_relative_to(resolved, round_work_dir.resolve()):
         raise ValueError('Round output file must stay inside the round work dir: %s' % value)
     _assert_not_code_refs(resolved)
     return resolved
@@ -555,30 +550,13 @@ def _write_plan_log(output_dir: Path, plan: List[PlanStep]) -> Path:
     output_dir.mkdir(parents=True, exist_ok=True)
     path = output_dir / 'active_learning_plan.json'
     _assert_not_code_refs(path)
-    with path.open('w', encoding='utf-8') as handle:
-        json.dump([step.to_dict() for step in plan], handle, indent=2)
+    write_common_json(path, [step.to_dict() for step in plan], indent=2)
     return path
 
 
 def _write_json(path: Path, payload: Dict[str, Any]) -> None:
     _assert_not_code_refs(path)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open('w', encoding='utf-8') as handle:
-        json.dump(_jsonable(payload), handle, indent=2)
-
-
-def _jsonable(value: Any) -> Any:
-    if isinstance(value, Path):
-        return str(value)
-    if isinstance(value, dict):
-        return {str(key): _jsonable(item) for key, item in value.items()}
-    if isinstance(value, (list, tuple)):
-        return [_jsonable(item) for item in value]
-    if hasattr(value, 'tolist'):
-        return _jsonable(value.tolist())
-    if hasattr(value, 'item'):
-        return value.item()
-    return value
+    write_common_json(path, payload, indent=2)
 
 
 def _print_plan(plan: Iterable[PlanStep]) -> None:
@@ -629,8 +607,7 @@ def _count_coco_images(path: Path) -> Optional[int]:
     if not path.exists():
         return None
     try:
-        with path.open('r', encoding='utf-8') as handle:
-            data = json.load(handle)
+        data = read_json(path)
         return len(data.get('images', []))
     except (OSError, ValueError, TypeError):
         return None
@@ -904,26 +881,28 @@ def _execute_lightweight_acquisition(
             )
         diagnostics_path = _round_relative_file(round_work_dir, str(diagnostics_file))
         diagnostics_stage = 'guide' if pal_mode_normalized in ('full', 'guide') else 'lius'
-        diagnostics_payload = dict(diagnostics)
-        diagnostics_payload.update({
-            'method': 'pal',
-            'stage': diagnostics_stage,
-            'round_index': round_index,
-            'budget': budget,
-            'selected_count': len(selected),
-            'inputs': {
+        diagnostics_extra = dict(diagnostics)
+        diagnostics_extra.pop('selected_image_ids', None)
+        diagnostics_payload = acquisition_result(
+            method='pal',
+            stage=diagnostics_stage,
+            round_index=round_index,
+            budget=budget,
+            selected_image_ids=selected,
+            inputs={
                 'labeled_pool_json': str(input_paths['labeled']),
                 'unlabeled_pool_json': str(input_paths['unlabeled']),
                 'labeled_detections_json': str(labeled_dets),
                 'unlabeled_detections_json': str(unlabeled_dets),
                 'embedding_path': str(embedding_path) if embedding_path else None,
             },
-            'outputs': {
+            outputs={
                 'labeled_pool_json': str(annotations['labeled']),
                 'unlabeled_pool_json': str(annotations['unlabeled']),
                 'diagnostics_json': str(diagnostics_path),
             },
-        })
+            **diagnostics_extra,
+        )
         write_diagnostics(diagnostics_path, diagnostics_payload)
     else:
         raise ValueError('Unsupported lightweight acquisition method: %s' % method)
@@ -949,8 +928,7 @@ def _execute_lightweight_acquisition(
 def _load_ppal_diagnostic_stages(diagnostics_path: Path) -> List[Dict[str, Any]]:
     if not diagnostics_path.exists():
         return []
-    with diagnostics_path.open('r', encoding='utf-8') as handle:
-        payload = json.load(handle)
+    payload = read_json(diagnostics_path)
     return list(payload.get('stages', []))
 
 
@@ -997,26 +975,25 @@ def _execute_ppal_acquisition(
     stages.append(output)
     stage_names = {str(stage.get('runner_stage')) for stage in stages}
     summary_stage = 'all' if {'uncertainty', 'diversity'}.issubset(stage_names) else ppal_stage
-    diagnostics_payload = {
-        'method': 'ppal',
-        'stage': summary_stage,
-        'round_index': round_index,
-        'budget': int(output.get('budget', cfg.get('budget', 0))),
-        'selected_image_ids': output.get('selected_image_ids', []),
-        'selected_count': int(output.get('selected_count', 0)),
-        'inputs': {
+    diagnostics_payload = acquisition_result(
+        method='ppal',
+        stage=summary_stage,
+        round_index=round_index,
+        budget=int(output.get('budget', cfg.get('budget', 0))),
+        selected_image_ids=output.get('selected_image_ids', []),
+        inputs={
             'labeled_pool_json': str(input_paths['labeled']),
             'unlabeled_pool_json': str(input_paths['unlabeled']),
             'uncertainty_result_json': str(result_json),
             'image_distance_npy': str(round_work_dir / 'image_dis.npy'),
         },
-        'outputs': {
+        outputs={
             'labeled_pool_json': output.get('outputs', {}).get('labeled_pool_json'),
             'unlabeled_pool_json': output.get('outputs', {}).get('unlabeled_pool_json'),
             'diagnostics_json': str(diagnostics_path),
         },
-        'stages': stages,
-    }
+        stages=stages,
+    )
     write_diagnostics(diagnostics_path, diagnostics_payload)
     output['diagnostics_path'] = str(diagnostics_path)
     return output

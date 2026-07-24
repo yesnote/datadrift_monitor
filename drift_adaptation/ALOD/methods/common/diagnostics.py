@@ -2,34 +2,16 @@
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 from typing import Any, Dict, Optional
 
-
-def to_jsonable(value: Any) -> Any:
-    """Convert common scientific Python values into JSON-serializable data."""
-
-    if isinstance(value, Path):
-        return str(value)
-    if isinstance(value, dict):
-        return {str(key): to_jsonable(item) for key, item in value.items()}
-    if isinstance(value, (list, tuple)):
-        return [to_jsonable(item) for item in value]
-    if hasattr(value, 'tolist'):
-        return to_jsonable(value.tolist())
-    if hasattr(value, 'item'):
-        return value.item()
-    return value
+from methods.common.io import to_jsonable, write_json
 
 
 def write_diagnostics(path: Path, diagnostics: Dict[str, Any]) -> Path:
     """Write a diagnostics dictionary as stable UTF-8 JSON."""
 
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open('w', encoding='utf-8') as handle:
-        json.dump(to_jsonable(diagnostics), handle, indent=2, ensure_ascii=False)
-    return path
+    return write_json(path, diagnostics, indent=2)
 
 
 def print_acquisition_summary(

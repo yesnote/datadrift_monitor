@@ -7,13 +7,15 @@ transformers. Heavy dependencies are imported only by the extraction path.
 
 from __future__ import annotations
 
-import json
-import math
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, Iterable, Iterator, List, Mapping, Optional, Sequence
 
 import numpy as np
+
+from methods.common.io import read_json, write_json
+from methods.common.paths import is_relative_to
+from methods.common.vectors import l2_normalize
 
 
 DEFAULT_GOOGLE_VIT_MODEL = 'google/vit-base-patch16-224-in21k'
@@ -27,14 +29,6 @@ class CocoImagePath:
     path: Path
 
 
-def _is_relative_to(path: Path, parent: Path) -> bool:
-    try:
-        path.relative_to(parent)
-        return True
-    except ValueError:
-        return False
-
-
 def resolve_coco_image_path(image_root: Path, file_name: str) -> Path:
     relative_path = Path(file_name)
     if relative_path.is_absolute():
@@ -43,7 +37,7 @@ def resolve_coco_image_path(image_root: Path, file_name: str) -> Path:
 
     root = Path(image_root).resolve()
     resolved = (root / relative_path).resolve()
-    if not _is_relative_to(resolved, root):
+    if not is_relative_to(resolved, root):
         raise ValueError('COCO file_name escapes image_root: %s' % file_name)
     return resolved
 
@@ -63,8 +57,7 @@ def read_coco_image_paths(annotation_paths: Sequence[Path], image_root: Path) ->
     order: List[Any] = []
     for annotation_path in annotation_paths:
         annotation_path = Path(annotation_path)
-        with annotation_path.open('r', encoding='utf-8') as handle:
-            payload = json.load(handle)
+        payload = read_json(annotation_path)
 
         images = payload.get('images')
         if not isinstance(images, list):
@@ -204,13 +197,6 @@ def select_output_tensor(outputs: Any, embedding_output: str) -> Any:
     raise ValueError('Unsupported embedding output: %s' % embedding_output)
 
 
-def _l2_normalize(vector: np.ndarray) -> np.ndarray:
-    norm = float(np.linalg.norm(vector))
-    if norm <= 0.0 or not math.isfinite(norm):
-        return vector.astype(np.float32, copy=False)
-    return (vector / norm).astype(np.float32, copy=False)
-
-
 def extract_vit_embeddings(
     records: Sequence[CocoImagePath],
     model_name: str = DEFAULT_GOOGLE_VIT_MODEL,
@@ -248,7 +234,7 @@ def extract_vit_embeddings(
         vectors = tensor.detach().cpu().numpy().astype(np.float32, copy=False)
         for record, vector in zip(batch_records, vectors):
             flat = np.asarray(vector, dtype=np.float32).reshape(-1)
-            embeddings[record.image_id] = _l2_normalize(flat) if normalize else flat
+            embeddings[record.image_id] = l2_normalize(flat) if normalize else flat
 
         if progress:
             done = min(batch_index * batch_size, total)
@@ -287,7 +273,4 @@ def metadata_payload(
 
 
 def write_metadata(payload: Mapping[str, Any], path: Path) -> None:
-    path = Path(path)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open('w', encoding='utf-8') as handle:
-        json.dump(dict(payload), handle, indent=2)
+    write_json(Path(path), dict(payload), indent=2)

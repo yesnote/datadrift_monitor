@@ -13,23 +13,19 @@ from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence
 
 import numpy as np
 
+from methods.common.selection import image_id_sort_key
+
 
 DEFAULT_ALPHA = 0.9
 DEFAULT_BETA = 0.04
 DEFAULT_GAMMA = 0.02
 
 
-def _sort_id(value: Any) -> tuple:
-    if isinstance(value, int):
-        return (0, value)
-    return (1, str(value))
-
-
 def _candidate_sort_key(candidate: Mapping[str, Any], score_key: str) -> tuple:
     return (
         -float(candidate.get(score_key, 0.0)),
-        _sort_id(candidate.get('image_id')),
-        _sort_id(candidate.get('category_id')),
+        image_id_sort_key(candidate.get('image_id')),
+        image_id_sort_key(candidate.get('category_id')),
     )
 
 
@@ -64,7 +60,7 @@ def compute_class_weights(
     total_unlabeled = float(sum(max(int(count), 0) for count in unlabeled_counts.values()))
 
     weights: Dict[Any, float] = {}
-    for category_id in sorted(category_ids, key=_sort_id):
+    for category_id in sorted(category_ids, key=image_id_sort_key):
         labeled_ratio = (
             max(int(labeled_counts.get(category_id, 0)), 0) / total_labeled
             if total_labeled > 0.0 else 0.0
@@ -84,7 +80,7 @@ def allocate_class_budgets(
 ) -> Dict[Any, int]:
     """Allocate integer per-class budgets with deterministic largest remainder."""
 
-    category_ids = sorted(class_capacities, key=_sort_id)
+    category_ids = sorted(class_capacities, key=image_id_sort_key)
     budgets = {category_id: 0 for category_id in category_ids}
     if total_budget <= 0 or not category_ids:
         return budgets
@@ -119,7 +115,7 @@ def allocate_class_budgets(
         key=lambda category_id: (
             -(raw[category_id] - math.floor(raw[category_id])),
             -positive_weights.get(category_id, 0.0),
-            _sort_id(category_id),
+            image_id_sort_key(category_id),
         ),
     )
     while remaining > 0:
@@ -172,7 +168,7 @@ def unique_categories_from_detections(
         for det in image_detections
         if det.get('category_id') is not None
     }
-    return sorted(categories, key=_sort_id)
+    return sorted(categories, key=image_id_sort_key)
 
 
 def compute_rcdi(
@@ -289,7 +285,7 @@ def build_class_candidates(
             best_by_class_image[category_id][image_id] = record
 
     candidates: Dict[Any, List[Dict[str, Any]]] = {}
-    for category_id in sorted(class_budgets, key=_sort_id):
+    for category_id in sorted(class_budgets, key=image_id_sort_key):
         limit = max(int(class_budgets.get(category_id, 0)), 0) * candidate_multiplier
         if limit <= 0:
             candidates[category_id] = []
@@ -321,7 +317,7 @@ def score_guide_candidates(
     """Attach CWIE, RCDI, RCSP, and final PAL scores to class candidates."""
 
     scored_by_class: Dict[Any, List[Dict[str, Any]]] = {}
-    for category_id in sorted(candidates_by_class, key=_sort_id):
+    for category_id in sorted(candidates_by_class, key=image_id_sort_key):
         class_candidates = [dict(candidate) for candidate in candidates_by_class[category_id]]
         ranked_image_ids = [candidate.get('image_id') for candidate in class_candidates]
         rcsp_values = compute_rcsp(ranked_image_ids, image_embeddings) if ranked_image_ids else {}
@@ -384,7 +380,7 @@ def select_deduplicated_candidates(
     class_order = sorted(
         class_budgets,
         key=lambda category_id: (-float(class_weights.get(category_id, 0.0)),
-                                 _sort_id(category_id)),
+                                 image_id_sort_key(category_id)),
     )
 
     def add_candidate(candidate: Mapping[str, Any], category_id: Any, reason: str) -> bool:

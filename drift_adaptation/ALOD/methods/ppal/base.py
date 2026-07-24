@@ -1,6 +1,8 @@
-import json
+from pathlib import Path
 
 import numpy as np
+
+from methods.common.coco_pool import image_ids, read_coco_json, write_coco_pool_split
 
 COCO_CLASSES = (
     'person', 'bicycle', 'car', 'motorcycle', 'airplane', 'bus',
@@ -52,10 +54,10 @@ class BaseALSampler(object):
         self.is_random = is_random
 
         # read and store oracle annotations
-        with open(oracle_annotation_path, encoding='utf-8') as f:
-            data = json.load(f)
+        data = read_coco_json(Path(oracle_annotation_path))
 
         self.image_pool_size = len(data['images'])
+        self.oracle_json = dict(data)
         self.oracle_data = dict()
         self.categories = data['categories']
 
@@ -80,6 +82,10 @@ class BaseALSampler(object):
             img_id = ann['image_id']
             if self.categories_dict[ann['category_id']] in self.CLASSES:
                 self.oracle_data[img_id]['annotations'].append(ann)
+        self.oracle_json['annotations'] = [
+            ann for records in self.oracle_data.values()
+            for ann in records['annotations']
+        ]
 
         self.oracle_cate_prob = self.cate_prob_stat(input_json=None)
 
@@ -102,8 +108,7 @@ class BaseALSampler(object):
                 for ann in self.oracle_data[img_id]['annotations']:
                     cate_freqs[ann['category_id']] += 1.
         else:
-            with open(input_json, encoding='utf-8') as f:
-                data = json.load(f)
+            data = read_coco_json(Path(input_json))
             for ann in data['annotations']:
                 if ann['category_id'] in self.valid_categories:
                     cate_freqs[ann['category_id']] += 1.
@@ -144,27 +149,21 @@ class BaseALSampler(object):
         out_label_path,
         out_unlabeled_path
     ):
-        with open(last_labeled_json, encoding='utf-8') as f:
-            last_labeled_data = json.load(f)
+        last_labeled_data = read_coco_json(Path(last_labeled_json))
 
-        last_labeled_img_ids = [x['id'] for x in last_labeled_data['images']]
+        last_labeled_img_ids = image_ids(last_labeled_data)
         all_labeled_img_ids = last_labeled_img_ids + sampled_img_ids
         assert len(set(all_labeled_img_ids)) == len(last_labeled_img_ids) + len(sampled_img_ids)
         assert len(all_labeled_img_ids) + len(unsampled_img_ids) == self.image_pool_size
 
-        labeled_data = dict(images=[], annotations=[], categories=self.categories)
-        unlabeled_data = dict(images=[], categories=self.categories)
-
-        for img_id in all_labeled_img_ids:
-            labeled_data['images'].append(self.oracle_data[img_id]['image'])
-            labeled_data['annotations'].extend(self.oracle_data[img_id]['annotations'])
-        for img_id in unsampled_img_ids:
-            unlabeled_data['images'].append(self.oracle_data[img_id]['image'])
-
-        with open(out_label_path, 'w', encoding='utf-8') as f:
-            json.dump(labeled_data, f)
-        with open(out_unlabeled_path, 'w', encoding='utf-8') as f:
-            json.dump(unlabeled_data, f)
+        write_coco_pool_split(
+            self.oracle_json,
+            all_labeled_img_ids,
+            unsampled_img_ids,
+            Path(out_label_path),
+            Path(out_unlabeled_path),
+            labeled_include_annotations=True,
+        )
 
         self.latest_labeled = out_label_path
         return {

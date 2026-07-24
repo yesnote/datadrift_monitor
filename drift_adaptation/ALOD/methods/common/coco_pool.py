@@ -6,26 +6,40 @@ lightweight samplers before detector dependencies load.
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Sequence, Tuple
+from typing import Any, Dict, Iterable, List, Sequence, Tuple, Union
+
+from methods.common.io import read_json, write_json
 
 JsonDict = Dict[str, Any]
+PoolInput = Union[Path, JsonDict]
 
 
 def read_coco_json(path: Path) -> JsonDict:
-    with path.open('r', encoding='utf-8') as handle:
-        return json.load(handle)
+    return read_json(Path(path))
 
 
 def write_coco_json(data: JsonDict, path: Path) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open('w', encoding='utf-8') as handle:
-        json.dump(data, handle, ensure_ascii=False)
+    write_json(path, data)
+
+
+def load_coco_pool(pool: PoolInput) -> JsonDict:
+    if isinstance(pool, Path):
+        return read_coco_json(pool)
+    return pool
 
 
 def image_ids(coco_data: JsonDict) -> List[Any]:
     return [image['id'] for image in coco_data.get('images', [])]
+
+
+def category_counts(records: Iterable[Dict[str, Any]]) -> Dict[Any, int]:
+    counts: Dict[Any, int] = {}
+    for record in records:
+        category_id = record.get('category_id')
+        if category_id is not None:
+            counts[category_id] = counts.get(category_id, 0) + 1
+    return counts
 
 
 def _metadata_from(oracle_data: JsonDict) -> JsonDict:
@@ -53,6 +67,62 @@ def build_coco_subset(
             if ann.get('image_id') in selected
         ]
     return subset
+
+
+def build_coco_subset_ordered(
+    oracle_data: JsonDict,
+    selected_image_ids: Iterable[Any],
+    include_annotations: bool,
+) -> JsonDict:
+    """Build a COCO subset preserving the supplied image-id order."""
+
+    subset = _metadata_from(oracle_data)
+    image_lookup = {
+        image.get('id'): image for image in oracle_data.get('images', [])
+    }
+    ordered_ids = [
+        image_id for image_id in selected_image_ids
+        if image_id in image_lookup
+    ]
+    selected = set(ordered_ids)
+    subset['images'] = [image_lookup[image_id] for image_id in ordered_ids]
+    if include_annotations:
+        subset['annotations'] = [
+            ann for ann in oracle_data.get('annotations', [])
+            if ann.get('image_id') in selected
+        ]
+    return subset
+
+
+def write_coco_pool_split(
+    oracle_data: JsonDict,
+    labeled_image_ids: Iterable[Any],
+    unlabeled_image_ids: Iterable[Any],
+    out_labeled_json: Path,
+    out_unlabeled_json: Path,
+    labeled_include_annotations: bool,
+) -> Tuple[List[Any], List[Any]]:
+    """Write labeled/unlabeled COCO files from explicit image-id lists."""
+
+    labeled_ids = list(labeled_image_ids)
+    unlabeled_ids = list(unlabeled_image_ids)
+    write_coco_json(
+        build_coco_subset_ordered(
+            oracle_data,
+            labeled_ids,
+            include_annotations=labeled_include_annotations,
+        ),
+        out_labeled_json,
+    )
+    write_coco_json(
+        build_coco_subset_ordered(
+            oracle_data,
+            unlabeled_ids,
+            include_annotations=False,
+        ),
+        out_unlabeled_json,
+    )
+    return labeled_ids, unlabeled_ids
 
 
 def update_labeled_unlabeled_from_oracle(
