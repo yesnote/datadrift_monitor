@@ -1,4 +1,9 @@
-"""Shared helpers for active learning methods."""
+"""Method-runtime helpers shared by active learning methods.
+
+This package must not depend on runner/tooling helpers. Runner and preparation
+helpers belong in tools.common and may call into this package when they need
+pure data utilities.
+"""
 
 from .coco_pool import (
     build_coco_subset,

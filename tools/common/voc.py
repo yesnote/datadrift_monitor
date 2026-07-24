@@ -4,10 +4,11 @@ from __future__ import annotations
 
 import xml.etree.ElementTree as ET
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Sequence, Tuple
+from typing import Any, Dict, List, Sequence, Tuple
 
 import numpy as np
 
+from methods.common.coco_pool import build_coco_subset
 from methods.common.io import read_json, write_json
 
 
@@ -132,25 +133,6 @@ def build_voc0712_oracle(vocdevkit: Path, split: str = 'trainval') -> Dict[str, 
     }
 
 
-def _subset_from_ids(
-    oracle: Dict[str, Any],
-    selected_image_ids: Iterable[int],
-    include_annotations: bool,
-) -> Dict[str, Any]:
-    selected = set(int(image_id) for image_id in selected_image_ids)
-    subset = {
-        'categories': oracle['categories'],
-        'images': [image for image in oracle['images'] if int(image['id']) in selected],
-        'annotations': [],
-    }
-    if include_annotations:
-        subset['annotations'] = [
-            ann for ann in oracle['annotations']
-            if int(ann['image_id']) in selected
-        ]
-    return subset
-
-
 def write_initial_splits(
     oracle: Dict[str, Any],
     output_dir: Path,
@@ -179,8 +161,8 @@ def write_initial_splits(
         stem = '%s_%d' % (dataset_prefix, n_labeled)
         labeled_path = Path(output_dir) / ('%s_labeled_%d.json' % (stem, split_index))
         unlabeled_path = Path(output_dir) / ('%s_unlabeled_%d.json' % (stem, split_index))
-        write_json(labeled_path, _subset_from_ids(oracle, labeled_ids, include_annotations=True))
-        write_json(unlabeled_path, _subset_from_ids(oracle, unlabeled_ids, include_annotations=False))
+        write_json(labeled_path, build_coco_subset(oracle, labeled_ids, include_annotations=True))
+        write_json(unlabeled_path, build_coco_subset(oracle, unlabeled_ids, include_annotations=False))
         written.append((labeled_path, unlabeled_path))
     return written
 
@@ -253,4 +235,3 @@ def ensure_voc_active_learning(voc_cfg: Dict[str, object], root: Path) -> Dict[s
             for labeled, unlabeled in written
         ],
     }
-
