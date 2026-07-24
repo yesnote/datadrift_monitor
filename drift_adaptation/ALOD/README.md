@@ -33,7 +33,8 @@ source tree, not from `code_refs/`.
 - `configs/alod_mmdet/`: minimal MMDetection configs used by ALOD runs.
 - `methods/ppal/`: PPAL method implementation.
 - `methods/pal/`: PAL method implementation.
-- `mmdet/`: local MMDetection backend used by train/test entrypoints.
+- `mmdet/`: local MMDetection backend used directly by `tools/train.py` and
+  `tools/test.py`; method code consumes saved artifacts instead of importing it.
 - `tools/common/`: runner support code for path handling and automatic input preparation.
 - `docs/`: implementation notes, plans, and run logs.
 
