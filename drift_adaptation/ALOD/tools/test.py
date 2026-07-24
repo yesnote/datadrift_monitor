@@ -24,8 +24,8 @@ from mmdet.datasets import (build_dataloader, build_dataset,
                             replace_ImageToTensor)
 from mmdet.models import build_detector
 
-from mmdet.ppal.datasets import *
-from mmdet.ppal.models import *
+from mmdet.alod.datasets import *
+from mmdet.alod.models import *
 
 
 def patch_yapf_verify_arg():

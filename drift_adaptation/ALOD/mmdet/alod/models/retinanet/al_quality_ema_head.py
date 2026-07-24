@@ -11,7 +11,7 @@ from mmdet.models.builder import HEADS
 from mmdet.models.dense_heads.retina_head import RetinaHead
 from mmdet.core.bbox.iou_calculators.iou2d_calculator import bbox_overlaps
 
-from mmdet.ppal.models.utils import concat_all_sum
+from mmdet.alod.models.utils import concat_all_sum
 
 @HEADS.register_module()
 class RetinaQualityEMAHead(RetinaHead):
@@ -212,6 +212,5 @@ class RetinaQualityEMAHead(RetinaHead):
                 self.class_momentum * self.base_momentum)
 
         return dict(loss_cls=losses_cls, loss_bbox=losses_bbox)
-
 
 

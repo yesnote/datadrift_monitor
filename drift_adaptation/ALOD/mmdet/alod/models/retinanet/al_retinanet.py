@@ -4,7 +4,7 @@ import numpy as np
 from mmdet.core import bbox2result
 from mmdet.models.builder import DETECTORS
 from mmdet.models.detectors.retinanet import RetinaNet
-from mmdet.ppal.models.utils import (
+from mmdet.alod.models.utils import (
     bbox2result_with_pre_nms_count,
     bbox2result_with_uncertainty,
 )
