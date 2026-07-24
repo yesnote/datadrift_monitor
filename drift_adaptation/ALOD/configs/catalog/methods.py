@@ -102,7 +102,16 @@ def _pal_config(mode: str) -> Dict[str, object]:
         })
         embedding_path = 'work_dirs/pal_embeddings/voc_google_vit_embeddings.npy'
         cfg['pal_embedding_path'] = embedding_path
-        cfg['required_files'] = [embedding_path]
+        cfg['pal_embedding_prep'] = dict(
+            type='google_vit',
+            output_path=embedding_path,
+            model_name='google/vit-base-patch16-224-in21k',
+            batch_size=16,
+            device='auto',
+            embedding_output='pooler',
+            normalize=True,
+            progress=False,
+        )
     return cfg
 
 

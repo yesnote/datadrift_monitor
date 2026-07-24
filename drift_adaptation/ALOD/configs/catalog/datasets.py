@@ -6,12 +6,6 @@ from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple
 
 
-VOC_PREP_HINT = (
-    'prepare VOC pools with: python -B datasets/prepare_voc_active_learning.py '
-    '--vocdevkit data/VOCdevkit --n-labeled 827 --n-diff 1 --seed 0'
-)
-
-
 @dataclass(frozen=True)
 class DatasetSpec:
     name: str
@@ -23,7 +17,7 @@ class DatasetSpec:
     image_root: str
     test_ann_file: str
     test_img_prefix: str
-    initial_pool_prep_hint: Optional[str] = None
+    dataset_prep: Dict[str, object] = field(default_factory=dict)
     common_cfg_options: Dict[str, object] = field(default_factory=dict)
     eval_cfg_options: Dict[str, object] = field(default_factory=dict)
 
@@ -51,8 +45,8 @@ class DatasetSpec:
             'common_cfg_options': common_options,
             'eval_cfg_options': eval_options,
         }
-        if self.initial_pool_prep_hint:
-            cfg['initial_pool_prep_hint'] = self.initial_pool_prep_hint
+        if self.dataset_prep:
+            cfg['dataset_prep'] = dict(self.dataset_prep)
         return cfg
 
 
@@ -66,7 +60,17 @@ VOC = DatasetSpec(
     image_root='data/VOCdevkit/',
     test_ann_file='data/VOCdevkit/VOC2007/ImageSets/Main/test.txt',
     test_img_prefix='data/VOCdevkit/VOC2007/',
-    initial_pool_prep_hint=VOC_PREP_HINT,
+    dataset_prep=dict(
+        type='voc0712',
+        vocdevkit='data/VOCdevkit',
+        oracle_output='data/VOC0712/annotations/trainval_0712.json',
+        split_output_dir='data/active_learning/voc',
+        n_labeled=827,
+        n_diff=1,
+        seed=0,
+        split='trainval',
+        dataset_prefix='voc',
+    ),
 )
 
 

@@ -271,10 +271,10 @@ class VitEmbeddingBackend(ImageEmbeddingBackend):
         image_ids: Optional[Iterable[Any]] = None,
     ) -> EmbeddingMap:
         raise NotImplementedError(
-            'Direct ViT embedding extraction is handled by '
-            'tools/build_pal_vit_embeddings.py. Use backend="detection" for '
+            'Direct ViT embedding extraction is handled by the ALOD runner '
+            'automatic preparation path. Use backend="detection" for '
             'deterministic detector-record fallback embeddings, or set '
-            'pal_embedding_source="external" with a generated cache.')
+            'pal_embedding_source="external" and let the runner prepare the cache.')
 
 
 def build_embedding_backend(name: str = 'detection', **kwargs: Any) -> ImageEmbeddingBackend:

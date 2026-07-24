@@ -26,8 +26,15 @@ class CatalogResolutionTest(unittest.TestCase):
         self.assertEqual(cfg['pal_mode'], 'full')
         self.assertEqual(cfg['pal_embedding_source'], 'external')
         self.assertEqual(cfg['pal_embedding_path'], 'work_dirs/pal_embeddings/voc_google_vit_embeddings.npy')
+        self.assertEqual(cfg['pal_embedding_prep']['type'], 'google_vit')
+        self.assertEqual(
+            cfg['pal_embedding_prep']['output_path'],
+            'work_dirs/pal_embeddings/voc_google_vit_embeddings.npy',
+        )
         self.assertEqual(cfg['output_dir'], 'work_dirs/retinanet_voc_pal_7rounds_5percent_to_20percent')
         self.assertEqual(cfg['train_config'], 'configs/alod_mmdet/retinanet_voc_train_26e.py')
+        self.assertEqual(cfg['dataset_prep']['type'], 'voc0712')
+        self.assertEqual(cfg['pretrained']['type'], 'resnet50')
 
     def test_pal_lius_combo_resolves_to_lius_config(self):
         selection = resolve_experiment(
@@ -45,6 +52,7 @@ class CatalogResolutionTest(unittest.TestCase):
         cfg = build_experiment_config(selection)
         self.assertEqual(cfg['pal_mode'], 'lius')
         self.assertNotIn('pal_embedding_path', cfg)
+        self.assertNotIn('pal_embedding_prep', cfg)
         self.assertEqual(cfg['output_dir'], 'work_dirs/retinanet_voc_pal_lius_7rounds_5percent_to_20percent')
 
     def test_preset_uses_own_default_method_alias(self):
@@ -72,6 +80,8 @@ class CatalogResolutionTest(unittest.TestCase):
         self.assertEqual(cfg['uncertainty_sampler_config']['type'], 'DCUSSampler')
         self.assertEqual(cfg['diversity_sampler_config']['type'], 'DiversitySampler')
         self.assertEqual(cfg['uncertainty_sampler_config']['oracle_annotation_path'], cfg['oracle_path'])
+        self.assertEqual(cfg['dataset_prep']['type'], 'voc0712')
+        self.assertEqual(cfg['pretrained']['output_path'], 'data/pretrain_models/resnet50-19c8e357.pth')
 
     def test_pal_round_plan_contains_expected_steps(self):
         selection = resolve_experiment(method='pal:guide', detector='retinanet', dataset='voc')
