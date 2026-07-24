@@ -652,6 +652,11 @@ def _count_annotation_items(path: Path) -> Optional[int]:
     return _count_nonempty_lines(path)
 
 
+def _runtime_read_path(value: str) -> Path:
+    path = Path(value)
+    return path if path.is_absolute() else ROOT / path
+
+
 def _train_max_epochs(cfg: Dict[str, Any]) -> Optional[int]:
     train_config = cfg.get('train_config')
     if not train_config:
@@ -699,7 +704,7 @@ def _progress_total_for_step(
         eval_options = cfg.get('eval_cfg_options', {})
         ann_file = eval_options.get('data.test.ann_file') if isinstance(eval_options, dict) else None
         if ann_file:
-            return _count_annotation_items(_resolve_repo_path(str(ann_file)))
+            return _count_annotation_items(_runtime_read_path(str(ann_file)))
         return None
     if step.name.startswith('pal_labeled_inference'):
         return _count_annotation_items(input_paths['labeled'])

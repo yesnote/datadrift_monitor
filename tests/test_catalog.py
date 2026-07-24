@@ -1,10 +1,11 @@
 import subprocess
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
 from configs.catalog import build_experiment_config, resolve_experiment, resolve_method_alias
-from tools.run_active_learning import build_round_plan
+from tools.run_active_learning import _progress_total_for_step, build_round_plan
 
 
 class CatalogResolutionTest(unittest.TestCase):
@@ -137,6 +138,30 @@ class CatalogResolutionTest(unittest.TestCase):
 
         self.assertEqual(result.returncode, 0, msg=result.stderr)
         self.assertIn('--verbose', result.stdout)
+
+    def test_eval_progress_total_allows_external_dataset_paths(self):
+        selection = resolve_experiment(method='pal:guide', detector='retinanet', dataset='voc')
+        cfg = build_experiment_config(selection)
+        plans = build_round_plan(
+            cfg,
+            Path(cfg['output_dir']),
+            selection.method,
+            round_index=1,
+        )
+        eval_plan = next(plan for plan in plans if plan.name == 'eval_round_01')
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            split_file = Path(tmp_dir) / 'test.txt'
+            split_file.write_text('000001\n000002\n', encoding='utf-8')
+            cfg['eval_cfg_options'] = dict(
+                cfg['eval_cfg_options'],
+                **{'data.test.ann_file': str(split_file)}
+            )
+
+            self.assertEqual(
+                _progress_total_for_step(eval_plan, cfg, Path(cfg['output_dir'])),
+                2,
+            )
 
 
 if __name__ == '__main__':
