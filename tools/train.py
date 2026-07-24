@@ -24,8 +24,8 @@ from mmdet.datasets import build_dataset
 from mmdet.models import build_detector
 from mmdet.utils import collect_env, get_root_logger
 
-from mmdet.ppal.datasets import *
-from mmdet.ppal.models import *
+from mmdet.alod.datasets import *
+from mmdet.alod.models import *
 
 
 def patch_yapf_verify_arg():

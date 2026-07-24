@@ -12,7 +12,7 @@ from mmdet.core.utils import filter_scores_and_topk, select_single_mlvl
 from mmdet.models.builder import HEADS
 from mmdet.models.dense_heads.retina_head import RetinaHead
 
-from mmdet.ppal.models.utils import get_img_score_distance_matrix_slow, concat_all_gather, get_inter_feats
+from mmdet.alod.models.utils import get_img_score_distance_matrix_slow, concat_all_gather, get_inter_feats
 
 @HEADS.register_module()
 class RetinaHeadFeat(RetinaHead):
@@ -409,6 +409,5 @@ class RetinaHeadFeat(RetinaHead):
             np.save(fwb, img_dis_mat)
             np.save(fwb, img_ids)
         return
-
 
 
