@@ -135,18 +135,6 @@ def resolve_experiment(
     return _selection_from_preset(matched, method_alias=method)
 
 
-def _dedupe(values: Iterable[object]) -> List[object]:
-    result = []
-    seen = set()
-    for value in values:
-        key = str(value)
-        if key in seen:
-            continue
-        seen.add(key)
-        result.append(value)
-    return result
-
-
 def build_experiment_config(selection: CatalogSelection) -> Dict[str, object]:
     """Build runner config from catalog specs instead of experiment globals."""
 
@@ -160,12 +148,7 @@ def build_experiment_config(selection: CatalogSelection) -> Dict[str, object]:
         'gpus': gpus,
     }
     cfg.update(selection.dataset_spec.to_config())
-    detector_cfg = selection.detector_spec.to_config()
-    detector_required = detector_cfg.pop('required_files', [])
-    cfg.update(detector_cfg)
-    method_cfg = selection.method_spec.to_config(selection.dataset_spec, gpus=gpus)
-    method_required = method_cfg.pop('required_files', [])
-    cfg.update(method_cfg)
+    cfg.update(selection.detector_spec.to_config())
+    cfg.update(selection.method_spec.to_config(selection.dataset_spec, gpus=gpus))
     cfg.update(selection.cfg_overrides)
-    cfg['required_files'] = _dedupe(list(detector_required) + list(method_required))
     return cfg

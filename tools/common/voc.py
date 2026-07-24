@@ -1,20 +1,15 @@
-"""Prepare PASCAL VOC files required by the PPAL/PAL active-learning runner.
-
-The script mirrors the PPAL reference data preparation behavior without
-importing MMDetection/MMCV. It converts VOC2007+VOC2012 trainval annotations to
-a COCO-style oracle JSON, then creates deterministic initial labeled/unlabeled
-pool JSON files.
-"""
+"""VOC active-learning data preparation helpers."""
 
 from __future__ import annotations
 
-import argparse
-import json
 import xml.etree.ElementTree as ET
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Sequence, Tuple
 
 import numpy as np
+
+from methods.common.io import read_json, write_json
+
 
 VOC_CLASSES = (
     'aeroplane', 'bicycle', 'bird', 'boat', 'bottle', 'bus', 'car',
@@ -105,7 +100,7 @@ def build_voc0712_oracle(vocdevkit: Path, split: str = 'trainval') -> Dict[str, 
     image_id = 0
 
     for year in ('2007', '2012'):
-        year_dir = vocdevkit / ('VOC%s' % year)
+        year_dir = Path(vocdevkit) / ('VOC%s' % year)
         if not year_dir.exists():
             raise FileNotFoundError('Expected VOC year directory: %s' % year_dir)
 
@@ -135,12 +130,6 @@ def build_voc0712_oracle(vocdevkit: Path, split: str = 'trainval') -> Dict[str, 
         'categories': _categories(),
         'annotations': annotations,
     }
-
-
-def write_json(data: Dict[str, Any], path: Path) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open('w', encoding='utf-8') as handle:
-        json.dump(data, handle)
 
 
 def _subset_from_ids(
@@ -188,46 +177,80 @@ def write_initial_splits(
         ]
 
         stem = '%s_%d' % (dataset_prefix, n_labeled)
-        labeled_path = output_dir / ('%s_labeled_%d.json' % (stem, split_index))
-        unlabeled_path = output_dir / ('%s_unlabeled_%d.json' % (stem, split_index))
-        write_json(_subset_from_ids(oracle, labeled_ids, include_annotations=True), labeled_path)
-        write_json(_subset_from_ids(oracle, unlabeled_ids, include_annotations=False), unlabeled_path)
+        labeled_path = Path(output_dir) / ('%s_labeled_%d.json' % (stem, split_index))
+        unlabeled_path = Path(output_dir) / ('%s_unlabeled_%d.json' % (stem, split_index))
+        write_json(labeled_path, _subset_from_ids(oracle, labeled_ids, include_annotations=True))
+        write_json(unlabeled_path, _subset_from_ids(oracle, unlabeled_ids, include_annotations=False))
         written.append((labeled_path, unlabeled_path))
     return written
 
 
-def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description='Prepare VOC active-learning JSON files')
-    parser.add_argument('--vocdevkit', type=Path, default=Path('data/VOCdevkit'))
-    parser.add_argument('--oracle-output', type=Path, default=Path('data/VOC0712/annotations/trainval_0712.json'))
-    parser.add_argument('--split-output-dir', type=Path, default=Path('data/active_learning/voc'))
-    parser.add_argument('--n-labeled', type=int, default=827)
-    parser.add_argument('--n-diff', type=int, default=1)
-    parser.add_argument('--seed', type=int, default=0)
-    parser.add_argument('--split', default='trainval')
-    return parser.parse_args()
+def ensure_voc_active_learning(voc_cfg: Dict[str, object], root: Path) -> Dict[str, object]:
+    vocdevkit = Path(str(voc_cfg.get('vocdevkit', 'data/VOCdevkit')))
+    oracle_output = Path(str(voc_cfg.get('oracle_output', 'data/VOC0712/annotations/trainval_0712.json')))
+    split_output_dir = Path(str(voc_cfg.get('split_output_dir', 'data/active_learning/voc')))
+    if not vocdevkit.is_absolute():
+        vocdevkit = Path(root) / vocdevkit
+    if not oracle_output.is_absolute():
+        oracle_output = Path(root) / oracle_output
+    if not split_output_dir.is_absolute():
+        split_output_dir = Path(root) / split_output_dir
 
+    n_labeled = int(voc_cfg.get('n_labeled', 827))
+    n_diff = int(voc_cfg.get('n_diff', 1))
+    seed = int(voc_cfg.get('seed', 0))
+    split = str(voc_cfg.get('split', 'trainval'))
+    dataset_prefix = str(voc_cfg.get('dataset_prefix', 'voc'))
 
-def main() -> None:
-    args = parse_args()
-    oracle = build_voc0712_oracle(args.vocdevkit, split=args.split)
-    write_json(oracle, args.oracle_output)
+    expected_splits = []
+    stem = '%s_%d' % (dataset_prefix, n_labeled)
+    for split_index in range(1, n_diff + 1):
+        expected_splits.append((
+            split_output_dir / ('%s_labeled_%d.json' % (stem, split_index)),
+            split_output_dir / ('%s_unlabeled_%d.json' % (stem, split_index)),
+        ))
+
+    existing = oracle_output.exists() and all(
+        labeled.exists() and unlabeled.exists()
+        for labeled, unlabeled in expected_splits
+    )
+    if existing:
+        return {
+            'component': 'dataset',
+            'type': 'voc0712',
+            'status': 'ready',
+            'action': 'kept',
+            'oracle_path': str(oracle_output),
+            'split_paths': [
+                {'labeled': str(labeled), 'unlabeled': str(unlabeled)}
+                for labeled, unlabeled in expected_splits
+            ],
+        }
+
+    oracle = (
+        read_json(oracle_output)
+        if oracle_output.exists()
+        else build_voc0712_oracle(vocdevkit, split=split)
+    )
+    if not oracle_output.exists():
+        write_json(oracle_output, oracle)
     written = write_initial_splits(
         oracle,
-        output_dir=args.split_output_dir,
-        n_labeled=args.n_labeled,
-        n_diff=args.n_diff,
-        seed=args.seed,
+        output_dir=split_output_dir,
+        n_labeled=n_labeled,
+        n_diff=n_diff,
+        seed=seed,
+        dataset_prefix=dataset_prefix,
     )
+    return {
+        'component': 'dataset',
+        'type': 'voc0712',
+        'status': 'ready',
+        'action': 'created',
+        'oracle_path': str(oracle_output),
+        'split_paths': [
+            {'labeled': str(labeled), 'unlabeled': str(unlabeled)}
+            for labeled, unlabeled in written
+        ],
+    }
 
-    print('Oracle: %s' % args.oracle_output)
-    print('Images: %d' % len(oracle['images']))
-    print('Annotations: %d' % len(oracle['annotations']))
-    for labeled_path, unlabeled_path in written:
-        print('Labeled: %s' % labeled_path)
-        print('Unlabeled: %s' % unlabeled_path)
-    print('Image file names are relative to VOCdevkit-style roots, e.g. VOC2007/JPEGImages/000001.jpg.')
-
-
-if __name__ == '__main__':
-    main()

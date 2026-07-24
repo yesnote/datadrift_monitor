@@ -34,10 +34,10 @@ source tree, not from `code_refs/`.
 - `methods/ppal/`: PPAL method implementation.
 - `methods/pal/`: PAL method implementation.
 - `mmdet/`: local MMDetection backend used by train/test entrypoints.
-- `datasets/`: dataset and active learning pool preparation utilities.
+- `tools/common/`: runner support code for path handling and automatic input preparation.
 - `docs/`: implementation notes, plans, and run logs.
 
-## Prepare Data
+## Prepare Environment
 
 Activate the environment:
 
@@ -53,25 +53,26 @@ that match the local CUDA/driver setup. Then install ALOD's pip-level runtime:
 pip install -r requirements.txt
 ```
 
-Prepare VOC active learning pools after `data/VOCdevkit` contains `VOC2007`
-and `VOC2012`:
-
-```powershell
-python -B datasets/prepare_voc_active_learning.py --vocdevkit data/VOCdevkit --n-labeled 827 --n-diff 1 --seed 0
-```
-
-Prepare the RetinaNet ResNet-50 backbone checkpoint:
-
-```powershell
-python -B tools/prepare_pretrain_models.py --output-dir data/pretrain_models
-```
-
-PAL GUIDE uses an image embedding cache:
+For PAL GUIDE with Google ViT embeddings, install the optional embedding
+dependencies before running PAL full mode:
 
 ```powershell
 pip install -r requirements/pal_embeddings.txt
-python -B tools/build_pal_vit_embeddings.py --ann-file data/active_learning/voc/voc_827_labeled_1.json --ann-file data/active_learning/voc/voc_827_unlabeled_1.json --image-root data/VOCdevkit --output work_dirs/pal_embeddings/voc_google_vit_embeddings.npy --device auto
 ```
+
+## Prepare Data
+
+Place the original VOC data under:
+
+```text
+data/VOCdevkit/VOC2007
+data/VOCdevkit/VOC2012
+```
+
+The runner automatically prepares the VOC0712 oracle JSON, initial active
+learning pools, RetinaNet ResNet-50 backbone checkpoint, and PAL GUIDE
+embedding cache when the selected experiment needs them. VOC source data is not
+downloaded automatically.
 
 ## Run
 
@@ -87,16 +88,18 @@ Run one PAL round:
 python -B tools/run_active_learning.py --method pal --detector retinanet --dataset voc --rounds 1 --gpus 1
 ```
 
-The default terminal output is concise. It prints the resolved run and output
-directory, then shows separate progress bars for the current round's train,
-eval, and method inference steps. Acquisition is printed as a short result line.
-Detailed command arguments, MMDetection logs, inference logs, and acquisition
-details are saved under the run directory instead of being streamed to the
-terminal.
+The default terminal output is concise. It prepares missing inputs, prints the
+resolved run and output directory, then shows separate progress bars for the
+current round's train, eval, and method inference steps. Acquisition is printed
+as a short result line. Detailed command arguments, MMDetection logs, inference
+logs, input preparation details, and acquisition details are saved under the run
+directory instead of being streamed to the terminal.
 
 Important output files:
 
 - `work_dirs/.../active_learning_plan.json`: full command/acquisition plan.
+- `work_dirs/.../preparation_summary.json`: automatically prepared or reused
+  input files.
 - `work_dirs/.../run_summary.json`: resolved method, detector, dataset, rounds,
   budget, output directory, and round summary paths.
 - `work_dirs/.../round_XX/round_summary.json`: per-round step status, durations,

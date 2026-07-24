@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple
 
 from .datasets import normalize_token
@@ -17,7 +17,7 @@ class DetectorSpec:
     uncertainty_infer_config: str
     diversity_infer_config: str
     pal_infer_config: str
-    required_files: Tuple[str, ...] = ()
+    pretrained: Dict[str, object] = field(default_factory=dict)
 
     def to_config(self) -> Dict[str, object]:
         return {
@@ -26,7 +26,7 @@ class DetectorSpec:
             'diversity_infer_config': self.diversity_infer_config,
             'pal_infer_config': self.pal_infer_config,
             'model_name': self.model_name,
-            'required_files': list(self.required_files),
+            'pretrained': dict(self.pretrained),
         }
 
 
@@ -38,7 +38,10 @@ RETINANET = DetectorSpec(
     uncertainty_infer_config='configs/alod_mmdet/retinanet_voc_uncertainty.py',
     diversity_infer_config='configs/alod_mmdet/retinanet_voc_diversity.py',
     pal_infer_config='configs/alod_mmdet/retinanet_voc_pal.py',
-    required_files=('data/pretrain_models/resnet50-19c8e357.pth',),
+    pretrained=dict(
+        type='resnet50',
+        output_path='data/pretrain_models/resnet50-19c8e357.pth',
+    ),
 )
 
 

@@ -26,23 +26,21 @@ if str(ROOT) not in sys.path:
 
 from configs.catalog import build_experiment_config, list_presets, resolve_experiment, resolve_method_alias
 
-VOC_PREP_HINT = (
-    'prepare VOC pools with: python -B datasets/prepare_voc_active_learning.py '
-    '--vocdevkit data/VOCdevkit --n-labeled 827 --n-diff 1 --seed 0'
-)
-PRETRAIN_PREP_HINT = (
-    'prepare pretrained weights with: python -B tools/prepare_pretrain_models.py '
-    '--output-dir data/pretrain_models'
-)
 from methods.common.coco_pool import update_labeled_unlabeled_from_oracle
 from methods.common.diagnostics import write_diagnostics
 from methods.common.io import read_json, write_json as write_common_json
-from methods.common.paths import is_relative_to
 from methods.common.results import acquisition_result
 from methods.entropy.sampler import sample as entropy_sample
 from methods.pal.acquisition import sample_pal_from_files
 from methods.ppal.acquisition import run_diversity_acquisition, run_uncertainty_acquisition
 from methods.random.sampler import sample as random_sample
+from tools.common.paths import (
+    assert_not_code_refs as tool_assert_not_code_refs,
+    display_path as tool_display_path,
+    is_relative_to,
+    resolve_repo_path as tool_resolve_repo_path,
+)
+from tools.common.preparation import prepare_required_inputs
 
 
 @dataclass
@@ -91,29 +89,15 @@ PlanStep = Union[CommandPlan, AcquisitionPlan]
 
 
 def _assert_not_code_refs(path: Path) -> None:
-    resolved = path.resolve()
-    code_refs = (ROOT / 'code_refs').resolve()
-    if is_relative_to(resolved, code_refs):
-        raise ValueError('Refusing to read/write runtime output under code_refs: %s' % path)
+    tool_assert_not_code_refs(path, ROOT)
 
 
 def _resolve_repo_path(value: str, must_be_relative: bool = True) -> Path:
-    path = Path(value)
-    if must_be_relative and path.is_absolute():
-        raise ValueError('Config path must be relative to the repo root: %s' % value)
-    resolved = (ROOT / path).resolve() if not path.is_absolute() else path.resolve()
-    root = ROOT.resolve()
-    if not is_relative_to(resolved, root):
-        raise ValueError('Config path must stay inside the repo root: %s' % value)
-    _assert_not_code_refs(resolved)
-    return resolved
+    return tool_resolve_repo_path(value, ROOT, must_be_relative=must_be_relative)
 
 
 def _display_path(path: Path) -> str:
-    try:
-        return str(path.resolve().relative_to(ROOT.resolve()))
-    except ValueError:
-        return str(path)
+    return tool_display_path(path, ROOT)
 
 
 def load_experiment_config(config_path: Path) -> Dict[str, Any]:
@@ -141,21 +125,6 @@ def validate_experiment_config_paths(cfg: Dict[str, Any]) -> None:
             _resolve_repo_path(str(value))
     if cfg.get('init_model'):
         _resolve_repo_path(str(cfg['init_model']))
-    for value in cfg.get('required_files', []):
-        _resolve_repo_path(str(value))
-
-
-def validate_required_files(cfg: Dict[str, Any]) -> None:
-    missing = []
-    for value in cfg.get('required_files', []):
-        path = _resolve_repo_path(str(value))
-        if not path.exists():
-            missing.append(_display_path(path))
-    if missing:
-        raise SystemExit(
-            'Missing required file(s): %s\n%s'
-            % (', '.join(missing), PRETRAIN_PREP_HINT)
-        )
 
 
 def validate_initial_pool_files(cfg: Dict[str, Any]) -> None:
@@ -169,10 +138,9 @@ def validate_initial_pool_files(cfg: Dict[str, Any]) -> None:
         if not path.exists():
             missing.append('%s=%s' % (key, _display_path(path)))
     if missing:
-        hint = str(cfg.get('initial_pool_prep_hint', VOC_PREP_HINT))
         raise SystemExit(
-            'Missing initial pool file(s): %s\n%s'
-            % (', '.join(missing), hint)
+            'Missing initial pool file(s) after automatic preparation: %s'
+            % ', '.join(missing)
         )
 
 
@@ -271,7 +239,7 @@ def initialize_round_zero(cfg: Dict[str, Any], output_dir: Path) -> List[str]:
         shutil.copy2(str(source), str(target))
         actions.append('copied %s -> %s' % (_display_path(source), _display_path(target)))
     if missing_initial_pool:
-        actions.append(VOC_PREP_HINT)
+        actions.append('initial pool files are missing after automatic preparation')
     return actions
 
 
@@ -1120,6 +1088,25 @@ def _run_summary_path(output_dir: Path) -> Path:
     return output_dir / 'run_summary.json'
 
 
+def _preparation_summary_path(output_dir: Path) -> Path:
+    return output_dir / 'preparation_summary.json'
+
+
+def _preparation_requested(cfg: Dict[str, Any]) -> bool:
+    return any(key in cfg for key in ('dataset_prep', 'pretrained', 'pal_embedding_prep'))
+
+
+def _print_preparation_summary(results: List[Dict[str, object]]) -> None:
+    if not results:
+        return
+    parts = []
+    for result in results:
+        component = str(result.get('component', 'input'))
+        action = str(result.get('action', 'ready'))
+        parts.append('%s=%s' % (component, action))
+    print('prepared inputs: %s' % ', '.join(parts), flush=True)
+
+
 def _latest_acquisition_result(round_results: List[Dict[str, Any]]) -> Dict[str, Any]:
     acquisitions = [
         result for result in round_results
@@ -1342,7 +1329,14 @@ def main() -> None:
     output_default = Path('work_dirs') / (config_path.stem if config_path is not None else selection['preset_name'])
     output_dir = _resolve_repo_path(str(cfg.get('output_dir', output_default)))
 
-    validate_required_files(cfg)
+    preparation_results: List[Dict[str, object]] = []
+    if _preparation_requested(cfg):
+        print('preparing inputs...', flush=True)
+        preparation_results = prepare_required_inputs(cfg, ROOT)
+        _print_preparation_summary(preparation_results)
+    preparation_path = _preparation_summary_path(output_dir)
+    _write_json(preparation_path, {'steps': preparation_results})
+
     validate_initial_pool_files(cfg)
 
     init_actions = initialize_round_zero(cfg, output_dir)
@@ -1357,6 +1351,8 @@ def main() -> None:
 
     plan_log = _write_plan_log(output_dir, plan)
     run_summary = _run_summary_base(args, cfg, selection, output_dir, plan_log, total_rounds)
+    run_summary['preparation_path'] = str(preparation_path)
+    run_summary['preparation'] = preparation_results
     _write_json(_run_summary_path(output_dir), run_summary)
     _print_run_header(run_summary)
     if args.verbose:
