@@ -12,6 +12,14 @@ from methods.ppal.inference import load_image_distance_cache
 eps = 1e-10
 
 
+def _image_cache_id(image):
+    stem = Path(str(image.get('file_name', ''))).stem
+    try:
+        return int(stem)
+    except ValueError:
+        return image.get('id')
+
+
 class DiversitySampler(BaseALSampler):
     def __init__(
         self,
@@ -26,6 +34,43 @@ class DiversitySampler(BaseALSampler):
             dataset_type=dataset_type)
 
         self.kmeans_iterations = 100
+
+    def _map_distance_image_ids(self, distance_image_ids):
+        oracle_ids = set(self.oracle_data.keys())
+        cache_id_to_oracle_id = {}
+        duplicate_cache_ids = set()
+        for oracle_id, record in self.oracle_data.items():
+            cache_id = _image_cache_id(record['image'])
+            if cache_id in cache_id_to_oracle_id and cache_id_to_oracle_id[cache_id] != oracle_id:
+                duplicate_cache_ids.add(cache_id)
+            else:
+                cache_id_to_oracle_id[cache_id] = oracle_id
+
+        mapped = []
+        missing = []
+        duplicates = []
+        for raw_id in distance_image_ids.reshape(-1).tolist():
+            cache_id = int(raw_id)
+            if cache_id in duplicate_cache_ids:
+                duplicates.append(cache_id)
+            elif cache_id in cache_id_to_oracle_id:
+                mapped.append(cache_id_to_oracle_id[cache_id])
+            elif cache_id in oracle_ids:
+                mapped.append(cache_id)
+            else:
+                missing.append(cache_id)
+
+        if duplicates:
+            raise ValueError(
+                'PPAL diversity cache id is ambiguous for oracle images: %s'
+                % sorted(set(duplicates))[:10]
+            )
+        if missing:
+            raise ValueError(
+                'PPAL diversity cache contains image ids not found in oracle: %s'
+                % sorted(set(missing))[:10]
+            )
+        return np.asarray(mapped, dtype=np.int64)
 
     @staticmethod
     def k_centroid_greedy(dis_matrix, K):
@@ -68,6 +113,7 @@ class DiversitySampler(BaseALSampler):
 
     def al_acquisition(self, image_dis_path, last_label_path):
         image_dis_matrix, distance_image_ids = load_image_distance_cache(image_dis_path)
+        oracle_image_ids = self._map_distance_image_ids(distance_image_ids)
 
         centroids = DiversitySampler.kmeans(
             image_dis_matrix,
@@ -89,7 +135,7 @@ class DiversitySampler(BaseALSampler):
             if image_hit[img_id] == 0:
                 rest_image_ids.append(img_id)
 
-        sampled_img_ids = distance_image_ids[centroids].tolist()
+        sampled_img_ids = oracle_image_ids[centroids].tolist()
         for img_id in sampled_img_ids:
             rest_image_ids.remove(img_id)
         unsampled_img_ids = rest_image_ids
@@ -98,6 +144,7 @@ class DiversitySampler(BaseALSampler):
             'image_distance_npy': str(image_dis_path),
             'distance_matrix_shape': list(image_dis_matrix.shape),
             'distance_image_count': int(distance_image_ids.shape[0]),
+            'mapped_distance_image_count': int(oracle_image_ids.shape[0]),
             'kmeans_iterations': int(self.kmeans_iterations),
         }
         return sampled_img_ids, unsampled_img_ids, metrics
