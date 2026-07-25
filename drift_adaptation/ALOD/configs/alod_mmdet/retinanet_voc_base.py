@@ -81,6 +81,7 @@ train_pipeline = [
 
 test_pipeline = [
     dict(type='LoadImageFromFile'),
+    dict(type='AddImageIdToMeta'),
     dict(
         type='MultiScaleFlipAug',
         img_scale=(1000, 600),
@@ -91,7 +92,13 @@ test_pipeline = [
             dict(type='Normalize', **img_norm_cfg),
             dict(type='Pad', size_divisor=32),
             dict(type='ImageToTensor', keys=['img']),
-            dict(type='Collect', keys=['img']),
+            dict(
+                type='Collect',
+                keys=['img'],
+                meta_keys=(
+                    'filename', 'ori_filename', 'ori_shape', 'img_shape',
+                    'pad_shape', 'scale_factor', 'flip', 'flip_direction',
+                    'img_norm_cfg', 'image_id')),
         ])
 ]
 

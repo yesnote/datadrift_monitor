@@ -26,7 +26,7 @@ if str(ROOT) not in sys.path:
 
 from configs.catalog import build_experiment_config, list_presets, resolve_experiment, resolve_method_alias
 
-from methods.common.coco_pool import update_labeled_unlabeled_from_oracle
+from methods.common.coco_pool import write_next_round_pool_split
 from methods.common.diagnostics import write_diagnostics
 from methods.common.io import read_json, write_json as write_common_json
 from methods.common.results import acquisition_result
@@ -209,8 +209,8 @@ def _round_annotations(output_dir: Path, round_index: int) -> Dict[str, Path]:
     return {
         'labeled': ann_dir / 'new_labeled.json',
         'unlabeled': ann_dir / 'new_unlabeled.json',
-        'uncertainty_labeled': ann_dir / 'uncertainty_new_labeled.json',
-        'uncertainty_unlabeled': ann_dir / 'uncertainty_new_unlabeled.json',
+        'uncertainty_pool': ann_dir / 'uncertainty_pool.json',
+        'uncertainty_remainder': ann_dir / 'uncertainty_remainder.json',
     }
 
 
@@ -363,8 +363,8 @@ def _diversity_infer_plan(cfg: Dict[str, Any], output_dir: Path, round_index: in
     head = 'roi_head' if cfg.get('model_name') == 'fasterrcnn' else 'bbox_head'
     pool_size = cfg.get('uncertainty_pool_size', cfg.get('budget'))
     options = {
-        'unlabeled_data': annotations['uncertainty_labeled'],
-        'data.test.ann_file': annotations['uncertainty_labeled'],
+        'unlabeled_data': annotations['uncertainty_pool'],
+        'data.test.ann_file': annotations['uncertainty_pool'],
         'model.%s.total_images' % head: int(pool_size),
         'model.%s.output_path' % head: image_dis,
     }
@@ -658,7 +658,7 @@ def _progress_total_for_step(
     if step.name.startswith('uncertainty_inference'):
         return _count_annotation_items(input_paths['unlabeled'])
     if step.name.startswith('diversity_inference'):
-        total = _count_annotation_items(annotations['uncertainty_labeled'])
+        total = _count_annotation_items(annotations['uncertainty_pool'])
         if total is not None:
             return total
         if cfg.get('uncertainty_pool_size') is not None:
@@ -875,7 +875,7 @@ def _execute_lightweight_acquisition(
     else:
         raise ValueError('Unsupported lightweight acquisition method: %s' % method)
 
-    update_labeled_unlabeled_from_oracle(
+    write_next_round_pool_split(
         _resolve_repo_path(str(cfg['oracle_path'])),
         input_paths['labeled'],
         selected,
@@ -921,8 +921,8 @@ def _execute_ppal_acquisition(
             round_index=round_index,
             result_json=result_json,
             last_labeled_json=input_paths['labeled'],
-            out_labeled_json=annotations['uncertainty_labeled'],
-            out_unlabeled_json=annotations['uncertainty_unlabeled'],
+            out_candidate_json=annotations['uncertainty_pool'],
+            out_remainder_json=annotations['uncertainty_remainder'],
         )
     else:
         output = run_diversity_acquisition(
@@ -955,11 +955,7 @@ def _execute_ppal_acquisition(
             'uncertainty_result_json': str(result_json),
             'image_distance_npy': str(round_work_dir / 'image_dis.npy'),
         },
-        outputs={
-            'labeled_pool_json': output.get('outputs', {}).get('labeled_pool_json'),
-            'unlabeled_pool_json': output.get('outputs', {}).get('unlabeled_pool_json'),
-            'diagnostics_json': str(diagnostics_path),
-        },
+        outputs=dict(output.get('outputs', {}), diagnostics_json=str(diagnostics_path)),
         stages=stages,
     )
     write_diagnostics(diagnostics_path, diagnostics_payload)
@@ -1077,6 +1073,10 @@ def _format_acquisition_result(result: Dict[str, Any]) -> str:
         parts.append('labeled=%s' % _display_path(Path(str(outputs['labeled_pool_json']))))
     if outputs.get('unlabeled_pool_json'):
         parts.append('unlabeled=%s' % _display_path(Path(str(outputs['unlabeled_pool_json']))))
+    if outputs.get('candidate_pool_json'):
+        parts.append('candidate=%s' % _display_path(Path(str(outputs['candidate_pool_json']))))
+    if outputs.get('remainder_pool_json'):
+        parts.append('remainder=%s' % _display_path(Path(str(outputs['remainder_pool_json']))))
     return ' '.join(parts)
 
 

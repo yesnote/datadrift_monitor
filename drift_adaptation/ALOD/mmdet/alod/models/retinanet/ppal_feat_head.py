@@ -1,5 +1,4 @@
 # Copyright (c) OpenMMLab. All rights reserved.
-import os
 import numpy as np
 import torch
 import torch.nn as nn
@@ -377,7 +376,12 @@ class RetinaHeadFeat(RetinaHead):
     def collect_det_info(self, img_meta, det_labels, det_scores, det_feats):
         rank, world_size = get_dist_info()
 
-        img_id = int(os.path.split(img_meta['filename'])[-1].split('.')[0])
+        if 'image_id' not in img_meta:
+            raise KeyError(
+                'RetinaHeadFeat requires image_id in img_meta. '
+                'Add AddImageIdToMeta to the test pipeline and include '
+                'image_id in Collect.meta_keys.')
+        img_id = int(img_meta['image_id'])
         img_id = torch.tensor([[img_id]], dtype=torch.int, device=self.image_id_queue.device)
 
         collected_img_ids = concat_all_gather(img_id.reshape(1, 1))
@@ -409,5 +413,4 @@ class RetinaHeadFeat(RetinaHead):
             np.save(fwb, img_dis_mat)
             np.save(fwb, img_ids)
         return
-
 
