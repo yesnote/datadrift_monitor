@@ -2,7 +2,7 @@ from pathlib import Path
 
 import numpy as np
 
-from methods.common.coco_pool import image_ids, read_coco_json, write_coco_pool_split
+from methods.common.coco_pool import read_coco_json
 
 COCO_CLASSES = (
     'person', 'bicycle', 'car', 'motorcycle', 'airplane', 'bus',
@@ -140,52 +140,3 @@ class BaseALSampler(object):
 
     def al_acquisition(self, result_json):
         pass
-
-    def create_jsons(
-        self,
-        sampled_img_ids,
-        unsampled_img_ids,
-        last_labeled_json,
-        out_label_path,
-        out_unlabeled_path
-    ):
-        last_labeled_data = read_coco_json(Path(last_labeled_json))
-
-        last_labeled_img_ids = image_ids(last_labeled_data)
-        all_labeled_img_ids = last_labeled_img_ids + sampled_img_ids
-        assert len(set(all_labeled_img_ids)) == len(last_labeled_img_ids) + len(sampled_img_ids)
-        assert len(all_labeled_img_ids) + len(unsampled_img_ids) == self.image_pool_size
-
-        write_coco_pool_split(
-            self.oracle_json,
-            all_labeled_img_ids,
-            unsampled_img_ids,
-            Path(out_label_path),
-            Path(out_unlabeled_path),
-            labeled_include_annotations=True,
-        )
-
-        self.latest_labeled = out_label_path
-        return {
-            'last_labeled_count': len(last_labeled_img_ids),
-            'new_labeled_count': len(all_labeled_img_ids),
-            'new_unlabeled_count': len(unsampled_img_ids),
-        }
-
-    def al_round(self, result_path, last_label_path, out_label_path, out_unlabeled_path):
-        self.round += 1
-        self.latest_labeled = last_label_path
-
-        sampled_img_ids, rest_img_ids = self.al_acquisition(result_path)
-        counts = self.create_jsons(
-            sampled_img_ids,
-            rest_img_ids,
-            last_label_path,
-            out_label_path,
-            out_unlabeled_path,
-        )
-        return {
-            'selected_image_ids': sampled_img_ids,
-            'selected_count': len(sampled_img_ids),
-            'metrics': counts,
-        }

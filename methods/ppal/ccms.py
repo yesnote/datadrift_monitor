@@ -1,23 +1,16 @@
 """PPAL CCMS/diversity acquisition step."""
 
-from pathlib import Path
-
 import numpy as np
 
-from methods.common.coco_pool import image_ids, read_coco_json
+from methods.common.image_identity import (
+    normalize_image_ids,
+    validate_image_ids_subset,
+)
 from methods.ppal.base import BaseALSampler
 from methods.ppal.inference import load_image_distance_cache
 
 
 eps = 1e-10
-
-
-def _image_cache_id(image):
-    stem = Path(str(image.get('file_name', ''))).stem
-    try:
-        return int(stem)
-    except ValueError:
-        return image.get('id')
 
 
 class DiversitySampler(BaseALSampler):
@@ -34,43 +27,6 @@ class DiversitySampler(BaseALSampler):
             dataset_type=dataset_type)
 
         self.kmeans_iterations = 100
-
-    def _map_distance_image_ids(self, distance_image_ids):
-        oracle_ids = set(self.oracle_data.keys())
-        cache_id_to_oracle_id = {}
-        duplicate_cache_ids = set()
-        for oracle_id, record in self.oracle_data.items():
-            cache_id = _image_cache_id(record['image'])
-            if cache_id in cache_id_to_oracle_id and cache_id_to_oracle_id[cache_id] != oracle_id:
-                duplicate_cache_ids.add(cache_id)
-            else:
-                cache_id_to_oracle_id[cache_id] = oracle_id
-
-        mapped = []
-        missing = []
-        duplicates = []
-        for raw_id in distance_image_ids.reshape(-1).tolist():
-            cache_id = int(raw_id)
-            if cache_id in duplicate_cache_ids:
-                duplicates.append(cache_id)
-            elif cache_id in cache_id_to_oracle_id:
-                mapped.append(cache_id_to_oracle_id[cache_id])
-            elif cache_id in oracle_ids:
-                mapped.append(cache_id)
-            else:
-                missing.append(cache_id)
-
-        if duplicates:
-            raise ValueError(
-                'PPAL diversity cache id is ambiguous for oracle images: %s'
-                % sorted(set(duplicates))[:10]
-            )
-        if missing:
-            raise ValueError(
-                'PPAL diversity cache contains image ids not found in oracle: %s'
-                % sorted(set(missing))[:10]
-            )
-        return np.asarray(mapped, dtype=np.int64)
 
     @staticmethod
     def k_centroid_greedy(dis_matrix, K):
@@ -111,9 +67,14 @@ class DiversitySampler(BaseALSampler):
             centroids = np.array(new_centroids)
         return centroids.tolist()
 
-    def al_acquisition(self, image_dis_path, last_label_path):
+    def al_acquisition(self, image_dis_path):
         image_dis_matrix, distance_image_ids = load_image_distance_cache(image_dis_path)
-        oracle_image_ids = self._map_distance_image_ids(distance_image_ids)
+        oracle_image_ids = normalize_image_ids(distance_image_ids.reshape(-1).tolist())
+        validate_image_ids_subset(
+            oracle_image_ids,
+            self.oracle_data.keys(),
+            'PPAL diversity cache',
+        )
 
         centroids = DiversitySampler.kmeans(
             image_dis_matrix,
@@ -121,46 +82,22 @@ class DiversitySampler(BaseALSampler):
             n_iter=self.kmeans_iterations,
         )
 
-        results = read_coco_json(Path(last_label_path))
-
-        last_labeled_img_ids = image_ids(results)
-        image_hit = dict()
-        for img_id in self.oracle_data.keys():
-            image_hit[img_id] = 0
-        for img_id in last_labeled_img_ids:
-            image_hit[img_id] = 1
-
-        rest_image_ids = []
-        for img_id in self.oracle_data.keys():
-            if image_hit[img_id] == 0:
-                rest_image_ids.append(img_id)
-
-        sampled_img_ids = oracle_image_ids[centroids].tolist()
-        for img_id in sampled_img_ids:
-            rest_image_ids.remove(img_id)
-        unsampled_img_ids = rest_image_ids
+        sampled_img_ids = [oracle_image_ids[index] for index in centroids]
 
         metrics = {
             'image_distance_npy': str(image_dis_path),
             'distance_matrix_shape': list(image_dis_matrix.shape),
             'distance_image_count': int(distance_image_ids.shape[0]),
-            'mapped_distance_image_count': int(oracle_image_ids.shape[0]),
+            'canonical_distance_image_count': len(oracle_image_ids),
+            'selected_candidate_count': len(sampled_img_ids),
             'kmeans_iterations': int(self.kmeans_iterations),
         }
-        return sampled_img_ids, unsampled_img_ids, metrics
+        return sampled_img_ids, metrics
 
-    def al_round(self, result_path, image_dis_path, last_label_path, out_label_path, out_unlabeled_path):
+    def al_round(self, image_dis_path, last_label_path):
         self.round += 1
         self.latest_labeled = last_label_path
-        sampled_img_ids, rest_img_ids, metrics = self.al_acquisition(image_dis_path, last_label_path)
-        counts = self.create_jsons(
-            sampled_img_ids,
-            rest_img_ids,
-            last_label_path,
-            out_label_path,
-            out_unlabeled_path,
-        )
-        metrics.update(counts)
+        sampled_img_ids, metrics = self.al_acquisition(image_dis_path)
         return {
             'selected_image_ids': sampled_img_ids,
             'selected_count': len(sampled_img_ids),

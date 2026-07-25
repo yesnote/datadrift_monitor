@@ -3,7 +3,7 @@ from pathlib import Path
 
 import numpy as np
 
-from methods.common.coco_pool import image_ids, read_coco_json, write_coco_pool_split
+from methods.common.coco_pool import image_ids, read_coco_json
 from methods.ppal.base import BaseALSampler
 from methods.ppal.inference import (
     class_quality_checkpoint_path,
@@ -97,9 +97,7 @@ class DCUSSampler(BaseALSampler):
 
         inds_sort = np.argsort(-1. * merged_img_uncertainties)
         sampled_inds = inds_sort[:self.n_images]
-        unsampled_img_ids = inds_sort[self.n_images:]
         sampled_img_ids = img_ids[sampled_inds].tolist()
-        unsampled_img_ids = img_ids[unsampled_img_ids].tolist()
 
         metrics = {
             'class_quality_checkpoint': str(checkpoint_path),
@@ -110,49 +108,18 @@ class DCUSSampler(BaseALSampler):
             'valid_detection_count': valid_detection_count,
             'class_weights': class_weights,
             'per_class_detection_counts': dict(per_class_detection_counts),
+            'last_labeled_count': len(last_labeled_img_ids),
+            'uncertainty_pool_count': len(sampled_img_ids),
         }
-        return sampled_img_ids, unsampled_img_ids, metrics
+        return sampled_img_ids, metrics
 
-    def al_round(self, result_path, last_label_path, out_label_path, out_unlabeled_path):
+    def al_round(self, result_path, last_label_path):
         self.round += 1
         self.latest_labeled = last_label_path
 
-        sampled_img_ids, rest_img_ids, metrics = self.al_acquisition(result_path, last_label_path)
-        counts = self.create_jsons(
-            sampled_img_ids,
-            rest_img_ids,
-            last_label_path,
-            out_label_path,
-            out_unlabeled_path,
-        )
-        metrics.update(counts)
+        sampled_img_ids, metrics = self.al_acquisition(result_path, last_label_path)
         return {
             'selected_image_ids': sampled_img_ids,
             'selected_count': len(sampled_img_ids),
             'metrics': metrics,
-        }
-
-    def create_jsons(self, sampled_img_ids, unsampled_img_ids, last_labeled_json, out_label_path, out_unlabeled_path):
-        last_labeled_data = read_coco_json(Path(last_labeled_json))
-
-        last_labeled_img_ids = image_ids(last_labeled_data)
-        all_labeled_img_ids = last_labeled_img_ids + sampled_img_ids
-        assert len(set(all_labeled_img_ids)) == len(last_labeled_img_ids) + len(sampled_img_ids)
-        assert len(all_labeled_img_ids) + len(unsampled_img_ids) == self.image_pool_size
-
-        # No annotation here because the annotating happens in the diversity step.
-        write_coco_pool_split(
-            self.oracle_json,
-            sampled_img_ids,
-            unsampled_img_ids,
-            Path(out_label_path),
-            Path(out_unlabeled_path),
-            labeled_include_annotations=False,
-        )
-
-        self.latest_labeled = out_label_path
-        return {
-            'last_labeled_count': len(last_labeled_img_ids),
-            'uncertainty_pool_count': len(sampled_img_ids),
-            'remaining_unlabeled_count': len(unsampled_img_ids),
         }

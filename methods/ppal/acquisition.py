@@ -7,6 +7,10 @@ from importlib.util import find_spec
 from pathlib import Path
 from typing import Any, Dict, Iterable, List
 
+from methods.common.coco_pool import (
+    write_candidate_pool_from_selection,
+    write_next_round_pool_split,
+)
 from methods.common.results import acquisition_result
 
 
@@ -84,15 +88,15 @@ def run_uncertainty_acquisition(
     round_index: int,
     result_json: Path,
     last_labeled_json: Path,
-    out_labeled_json: Path,
-    out_unlabeled_json: Path,
+    out_candidate_json: Path,
+    out_remainder_json: Path,
 ) -> Dict[str, Any]:
     """Run PPAL DCUS acquisition with the local method implementation."""
 
     _require_file(result_json, 'PPAL uncertainty inference result')
     _require_file(last_labeled_json, 'PPAL previous labeled pool')
     _require_file(result_json.parent / 'latest.pth', 'PPAL checkpoint for class quality')
-    out_labeled_json.parent.mkdir(parents=True, exist_ok=True)
+    out_candidate_json.parent.mkdir(parents=True, exist_ok=True)
 
     sampler = build_local_sampler(cfg['uncertainty_sampler_config'], repo_root)
     if hasattr(sampler, 'set_round'):
@@ -100,13 +104,23 @@ def run_uncertainty_acquisition(
     result = sampler.al_round(
         str(result_json),
         str(last_labeled_json),
-        str(out_labeled_json),
-        str(out_unlabeled_json),
+    )
+    selected = result.get('selected_image_ids', [])
+    candidate_ids, remainder_ids = write_candidate_pool_from_selection(
+        sampler.oracle_json,
+        last_labeled_json,
+        selected,
+        out_candidate_json,
+        out_remainder_json,
+        candidate_include_annotations=False,
     )
     metrics = dict(result.get('metrics', {}))
-    selected = result.get('selected_image_ids', [])
-    out_labeled = str(out_labeled_json)
-    out_unlabeled = str(out_unlabeled_json)
+    metrics.update({
+        'uncertainty_pool_count': len(candidate_ids),
+        'remaining_unlabeled_count': len(remainder_ids),
+    })
+    out_candidate = str(out_candidate_json)
+    out_remainder = str(out_remainder_json)
     return acquisition_result(
         method='ppal',
         stage='dcus',
@@ -120,12 +134,12 @@ def run_uncertainty_acquisition(
             'class_quality_checkpoint': str(result_json.parent / 'latest.pth'),
         },
         outputs={
-            'labeled_pool_json': out_labeled,
-            'unlabeled_pool_json': out_unlabeled,
+            'candidate_pool_json': out_candidate,
+            'remainder_pool_json': out_remainder,
         },
         metrics=metrics,
-        out_labeled_json=out_labeled,
-        out_unlabeled_json=out_unlabeled,
+        out_candidate_json=out_candidate,
+        out_remainder_json=out_remainder,
     )
 
 
@@ -150,14 +164,22 @@ def run_diversity_acquisition(
     if hasattr(sampler, 'set_round'):
         sampler.set_round(round_index)
     result = sampler.al_round(
-        str(result_json),
         str(image_distance_npy),
         str(last_labeled_json),
-        str(out_labeled_json),
-        str(out_unlabeled_json),
+    )
+    selected = result.get('selected_image_ids', [])
+    labeled_ids, unlabeled_ids = write_next_round_pool_split(
+        sampler.oracle_json,
+        last_labeled_json,
+        selected,
+        out_labeled_json,
+        out_unlabeled_json,
     )
     metrics = dict(result.get('metrics', {}))
-    selected = result.get('selected_image_ids', [])
+    metrics.update({
+        'new_labeled_count': len(labeled_ids),
+        'new_unlabeled_count': len(unlabeled_ids),
+    })
     out_labeled = str(out_labeled_json)
     out_unlabeled = str(out_unlabeled_json)
     return acquisition_result(
