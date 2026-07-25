@@ -1,3 +1,0 @@
-# ALOD tests currently use Python's stdlib unittest.
-# This file exists only as a stable install target for test environments.
--r runtime.txt

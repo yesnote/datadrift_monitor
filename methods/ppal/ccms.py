@@ -67,7 +67,7 @@ class DiversitySampler(BaseALSampler):
         return centroids.tolist()
 
     def al_acquisition(self, image_dis_path, last_label_path):
-        image_dis_matrix, image_ids = load_image_distance_cache(image_dis_path)
+        image_dis_matrix, distance_image_ids = load_image_distance_cache(image_dis_path)
 
         centroids = DiversitySampler.kmeans(
             image_dis_matrix,
@@ -89,7 +89,7 @@ class DiversitySampler(BaseALSampler):
             if image_hit[img_id] == 0:
                 rest_image_ids.append(img_id)
 
-        sampled_img_ids = image_ids[centroids].tolist()
+        sampled_img_ids = distance_image_ids[centroids].tolist()
         for img_id in sampled_img_ids:
             rest_image_ids.remove(img_id)
         unsampled_img_ids = rest_image_ids
@@ -97,7 +97,7 @@ class DiversitySampler(BaseALSampler):
         metrics = {
             'image_distance_npy': str(image_dis_path),
             'distance_matrix_shape': list(image_dis_matrix.shape),
-            'distance_image_count': int(image_ids.shape[0]),
+            'distance_image_count': int(distance_image_ids.shape[0]),
             'kmeans_iterations': int(self.kmeans_iterations),
         }
         return sampled_img_ids, unsampled_img_ids, metrics
