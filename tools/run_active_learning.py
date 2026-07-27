@@ -259,11 +259,9 @@ def _train_plan(
 ) -> CommandPlan:
     round_work_dir = _round_dir(output_dir, round_index)
     options = {
-        'labeled_data': input_paths['labeled'],
-        'unlabeled_data': input_paths['unlabeled'],
         'data.train.ann_file': input_paths['labeled'],
     }
-    options.update(cfg.get('common_cfg_options', {}))
+    options.update(cfg.get('mmdet_common_cfg_options', {}))
     argv = (
         _command_prefix(cfg)
         + [
@@ -290,7 +288,7 @@ def _train_plan(
 def _eval_plan(cfg: Dict[str, Any], output_dir: Path, round_index: int) -> CommandPlan:
     round_work_dir = _round_dir(output_dir, round_index)
     latest_ckpt = round_work_dir / 'latest.pth'
-    options = cfg.get('eval_cfg_options', {})
+    options = cfg.get('mmdet_eval_cfg_options', {})
     argv = (
         _command_prefix(cfg)
         + [
@@ -326,10 +324,9 @@ def _uncertainty_infer_plan(
     prefix = round_work_dir / 'unlabeled_inference_result'
     latest_ckpt = round_work_dir / 'latest.pth'
     options = {
-        'unlabeled_data': input_paths['unlabeled'],
         'data.test.ann_file': input_paths['unlabeled'],
     }
-    options.update(cfg.get('common_cfg_options', {}))
+    options.update(cfg.get('mmdet_common_cfg_options', {}))
     argv = (
         _command_prefix(cfg)
         + [
@@ -365,12 +362,11 @@ def _diversity_infer_plan(cfg: Dict[str, Any], output_dir: Path, round_index: in
     head = 'roi_head' if cfg.get('model_name') == 'fasterrcnn' else 'bbox_head'
     pool_size = cfg.get('uncertainty_pool_size', cfg.get('budget'))
     options = {
-        'unlabeled_data': annotations['uncertainty_pool'],
         'data.test.ann_file': annotations['uncertainty_pool'],
         'model.%s.total_images' % head: int(pool_size),
         'model.%s.output_path' % head: image_dis,
     }
-    options.update(cfg.get('common_cfg_options', {}))
+    options.update(cfg.get('mmdet_common_cfg_options', {}))
     argv = (
         _command_prefix(cfg)
         + [
@@ -445,11 +441,10 @@ def _pal_infer_plan(
     detection_json = _pal_detection_json(cfg, output_dir, round_index, pool_name)
     prefix = _bbox_json_prefix(detection_json)
     options = {
-        'unlabeled_data': input_paths[pool_name],
         'data.test.ann_file': input_paths[pool_name],
     }
-    options.update(cfg.get('common_cfg_options', {}))
-    options.update(cfg.get('pal_cfg_options', {}))
+    options.update(cfg.get('mmdet_common_cfg_options', {}))
+    options.update(cfg.get('mmdet_pal_infer_cfg_options', {}))
     argv = (
         _command_prefix(cfg)
         + [
@@ -648,7 +643,7 @@ def _progress_total_for_step(
             return image_count * max_epochs
         return image_count
     if step.name.startswith('eval'):
-        eval_options = cfg.get('eval_cfg_options', {})
+        eval_options = cfg.get('mmdet_eval_cfg_options', {})
         ann_file = eval_options.get('data.test.ann_file') if isinstance(eval_options, dict) else None
         if ann_file:
             return _count_annotation_items(_runtime_read_path(str(ann_file)))

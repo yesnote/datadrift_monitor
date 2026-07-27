@@ -18,8 +18,8 @@ class DatasetSpec:
     test_ann_file: str
     test_img_prefix: str
     dataset_prep: Dict[str, object] = field(default_factory=dict)
-    common_cfg_options: Dict[str, object] = field(default_factory=dict)
-    eval_cfg_options: Dict[str, object] = field(default_factory=dict)
+    mmdet_common_cfg_options: Dict[str, object] = field(default_factory=dict)
+    mmdet_eval_cfg_options: Dict[str, object] = field(default_factory=dict)
 
     def to_config(self) -> Dict[str, object]:
         common_options = {
@@ -28,13 +28,13 @@ class DatasetSpec:
             'data.val.img_prefix': self.test_img_prefix,
             'data.test.img_prefix': self.image_root,
         }
-        common_options.update(self.common_cfg_options)
+        common_options.update(self.mmdet_common_cfg_options)
 
         eval_options = {
             'data.test.ann_file': self.test_ann_file,
             'data.test.img_prefix': self.test_img_prefix,
         }
-        eval_options.update(self.eval_cfg_options)
+        eval_options.update(self.mmdet_eval_cfg_options)
 
         cfg = {
             'oracle_path': self.oracle_path,
@@ -42,8 +42,8 @@ class DatasetSpec:
             'init_unlabeled_json': self.init_unlabeled_json,
             'init_model': None,
             'image_root': self.image_root,
-            'common_cfg_options': common_options,
-            'eval_cfg_options': eval_options,
+            'mmdet_common_cfg_options': common_options,
+            'mmdet_eval_cfg_options': eval_options,
         }
         if self.dataset_prep:
             cfg['dataset_prep'] = dict(self.dataset_prep)
