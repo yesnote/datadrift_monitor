@@ -98,6 +98,20 @@ class DCUSSampler(BaseALSampler):
         inds_sort = np.argsort(-1. * merged_img_uncertainties)
         sampled_inds = inds_sort[:self.n_images]
         sampled_img_ids = img_ids[sampled_inds].tolist()
+        candidate_records = []
+        for rank, index in enumerate(sampled_inds.tolist(), start=1):
+            score = float(merged_img_uncertainties[index])
+            candidate_records.append({
+                'image_id': img_ids[index].item() if hasattr(img_ids[index], 'item') else img_ids[index],
+                'rank': rank,
+                'score': score,
+                'source': 'dcus',
+                'components': {
+                    'dcus_score': score,
+                    'weighted_uncertainty': score,
+                },
+                'metadata': {},
+            })
 
         metrics = {
             'class_quality_checkpoint': str(checkpoint_path),
@@ -111,15 +125,16 @@ class DCUSSampler(BaseALSampler):
             'last_labeled_count': len(last_labeled_img_ids),
             'uncertainty_pool_count': len(sampled_img_ids),
         }
-        return sampled_img_ids, metrics
+        return sampled_img_ids, candidate_records, metrics
 
     def al_round(self, result_path, last_label_path):
         self.round += 1
         self.latest_labeled = last_label_path
 
-        sampled_img_ids, metrics = self.al_acquisition(result_path, last_label_path)
+        sampled_img_ids, candidate_records, metrics = self.al_acquisition(result_path, last_label_path)
         return {
             'selected_image_ids': sampled_img_ids,
+            'candidate_records': candidate_records,
             'selected_count': len(sampled_img_ids),
             'metrics': metrics,
         }

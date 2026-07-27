@@ -83,6 +83,24 @@ class DiversitySampler(BaseALSampler):
         )
 
         sampled_img_ids = [oracle_image_ids[index] for index in centroids]
+        centroid_ranks = {
+            index: rank for rank, index in enumerate(centroids, start=1)
+        }
+        candidate_records = []
+        for index, image_id in enumerate(oracle_image_ids):
+            centroid_rank = centroid_ranks.get(index)
+            candidate_records.append({
+                'image_id': image_id,
+                'rank': index + 1,
+                'score': None,
+                'source': 'ccms',
+                'components': {},
+                'metadata': {
+                    'distance_index': index,
+                    'selected_by_ccms': centroid_rank is not None,
+                    'centroid_rank': centroid_rank,
+                },
+            })
 
         metrics = {
             'image_distance_npy': str(image_dis_path),
@@ -92,14 +110,15 @@ class DiversitySampler(BaseALSampler):
             'selected_candidate_count': len(sampled_img_ids),
             'kmeans_iterations': int(self.kmeans_iterations),
         }
-        return sampled_img_ids, metrics
+        return sampled_img_ids, candidate_records, metrics
 
     def al_round(self, image_dis_path, last_label_path):
         self.round += 1
         self.latest_labeled = last_label_path
-        sampled_img_ids, metrics = self.al_acquisition(image_dis_path)
+        sampled_img_ids, candidate_records, metrics = self.al_acquisition(image_dis_path)
         return {
             'selected_image_ids': sampled_img_ids,
+            'candidate_records': candidate_records,
             'selected_count': len(sampled_img_ids),
             'metrics': metrics,
         }

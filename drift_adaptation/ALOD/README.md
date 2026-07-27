@@ -99,10 +99,8 @@ directory instead of being streamed to the terminal.
 Important output files:
 
 - `work_dirs/.../active_learning_plan.json`: full command/acquisition plan.
-- `work_dirs/.../preparation_summary.json`: automatically prepared or reused
-  input files.
 - `work_dirs/.../run_summary.json`: resolved method, detector, dataset, rounds,
-  budget, output directory, and round summary paths.
+  budget, output directory, prepared inputs, and round summary paths.
 - `work_dirs/.../round_XX/round_summary.json`: per-round step status, durations,
   logs, and acquisition outputs.
 - `work_dirs/.../round_XX/logs/train.log`: training stdout/stderr.
@@ -111,6 +109,8 @@ Important output files:
 - `work_dirs/.../round_XX/pal_diagnostics.json` or
   `work_dirs/.../round_XX/ppal_diagnostics.json`: method-specific acquisition
   diagnostics.
+- `work_dirs/.../round_XX/*_candidates.json`: compact candidate rankings and
+  final selection flags for method analysis.
 
 Use `--verbose` when debugging to print the full plan and stream subprocess
 output:

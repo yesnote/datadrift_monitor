@@ -26,6 +26,10 @@ if str(ROOT) not in sys.path:
 
 from configs.catalog import build_experiment_config, list_presets, resolve_experiment, resolve_method_alias
 
+from methods.common.candidates import (
+    build_candidate_artifact,
+    write_candidate_artifact,
+)
 from methods.common.coco_pool import write_next_round_pool_split
 from methods.common.diagnostics import write_diagnostics
 from methods.common.io import read_json, write_json as write_common_json
@@ -210,7 +214,6 @@ def _round_annotations(output_dir: Path, round_index: int) -> Dict[str, Path]:
         'labeled': ann_dir / 'new_labeled.json',
         'unlabeled': ann_dir / 'new_unlabeled.json',
         'uncertainty_pool': ann_dir / 'uncertainty_pool.json',
-        'uncertainty_remainder': ann_dir / 'uncertainty_remainder.json',
     }
 
 
@@ -810,6 +813,7 @@ def _execute_lightweight_acquisition(
     budget = int(cfg.get('budget', 0))
     diagnostics_path = None
     diagnostics_stage = None
+    candidate_outputs: Dict[str, str] = {}
 
     if method == 'random':
         selected = random_sample(input_paths['unlabeled'], budget=budget, seed=seed)
@@ -851,6 +855,26 @@ def _execute_lightweight_acquisition(
         diagnostics_stage = 'guide' if pal_mode_normalized in ('full', 'guide') else 'lius'
         diagnostics_extra = dict(diagnostics)
         diagnostics_extra.pop('selected_image_ids', None)
+        candidate_records = list(diagnostics_extra.pop('candidate_records', []))
+        diagnostics_extra.pop('candidate_scores', None)
+        candidate_file = (
+            'pal_candidates.json'
+            if diagnostics_stage == 'guide'
+            else 'pal_lius_candidates.json'
+        )
+        candidate_artifact_path = _round_relative_file(round_work_dir, candidate_file)
+        candidate_outputs = {
+            'candidates_json': str(candidate_artifact_path),
+        }
+        candidate_artifact = build_candidate_artifact(
+            method='pal',
+            stage=diagnostics_stage,
+            round_index=round_index,
+            budget=budget,
+            candidates=candidate_records,
+            selected_image_ids=selected,
+        )
+        write_candidate_artifact(candidate_artifact_path, candidate_artifact)
         diagnostics_payload = acquisition_result(
             method='pal',
             stage=diagnostics_stage,
@@ -868,6 +892,7 @@ def _execute_lightweight_acquisition(
                 'labeled_pool_json': str(annotations['labeled']),
                 'unlabeled_pool_json': str(annotations['unlabeled']),
                 'diagnostics_json': str(diagnostics_path),
+                **candidate_outputs,
             },
             **diagnostics_extra,
         )
@@ -889,6 +914,7 @@ def _execute_lightweight_acquisition(
         'outputs': {
             'labeled_pool_json': str(annotations['labeled']),
             'unlabeled_pool_json': str(annotations['unlabeled']),
+            **candidate_outputs,
         },
     }
 
@@ -922,7 +948,6 @@ def _execute_ppal_acquisition(
             result_json=result_json,
             last_labeled_json=input_paths['labeled'],
             out_candidate_json=annotations['uncertainty_pool'],
-            out_remainder_json=annotations['uncertainty_remainder'],
         )
     else:
         output = run_diversity_acquisition(
@@ -1073,10 +1098,8 @@ def _format_acquisition_result(result: Dict[str, Any]) -> str:
         parts.append('labeled=%s' % _display_path(Path(str(outputs['labeled_pool_json']))))
     if outputs.get('unlabeled_pool_json'):
         parts.append('unlabeled=%s' % _display_path(Path(str(outputs['unlabeled_pool_json']))))
-    if outputs.get('candidate_pool_json'):
-        parts.append('candidate=%s' % _display_path(Path(str(outputs['candidate_pool_json']))))
-    if outputs.get('remainder_pool_json'):
-        parts.append('remainder=%s' % _display_path(Path(str(outputs['remainder_pool_json']))))
+    if outputs.get('candidates_json'):
+        parts.append('candidates=%s' % _display_path(Path(str(outputs['candidates_json']))))
     return ' '.join(parts)
 
 
@@ -1086,10 +1109,6 @@ def _round_summary_path(output_dir: Path, round_index: int) -> Path:
 
 def _run_summary_path(output_dir: Path) -> Path:
     return output_dir / 'run_summary.json'
-
-
-def _preparation_summary_path(output_dir: Path) -> Path:
-    return output_dir / 'preparation_summary.json'
 
 
 def _preparation_requested(cfg: Dict[str, Any]) -> bool:
@@ -1180,7 +1199,6 @@ def _run_summary_base(
         'plan_path': str(plan_log),
         'config_paths': _config_path_summary(cfg),
         'round_summaries': [],
-        'rounds_detail': [],
     }
 
 
@@ -1334,8 +1352,6 @@ def main() -> None:
         print('preparing inputs...', flush=True)
         preparation_results = prepare_required_inputs(cfg, ROOT)
         _print_preparation_summary(preparation_results)
-    preparation_path = _preparation_summary_path(output_dir)
-    _write_json(preparation_path, {'steps': preparation_results})
 
     validate_initial_pool_files(cfg)
 
@@ -1351,7 +1367,6 @@ def main() -> None:
 
     plan_log = _write_plan_log(output_dir, plan)
     run_summary = _run_summary_base(args, cfg, selection, output_dir, plan_log, total_rounds)
-    run_summary['preparation_path'] = str(preparation_path)
     run_summary['preparation'] = preparation_results
     _write_json(_run_summary_path(output_dir), run_summary)
     _print_run_header(run_summary)
@@ -1385,7 +1400,6 @@ def main() -> None:
                 run_summary['failed_round'] = round_index
                 run_summary['failed_step'] = result
                 run_summary['round_summaries'].append(str(round_summary_path))
-                run_summary['rounds_detail'].append(round_payload)
                 _write_json(_run_summary_path(output_dir), run_summary)
                 if isinstance(exc, RunnerStepError):
                     raise SystemExit(str(exc))
@@ -1400,7 +1414,6 @@ def main() -> None:
         round_summary_path = _round_summary_path(output_dir, round_index)
         _write_json(round_summary_path, round_payload)
         run_summary['round_summaries'].append(str(round_summary_path))
-        run_summary['rounds_detail'].append(round_payload)
         _write_json(_run_summary_path(output_dir), run_summary)
 
     run_summary['status'] = 'done'

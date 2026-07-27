@@ -7,7 +7,7 @@ lightweight samplers before detector dependencies load.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Sequence, Tuple, Union
+from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple, Union
 
 from methods.common.io import read_json, write_json
 
@@ -126,10 +126,10 @@ def write_candidate_pool_from_selection(
     last_labeled: PoolInput,
     candidate_image_ids: Iterable[Any],
     out_candidate_json: Path,
-    out_remainder_json: Path,
+    out_remainder_json: Optional[Path] = None,
     candidate_include_annotations: bool = False,
 ) -> Tuple[List[Any], List[Any]]:
-    """Write a candidate pool and unlabeled remainder from selected ids."""
+    """Write a candidate pool and optionally its unlabeled remainder."""
 
     oracle_data = load_coco_pool(oracle)
     last_labeled_data = load_coco_pool(last_labeled)
@@ -178,14 +178,15 @@ def write_candidate_pool_from_selection(
         ),
         out_candidate_json,
     )
-    write_coco_json(
-        build_coco_subset_ordered(
-            oracle_data,
-            remainder_ids,
-            include_annotations=False,
-        ),
-        out_remainder_json,
-    )
+    if out_remainder_json is not None:
+        write_coco_json(
+            build_coco_subset_ordered(
+                oracle_data,
+                remainder_ids,
+                include_annotations=False,
+            ),
+            out_remainder_json,
+        )
     return candidate_ids, remainder_ids
 
 
