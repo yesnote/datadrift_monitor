@@ -1,8 +1,11 @@
-"""Shared acquisition result payload helpers."""
+"""Shared acquisition result and diagnostics payload helpers."""
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any, Dict, Iterable, Mapping, Optional
+
+from methods.common.io import write_json
 
 
 def acquisition_result(
@@ -33,3 +36,9 @@ def acquisition_result(
         payload['stage'] = stage
     payload.update(extra)
     return payload
+
+
+def write_diagnostics(path: Path, diagnostics: Dict[str, Any]) -> Path:
+    """Write a diagnostics dictionary as stable UTF-8 JSON."""
+
+    return write_json(path, diagnostics, indent=2)

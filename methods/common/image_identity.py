@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any, Iterable, List, Mapping
+from typing import Any, Iterable, List
 
 
 def normalize_image_id(value: Any) -> Any:
@@ -20,15 +20,6 @@ def normalize_image_ids(values: Iterable[Any]) -> List[Any]:
     """Return image ids as plain JSON/Python scalar values."""
 
     return [normalize_image_id(value) for value in values]
-
-
-def canonical_image_ids(coco_data: Mapping[str, Any]) -> List[Any]:
-    """Return canonical COCO image ids from an annotation payload."""
-
-    return [
-        normalize_image_id(image['id'])
-        for image in coco_data.get('images', [])
-    ]
 
 
 def validate_image_ids_subset(
