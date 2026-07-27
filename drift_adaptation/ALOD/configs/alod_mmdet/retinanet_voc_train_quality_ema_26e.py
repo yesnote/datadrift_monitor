@@ -1,8 +1,5 @@
 _base_ = './retinanet_voc_base.py'
 
-labeled_data = ''
-unlabeled_data = ''
-
 model = dict(
     bbox_head=dict(
         type='RetinaQualityEMAHead',

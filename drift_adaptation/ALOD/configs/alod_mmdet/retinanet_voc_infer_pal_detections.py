@@ -25,4 +25,3 @@ data = dict(
         img_prefix='data/VOC0712/images/',
         classes=CLASSES),
 )
-unlabeled_data = ''
