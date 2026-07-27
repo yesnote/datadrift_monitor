@@ -147,6 +147,35 @@ def _append_selected(
     selected_details.append(detail)
 
 
+def _pal_candidate_record(record: Dict[str, Any], rank: int) -> Dict[str, Any]:
+    components = {}
+    for key in (
+            'lius_score',
+            'tp_probability',
+            'guide_cwie',
+            'guide_rcdi',
+            'guide_rcsp',
+            'pal_score'):
+        if key in record:
+            components[key] = float(record[key])
+
+    metadata = {}
+    for key in ('candidate_class_id', 'candidate_rank', 'selection_stage'):
+        if key in record:
+            metadata[key] = record[key]
+
+    score = record.get('pal_score', record.get('lius_score', record.get('score')))
+    return {
+        'image_id': record['image_id'],
+        'category_id': record.get('category_id'),
+        'rank': rank,
+        'score': float(score) if score is not None else None,
+        'source': 'guide',
+        'components': components,
+        'metadata': metadata,
+    }
+
+
 def select_lius_images(
     labeled_pool: Dict[str, Any],
     unlabeled_pool: Dict[str, Any],
@@ -195,8 +224,9 @@ def select_lius_images(
                 candidate_scores[image_id] = score
 
     selected = ranked_ids_by_score(candidate_scores)[:budget]
+    global_scores: Dict[Any, float] = {}
     if len(selected) < budget:
-        global_scores: Dict[Any, float] = defaultdict(float)
+        global_scores = defaultdict(float)
         for det in scored:
             image_id = det.get('image_id')
             if image_id is not None:
@@ -204,11 +234,27 @@ def select_lius_images(
         for image_id in ranked_ids_by_score(global_scores):
             if image_id not in selected:
                 selected.append(image_id)
+                candidate_scores.setdefault(image_id, float(global_scores[image_id]))
             if len(selected) == budget:
                 break
 
     if len(selected) < budget:
+        before_refill = len(selected)
         selected = fill_to_budget(selected, unlabeled_ids, budget, seed=seed)
+        for image_id in selected[before_refill:]:
+            candidate_scores.setdefault(image_id, 0.0)
+
+    candidate_records = []
+    for rank, image_id in enumerate(ranked_ids_by_score(candidate_scores), start=1):
+        score = float(candidate_scores[image_id])
+        candidate_records.append({
+            'image_id': image_id,
+            'rank': rank,
+            'score': score,
+            'source': 'lius',
+            'components': {'lius_score': score},
+            'metadata': {},
+        })
 
     return {
         'selected_image_ids': selected[:budget],
@@ -216,6 +262,7 @@ def select_lius_images(
         'class_budgets': class_budgets,
         'matched_detection_count': len(matched),
         'scored_detection_count': len(scored),
+        'candidate_records': candidate_records,
     }
 
 
@@ -334,6 +381,23 @@ def select_full_pal_images(
             }
             _append_selected(selected, selected_details, selected_set, record, 'random_refill')
 
+    candidate_records = [
+        _pal_candidate_record(candidate, rank)
+        for rank, candidate in enumerate(all_candidates, start=1)
+    ]
+    candidate_image_set = {
+        candidate.get('image_id')
+        for candidate in candidate_records
+        if candidate.get('image_id') is not None
+    }
+    for detail in selected_details:
+        image_id = detail.get('image_id')
+        if image_id is not None and image_id not in candidate_image_set:
+            candidate_records.append(
+                _pal_candidate_record(detail, len(candidate_records) + 1)
+            )
+            candidate_image_set.add(image_id)
+
     return {
         'selected_image_ids': selected[:budget],
         'mode': 'full',
@@ -348,8 +412,7 @@ def select_full_pal_images(
         'gamma': gamma,
         'class_selected_counts': selection['class_selected_counts'],
         'unfilled_guide_budget': selection['unfilled_budget'],
-        'selected_details': selected_details[:budget],
-        'candidate_scores': all_candidates,
+        'candidate_records': candidate_records,
     }
 
 

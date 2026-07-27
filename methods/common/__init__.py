@@ -16,6 +16,14 @@ from .coco_pool import (
     write_next_round_pool_split,
     write_coco_json,
 )
+from .candidates import (
+    build_candidate_artifact,
+    candidate_image_ids,
+    normalize_candidate_record,
+    rank_candidate_records,
+    unique_candidate_image_ids,
+    write_candidate_artifact,
+)
 from .detections import load_detection_records
 from .image_identity import (
     canonical_image_ids,
@@ -39,6 +47,8 @@ from .vectors import l2_normalize
 __all__ = [
     'build_coco_subset',
     'build_coco_subset_ordered',
+    'build_candidate_artifact',
+    'candidate_image_ids',
     'category_counts',
     'canonical_image_ids',
     'acquisition_result',
@@ -52,13 +62,17 @@ __all__ = [
     'l2_normalize',
     'normalize_image_id',
     'normalize_image_ids',
+    'normalize_candidate_record',
+    'rank_candidate_records',
     'ranked_ids_by_score',
     'read_json',
     'read_coco_json',
     'to_jsonable',
     'top_k_by_score',
     'unique_in_order',
+    'unique_candidate_image_ids',
     'validate_image_ids_subset',
+    'write_candidate_artifact',
     'write_candidate_pool_from_selection',
     'write_coco_json',
     'write_next_round_pool_split',

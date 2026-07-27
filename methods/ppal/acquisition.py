@@ -7,6 +7,10 @@ from importlib.util import find_spec
 from pathlib import Path
 from typing import Any, Dict, Iterable, List
 
+from methods.common.candidates import (
+    build_candidate_artifact,
+    write_candidate_artifact,
+)
 from methods.common.coco_pool import (
     write_candidate_pool_from_selection,
     write_next_round_pool_split,
@@ -64,6 +68,10 @@ def _require_file(path: Path, description: str) -> None:
         raise FileNotFoundError('%s does not exist: %s' % (description, path))
 
 
+def _round_artifact_path(anchor: Path, filename: str) -> Path:
+    return anchor.parent.parent / filename
+
+
 def build_local_sampler(sampler_config: Dict[str, Any], repo_root: Path) -> Any:
     """Build a PPAL sampler from local method modules."""
 
@@ -89,7 +97,6 @@ def run_uncertainty_acquisition(
     result_json: Path,
     last_labeled_json: Path,
     out_candidate_json: Path,
-    out_remainder_json: Path,
 ) -> Dict[str, Any]:
     """Run PPAL DCUS acquisition with the local method implementation."""
 
@@ -111,7 +118,6 @@ def run_uncertainty_acquisition(
         last_labeled_json,
         selected,
         out_candidate_json,
-        out_remainder_json,
         candidate_include_annotations=False,
     )
     metrics = dict(result.get('metrics', {}))
@@ -120,7 +126,17 @@ def run_uncertainty_acquisition(
         'remaining_unlabeled_count': len(remainder_ids),
     })
     out_candidate = str(out_candidate_json)
-    out_remainder = str(out_remainder_json)
+    candidates_json = _round_artifact_path(out_candidate_json, 'ppal_dcus_candidates.json')
+    candidate_artifact = build_candidate_artifact(
+        method='ppal',
+        stage='dcus',
+        round_index=round_index,
+        budget=int(cfg['uncertainty_sampler_config'].get('n_sample_images', 0)),
+        candidates=result.get('candidate_records', []),
+        selected_image_ids=selected,
+        candidate_pool_json=out_candidate,
+    )
+    write_candidate_artifact(candidates_json, candidate_artifact)
     return acquisition_result(
         method='ppal',
         stage='dcus',
@@ -135,11 +151,9 @@ def run_uncertainty_acquisition(
         },
         outputs={
             'candidate_pool_json': out_candidate,
-            'remainder_pool_json': out_remainder,
+            'candidates_json': str(candidates_json),
         },
         metrics=metrics,
-        out_candidate_json=out_candidate,
-        out_remainder_json=out_remainder,
     )
 
 
@@ -182,6 +196,18 @@ def run_diversity_acquisition(
     })
     out_labeled = str(out_labeled_json)
     out_unlabeled = str(out_unlabeled_json)
+    candidate_pool_json = out_labeled_json.parent / 'uncertainty_pool.json'
+    candidates_json = _round_artifact_path(out_labeled_json, 'ppal_ccms_candidates.json')
+    candidate_artifact = build_candidate_artifact(
+        method='ppal',
+        stage='ccms',
+        round_index=round_index,
+        budget=int(cfg['diversity_sampler_config'].get('n_sample_images', 0)),
+        candidates=result.get('candidate_records', []),
+        selected_image_ids=selected,
+        candidate_pool_json=str(candidate_pool_json),
+    )
+    write_candidate_artifact(candidates_json, candidate_artifact)
     return acquisition_result(
         method='ppal',
         stage='ccms',
@@ -197,8 +223,7 @@ def run_diversity_acquisition(
         outputs={
             'labeled_pool_json': out_labeled,
             'unlabeled_pool_json': out_unlabeled,
+            'candidates_json': str(candidates_json),
         },
         metrics=metrics,
-        out_labeled_json=out_labeled,
-        out_unlabeled_json=out_unlabeled,
     )
