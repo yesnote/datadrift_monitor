@@ -31,9 +31,8 @@ from methods.common.candidates import (
     write_candidate_artifact,
 )
 from methods.common.coco_pool import write_next_round_pool_split
-from methods.common.diagnostics import write_diagnostics
 from methods.common.io import read_json, write_json as write_common_json
-from methods.common.results import acquisition_result
+from methods.common.results import acquisition_result, write_diagnostics
 from methods.entropy.sampler import sample as entropy_sample
 from methods.pal.acquisition import sample_pal_from_files
 from methods.ppal.acquisition import run_diversity_acquisition, run_uncertainty_acquisition
