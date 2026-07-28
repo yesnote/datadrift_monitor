@@ -166,6 +166,7 @@ def run_diversity_acquisition(
     last_labeled_json: Path,
     out_labeled_json: Path,
     out_unlabeled_json: Path,
+    seed: int = 0,
 ) -> Dict[str, Any]:
     """Run PPAL diversity acquisition with the local method implementation."""
 
@@ -174,7 +175,9 @@ def run_diversity_acquisition(
     _require_file(last_labeled_json, 'PPAL previous labeled pool')
     out_labeled_json.parent.mkdir(parents=True, exist_ok=True)
 
-    sampler = build_local_sampler(cfg['diversity_sampler_config'], repo_root)
+    sampler_config = dict(cfg['diversity_sampler_config'])
+    sampler_config['seed'] = seed
+    sampler = build_local_sampler(sampler_config, repo_root)
     if hasattr(sampler, 'set_round'):
         sampler.set_round(round_index)
     result = sampler.al_round(

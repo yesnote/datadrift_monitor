@@ -12,6 +12,7 @@ import subprocess
 import sys
 import time
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Union
 
@@ -256,6 +257,7 @@ def _train_plan(
     output_dir: Path,
     round_index: int,
     input_paths: Dict[str, Path],
+    seed: int,
 ) -> CommandPlan:
     round_work_dir = _round_dir(output_dir, round_index)
     options = {
@@ -271,6 +273,8 @@ def _train_plan(
             str(round_work_dir),
             '--launcher',
             _launcher_value(cfg),
+            '--seed',
+            str(seed),
         ]
     )
     if not _use_distributed(cfg):
@@ -476,10 +480,11 @@ def build_round_plan(
     output_dir: Path,
     method: str,
     round_index: int,
+    seed: int,
 ) -> List[PlanStep]:
     input_paths = _input_pool_paths(output_dir, round_index)
     plan: List[PlanStep] = [
-        _train_plan(cfg, output_dir, round_index, input_paths),
+        _train_plan(cfg, output_dir, round_index, input_paths, seed),
         _eval_plan(cfg, output_dir, round_index),
     ]
     if method == 'random':
@@ -925,6 +930,7 @@ def _execute_ppal_acquisition(
     output_dir: Path,
     round_index: int,
     ppal_stage: str,
+    seed: int,
 ) -> Dict[str, Any]:
     if ppal_stage not in ('uncertainty', 'diversity'):
         raise ValueError('Unsupported PPAL acquisition stage: %s' % ppal_stage)
@@ -953,6 +959,7 @@ def _execute_ppal_acquisition(
             last_labeled_json=input_paths['labeled'],
             out_labeled_json=annotations['labeled'],
             out_unlabeled_json=annotations['unlabeled'],
+            seed=seed,
         )
 
     diagnostics_path = round_work_dir / 'ppal_diagnostics.json'
@@ -991,7 +998,7 @@ def _run_acquisition_plan(
     if step.method == 'ppal':
         if step.ppal_stage is None:
             raise ValueError('PPAL acquisition step requires ppal_stage')
-        output = _execute_ppal_acquisition(cfg, output_dir, step.round_index, step.ppal_stage)
+        output = _execute_ppal_acquisition(cfg, output_dir, step.round_index, step.ppal_stage, seed)
         return {
             'selected_count': int(output.get('selected_count', 0)),
             'diagnostics_path': output.get('diagnostics_path'),
@@ -1170,6 +1177,7 @@ def _run_summary_base(
     output_dir: Path,
     plan_log: Path,
     total_rounds: int,
+    seed: int,
 ) -> Dict[str, Any]:
     catalog_selection = selection.get('catalog_selection')
     detector = None
@@ -1187,7 +1195,7 @@ def _run_summary_base(
         'rounds': total_rounds,
         'start_round': args.start_round,
         'budget': int(cfg.get('budget', 0)),
-        'seed': args.seed,
+        'seed': seed,
         'gpus': int(cfg.get('gpus', 1)),
         'output_dir': str(output_dir),
         'plan_path': str(plan_log),
@@ -1196,22 +1204,288 @@ def _run_summary_base(
     }
 
 
-def _print_run_header(summary: Dict[str, Any]) -> None:
-    detector = summary.get('detector') or 'custom'
-    dataset = summary.get('dataset') or 'custom'
-    print('ALOD run: %s / %s / %s' % (summary['method'], detector, dataset))
+def _run_timestamp() -> str:
+    return datetime.now().strftime('%m-%d-%Y_%H;%M')
+
+
+def _seed_output_dir(run_dir: Path, seed: int) -> Path:
+    return run_dir / ('seed_%d' % seed)
+
+
+def _ensure_new_timestamp_run_dir(run_dir: Path) -> None:
+    if run_dir.exists() and any(run_dir.iterdir()):
+        raise SystemExit(
+            'Timestamp output directory already exists and is not empty: %s'
+            % _display_path(run_dir)
+        )
+
+
+def _selected_seeds(args: argparse.Namespace) -> List[int]:
+    if args.seeds is not None:
+        if args.seed is not None:
+            raise SystemExit('Do not combine --seed with --seeds.')
+        seeds = [int(seed) for seed in args.seeds]
+    else:
+        seeds = [int(args.seed) if args.seed is not None else 0]
+    if not seeds:
+        raise SystemExit('At least one seed is required.')
+    duplicates = sorted({seed for seed in seeds if seeds.count(seed) > 1})
+    if duplicates:
+        raise SystemExit('Duplicate seeds are not allowed: %s' % duplicates)
+    return seeds
+
+
+def _print_timestamp_run_header(
+    args: argparse.Namespace,
+    cfg: Dict[str, Any],
+    selection: Dict[str, Any],
+    run_dir: Path,
+    seeds: List[int],
+    total_rounds: int,
+) -> None:
+    catalog_selection = selection.get('catalog_selection')
+    detector = catalog_selection.preset.detector if catalog_selection is not None else 'custom'
+    dataset = catalog_selection.preset.dataset if catalog_selection is not None else 'custom'
+    print('ALOD run: %s / %s / %s' % (args.method, detector, dataset))
     print(
-        'rounds=%s budget=%s seed=%s gpus=%s'
-        % (summary['rounds'], summary['budget'], summary['seed'], summary['gpus'])
+        'seeds=%s rounds=%s budget=%s gpus=%s'
+        % (
+            ','.join(str(seed) for seed in seeds),
+            total_rounds,
+            int(cfg.get('budget', 0)),
+            int(cfg.get('gpus', 1)),
+        )
     )
-    print('output=%s' % _display_path(Path(str(summary['output_dir']))))
-    print('plan=%s' % _display_path(Path(str(summary['plan_path']))))
+    print('output=%s' % _display_path(run_dir))
+
+
+def _read_eval_json_metrics(round_dir: Path) -> Optional[Dict[str, float]]:
+    paths = sorted(round_dir.glob('eval_*.json'))
+    for path in reversed(paths):
+        try:
+            payload = read_json(path)
+        except (OSError, ValueError, TypeError):
+            continue
+        metric = payload.get('metric') if isinstance(payload, dict) else None
+        if not isinstance(metric, dict):
+            continue
+        values = {}
+        for key in ('mAP', 'AP50'):
+            if metric.get(key) is not None:
+                values[key] = float(metric[key])
+        if values:
+            return values
+    return None
+
+
+def _read_eval_log_metrics(round_summary: Dict[str, Any]) -> Optional[Dict[str, float]]:
+    steps = round_summary.get('steps', [])
+    if not isinstance(steps, list):
+        return None
+    eval_log = None
+    for step in steps:
+        if isinstance(step, dict) and step.get('label') == 'eval' and step.get('log_path'):
+            eval_log = Path(str(step['log_path']))
+            break
+    if eval_log is None:
+        return None
+    if not eval_log.is_absolute():
+        eval_log = ROOT / eval_log
+    if not eval_log.exists():
+        return None
+    try:
+        text = eval_log.read_text(encoding='utf-8', errors='replace')
+    except OSError:
+        return None
+    values = {}
+    for key in ('mAP', 'AP50'):
+        match = re.search(r"\('%s',\s*([0-9.eE+-]+)\)" % re.escape(key), text)
+        if match:
+            values[key] = float(match.group(1))
+    return values or None
+
+
+def _round_metrics(seed_dir: Path, round_index: int, round_summary: Dict[str, Any]) -> Dict[str, float]:
+    round_dir = _round_dir(seed_dir, round_index)
+    metrics = _read_eval_json_metrics(round_dir)
+    if metrics is None:
+        metrics = _read_eval_log_metrics(round_summary)
+    return metrics or {}
+
+
+def _round_duration_sec(round_summary: Dict[str, Any]) -> Optional[float]:
+    steps = round_summary.get('steps', [])
+    if not isinstance(steps, list):
+        return None
+    durations = [
+        float(step['duration_sec'])
+        for step in steps
+        if isinstance(step, dict) and step.get('duration_sec') is not None
+    ]
+    if not durations:
+        return None
+    return round(sum(durations), 3)
+
+
+def _numeric_summary(values_by_seed: Dict[int, float], seeds: List[int]) -> Dict[str, Any]:
+    values = [float(values_by_seed[seed]) for seed in seeds if seed in values_by_seed]
+    payload: Dict[str, Any] = {
+        'values': {str(seed): values_by_seed[seed] for seed in seeds if seed in values_by_seed},
+        'count': len(values),
+        'missing_seeds': [seed for seed in seeds if seed not in values_by_seed],
+        'mean': None,
+        'std': None,
+    }
+    if values:
+        mean = sum(values) / len(values)
+        variance = sum((value - mean) ** 2 for value in values) / len(values)
+        payload['mean'] = mean
+        payload['std'] = variance ** 0.5
+    return payload
+
+
+def _read_round_summary(seed_dir: Path, round_index: int) -> Optional[Dict[str, Any]]:
+    path = _round_summary_path(seed_dir, round_index)
+    if not path.exists():
+        return None
+    try:
+        payload = read_json(path)
+    except (OSError, ValueError, TypeError):
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
+def _aggregate_summary_path(run_dir: Path) -> Path:
+    return run_dir / 'aggregate_summary.json'
+
+
+def _build_aggregate_summary(
+    args: argparse.Namespace,
+    cfg: Dict[str, Any],
+    selection: Dict[str, Any],
+    base_output_dir: Path,
+    run_dir: Path,
+    run_id: str,
+    seeds: List[int],
+    seed_run_summaries: Dict[int, Dict[str, Any]],
+    total_rounds: int,
+) -> Dict[str, Any]:
+    catalog_selection = selection.get('catalog_selection')
+    detector = catalog_selection.preset.detector if catalog_selection is not None else None
+    dataset = catalog_selection.preset.dataset if catalog_selection is not None else None
+    round_indexes = list(range(args.start_round, args.start_round + total_rounds))
+
+    seed_runs = []
+    round_metrics_by_seed: Dict[int, Dict[int, Dict[str, float]]] = {}
+    for seed in seeds:
+        seed_dir = _seed_output_dir(run_dir, seed)
+        summary = seed_run_summaries.get(seed, {})
+        per_round_metrics: Dict[int, Dict[str, float]] = {}
+        round_summary_paths = []
+        for round_index in round_indexes:
+            round_summary = _read_round_summary(seed_dir, round_index)
+            if round_summary is None:
+                continue
+            round_summary_paths.append(str(_round_summary_path(seed_dir, round_index)))
+            per_round_metrics[round_index] = _round_metrics(seed_dir, round_index, round_summary)
+        round_metrics_by_seed[seed] = per_round_metrics
+        final_metrics = {}
+        for round_index in reversed(round_indexes):
+            if per_round_metrics.get(round_index):
+                final_metrics = per_round_metrics[round_index]
+                break
+        seed_runs.append({
+            'seed': seed,
+            'status': summary.get('status'),
+            'output_dir': str(seed_dir),
+            'run_summary_json': str(_run_summary_path(seed_dir)),
+            'round_summary_jsons': round_summary_paths,
+            'final_metrics': final_metrics,
+        })
+
+    rounds_summary = []
+    for round_index in round_indexes:
+        metric_payload = {}
+        for metric_name in ('mAP', 'AP50'):
+            values_by_seed = {
+                seed: round_metrics_by_seed.get(seed, {}).get(round_index, {}).get(metric_name)
+                for seed in seeds
+                if round_metrics_by_seed.get(seed, {}).get(round_index, {}).get(metric_name) is not None
+            }
+            metric_payload[metric_name] = _numeric_summary(values_by_seed, seeds)
+
+        selected_by_seed: Dict[int, float] = {}
+        duration_by_seed: Dict[int, float] = {}
+        for seed in seeds:
+            round_summary = _read_round_summary(_seed_output_dir(run_dir, seed), round_index)
+            if round_summary is None:
+                continue
+            if round_summary.get('selected_count') is not None:
+                selected_by_seed[seed] = float(round_summary['selected_count'])
+            duration = _round_duration_sec(round_summary)
+            if duration is not None:
+                duration_by_seed[seed] = duration
+
+        rounds_summary.append({
+            'round_index': round_index,
+            'metrics': metric_payload,
+            'selected_count': _numeric_summary(selected_by_seed, seeds),
+            'duration_sec': _numeric_summary(duration_by_seed, seeds),
+        })
+
+    return {
+        'schema_version': 1,
+        'created_at': time.strftime('%Y-%m-%dT%H:%M:%S'),
+        'run_id': run_id,
+        'base_output_dir': str(base_output_dir),
+        'run_dir': str(run_dir),
+        'method': args.method,
+        'method_arg': cfg.get('_method_arg'),
+        'detector': detector,
+        'dataset': dataset,
+        'preset': selection.get('preset_name'),
+        'rounds': total_rounds,
+        'start_round': args.start_round,
+        'budget': int(cfg.get('budget', 0)),
+        'gpus': int(cfg.get('gpus', 1)),
+        'seeds': seeds,
+        'seed_runs': seed_runs,
+        'rounds_summary': rounds_summary,
+    }
+
+
+def _write_aggregate_summary(
+    args: argparse.Namespace,
+    cfg: Dict[str, Any],
+    selection: Dict[str, Any],
+    base_output_dir: Path,
+    run_dir: Path,
+    run_id: str,
+    seeds: List[int],
+    seed_run_summaries: Dict[int, Dict[str, Any]],
+    total_rounds: int,
+) -> Path:
+    path = _aggregate_summary_path(run_dir)
+    payload = _build_aggregate_summary(
+        args,
+        cfg,
+        selection,
+        base_output_dir,
+        run_dir,
+        run_id,
+        seeds,
+        seed_run_summaries,
+        total_rounds,
+    )
+    _write_json(path, payload)
+    return path
 
 
 def _catalog_epilog() -> str:
     lines = [
         'Examples:',
         '  python -B tools/run_active_learning.py --method pal --detector retinanet --dataset voc --rounds 1 --gpus 1',
+        '  python -B tools/run_active_learning.py --method pal --detector retinanet --dataset voc --gpus 1 --seeds 0 1 2',
         '  python -B tools/run_active_learning.py --preset ppal-retinanet-voc --rounds 1 --gpus 1',
         '',
         'Catalog presets:',
@@ -1312,7 +1586,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument('--list-presets', action='store_true', help='List supported catalog presets and exit')
     parser.add_argument('--rounds', type=int, default=None, help='Number of AL rounds to execute')
     parser.add_argument('--start-round', type=int, default=1, help='First AL round index to execute')
-    parser.add_argument('--seed', type=int, default=0, help='Sampler seed for deterministic methods')
+    parser.add_argument('--seed', type=int, default=None, help='Single run seed. Defaults to 0 when --seeds is omitted')
+    parser.add_argument('--seeds', type=int, nargs='+', default=None, help='Run one timestamped experiment over multiple seeds')
     parser.add_argument('--gpus', type=int, default=None, help='Override config gpus for command planning/execution')
     parser.add_argument('--port', type=int, default=None, help='Override distributed master port')
     parser.add_argument('--python-path', default=None, help='Override config python executable')
@@ -1320,50 +1595,25 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def main() -> None:
-    args = parse_args()
-    if args.list_presets:
-        _print_presets()
-        return
-
-    selection = resolve_runner_selection(args)
-    args.method = selection['method']
-    if selection['catalog_selection'] is None:
-        config_path = selection['config_path']
-        cfg = load_experiment_config(config_path)
-    else:
-        config_path = None
-        cfg = build_experiment_config(selection['catalog_selection'])
-    cfg.update(selection['cfg_overrides'])
-    cfg['_method_arg'] = selection['method_arg']
-    apply_cli_overrides(cfg, args)
-    validate_experiment_config_paths(cfg)
-    output_default = Path('work_dirs') / (config_path.stem if config_path is not None else selection['preset_name'])
-    output_dir = _resolve_repo_path(str(cfg.get('output_dir', output_default)))
-
-    preparation_results: List[Dict[str, object]] = []
-    if _preparation_requested(cfg):
-        print('preparing inputs...', flush=True)
-        preparation_results = prepare_required_inputs(cfg, ROOT)
-        _print_preparation_summary(preparation_results)
-
-    validate_initial_pool_files(cfg)
-
+def _run_seed(
+    args: argparse.Namespace,
+    cfg: Dict[str, Any],
+    selection: Dict[str, Any],
+    output_dir: Path,
+    total_rounds: int,
+    seed: int,
+    preparation_results: List[Dict[str, object]],
+) -> Dict[str, Any]:
     init_actions = initialize_round_zero(cfg, output_dir)
-
-    total_rounds = int(args.rounds if args.rounds is not None else cfg.get('round_num', 1))
-    if total_rounds < 1:
-        raise ValueError('round count must be positive')
 
     plan: List[PlanStep] = []
     for round_index in range(args.start_round, args.start_round + total_rounds):
-        plan.extend(build_round_plan(cfg, output_dir, args.method, round_index))
+        plan.extend(build_round_plan(cfg, output_dir, args.method, round_index, seed))
 
     plan_log = _write_plan_log(output_dir, plan)
-    run_summary = _run_summary_base(args, cfg, selection, output_dir, plan_log, total_rounds)
+    run_summary = _run_summary_base(args, cfg, selection, output_dir, plan_log, total_rounds, seed)
     run_summary['preparation'] = preparation_results
     _write_json(_run_summary_path(output_dir), run_summary)
-    _print_run_header(run_summary)
     if args.verbose:
         for action in init_actions:
             print(action)
@@ -1383,7 +1633,7 @@ def main() -> None:
                 print('[%d/%d] %-26s running...' % (step_index, len(round_plan), label), flush=True)
             started = time.time()
             try:
-                result = _run_plan_step(step, cfg, output_dir, seed=args.seed, verbose=args.verbose)
+                result = _run_plan_step(step, cfg, output_dir, seed=seed, verbose=args.verbose)
             except Exception as exc:
                 result = _failed_step_result(step, exc, started)
                 round_results.append(result)
@@ -1412,9 +1662,77 @@ def main() -> None:
 
     run_summary['status'] = 'done'
     _write_json(_run_summary_path(output_dir), run_summary)
+    return run_summary
+
+
+def main() -> None:
+    args = parse_args()
+    if args.list_presets:
+        _print_presets()
+        return
+
+    selection = resolve_runner_selection(args)
+    args.method = selection['method']
+    seeds = _selected_seeds(args)
+    if selection['catalog_selection'] is None:
+        config_path = selection['config_path']
+        cfg = load_experiment_config(config_path)
+    else:
+        config_path = None
+        cfg = build_experiment_config(selection['catalog_selection'])
+    cfg.update(selection['cfg_overrides'])
+    cfg['_method_arg'] = selection['method_arg']
+    apply_cli_overrides(cfg, args)
+    validate_experiment_config_paths(cfg)
+    output_default = Path('work_dirs') / (config_path.stem if config_path is not None else selection['preset_name'])
+    base_output_dir = _resolve_repo_path(str(cfg.get('output_dir', output_default)))
+
+    preparation_results: List[Dict[str, object]] = []
+    if _preparation_requested(cfg):
+        print('preparing inputs...', flush=True)
+        preparation_results = prepare_required_inputs(cfg, ROOT)
+        _print_preparation_summary(preparation_results)
+
+    validate_initial_pool_files(cfg)
+
+    total_rounds = int(args.rounds if args.rounds is not None else cfg.get('round_num', 1))
+    if total_rounds < 1:
+        raise ValueError('round count must be positive')
+
+    run_id = _run_timestamp()
+    run_dir = base_output_dir / run_id
+    _ensure_new_timestamp_run_dir(run_dir)
+    _print_timestamp_run_header(args, cfg, selection, run_dir, seeds, total_rounds)
+
+    seed_run_summaries: Dict[int, Dict[str, Any]] = {}
+    for seed_offset, seed in enumerate(seeds, start=1):
+        print('')
+        print('Seed %d/%d: seed=%d' % (seed_offset, len(seeds), seed))
+        seed_dir = _seed_output_dir(run_dir, seed)
+        seed_run_summaries[seed] = _run_seed(
+            args,
+            cfg,
+            selection,
+            seed_dir,
+            total_rounds,
+            seed,
+            preparation_results,
+        )
+
+    aggregate_path = _write_aggregate_summary(
+        args,
+        cfg,
+        selection,
+        base_output_dir,
+        run_dir,
+        run_id,
+        seeds,
+        seed_run_summaries,
+        total_rounds,
+    )
     print('')
     print('ALOD run complete')
-    print('summary=%s' % _display_path(_run_summary_path(output_dir)))
+    print('aggregate=%s' % _display_path(aggregate_path))
 
 
 if __name__ == '__main__':
