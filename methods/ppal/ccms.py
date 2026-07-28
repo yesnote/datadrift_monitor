@@ -19,6 +19,7 @@ class DiversitySampler(BaseALSampler):
         n_sample_images,
         oracle_annotation_path,
         dataset_type,
+        seed=None,
     ):
         super(DiversitySampler, self).__init__(
             n_sample_images,
@@ -27,12 +28,16 @@ class DiversitySampler(BaseALSampler):
             dataset_type=dataset_type)
 
         self.kmeans_iterations = 100
+        self.seed = seed
+        self.random_state = np.random.RandomState(seed) if seed is not None else np.random
 
     @staticmethod
-    def k_centroid_greedy(dis_matrix, K):
+    def k_centroid_greedy(dis_matrix, K, rng=None):
+        if rng is None:
+            rng = np.random
         N = dis_matrix.shape[0]
         centroids = []
-        c = np.random.randint(0, N, (1,))[0]
+        c = rng.randint(0, N, (1,))[0]
         centroids.append(c)
         i = 1
         while i < K:
@@ -45,9 +50,9 @@ class DiversitySampler(BaseALSampler):
         return centroids
 
     @staticmethod
-    def kmeans(dis_matrix, K, n_iter=100):
+    def kmeans(dis_matrix, K, n_iter=100, rng=None):
         N = dis_matrix.shape[0]
-        centroids = DiversitySampler.k_centroid_greedy(dis_matrix, K)
+        centroids = DiversitySampler.k_centroid_greedy(dis_matrix, K, rng=rng)
         data_indices = np.arange(N)
 
         assign_dis_records = []
@@ -80,6 +85,7 @@ class DiversitySampler(BaseALSampler):
             image_dis_matrix,
             K=self.n_images,
             n_iter=self.kmeans_iterations,
+            rng=self.random_state,
         )
 
         sampled_img_ids = [oracle_image_ids[index] for index in centroids]
@@ -109,6 +115,7 @@ class DiversitySampler(BaseALSampler):
             'canonical_distance_image_count': len(oracle_image_ids),
             'selected_candidate_count': len(sampled_img_ids),
             'kmeans_iterations': int(self.kmeans_iterations),
+            'seed': self.seed,
         }
         return sampled_img_ids, candidate_records, metrics
 

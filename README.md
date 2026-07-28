@@ -89,6 +89,12 @@ Run one PAL round:
 python -B tools/run_active_learning.py --method pal --detector retinanet --dataset voc --rounds 1 --gpus 1
 ```
 
+Run PAL with the three seeds used for paper-style reporting:
+
+```powershell
+python -B tools/run_active_learning.py --method pal --detector retinanet --dataset voc --gpus 1 --seeds 0 1 2
+```
+
 The default terminal output is concise. It prepares missing inputs, prints the
 resolved run and output directory, then shows separate progress bars for the
 current round's train, eval, and method inference steps. Acquisition is printed
@@ -96,21 +102,38 @@ as a short result line. Detailed command arguments, MMDetection logs, inference
 logs, input preparation details, and acquisition details are saved under the run
 directory instead of being streamed to the terminal.
 
+Every run is stored under a timestamp directory. Single-seed and multi-seed
+runs use the same layout:
+
+```text
+work_dirs/<experiment_name>/<MM-DD-YYYY_HH;mm>/
+  seed_0/
+    active_learning_plan.json
+    run_summary.json
+    round_00/
+    round_01/
+  seed_1/
+  seed_2/
+  aggregate_summary.json
+```
+
 Important output files:
 
-- `work_dirs/.../active_learning_plan.json`: full command/acquisition plan.
-- `work_dirs/.../run_summary.json`: resolved method, detector, dataset, rounds,
+- `work_dirs/.../seed_*/active_learning_plan.json`: full command/acquisition plan.
+- `work_dirs/.../seed_*/run_summary.json`: resolved method, detector, dataset, rounds,
   budget, output directory, prepared inputs, and round summary paths.
-- `work_dirs/.../round_XX/round_summary.json`: per-round step status, durations,
+- `work_dirs/.../seed_*/round_XX/round_summary.json`: per-round step status, durations,
   logs, and acquisition outputs.
-- `work_dirs/.../round_XX/logs/train.log`: training stdout/stderr.
-- `work_dirs/.../round_XX/logs/eval.log`: evaluation stdout/stderr.
-- `work_dirs/.../round_XX/logs/*_inference.log`: method inference stdout/stderr.
-- `work_dirs/.../round_XX/pal_diagnostics.json` or
-  `work_dirs/.../round_XX/ppal_diagnostics.json`: method-specific acquisition
+- `work_dirs/.../seed_*/round_XX/logs/train.log`: training stdout/stderr.
+- `work_dirs/.../seed_*/round_XX/logs/eval.log`: evaluation stdout/stderr.
+- `work_dirs/.../seed_*/round_XX/logs/*_inference.log`: method inference stdout/stderr.
+- `work_dirs/.../seed_*/round_XX/pal_diagnostics.json` or
+  `work_dirs/.../seed_*/round_XX/ppal_diagnostics.json`: method-specific acquisition
   diagnostics.
-- `work_dirs/.../round_XX/*_candidates.json`: compact candidate rankings and
+- `work_dirs/.../seed_*/round_XX/*_candidates.json`: compact candidate rankings and
   final selection flags for method analysis.
+- `work_dirs/.../aggregate_summary.json`: seed-level run paths plus round-wise
+  mAP/AP50 mean and standard deviation.
 
 Use `--verbose` when debugging to print the full plan and stream subprocess
 output:
