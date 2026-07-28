@@ -275,6 +275,7 @@ def _train_plan(
             _launcher_value(cfg),
             '--seed',
             str(seed),
+            '--deterministic',
         ]
     )
     if not _use_distributed(cfg):
