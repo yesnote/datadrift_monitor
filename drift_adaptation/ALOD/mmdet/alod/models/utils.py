@@ -239,3 +239,26 @@ def bbox2result_with_pre_nms_count(
             columns.append(class_scores)
         bboxes = np.concatenate(columns, axis=1)
         return [bboxes[labels == i, :] for i in range(num_classes)]
+
+
+def bbox2result_with_ecpal_features(
+        bboxes, labels, ecpal_features, ecpal_miss_features):
+    if isinstance(bboxes, torch.Tensor):
+        bboxes = bboxes.detach().cpu().numpy()
+    if isinstance(labels, torch.Tensor):
+        labels = labels.detach().cpu().numpy()
+
+    converted_features = {}
+    for key, value in ecpal_features.items():
+        if isinstance(value, torch.Tensor):
+            value = value.detach().cpu().numpy()
+        converted_features[key] = np.asarray(value)
+
+    if isinstance(ecpal_miss_features, torch.Tensor):
+        ecpal_miss_features = ecpal_miss_features.detach().cpu().numpy()
+
+    return dict(
+        det_bboxes=np.asarray(bboxes),
+        det_labels=np.asarray(labels),
+        ecpal_features=converted_features,
+        ecpal_miss_features=np.asarray(ecpal_miss_features))

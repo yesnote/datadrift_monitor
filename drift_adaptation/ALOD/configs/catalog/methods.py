@@ -11,6 +11,7 @@ from .datasets import DatasetSpec, normalize_token
 PAL_FULL_ALIASES = ('pal', 'pal:full', 'pal/full', 'pal:guide', 'pal/guide')
 PAL_LIUS_ALIASES = ('pal:lius', 'pal/lius')
 PPAL_ALIASES = ('ppal', 'ppal:dcus-ccms', 'ppal/dcus-ccms', 'ppal:full', 'ppal/full')
+ECPAL_ALIASES = ('ecpal', 'ecpal:full', 'ecpal/full')
 
 
 def normalize_method_alias(value: str) -> str:
@@ -54,6 +55,8 @@ class MethodSpec:
             cfg.update(_pal_config(mode='full'))
         elif self.key == 'pal_lius':
             cfg.update(_pal_config(mode='lius'))
+        elif self.key == 'ecpal':
+            cfg.update(_ecpal_config())
         cfg.update(self.cfg_overrides)
         return cfg
 
@@ -115,6 +118,20 @@ def _pal_config(mode: str) -> Dict[str, object]:
     return cfg
 
 
+def _ecpal_config() -> Dict[str, object]:
+    return {
+        'ecpal_candidate_expand_ratio': 2,
+        'ecpal_foreground_iou_threshold': 0.5,
+        'ecpal_background_iou_threshold': 0.1,
+        'ecpal_eps': 1e-12,
+        'ecpal_weight_eps': 1e-6,
+        'ecpal_diagnostics_file': 'ecpal_diagnostics.json',
+        'ecpal_candidates_file': 'ecpal_candidates.json',
+        'ecpal_labeled_features': 'ecpal_labeled_features.json',
+        'ecpal_unlabeled_features': 'ecpal_unlabeled_features.json',
+    }
+
+
 METHODS = (
     MethodSpec(
         key='ppal',
@@ -138,6 +155,13 @@ METHODS = (
         description='PAL LIUS-only acquisition.',
         output_name='retinanet_voc_pal_lius_7rounds_5percent_to_20percent',
         cfg_overrides={'pal_mode': 'lius'},
+    ),
+    MethodSpec(
+        key='ecpal',
+        method='ecpal',
+        aliases=ECPAL_ALIASES,
+        description='ECPAL error-count prediction acquisition.',
+        output_name='retinanet_voc_ecpal_7rounds_5percent_to_20percent',
     ),
     MethodSpec(
         key='random',

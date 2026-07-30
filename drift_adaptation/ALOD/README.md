@@ -19,6 +19,7 @@ Current implemented target:
 | --- | --- | --- | --- |
 | PPAL | RetinaNet | PASCAL VOC | DCUS + CCMS reproduction path |
 | PAL | RetinaNet | PASCAL VOC | LIUS + GUIDE reproduction path |
+| ECPAL | RetinaNet | PASCAL VOC | Error-count prediction acquisition |
 | Random | RetinaNet | PASCAL VOC | Baseline acquisition |
 | Entropy | RetinaNet | PASCAL VOC | Baseline acquisition |
 
@@ -33,6 +34,7 @@ source tree, not from `code_refs/`.
 - `configs/alod_mmdet/`: minimal MMDetection configs used by ALOD runs.
 - `methods/ppal/`: PPAL method implementation.
 - `methods/pal/`: PAL method implementation.
+- `methods/ecpal/`: ECPAL method implementation.
 - `mmdet/`: local MMDetection backend used directly by `tools/train.py` and
   `tools/test.py`; method code consumes saved artifacts instead of importing it.
 - `tools/common/`: runner support code for path handling and automatic input preparation.
@@ -127,8 +129,7 @@ Important output files:
 - `work_dirs/.../seed_*/round_XX/logs/train.log`: training stdout/stderr.
 - `work_dirs/.../seed_*/round_XX/logs/eval.log`: evaluation stdout/stderr.
 - `work_dirs/.../seed_*/round_XX/logs/*_inference.log`: method inference stdout/stderr.
-- `work_dirs/.../seed_*/round_XX/pal_diagnostics.json` or
-  `work_dirs/.../seed_*/round_XX/ppal_diagnostics.json`: method-specific acquisition
+- `work_dirs/.../seed_*/round_XX/*_diagnostics.json`: method-specific acquisition
   diagnostics.
 - `work_dirs/.../seed_*/round_XX/*_candidates.json`: compact candidate rankings and
   final selection flags for method analysis.
@@ -147,5 +148,6 @@ Useful method aliases:
 - `ppal`: PPAL DCUS + CCMS.
 - `pal`, `pal:guide`, `pal/full`: PAL LIUS + GUIDE.
 - `pal:lius`: PAL LIUS only.
+- `ecpal`: ECPAL error-count prediction.
 - `random`: random acquisition baseline.
 - `entropy`: entropy acquisition baseline.

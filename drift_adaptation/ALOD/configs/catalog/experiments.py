@@ -39,6 +39,7 @@ _PRESET_NAMES = {
     'ppal': 'ppal-retinanet-voc',
     'pal_full': 'pal-retinanet-voc',
     'pal_lius': 'pal-lius-retinanet-voc',
+    'ecpal': 'ecpal-retinanet-voc',
     'random': 'random-retinanet-voc',
     'entropy': 'entropy-retinanet-voc',
 }
