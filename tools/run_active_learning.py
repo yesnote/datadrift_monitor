@@ -120,6 +120,7 @@ def validate_experiment_config_paths(cfg: Dict[str, Any]) -> None:
         'uncertainty_infer_config',
         'diversity_infer_config',
         'pal_infer_config',
+        'ecpal_infer_config',
         'pal_embedding_path',
         'output_dir',
     )
@@ -476,6 +477,69 @@ def _pal_infer_plan(
     )
 
 
+def _json_prefix(path: Path) -> Path:
+    text = str(path)
+    if text.endswith('.json'):
+        return Path(text[:-len('.json')])
+    return path
+
+
+def _ecpal_feature_json(cfg: Dict[str, Any], output_dir: Path, round_index: int, pool_name: str) -> Path:
+    round_work_dir = _round_dir(output_dir, round_index)
+    key = 'ecpal_%s_features' % pool_name
+    default = 'ecpal_%s_features.json' % pool_name
+    path = _round_relative_file(round_work_dir, str(cfg.get(key, default)))
+    text = str(path)
+    if text.endswith('.json'):
+        return path
+    return Path(text + '.json')
+
+
+def _ecpal_infer_plan(
+    cfg: Dict[str, Any],
+    output_dir: Path,
+    round_index: int,
+    input_paths: Dict[str, Path],
+    pool_name: str,
+) -> CommandPlan:
+    if 'ecpal_infer_config' not in cfg:
+        raise ValueError('ecpal_infer_config is required for ECPAL inference')
+
+    round_work_dir = _round_dir(output_dir, round_index)
+    latest_ckpt = round_work_dir / 'latest.pth'
+    feature_json = _ecpal_feature_json(cfg, output_dir, round_index, pool_name)
+    prefix = _json_prefix(feature_json)
+    options = {
+        'data.test.ann_file': input_paths[pool_name],
+    }
+    options.update(cfg.get('mmdet_common_cfg_options', {}))
+    options.update(cfg.get('mmdet_ecpal_infer_cfg_options', {}))
+    argv = (
+        _command_prefix(cfg)
+        + [
+            'tools/test.py',
+            str(cfg['ecpal_infer_config']),
+            str(latest_ckpt),
+            '--work-dir',
+            str(round_work_dir),
+            '--launcher',
+            _launcher_value(cfg),
+            '--format-only',
+            '--eval-options',
+            'jsonfile_prefix=%s' % prefix,
+            '--cfg-options',
+        ]
+        + _cfg_options(options)
+    )
+    return CommandPlan(
+        'ecpal_%s_inference_round_%02d' % (pool_name, round_index),
+        argv,
+        str(ROOT),
+        round_index=round_index,
+        log_path=str(_round_log_path(output_dir, round_index, 'ecpal_%s_inference.log' % pool_name)),
+    )
+
+
 def build_round_plan(
     cfg: Dict[str, Any],
     output_dir: Path,
@@ -512,6 +576,10 @@ def build_round_plan(
         plan.append(_pal_infer_plan(cfg, output_dir, round_index, input_paths, 'labeled'))
         plan.append(_pal_infer_plan(cfg, output_dir, round_index, input_paths, 'unlabeled'))
         plan.append(AcquisitionPlan('pal_acquisition_round_%02d' % round_index, method, round_index))
+    elif method == 'ecpal':
+        plan.append(_ecpal_infer_plan(cfg, output_dir, round_index, input_paths, 'labeled'))
+        plan.append(_ecpal_infer_plan(cfg, output_dir, round_index, input_paths, 'unlabeled'))
+        plan.append(AcquisitionPlan('ecpal_acquisition_round_%02d' % round_index, method, round_index))
     else:
         raise ValueError('Unsupported method: %s' % method)
     return plan
@@ -538,10 +606,13 @@ def _print_plan(plan: Iterable[PlanStep]) -> None:
 def _step_label(step: PlanStep) -> str:
     name = step.name
     labels = (
+        ('ecpal_labeled_inference', 'ecpal labeled inference'),
+        ('ecpal_unlabeled_inference', 'ecpal unlabeled inference'),
         ('pal_labeled_inference', 'pal labeled inference'),
         ('pal_unlabeled_inference', 'pal unlabeled inference'),
         ('uncertainty_inference', 'uncertainty inference'),
         ('diversity_inference', 'diversity inference'),
+        ('ecpal_acquisition', 'ecpal acquisition'),
         ('ppal_uncertainty_acquisition', 'ppal uncertainty acquisition'),
         ('ppal_diversity_acquisition', 'ppal diversity acquisition'),
         ('pal_acquisition', 'pal acquisition'),
@@ -624,6 +695,8 @@ def _progress_kind(step: CommandPlan) -> str:
         return 'train'
     if (
         step.name.startswith('eval')
+        or step.name.startswith('ecpal_labeled_inference')
+        or step.name.startswith('ecpal_unlabeled_inference')
         or step.name.startswith('pal_labeled_inference')
         or step.name.startswith('pal_unlabeled_inference')
         or step.name.startswith('uncertainty_inference')
@@ -654,6 +727,10 @@ def _progress_total_for_step(
         if ann_file:
             return _count_annotation_items(_runtime_read_path(str(ann_file)))
         return None
+    if step.name.startswith('ecpal_labeled_inference'):
+        return _count_annotation_items(input_paths['labeled'])
+    if step.name.startswith('ecpal_unlabeled_inference'):
+        return _count_annotation_items(input_paths['unlabeled'])
     if step.name.startswith('pal_labeled_inference'):
         return _count_annotation_items(input_paths['labeled'])
     if step.name.startswith('pal_unlabeled_inference'):
@@ -887,6 +964,72 @@ def _execute_lightweight_acquisition(
                 'labeled_detections_json': str(labeled_dets),
                 'unlabeled_detections_json': str(unlabeled_dets),
                 'embedding_path': str(embedding_path) if embedding_path else None,
+            },
+            outputs={
+                'labeled_pool_json': str(annotations['labeled']),
+                'unlabeled_pool_json': str(annotations['unlabeled']),
+                'diagnostics_json': str(diagnostics_path),
+                **candidate_outputs,
+            },
+            **diagnostics_extra,
+        )
+        write_diagnostics(diagnostics_path, diagnostics_payload)
+    elif method == 'ecpal':
+        from methods.ecpal.acquisition import sample_ecpal_from_files
+
+        labeled_features = _ecpal_feature_json(cfg, output_dir, round_index, 'labeled')
+        unlabeled_features = _ecpal_feature_json(cfg, output_dir, round_index, 'unlabeled')
+        diagnostics = sample_ecpal_from_files(
+            labeled_pool_json=input_paths['labeled'],
+            unlabeled_pool_json=input_paths['unlabeled'],
+            labeled_features_json=labeled_features,
+            unlabeled_features_json=unlabeled_features,
+            budget=budget,
+            candidate_expand_ratio=int(cfg.get('ecpal_candidate_expand_ratio', 2)),
+            foreground_iou_threshold=float(cfg.get('ecpal_foreground_iou_threshold', 0.5)),
+            background_iou_threshold=float(cfg.get('ecpal_background_iou_threshold', 0.1)),
+            eps=float(cfg.get('ecpal_eps', 1e-12)),
+            weight_eps=float(cfg.get('ecpal_weight_eps', 1e-6)),
+            seed=seed,
+        )
+        selected = diagnostics['selected_image_ids']
+        diagnostics_path = _round_relative_file(
+            round_work_dir,
+            str(cfg.get('ecpal_diagnostics_file', 'ecpal_diagnostics.json')),
+        )
+        diagnostics_stage = 'ecd'
+        diagnostics_extra = dict(diagnostics)
+        diagnostics_extra.pop('selected_image_ids', None)
+        diagnostics_extra.pop('stage', None)
+        candidate_records = list(diagnostics_extra.pop('candidate_records', []))
+        diagnostics_extra.pop('candidate_scores', None)
+        candidate_artifact_path = _round_relative_file(
+            round_work_dir,
+            str(cfg.get('ecpal_candidates_file', 'ecpal_candidates.json')),
+        )
+        candidate_outputs = {
+            'candidates_json': str(candidate_artifact_path),
+        }
+        candidate_artifact = build_candidate_artifact(
+            method='ecpal',
+            stage=diagnostics_stage,
+            round_index=round_index,
+            budget=budget,
+            candidates=candidate_records,
+            selected_image_ids=selected,
+        )
+        write_candidate_artifact(candidate_artifact_path, candidate_artifact)
+        diagnostics_payload = acquisition_result(
+            method='ecpal',
+            stage=diagnostics_stage,
+            round_index=round_index,
+            budget=budget,
+            selected_image_ids=selected,
+            inputs={
+                'labeled_pool_json': str(input_paths['labeled']),
+                'unlabeled_pool_json': str(input_paths['unlabeled']),
+                'labeled_features_json': str(labeled_features),
+                'unlabeled_features_json': str(unlabeled_features),
             },
             outputs={
                 'labeled_pool_json': str(annotations['labeled']),
@@ -1166,6 +1309,7 @@ def _config_path_summary(cfg: Dict[str, Any]) -> Dict[str, Optional[str]]:
         'uncertainty_infer_config',
         'diversity_infer_config',
         'pal_infer_config',
+        'ecpal_infer_config',
         'pal_embedding_path',
     )
     return {key: str(cfg.get(key)) if cfg.get(key) else None for key in keys}
@@ -1579,7 +1723,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         '--method',
         default=None,
-        help='Method or alias: ppal, pal, pal:guide, pal/full, pal:lius, random, entropy',
+        help='Method or alias: ppal, pal, pal:guide, pal/full, pal:lius, ecpal, random, entropy',
     )
     parser.add_argument('--detector', default=None, help='Catalog detector, e.g. retinanet')
     parser.add_argument('--dataset', default=None, help='Catalog dataset, e.g. voc')

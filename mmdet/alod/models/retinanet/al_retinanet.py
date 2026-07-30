@@ -5,6 +5,7 @@ from mmdet.core import bbox2result
 from mmdet.models.builder import DETECTORS
 from mmdet.models.detectors.retinanet import RetinaNet
 from mmdet.alod.models.utils import (
+    bbox2result_with_ecpal_features,
     bbox2result_with_pre_nms_count,
     bbox2result_with_uncertainty,
 )
@@ -40,6 +41,17 @@ class ALRetinaNet(RetinaNet):
         bbox_results = []
         for result in results_list:
             if isinstance(result, dict):
+                ecpal_keys = {
+                    'det_bboxes', 'det_labels', 'ecpal_features',
+                    'ecpal_miss_features'
+                }
+                if ecpal_keys.issubset(result):
+                    bbox_results.append(
+                        bbox2result_with_ecpal_features(
+                            result['det_bboxes'], result['det_labels'],
+                            result['ecpal_features'],
+                            result['ecpal_miss_features']))
+                    continue
                 required_keys = {'det_bboxes', 'det_labels', 'pre_nms_counts'}
                 if not required_keys.issubset(result):
                     raise ValueError('Unsupported ALRetinaNet dict result keys: %r' % sorted(result.keys()))

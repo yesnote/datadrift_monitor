@@ -1,2 +1,3 @@
-from .retinanet import (ALRetinaNet, RetinaHeadFeat, RetinaHeadPAL,
-                        RetinaHeadUncertainty, RetinaQualityEMAHead)
+from .retinanet import (ALRetinaNet, RetinaHeadECPAL, RetinaHeadFeat,
+                        RetinaHeadPAL, RetinaHeadUncertainty,
+                        RetinaQualityEMAHead)

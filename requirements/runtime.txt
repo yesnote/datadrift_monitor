@@ -7,6 +7,7 @@ numpy==1.23.5
 opencv-python
 Pillow
 pycocotools
+scikit-learn==1.3.2
 six
 terminaltables
 tqdm
