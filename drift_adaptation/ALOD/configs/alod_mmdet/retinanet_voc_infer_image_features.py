@@ -7,12 +7,10 @@ CLASSES = ('aeroplane', 'bicycle', 'bird', 'boat', 'bottle', 'bus', 'car',
 model = dict(
     type='ALRetinaNet',
     bbox_head=dict(
-        type='RetinaFeatureExportHead',
+        type='RetinaImageFeatureExportHead',
         total_images=0,
-        max_det=100,
         feat_dim=256,
         output_path='',
-        export_detection_features=True,
     ),
 )
 
