@@ -66,7 +66,15 @@ def _install_windows_ssl_store_fallback() -> None:
 
 def main() -> None:
     _install_windows_ssl_store_fallback()
-    dashboard_script = Path(__file__).with_name('view_metrics.py')
+    dashboard_script = Path(__file__).with_name('view_metrics.py').resolve()
+    repo_root = dashboard_script.parents[1]
+    if str(repo_root) not in sys.path:
+        sys.path.insert(0, str(repo_root))
+    os.environ['PYTHONPATH'] = (
+        str(repo_root)
+        if not os.environ.get('PYTHONPATH')
+        else str(repo_root) + os.pathsep + os.environ['PYTHONPATH']
+    )
     sys.argv = [
         'streamlit',
         'run',
@@ -81,4 +89,3 @@ def main() -> None:
 
 if __name__ == '__main__':
     main()
-
