@@ -1899,11 +1899,7 @@ def _run_seed(
     preparation_results: List[Dict[str, object]],
 ) -> Dict[str, Any]:
     init_actions = initialize_round_zero(cfg, output_dir)
-
     plan: List[PlanStep] = []
-    for round_index in range(args.start_round, args.start_round + total_rounds):
-        plan.extend(build_round_plan(cfg, output_dir, args.method, round_index, seed))
-
     plan_log = _write_plan_log(output_dir, plan)
     run_summary = _run_summary_base(args, cfg, selection, output_dir, plan_log, total_rounds, seed)
     run_summary['preparation'] = preparation_results
@@ -1911,16 +1907,19 @@ def _run_seed(
     if args.verbose:
         for action in init_actions:
             print(action)
-        print('active learning plan:')
-        _print_plan(plan)
     elif init_actions:
         print('initial pools: round_00 annotations ready')
 
     for round_offset, round_index in enumerate(range(args.start_round, args.start_round + total_rounds), start=1):
-        round_plan = [step for step in plan if step.round_index == round_index]
+        round_plan = build_round_plan(cfg, output_dir, args.method, round_index, seed)
+        plan.extend(round_plan)
+        _write_plan_log(output_dir, plan)
         round_results: List[Dict[str, Any]] = []
         print('')
         print('Round %d/%d' % (round_offset, total_rounds))
+        if args.verbose:
+            print('round plan:')
+            _print_plan(round_plan)
         for step_index, step in enumerate(round_plan, start=1):
             label = _step_label(step)
             if args.verbose or (tqdm is None and isinstance(step, CommandPlan)):
