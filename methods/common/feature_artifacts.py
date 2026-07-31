@@ -16,7 +16,7 @@ from methods.common.image_identity import normalize_image_id, normalize_image_id
 class FeatureArtifact:
     path: Path
     image_ids: List[Any]
-    image_features: np.ndarray
+    image_features: Optional[np.ndarray] = None
     det_labels: Optional[np.ndarray] = None
     det_scores: Optional[np.ndarray] = None
     det_features: Optional[np.ndarray] = None
@@ -61,22 +61,30 @@ def _validate_unique_image_ids(image_ids: List[Any], path: Path) -> None:
             % (path, sorted(set(duplicates), key=str)[:10]))
 
 
-def load_feature_artifact(path: Any, require_detection_features: bool = False) -> FeatureArtifact:
+def load_feature_artifact(
+    path: Any,
+    require_detection_features: bool = False,
+    require_image_features: bool = True,
+) -> FeatureArtifact:
     """Load a generic ALOD feature artifact from ``np.savez`` output."""
 
     artifact_path = Path(path)
     with np.load(artifact_path, allow_pickle=False) as data:
-        required = ('image_ids', 'image_features')
+        required = ['image_ids']
+        if require_image_features:
+            required.append('image_features')
         missing = [key for key in required if key not in data]
         if missing:
             raise KeyError('Feature artifact %s is missing keys: %s' % (artifact_path, ', '.join(missing)))
 
         image_ids = normalize_image_ids(np.asarray(data['image_ids']).reshape(-1).tolist())
-        image_features = _require_2d_float(data['image_features'], 'image_features', artifact_path)
-        if image_features.shape[0] != len(image_ids):
-            raise ValueError(
-                'Feature artifact %s has %d image ids but %d image feature rows'
-                % (artifact_path, len(image_ids), image_features.shape[0]))
+        image_features = None
+        if 'image_features' in data:
+            image_features = _require_2d_float(data['image_features'], 'image_features', artifact_path)
+            if image_features.shape[0] != len(image_ids):
+                raise ValueError(
+                    'Feature artifact %s has %d image ids but %d image feature rows'
+                    % (artifact_path, len(image_ids), image_features.shape[0]))
         _validate_unique_image_ids(image_ids, artifact_path)
 
         det_labels = det_scores = det_features = det_valid = None
@@ -145,7 +153,7 @@ def filter_feature_artifact(
     return FeatureArtifact(
         path=artifact.path,
         image_ids=kept_ids,
-        image_features=artifact.image_features[rows],
+        image_features=take_optional(artifact.image_features),
         det_labels=take_optional(artifact.det_labels),
         det_scores=take_optional(artifact.det_scores),
         det_features=take_optional(artifact.det_features),

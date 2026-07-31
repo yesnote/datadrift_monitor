@@ -17,13 +17,14 @@ embedding for CCMS. PPAL diversity uses detection-level features:
 - `DiversitySampler` consumes the precomputed image-distance matrix.
 
 Therefore ALOD keeps PPAL's detection-level path intact. PPAL feature inference
-continues to export detection labels, scores, features, and validity masks.
+now uses `RetinaDetectionFeatureExportHead` and exports detection labels,
+scores, features, and validity masks.
 
 ## Core-set Artifact Policy
 
 Core-set only needs one image-level feature vector per image for greedy
-k-center selection. Core-set feature inference now disables detection-level
-feature export and writes only:
+k-center selection. Core-set feature inference now uses
+`RetinaImageFeatureExportHead` and writes only:
 
 - `image_ids`
 - `image_features`

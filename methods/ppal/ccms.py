@@ -77,6 +77,7 @@ class DiversitySampler(BaseALSampler):
         feature_artifact = load_feature_artifact(
             feature_artifact_path,
             require_detection_features=True,
+            require_image_features=False,
         )
         oracle_image_ids = normalize_image_ids(feature_artifact.image_ids)
         validate_image_ids_subset(

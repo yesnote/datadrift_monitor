@@ -35,6 +35,8 @@ def select_coreset_images(
         artifact_name='Core-set unlabeled feature artifact',
         require_all=True,
     )
+    if labeled_features.image_features is None or unlabeled_features.image_features is None:
+        raise ValueError('Core-set acquisition requires image_features in feature artifacts')
     selection = greedy_k_center_select(
         candidate_image_ids=unlabeled_features.image_ids,
         candidate_features=unlabeled_features.image_features,

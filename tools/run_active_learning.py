@@ -118,7 +118,8 @@ def validate_experiment_config_paths(cfg: Dict[str, Any]) -> None:
         'init_unlabeled_json',
         'train_config',
         'uncertainty_infer_config',
-        'feature_infer_config',
+        'image_feature_infer_config',
+        'detection_feature_infer_config',
         'pal_infer_config',
         'ecpal_infer_config',
         'pal_embedding_path',
@@ -397,10 +398,10 @@ def _feature_infer_plan(
     name: str,
     log_name: str,
     expected_total: Optional[int] = None,
-    cfg_options: Optional[Dict[str, Any]] = None,
+    config_key: str = 'image_feature_infer_config',
 ) -> CommandPlan:
-    if 'feature_infer_config' not in cfg:
-        raise ValueError('feature_infer_config is required for feature inference')
+    if config_key not in cfg:
+        raise ValueError('%s is required for feature inference' % config_key)
 
     round_work_dir = _round_dir(output_dir, round_index)
     prefix = round_work_dir / ('%s_result' % name)
@@ -416,14 +417,12 @@ def _feature_infer_plan(
         'model.%s.total_images' % head: int(pool_size),
         'model.%s.output_path' % head: feature_npz,
     }
-    if cfg_options:
-        options.update(cfg_options)
     options.update(cfg.get('mmdet_common_cfg_options', {}))
     argv = (
         _command_prefix(cfg)
         + [
             'tools/test.py',
-            str(cfg['feature_infer_config']),
+            str(cfg[config_key]),
             str(latest_ckpt),
             '--work-dir',
             str(round_work_dir),
@@ -621,6 +620,7 @@ def build_round_plan(
             'ppal_feature_inference',
             'ppal_feature_inference.log',
             expected_total=int(cfg.get('uncertainty_pool_size', cfg.get('budget', 0))),
+            config_key='detection_feature_infer_config',
         ))
         plan.append(AcquisitionPlan(
             'ppal_diversity_acquisition_round_%02d' % round_index,
@@ -645,7 +645,7 @@ def build_round_plan(
             _coreset_features_npz(cfg, output_dir, round_index, 'labeled'),
             'coreset_labeled_feature_inference',
             'coreset_labeled_feature_inference.log',
-            cfg_options={'model.bbox_head.export_detection_features': False},
+            config_key='image_feature_infer_config',
         ))
         plan.append(_feature_infer_plan(
             cfg,
@@ -655,7 +655,7 @@ def build_round_plan(
             _coreset_features_npz(cfg, output_dir, round_index, 'unlabeled'),
             'coreset_unlabeled_feature_inference',
             'coreset_unlabeled_feature_inference.log',
-            cfg_options={'model.bbox_head.export_detection_features': False},
+            config_key='image_feature_infer_config',
         ))
         plan.append(AcquisitionPlan('coreset_acquisition_round_%02d' % round_index, method, round_index))
     else:
@@ -1455,7 +1455,8 @@ def _config_path_summary(cfg: Dict[str, Any]) -> Dict[str, Optional[str]]:
     keys = (
         'train_config',
         'uncertainty_infer_config',
-        'feature_infer_config',
+        'image_feature_infer_config',
+        'detection_feature_infer_config',
         'pal_infer_config',
         'ecpal_infer_config',
         'pal_embedding_path',
