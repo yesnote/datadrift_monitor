@@ -154,7 +154,7 @@ pip install -r requirements/dashboard.txt
 Open the read-only local metrics dashboard:
 
 ```powershell
-streamlit run tools/view_metrics.py
+python tools/run_metrics_dashboard.py
 ```
 
 The dashboard scans `work_dirs` by default and lets you compare validation

@@ -26,16 +26,26 @@ pip install -r requirements/dashboard.txt
 기본 실행은 다음과 같다.
 
 ```powershell
-streamlit run tools/view_metrics.py
+python tools/run_metrics_dashboard.py
 ```
 
 기본적으로 `work_dirs`를 scan한다. 다른 root를 보고 싶으면 다음처럼 실행할 수 있다.
 
 ```powershell
-streamlit run tools/view_metrics.py -- --work_dir other_work_dirs
+python tools/run_metrics_dashboard.py --work_dir other_work_dirs
 ```
 
 `--run_dir`도 같은 의미의 alias로 지원한다.
+
+정상 SSL 환경에서는 Streamlit CLI를 직접 실행해도 된다.
+
+```powershell
+streamlit run tools/view_metrics.py
+```
+
+다만 일부 Windows conda 환경에서는 Streamlit/Tornado import 중 Windows certificate store를 읽다가
+`ssl.SSLError: [ASN1: NOT_ENOUGH_DATA]`가 발생할 수 있다. 이 경우 `tools/run_metrics_dashboard.py` launcher가
+Streamlit import 전에 narrow SSL fallback을 적용하므로 launcher 실행을 사용한다.
 
 ## 자동 Scan 규칙
 
@@ -150,6 +160,7 @@ Train loss는 주로 다음 용도로 보는 것이 좋다.
 
 ```text
 tools/view_metrics.py
+tools/run_metrics_dashboard.py
 tools/common/metrics_scanner.py
 tools/common/metrics_viewer.py
 tools/common/metrics_logs.py
@@ -161,6 +172,7 @@ requirements/dashboard.txt
 | File | Role |
 |---|---|
 | `tools/view_metrics.py` | Streamlit UI entrypoint |
+| `tools/run_metrics_dashboard.py` | Streamlit launcher with Windows SSL-store fallback |
 | `tools/common/metrics_scanner.py` | `work_dirs` run discovery |
 | `tools/common/metrics_viewer.py` | validation metric/labeled count parser |
 | `tools/common/metrics_logs.py` | train loss/lr log parser |
@@ -189,4 +201,3 @@ Dashboard는 다음 파일들을 읽기만 한다.
 - selected image overlap 분석
 - method별 final mAP summary card
 - 진행 중인 log의 자동 refresh 주기 조절
-
