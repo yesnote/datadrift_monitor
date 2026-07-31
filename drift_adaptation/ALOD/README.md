@@ -143,6 +143,24 @@ output:
 python -B tools/run_active_learning.py --method pal --detector retinanet --dataset voc --rounds 1 --gpus 1 --verbose
 ```
 
+## View Metrics
+
+Install the optional dashboard dependencies:
+
+```powershell
+pip install -r requirements/dashboard.txt
+```
+
+Open the read-only local metrics dashboard:
+
+```powershell
+streamlit run tools/view_metrics.py
+```
+
+The dashboard scans `work_dirs` by default and lets you compare validation
+mAP/AP50 and train loss/lr curves across methods, seeds, rounds, and timestamped
+runs from the sidebar.
+
 Useful method aliases:
 
 - `ppal`: PPAL DCUS + CCMS.
