@@ -1,8 +1,6 @@
 .agents/
-.chatgpt/
 code_refs/
 data/
-docs/
 work_dirs/
 __pycache__/
 *.pyc
