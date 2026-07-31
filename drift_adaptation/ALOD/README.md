@@ -20,6 +20,7 @@ Current implemented target:
 | PPAL | RetinaNet | PASCAL VOC | DCUS + CCMS reproduction path |
 | PAL | RetinaNet | PASCAL VOC | LIUS + GUIDE reproduction path |
 | ECPAL | RetinaNet | PASCAL VOC | Error-count prediction acquisition |
+| Core-set | RetinaNet | PASCAL VOC | Greedy k-center acquisition |
 | Random | RetinaNet | PASCAL VOC | Baseline acquisition |
 | Entropy | RetinaNet | PASCAL VOC | Baseline acquisition |
 
@@ -35,6 +36,7 @@ source tree, not from `code_refs/`.
 - `methods/ppal/`: PPAL method implementation.
 - `methods/pal/`: PAL method implementation.
 - `methods/ecpal/`: ECPAL method implementation.
+- `methods/coreset/`: Core-set method implementation.
 - `mmdet/`: local MMDetection backend used directly by `tools/train.py` and
   `tools/test.py`; method code consumes saved artifacts instead of importing it.
 - `tools/common/`: runner support code for path handling and automatic input preparation.
@@ -167,5 +169,6 @@ Useful method aliases:
 - `pal`, `pal:guide`, `pal/full`: PAL LIUS + GUIDE.
 - `pal:lius`: PAL LIUS only.
 - `ecpal`: ECPAL error-count prediction.
+- `coreset`, `core-set`, `kcenter`: Core-set greedy k-center.
 - `random`: random acquisition baseline.
 - `entropy`: entropy acquisition baseline.

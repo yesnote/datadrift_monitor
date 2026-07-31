@@ -1,35 +1,37 @@
 # Copyright (c) OpenMMLab. All rights reserved.
+import json
+
 import numpy as np
 import torch
-import torch.nn as nn
-import torch.nn.functional as F
 
 from mmcv.ops import batched_nms
-from mmcv.runner import BaseModule, force_fp32, get_dist_info
+from mmcv.runner import force_fp32, get_dist_info
 
 from mmdet.core.utils import filter_scores_and_topk, select_single_mlvl
 from mmdet.models.builder import HEADS
 from mmdet.models.dense_heads.retina_head import RetinaHead
 
-from mmdet.alod.models.utils import get_img_score_distance_matrix_slow, concat_all_gather, get_inter_feats
+from mmdet.alod.models.utils import concat_all_gather, get_inter_feats
 
 @HEADS.register_module()
-class RetinaHeadFeat(RetinaHead):
+class RetinaFeatureExportHead(RetinaHead):
     def __init__(self, total_images, max_det, feat_dim, output_path, **kwargs):
-        super(RetinaHeadFeat, self).__init__(**kwargs)
+        super(RetinaFeatureExportHead, self).__init__(**kwargs)
 
         _, world_size = get_dist_info()
-        assert total_images % world_size == 0  # 8 GPUs
-        self.total_images = total_images
-        self.queue_length = total_images
+        self.total_images = int(total_images)
+        remainder = self.total_images % world_size
+        self.queue_length = self.total_images if remainder == 0 else self.total_images + world_size - remainder
         self.current_images = 0
-        self.max_det = max_det
-        self.feat_dim = feat_dim
+        self.max_det = int(max_det)
+        self.feat_dim = int(feat_dim)
         self.output_path = output_path
 
-        self.register_buffer("det_label_queue", torch.zeros((self.queue_length, max_det)))
-        self.register_buffer("det_score_queue", torch.zeros((self.queue_length, max_det)))
-        self.register_buffer("det_feat_queue", torch.zeros((self.queue_length, max_det, feat_dim)))
+        self.register_buffer("image_feature_queue", torch.zeros((self.queue_length, self.feat_dim)))
+        self.register_buffer("det_label_queue", torch.zeros((self.queue_length, self.max_det), dtype=torch.long) - 1)
+        self.register_buffer("det_score_queue", torch.zeros((self.queue_length, self.max_det)))
+        self.register_buffer("det_feat_queue", torch.zeros((self.queue_length, self.max_det, self.feat_dim)))
+        self.register_buffer("det_valid_queue", torch.zeros((self.queue_length, self.max_det), dtype=torch.bool))
         self.register_buffer("image_id_queue", torch.zeros((self.queue_length, 1), dtype=torch.int) - 1)
 
     def forward_single(self, x):
@@ -358,13 +360,14 @@ class RetinaHeadFeat(RetinaHead):
             box_uncertainties = torch.zeros_like(cls_uncertainties)
 
             rank, world_size = get_dist_info()
-            self.collect_det_info(img_meta, det_labels, cls_scores, det_feats)
+            image_feature = self._image_feature_from_levels(mlvl_feats)
+            self.collect_det_info(img_meta, image_feature, det_labels, cls_scores, det_feats)
             self.current_images += world_size
 
             if self.current_images >= self.total_images:
                 torch.cuda.empty_cache()
                 if rank == 0:
-                    self.compute_al()
+                    self.export_features()
                 else:
                     torch.cuda.synchronize()
 
@@ -373,12 +376,31 @@ class RetinaHeadFeat(RetinaHead):
         else:
             raise NotImplementedError
 
-    def collect_det_info(self, img_meta, det_labels, det_scores, det_feats):
+    def _image_feature_from_levels(self, mlvl_feats):
+        pooled = []
+        for feat in mlvl_feats:
+            pooled.append(feat.float().mean(dim=(1, 2)))
+        return torch.stack(pooled, dim=0).mean(dim=0)
+
+    def _pad_detection_values(self, det_labels, det_scores, det_feats):
+        n_det = min(int(det_labels.numel()), self.max_det)
+        padded_labels = det_labels.new_full((self.max_det, ), -1)
+        padded_scores = det_scores.new_zeros((self.max_det, ))
+        padded_feats = det_feats.new_zeros((self.max_det, self.feat_dim))
+        padded_valid = torch.zeros((self.max_det, ), dtype=torch.bool, device=det_labels.device)
+        if n_det > 0:
+            padded_labels[:n_det] = det_labels[:n_det].to(dtype=torch.long)
+            padded_scores[:n_det] = det_scores[:n_det]
+            padded_feats[:n_det] = det_feats[:n_det]
+            padded_valid[:n_det] = True
+        return padded_labels, padded_scores, padded_feats, padded_valid
+
+    def collect_det_info(self, img_meta, image_feature, det_labels, det_scores, det_feats):
         rank, world_size = get_dist_info()
 
         if 'image_id' not in img_meta:
             raise KeyError(
-                'RetinaHeadFeat requires image_id in img_meta. '
+                'RetinaFeatureExportHead requires image_id in img_meta. '
                 'Add AddImageIdToMeta to the test pipeline and include '
                 'image_id in Collect.meta_keys.')
         img_id = int(img_meta['image_id'])
@@ -387,30 +409,72 @@ class RetinaHeadFeat(RetinaHead):
         collected_img_ids = concat_all_gather(img_id.reshape(1, 1))
         self.image_id_queue[self.current_images:(self.current_images + world_size)] = collected_img_ids
 
-        collected_det_labels = concat_all_gather(det_labels.reshape(1, self.max_det))
-        collected_det_scores = concat_all_gather(det_scores.reshape(1, self.max_det).contiguous())
-        collected_det_feats  = concat_all_gather(det_feats.reshape(1, self.max_det, self.feat_dim).contiguous())
+        padded_labels, padded_scores, padded_feats, padded_valid = self._pad_detection_values(
+            det_labels, det_scores, det_feats)
+        collected_image_features = concat_all_gather(image_feature.reshape(1, self.feat_dim).contiguous())
+        collected_det_labels = concat_all_gather(padded_labels.reshape(1, self.max_det).contiguous())
+        collected_det_scores = concat_all_gather(padded_scores.reshape(1, self.max_det).contiguous())
+        collected_det_feats  = concat_all_gather(padded_feats.reshape(1, self.max_det, self.feat_dim).contiguous())
+        collected_det_valid = concat_all_gather(padded_valid.reshape(1, self.max_det).contiguous())
+        self.image_feature_queue[self.current_images:(self.current_images + world_size)] = collected_image_features
         self.det_label_queue[self.current_images:(self.current_images + world_size)] = collected_det_labels
         self.det_score_queue[self.current_images:(self.current_images + world_size)] = collected_det_scores
         self.det_feat_queue[self.current_images:(self.current_images + world_size)] = collected_det_feats
+        self.det_valid_queue[self.current_images:(self.current_images + world_size)] = collected_det_valid
         return
 
-    def compute_al(self):
+    def export_features(self):
         valid_inds = (self.image_id_queue >= 0).reshape(-1)
         image_id_queue = self.image_id_queue[valid_inds]
 
+        image_feature_queue = self.image_feature_queue[valid_inds]
         det_label_queue = self.det_label_queue[valid_inds]
         det_score_queue = self.det_score_queue[valid_inds]
         det_feat_queue = self.det_feat_queue[valid_inds]
+        det_valid_queue = self.det_valid_queue[valid_inds]
 
-        img_dis_mat = get_img_score_distance_matrix_slow(
-            det_label_queue, det_score_queue, det_feat_queue, score_thr=0.05)
-
-        img_dis_mat = img_dis_mat.detach().cpu().numpy()
         img_ids = image_id_queue.detach().cpu().numpy()
+        image_features = image_feature_queue.detach().cpu().numpy()
+        det_labels = det_label_queue.detach().cpu().numpy()
+        det_scores = det_score_queue.detach().cpu().numpy()
+        det_features = det_feat_queue.detach().cpu().numpy()
+        det_valid = det_valid_queue.detach().cpu().numpy()
 
-        with open(self.output_path, 'wb') as fwb:
-            np.save(fwb, img_dis_mat)
-            np.save(fwb, img_ids)
+        keep = []
+        seen = set()
+        for index, image_id in enumerate(img_ids.reshape(-1).tolist()):
+            image_id = int(image_id)
+            if image_id in seen:
+                continue
+            seen.add(image_id)
+            keep.append(index)
+            if len(keep) >= self.total_images:
+                break
+        keep = np.asarray(keep, dtype=np.int64)
+        img_ids = img_ids[keep]
+        image_features = image_features[keep]
+        det_labels = det_labels[keep]
+        det_scores = det_scores[keep]
+        det_features = det_features[keep]
+        det_valid = det_valid[keep]
+
+        metadata = dict(
+            schema='alod_feature_artifact',
+            schema_version=1,
+            total_images=int(self.total_images),
+            exported_images=int(img_ids.shape[0]),
+            max_det=int(self.max_det),
+            feat_dim=int(self.feat_dim),
+        )
+
+        np.savez_compressed(
+            self.output_path,
+            image_ids=img_ids.reshape(-1),
+            image_features=image_features.astype(np.float32, copy=False),
+            det_labels=det_labels.astype(np.int64, copy=False),
+            det_scores=det_scores.astype(np.float32, copy=False),
+            det_features=det_features.astype(np.float32, copy=False),
+            det_valid=det_valid.astype(np.bool_, copy=False),
+            metadata_json=np.array(json.dumps(metadata), dtype=np.str_),
+        )
         return
-

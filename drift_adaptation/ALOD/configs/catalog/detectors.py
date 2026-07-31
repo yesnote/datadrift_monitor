@@ -15,7 +15,7 @@ class DetectorSpec:
     model_name: str
     train_config: str
     uncertainty_infer_config: str
-    diversity_infer_config: str
+    feature_infer_config: str
     pal_infer_config: str
     ecpal_infer_config: str
     pretrained: Dict[str, object] = field(default_factory=dict)
@@ -24,7 +24,7 @@ class DetectorSpec:
         return {
             'train_config': self.train_config,
             'uncertainty_infer_config': self.uncertainty_infer_config,
-            'diversity_infer_config': self.diversity_infer_config,
+            'feature_infer_config': self.feature_infer_config,
             'pal_infer_config': self.pal_infer_config,
             'ecpal_infer_config': self.ecpal_infer_config,
             'model_name': self.model_name,
@@ -38,7 +38,7 @@ RETINANET = DetectorSpec(
     model_name='retinanet',
     train_config='configs/alod_mmdet/retinanet_voc_train_quality_ema_26e.py',
     uncertainty_infer_config='configs/alod_mmdet/retinanet_voc_infer_uncertainty.py',
-    diversity_infer_config='configs/alod_mmdet/retinanet_voc_infer_features.py',
+    feature_infer_config='configs/alod_mmdet/retinanet_voc_infer_features.py',
     pal_infer_config='configs/alod_mmdet/retinanet_voc_infer_pal_detections.py',
     ecpal_infer_config='configs/alod_mmdet/retinanet_voc_infer_ecpal_detections.py',
     pretrained=dict(

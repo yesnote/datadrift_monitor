@@ -29,7 +29,7 @@ PPAL_STEPS = (
     PPALStep('eval', 'Evaluate the current checkpoint on VOC test data.'),
     PPALStep('uncertainty_inference', 'Run RetinaHeadUncertainty on unlabeled data.'),
     PPALStep('dcus_acquisition', 'Select the expanded uncertainty pool with DCUS.'),
-    PPALStep('diversity_inference', 'Export image distance features for the uncertainty pool.'),
+    PPALStep('feature_inference', 'Export detector features for the uncertainty pool.'),
     PPALStep('diversity_acquisition', 'Select the final budget with CCMS.'),
 )
 
@@ -162,7 +162,7 @@ def run_diversity_acquisition(
     repo_root: Path,
     round_index: int,
     result_json: Path,
-    image_distance_npy: Path,
+    feature_npz: Path,
     last_labeled_json: Path,
     out_labeled_json: Path,
     out_unlabeled_json: Path,
@@ -171,7 +171,7 @@ def run_diversity_acquisition(
     """Run PPAL diversity acquisition with the local method implementation."""
 
     _require_file(result_json, 'PPAL uncertainty inference result')
-    _require_file(image_distance_npy, 'PPAL diversity image distance cache')
+    _require_file(feature_npz, 'PPAL diversity feature artifact')
     _require_file(last_labeled_json, 'PPAL previous labeled pool')
     out_labeled_json.parent.mkdir(parents=True, exist_ok=True)
 
@@ -181,7 +181,7 @@ def run_diversity_acquisition(
     if hasattr(sampler, 'set_round'):
         sampler.set_round(round_index)
     result = sampler.al_round(
-        str(image_distance_npy),
+        str(feature_npz),
         str(last_labeled_json),
     )
     selected = result.get('selected_image_ids', [])
@@ -221,7 +221,7 @@ def run_diversity_acquisition(
         inputs={
             'labeled_pool_json': str(last_labeled_json),
             'uncertainty_result_json': str(result_json),
-            'image_distance_npy': str(image_distance_npy),
+            'feature_npz': str(feature_npz),
         },
         outputs={
             'labeled_pool_json': out_labeled,
