@@ -3,9 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Dict, Optional
-
-import numpy as np
+from typing import Any, Dict
 
 from methods.common.coco_pool import image_ids, read_coco_json
 from methods.common.feature_artifacts import filter_feature_artifact, load_feature_artifact
@@ -48,10 +46,7 @@ def select_coreset_images(
         center_batch_size=center_batch_size,
     )
 
-    finite_initial = [
-        value for value in selection['initial_min_distances']
-        if value is not None and np.isfinite(value)
-    ]
+    metrics = dict(selection.get('metrics', {}))
     diagnostics = {
         'mode': 'coreset',
         'stage': 'kcenter',
@@ -65,14 +60,9 @@ def select_coreset_images(
         },
         'feature_dim': int(unlabeled_features.image_features.shape[1])
         if unlabeled_features.image_features.ndim == 2 else None,
-        'distance_summary': {
-            'initial_min': float(np.min(finite_initial)) if finite_initial else None,
-            'initial_mean': float(np.mean(finite_initial)) if finite_initial else None,
-            'initial_max': float(np.max(finite_initial)) if finite_initial else None,
-        },
+        'distance_summary': metrics.get('distance_summary', {}),
         'selected_count': len(selection['selected_image_ids']),
         'selected_image_ids': selection['selected_image_ids'],
-        'selected_records': selection['selected_records'],
     }
     return {
         'selected_image_ids': selection['selected_image_ids'],
@@ -92,11 +82,9 @@ def sample_coreset_from_files(
     normalize_features: bool = False,
     batch_size: int = 512,
     center_batch_size: int = 2048,
-    oracle_json: Optional[Path] = None,
 ) -> Dict[str, Any]:
     """Run Core-set acquisition from COCO pools and feature artifacts."""
 
-    del oracle_json
     labeled_pool = read_coco_json(Path(labeled_pool_json))
     unlabeled_pool = read_coco_json(Path(unlabeled_pool_json))
     labeled_features = load_feature_artifact(Path(labeled_features_npz))

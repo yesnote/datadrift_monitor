@@ -14,6 +14,7 @@ from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence
 
 import numpy as np
 
+from methods.common.image_identity import normalize_image_id
 from methods.common.io import read_json, write_json
 from methods.common.selection import image_id_sort_key
 from methods.common.vectors import l2_normalize
@@ -23,18 +24,12 @@ from methods.pal.inference import detection_confidence, detection_pre_nms_count
 EmbeddingMap = Dict[Any, np.ndarray]
 
 
-def _normalize_image_id(image_id: Any) -> Any:
-    if isinstance(image_id, np.generic):
-        return image_id.item()
-    return image_id
-
-
 def _sort_image_id(image_id: Any) -> tuple:
-    return image_id_sort_key(_normalize_image_id(image_id))
+    return image_id_sort_key(normalize_image_id(image_id))
 
 
 def _json_image_id(image_id: Any) -> str:
-    return json.dumps(_normalize_image_id(image_id), sort_keys=True)
+    return json.dumps(normalize_image_id(image_id), sort_keys=True)
 
 
 def _loads_image_id(value: Any) -> Any:
@@ -105,7 +100,7 @@ class DetectionEmbeddingBackend(ImageEmbeddingBackend):
             for image_id in ordered_image_ids
         }
         for record in records:
-            image_id = _normalize_image_id(record.get('image_id'))
+            image_id = normalize_image_id(record.get('image_id'))
             if image_id not in accumulators:
                 continue
             class_vector = self._record_class_vector(
@@ -145,14 +140,14 @@ class DetectionEmbeddingBackend(ImageEmbeddingBackend):
             seen = set()
             ordered = []
             for image_id in image_ids:
-                normalized = _normalize_image_id(image_id)
+                normalized = normalize_image_id(image_id)
                 if normalized not in seen:
                     ordered.append(normalized)
                     seen.add(normalized)
             return ordered
 
         ids = {
-            _normalize_image_id(record.get('image_id'))
+            normalize_image_id(record.get('image_id'))
             for record in records
             if record.get('image_id') is not None
         }
@@ -169,7 +164,7 @@ class DetectionEmbeddingBackend(ImageEmbeddingBackend):
             if class_scores is not None:
                 max_class_scores = max(max_class_scores, len(class_scores))
             if record.get('category_id') is not None:
-                categories.add(_normalize_image_id(record['category_id']))
+                categories.add(normalize_image_id(record['category_id']))
 
         if self.num_classes is not None:
             class_dim = int(self.num_classes)
@@ -207,7 +202,7 @@ class DetectionEmbeddingBackend(ImageEmbeddingBackend):
             return _as_float_vector(record['class_scores'], class_dim)
 
         vector = np.zeros(class_dim, dtype=np.float32)
-        category_id = _normalize_image_id(record.get('category_id'))
+        category_id = normalize_image_id(record.get('category_id'))
         index = category_to_index.get(category_id)
         if index is not None and 0 <= index < class_dim:
             vector[index] = 1.0
@@ -305,7 +300,7 @@ def _validate_embedding_map(embeddings: Mapping[Any, np.ndarray]) -> EmbeddingMa
             expected_shape = vector.shape
         elif vector.shape != expected_shape:
             raise ValueError('All PAL image embeddings must have the same shape')
-        normalized[_normalize_image_id(image_id)] = vector
+        normalized[normalize_image_id(image_id)] = vector
     return normalized
 
 
@@ -336,7 +331,7 @@ def read_embeddings_json(path: Path) -> EmbeddingMap:
 
     embeddings = {}
     for record in records:
-        image_id = _normalize_image_id(record['image_id'])
+        image_id = normalize_image_id(record['image_id'])
         embeddings[image_id] = np.asarray(record['embedding'], dtype=np.float32)
     return embeddings
 
@@ -398,7 +393,7 @@ def stack_embeddings(
     image_ids: Optional[Iterable[Any]] = None,
 ) -> tuple:
     ordered_ids = (
-        [_normalize_image_id(image_id) for image_id in image_ids]
+        [normalize_image_id(image_id) for image_id in image_ids]
         if image_ids is not None
         else sorted(embeddings, key=_sort_image_id)
     )

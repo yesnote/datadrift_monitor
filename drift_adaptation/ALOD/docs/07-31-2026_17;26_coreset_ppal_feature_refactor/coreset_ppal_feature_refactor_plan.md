@@ -90,6 +90,9 @@ annotations/new_unlabeled.json
 
 The PPAL distance matrix is computed during acquisition and not persisted by
 default. Diagnostics record the feature artifact path and distance matrix shape.
+Core-set diagnostics store compact distance summaries only. Per-image selection
+details are stored in `coreset_candidates.json` through common candidate fields
+such as `selected`, `selection_rank`, and `metadata.kcenter_rank`.
 
 ## User-Facing Invocation
 
