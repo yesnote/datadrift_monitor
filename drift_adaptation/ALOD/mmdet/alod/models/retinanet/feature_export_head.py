@@ -15,7 +15,15 @@ from mmdet.alod.models.utils import concat_all_gather, get_inter_feats
 
 @HEADS.register_module()
 class RetinaFeatureExportHead(RetinaHead):
-    def __init__(self, total_images, max_det, feat_dim, output_path, **kwargs):
+    def __init__(
+        self,
+        total_images,
+        max_det,
+        feat_dim,
+        output_path,
+        export_detection_features=True,
+        **kwargs
+    ):
         super(RetinaFeatureExportHead, self).__init__(**kwargs)
 
         _, world_size = get_dist_info()
@@ -26,13 +34,15 @@ class RetinaFeatureExportHead(RetinaHead):
         self.max_det = int(max_det)
         self.feat_dim = int(feat_dim)
         self.output_path = output_path
+        self.export_detection_features = bool(export_detection_features)
 
-        self.register_buffer("image_feature_queue", torch.zeros((self.queue_length, self.feat_dim)))
-        self.register_buffer("det_label_queue", torch.zeros((self.queue_length, self.max_det), dtype=torch.long) - 1)
-        self.register_buffer("det_score_queue", torch.zeros((self.queue_length, self.max_det)))
-        self.register_buffer("det_feat_queue", torch.zeros((self.queue_length, self.max_det, self.feat_dim)))
-        self.register_buffer("det_valid_queue", torch.zeros((self.queue_length, self.max_det), dtype=torch.bool))
         self.register_buffer("image_id_queue", torch.zeros((self.queue_length, 1), dtype=torch.int) - 1)
+        self.register_buffer("image_feature_queue", torch.zeros((self.queue_length, self.feat_dim)))
+        if self.export_detection_features:
+            self.register_buffer("det_label_queue", torch.zeros((self.queue_length, self.max_det), dtype=torch.long) - 1)
+            self.register_buffer("det_score_queue", torch.zeros((self.queue_length, self.max_det)))
+            self.register_buffer("det_feat_queue", torch.zeros((self.queue_length, self.max_det, self.feat_dim)))
+            self.register_buffer("det_valid_queue", torch.zeros((self.queue_length, self.max_det), dtype=torch.bool))
 
     def forward_single(self, x):
         """Forward feature of a single scale level.
@@ -351,9 +361,11 @@ class RetinaFeatureExportHead(RetinaHead):
             det_bboxes = det_bboxes[:cfg.max_per_img]
             det_labels = mlvl_labels[keep_idxs][:cfg.max_per_img]
 
-            det_lvl_inds = lvl_inds[keep_idxs][:cfg.max_per_img]
-            det_unscale_bboxes = mlvl_bboxes_unscale[keep_idxs][:cfg.max_per_img]
-            det_feats = get_inter_feats(mlvl_feats, det_lvl_inds, det_unscale_bboxes, img_shape)
+            det_feats = None
+            if self.export_detection_features:
+                det_lvl_inds = lvl_inds[keep_idxs][:cfg.max_per_img]
+                det_unscale_bboxes = mlvl_bboxes_unscale[keep_idxs][:cfg.max_per_img]
+                det_feats = get_inter_feats(mlvl_feats, det_lvl_inds, det_unscale_bboxes, img_shape)
 
             cls_scores = det_bboxes[:, -1]
             cls_uncertainties = -1 * (cls_scores * torch.log(cls_scores+1e-10) + (1-cls_scores) * torch.log((1-cls_scores) + 1e-10))
@@ -383,6 +395,8 @@ class RetinaFeatureExportHead(RetinaHead):
         return torch.stack(pooled, dim=0).mean(dim=0)
 
     def _pad_detection_values(self, det_labels, det_scores, det_feats):
+        if det_feats is None:
+            det_feats = det_scores.new_zeros((0, self.feat_dim))
         n_det = min(int(det_labels.numel()), self.max_det)
         padded_labels = det_labels.new_full((self.max_det, ), -1)
         padded_scores = det_scores.new_zeros((self.max_det, ))
@@ -409,14 +423,17 @@ class RetinaFeatureExportHead(RetinaHead):
         collected_img_ids = concat_all_gather(img_id.reshape(1, 1))
         self.image_id_queue[self.current_images:(self.current_images + world_size)] = collected_img_ids
 
+        collected_image_features = concat_all_gather(image_feature.reshape(1, self.feat_dim).contiguous())
+        self.image_feature_queue[self.current_images:(self.current_images + world_size)] = collected_image_features
+        if not self.export_detection_features:
+            return
+
         padded_labels, padded_scores, padded_feats, padded_valid = self._pad_detection_values(
             det_labels, det_scores, det_feats)
-        collected_image_features = concat_all_gather(image_feature.reshape(1, self.feat_dim).contiguous())
         collected_det_labels = concat_all_gather(padded_labels.reshape(1, self.max_det).contiguous())
         collected_det_scores = concat_all_gather(padded_scores.reshape(1, self.max_det).contiguous())
         collected_det_feats  = concat_all_gather(padded_feats.reshape(1, self.max_det, self.feat_dim).contiguous())
         collected_det_valid = concat_all_gather(padded_valid.reshape(1, self.max_det).contiguous())
-        self.image_feature_queue[self.current_images:(self.current_images + world_size)] = collected_image_features
         self.det_label_queue[self.current_images:(self.current_images + world_size)] = collected_det_labels
         self.det_score_queue[self.current_images:(self.current_images + world_size)] = collected_det_scores
         self.det_feat_queue[self.current_images:(self.current_images + world_size)] = collected_det_feats
@@ -428,17 +445,18 @@ class RetinaFeatureExportHead(RetinaHead):
         image_id_queue = self.image_id_queue[valid_inds]
 
         image_feature_queue = self.image_feature_queue[valid_inds]
-        det_label_queue = self.det_label_queue[valid_inds]
-        det_score_queue = self.det_score_queue[valid_inds]
-        det_feat_queue = self.det_feat_queue[valid_inds]
-        det_valid_queue = self.det_valid_queue[valid_inds]
 
         img_ids = image_id_queue.detach().cpu().numpy()
         image_features = image_feature_queue.detach().cpu().numpy()
-        det_labels = det_label_queue.detach().cpu().numpy()
-        det_scores = det_score_queue.detach().cpu().numpy()
-        det_features = det_feat_queue.detach().cpu().numpy()
-        det_valid = det_valid_queue.detach().cpu().numpy()
+        if self.export_detection_features:
+            det_label_queue = self.det_label_queue[valid_inds]
+            det_score_queue = self.det_score_queue[valid_inds]
+            det_feat_queue = self.det_feat_queue[valid_inds]
+            det_valid_queue = self.det_valid_queue[valid_inds]
+            det_labels = det_label_queue.detach().cpu().numpy()
+            det_scores = det_score_queue.detach().cpu().numpy()
+            det_features = det_feat_queue.detach().cpu().numpy()
+            det_valid = det_valid_queue.detach().cpu().numpy()
 
         keep = []
         seen = set()
@@ -453,10 +471,11 @@ class RetinaFeatureExportHead(RetinaHead):
         keep = np.asarray(keep, dtype=np.int64)
         img_ids = img_ids[keep]
         image_features = image_features[keep]
-        det_labels = det_labels[keep]
-        det_scores = det_scores[keep]
-        det_features = det_features[keep]
-        det_valid = det_valid[keep]
+        if self.export_detection_features:
+            det_labels = det_labels[keep]
+            det_scores = det_scores[keep]
+            det_features = det_features[keep]
+            det_valid = det_valid[keep]
 
         metadata = dict(
             schema='alod_feature_artifact',
@@ -465,16 +484,21 @@ class RetinaFeatureExportHead(RetinaHead):
             exported_images=int(img_ids.shape[0]),
             max_det=int(self.max_det),
             feat_dim=int(self.feat_dim),
+            export_detection_features=bool(self.export_detection_features),
         )
 
-        np.savez_compressed(
-            self.output_path,
+        payload = dict(
             image_ids=img_ids.reshape(-1),
             image_features=image_features.astype(np.float32, copy=False),
-            det_labels=det_labels.astype(np.int64, copy=False),
-            det_scores=det_scores.astype(np.float32, copy=False),
-            det_features=det_features.astype(np.float32, copy=False),
-            det_valid=det_valid.astype(np.bool_, copy=False),
             metadata_json=np.array(json.dumps(metadata), dtype=np.str_),
         )
+        if self.export_detection_features:
+            payload.update(
+                det_labels=det_labels.astype(np.int64, copy=False),
+                det_scores=det_scores.astype(np.float32, copy=False),
+                det_features=det_features.astype(np.float32, copy=False),
+                det_valid=det_valid.astype(np.bool_, copy=False),
+            )
+
+        np.savez_compressed(self.output_path, **payload)
         return

@@ -16,7 +16,6 @@ def select_coreset_images(
     labeled_feature_artifact: Any,
     unlabeled_feature_artifact: Any,
     budget: int,
-    normalize_features: bool = False,
     batch_size: int = 512,
     center_batch_size: int = 2048,
 ) -> Dict[str, Any]:
@@ -41,7 +40,6 @@ def select_coreset_images(
         candidate_features=unlabeled_features.image_features,
         center_features=labeled_features.image_features,
         budget=budget,
-        normalize=normalize_features,
         batch_size=batch_size,
         center_batch_size=center_batch_size,
     )
@@ -51,7 +49,6 @@ def select_coreset_images(
         'mode': 'coreset',
         'stage': 'kcenter',
         'budget': int(budget),
-        'normalize_features': bool(normalize_features),
         'pool_counts': {
             'labeled_images': len(labeled_ids),
             'unlabeled_images': len(unlabeled_ids),
@@ -79,7 +76,6 @@ def sample_coreset_from_files(
     labeled_features_npz: Path,
     unlabeled_features_npz: Path,
     budget: int,
-    normalize_features: bool = False,
     batch_size: int = 512,
     center_batch_size: int = 2048,
 ) -> Dict[str, Any]:
@@ -95,7 +91,6 @@ def sample_coreset_from_files(
         labeled_feature_artifact=labeled_features,
         unlabeled_feature_artifact=unlabeled_features,
         budget=budget,
-        normalize_features=normalize_features,
         batch_size=batch_size,
         center_batch_size=center_batch_size,
     )

@@ -12,6 +12,7 @@ model = dict(
         max_det=100,
         feat_dim=256,
         output_path='',
+        export_detection_features=True,
     ),
 )
 
