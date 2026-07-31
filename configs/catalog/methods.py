@@ -141,7 +141,6 @@ def _coreset_config() -> Dict[str, object]:
         'coreset_unlabeled_features': 'coreset_unlabeled_features.npz',
         'coreset_candidates_file': 'coreset_candidates.json',
         'coreset_diagnostics_file': 'coreset_diagnostics.json',
-        'coreset_normalize_features': False,
         'coreset_distance_batch_size': 512,
         'coreset_center_batch_size': 2048,
     }

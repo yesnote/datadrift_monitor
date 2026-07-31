@@ -397,6 +397,7 @@ def _feature_infer_plan(
     name: str,
     log_name: str,
     expected_total: Optional[int] = None,
+    cfg_options: Optional[Dict[str, Any]] = None,
 ) -> CommandPlan:
     if 'feature_infer_config' not in cfg:
         raise ValueError('feature_infer_config is required for feature inference')
@@ -415,6 +416,8 @@ def _feature_infer_plan(
         'model.%s.total_images' % head: int(pool_size),
         'model.%s.output_path' % head: feature_npz,
     }
+    if cfg_options:
+        options.update(cfg_options)
     options.update(cfg.get('mmdet_common_cfg_options', {}))
     argv = (
         _command_prefix(cfg)
@@ -642,6 +645,7 @@ def build_round_plan(
             _coreset_features_npz(cfg, output_dir, round_index, 'labeled'),
             'coreset_labeled_feature_inference',
             'coreset_labeled_feature_inference.log',
+            cfg_options={'model.bbox_head.export_detection_features': False},
         ))
         plan.append(_feature_infer_plan(
             cfg,
@@ -651,6 +655,7 @@ def build_round_plan(
             _coreset_features_npz(cfg, output_dir, round_index, 'unlabeled'),
             'coreset_unlabeled_feature_inference',
             'coreset_unlabeled_feature_inference.log',
+            cfg_options={'model.bbox_head.export_detection_features': False},
         ))
         plan.append(AcquisitionPlan('coreset_acquisition_round_%02d' % round_index, method, round_index))
     else:
@@ -1133,7 +1138,6 @@ def _execute_lightweight_acquisition(
             labeled_features_npz=labeled_features,
             unlabeled_features_npz=unlabeled_features,
             budget=budget,
-            normalize_features=bool(cfg.get('coreset_normalize_features', False)),
             batch_size=int(cfg.get('coreset_distance_batch_size', 512)),
             center_batch_size=int(cfg.get('coreset_center_batch_size', 2048)),
         )

@@ -7,7 +7,6 @@ from typing import Any, Dict, List, Optional, Sequence
 import numpy as np
 
 from methods.common.vectors import (
-    l2_normalize_rows,
     squared_euclidean_to_centers,
     squared_euclidean_to_vector,
 )
@@ -43,7 +42,6 @@ def greedy_k_center_select(
     candidate_features: Any,
     budget: int,
     center_features: Optional[Any] = None,
-    normalize: bool = False,
     batch_size: int = 512,
     center_batch_size: int = 2048,
 ) -> Dict[str, Any]:
@@ -60,9 +58,6 @@ def greedy_k_center_select(
             'candidate_image_ids has %d ids but candidate_features has %d rows'
             % (len(candidate_ids), features.shape[0]))
 
-    if normalize:
-        features = l2_normalize_rows(features)
-
     centers = None
     if center_features is not None:
         centers = _as_feature_matrix(center_features, 'center_features')
@@ -70,9 +65,6 @@ def greedy_k_center_select(
             raise ValueError(
                 'center feature dim %d does not match candidate feature dim %d'
                 % (centers.shape[1], features.shape[1]))
-        if normalize:
-            centers = l2_normalize_rows(centers)
-
     target = min(int(budget), len(candidate_ids))
     if target <= 0:
         return {
@@ -111,14 +103,9 @@ def greedy_k_center_select(
         min_distances = np.minimum(min_distances, new_distances)
         min_distances[selected_indices] = -np.inf
 
-    selected_set = set(selected_indices)
-    selected_rank = {
-        index: rank for rank, index in enumerate(selected_indices, start=1)
-    }
     candidate_records = []
     final_distances = min_distances.copy()
     for index, image_id in enumerate(candidate_ids):
-        is_selected = index in selected_set
         candidate_records.append({
             'image_id': image_id,
             'rank': index + 1,
@@ -126,14 +113,8 @@ def greedy_k_center_select(
             if np.isfinite(initial_min_distances[index]) else None,
             'source': 'kcenter',
             'components': {
-                'initial_min_distance': float(initial_min_distances[index])
-                if np.isfinite(initial_min_distances[index]) else None,
                 'final_min_distance': float(final_distances[index])
                 if np.isfinite(final_distances[index]) else None,
-            },
-            'metadata': {
-                'selected_by_kcenter': is_selected,
-                'kcenter_rank': selected_rank.get(index),
             },
         })
 
