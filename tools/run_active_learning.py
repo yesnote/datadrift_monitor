@@ -118,7 +118,7 @@ def validate_experiment_config_paths(cfg: Dict[str, Any]) -> None:
         'init_unlabeled_json',
         'train_config',
         'uncertainty_infer_config',
-        'diversity_infer_config',
+        'feature_infer_config',
         'pal_infer_config',
         'ecpal_infer_config',
         'pal_embedding_path',
@@ -359,25 +359,68 @@ def _uncertainty_infer_plan(
     )
 
 
-def _diversity_infer_plan(cfg: Dict[str, Any], output_dir: Path, round_index: int) -> CommandPlan:
+def _feature_artifact_npz(cfg: Dict[str, Any], output_dir: Path, round_index: int, key: str, default: str) -> Path:
     round_work_dir = _round_dir(output_dir, round_index)
-    annotations = _round_annotations(output_dir, round_index)
-    prefix = round_work_dir / 'diversity_inference_result'
+    path = _round_relative_file(round_work_dir, str(cfg.get(key, default)))
+    text = str(path)
+    if text.endswith('.npz'):
+        return path
+    return Path(text + '.npz')
+
+
+def _ppal_candidate_features_npz(cfg: Dict[str, Any], output_dir: Path, round_index: int) -> Path:
+    return _feature_artifact_npz(
+        cfg,
+        output_dir,
+        round_index,
+        'ppal_candidate_features',
+        'ppal_candidate_features.npz',
+    )
+
+
+def _coreset_features_npz(cfg: Dict[str, Any], output_dir: Path, round_index: int, pool_name: str) -> Path:
+    return _feature_artifact_npz(
+        cfg,
+        output_dir,
+        round_index,
+        'coreset_%s_features' % pool_name,
+        'coreset_%s_features.npz' % pool_name,
+    )
+
+
+def _feature_infer_plan(
+    cfg: Dict[str, Any],
+    output_dir: Path,
+    round_index: int,
+    ann_file: Path,
+    feature_npz: Path,
+    name: str,
+    log_name: str,
+    expected_total: Optional[int] = None,
+) -> CommandPlan:
+    if 'feature_infer_config' not in cfg:
+        raise ValueError('feature_infer_config is required for feature inference')
+
+    round_work_dir = _round_dir(output_dir, round_index)
+    prefix = round_work_dir / ('%s_result' % name)
     latest_ckpt = round_work_dir / 'latest.pth'
-    image_dis = round_work_dir / 'image_dis.npy'
     head = 'roi_head' if cfg.get('model_name') == 'fasterrcnn' else 'bbox_head'
-    pool_size = cfg.get('uncertainty_pool_size', cfg.get('budget'))
+    pool_size = _count_annotation_items(ann_file)
+    if pool_size is None and expected_total is not None:
+        pool_size = int(expected_total)
+    if pool_size is None:
+        raise ValueError('Cannot determine feature inference pool size: %s' % ann_file)
     options = {
-        'data.test.ann_file': annotations['uncertainty_pool'],
+        'data.test.ann_file': ann_file,
         'model.%s.total_images' % head: int(pool_size),
-        'model.%s.output_path' % head: image_dis,
+        'model.%s.output_path' % head: feature_npz,
     }
     options.update(cfg.get('mmdet_common_cfg_options', {}))
     argv = (
         _command_prefix(cfg)
         + [
             'tools/test.py',
-            str(cfg['diversity_infer_config']),
+            str(cfg['feature_infer_config']),
             str(latest_ckpt),
             '--work-dir',
             str(round_work_dir),
@@ -391,11 +434,11 @@ def _diversity_infer_plan(cfg: Dict[str, Any], output_dir: Path, round_index: in
         + _cfg_options(options)
     )
     return CommandPlan(
-        'diversity_inference_round_%02d' % round_index,
+        '%s_round_%02d' % (name, round_index),
         argv,
         str(ROOT),
         round_index=round_index,
-        log_path=str(_round_log_path(output_dir, round_index, 'diversity_inference.log')),
+        log_path=str(_round_log_path(output_dir, round_index, log_name)),
     )
 
 
@@ -565,7 +608,17 @@ def build_round_plan(
             round_index,
             ppal_stage='uncertainty',
         ))
-        plan.append(_diversity_infer_plan(cfg, output_dir, round_index))
+        annotations = _round_annotations(output_dir, round_index)
+        plan.append(_feature_infer_plan(
+            cfg,
+            output_dir,
+            round_index,
+            annotations['uncertainty_pool'],
+            _ppal_candidate_features_npz(cfg, output_dir, round_index),
+            'ppal_feature_inference',
+            'ppal_feature_inference.log',
+            expected_total=int(cfg.get('uncertainty_pool_size', cfg.get('budget', 0))),
+        ))
         plan.append(AcquisitionPlan(
             'ppal_diversity_acquisition_round_%02d' % round_index,
             method,
@@ -580,6 +633,26 @@ def build_round_plan(
         plan.append(_ecpal_infer_plan(cfg, output_dir, round_index, input_paths, 'labeled'))
         plan.append(_ecpal_infer_plan(cfg, output_dir, round_index, input_paths, 'unlabeled'))
         plan.append(AcquisitionPlan('ecpal_acquisition_round_%02d' % round_index, method, round_index))
+    elif method == 'coreset':
+        plan.append(_feature_infer_plan(
+            cfg,
+            output_dir,
+            round_index,
+            input_paths['labeled'],
+            _coreset_features_npz(cfg, output_dir, round_index, 'labeled'),
+            'coreset_labeled_feature_inference',
+            'coreset_labeled_feature_inference.log',
+        ))
+        plan.append(_feature_infer_plan(
+            cfg,
+            output_dir,
+            round_index,
+            input_paths['unlabeled'],
+            _coreset_features_npz(cfg, output_dir, round_index, 'unlabeled'),
+            'coreset_unlabeled_feature_inference',
+            'coreset_unlabeled_feature_inference.log',
+        ))
+        plan.append(AcquisitionPlan('coreset_acquisition_round_%02d' % round_index, method, round_index))
     else:
         raise ValueError('Unsupported method: %s' % method)
     return plan
@@ -608,11 +681,14 @@ def _step_label(step: PlanStep) -> str:
     labels = (
         ('ecpal_labeled_inference', 'ecpal labeled inference'),
         ('ecpal_unlabeled_inference', 'ecpal unlabeled inference'),
+        ('coreset_labeled_feature_inference', 'coreset labeled feature inference'),
+        ('coreset_unlabeled_feature_inference', 'coreset unlabeled feature inference'),
+        ('ppal_feature_inference', 'ppal feature inference'),
         ('pal_labeled_inference', 'pal labeled inference'),
         ('pal_unlabeled_inference', 'pal unlabeled inference'),
         ('uncertainty_inference', 'uncertainty inference'),
-        ('diversity_inference', 'diversity inference'),
         ('ecpal_acquisition', 'ecpal acquisition'),
+        ('coreset_acquisition', 'coreset acquisition'),
         ('ppal_uncertainty_acquisition', 'ppal uncertainty acquisition'),
         ('ppal_diversity_acquisition', 'ppal diversity acquisition'),
         ('pal_acquisition', 'pal acquisition'),
@@ -700,7 +776,9 @@ def _progress_kind(step: CommandPlan) -> str:
         or step.name.startswith('pal_labeled_inference')
         or step.name.startswith('pal_unlabeled_inference')
         or step.name.startswith('uncertainty_inference')
-        or step.name.startswith('diversity_inference')
+        or step.name.startswith('ppal_feature_inference')
+        or step.name.startswith('coreset_labeled_feature_inference')
+        or step.name.startswith('coreset_unlabeled_feature_inference')
     ):
         return 'test'
     return 'command'
@@ -737,12 +815,16 @@ def _progress_total_for_step(
         return _count_annotation_items(input_paths['unlabeled'])
     if step.name.startswith('uncertainty_inference'):
         return _count_annotation_items(input_paths['unlabeled'])
-    if step.name.startswith('diversity_inference'):
+    if step.name.startswith('ppal_feature_inference'):
         total = _count_annotation_items(annotations['uncertainty_pool'])
         if total is not None:
             return total
         if cfg.get('uncertainty_pool_size') is not None:
             return int(cfg['uncertainty_pool_size'])
+    if step.name.startswith('coreset_labeled_feature_inference'):
+        return _count_annotation_items(input_paths['labeled'])
+    if step.name.startswith('coreset_unlabeled_feature_inference'):
+        return _count_annotation_items(input_paths['unlabeled'])
     return None
 
 
@@ -1040,6 +1122,68 @@ def _execute_lightweight_acquisition(
             **diagnostics_extra,
         )
         write_diagnostics(diagnostics_path, diagnostics_payload)
+    elif method == 'coreset':
+        from methods.coreset.acquisition import sample_coreset_from_files
+
+        labeled_features = _coreset_features_npz(cfg, output_dir, round_index, 'labeled')
+        unlabeled_features = _coreset_features_npz(cfg, output_dir, round_index, 'unlabeled')
+        diagnostics = sample_coreset_from_files(
+            labeled_pool_json=input_paths['labeled'],
+            unlabeled_pool_json=input_paths['unlabeled'],
+            labeled_features_npz=labeled_features,
+            unlabeled_features_npz=unlabeled_features,
+            budget=budget,
+            normalize_features=bool(cfg.get('coreset_normalize_features', False)),
+            batch_size=int(cfg.get('coreset_distance_batch_size', 512)),
+            center_batch_size=int(cfg.get('coreset_center_batch_size', 2048)),
+        )
+        selected = diagnostics['selected_image_ids']
+        diagnostics_path = _round_relative_file(
+            round_work_dir,
+            str(cfg.get('coreset_diagnostics_file', 'coreset_diagnostics.json')),
+        )
+        diagnostics_stage = 'kcenter'
+        diagnostics_extra = dict(diagnostics)
+        diagnostics_extra.pop('selected_image_ids', None)
+        diagnostics_extra.pop('stage', None)
+        candidate_records = list(diagnostics_extra.pop('candidate_records', []))
+        candidate_artifact_path = _round_relative_file(
+            round_work_dir,
+            str(cfg.get('coreset_candidates_file', 'coreset_candidates.json')),
+        )
+        candidate_outputs = {
+            'candidates_json': str(candidate_artifact_path),
+        }
+        candidate_artifact = build_candidate_artifact(
+            method='coreset',
+            stage=diagnostics_stage,
+            round_index=round_index,
+            budget=budget,
+            candidates=candidate_records,
+            selected_image_ids=selected,
+        )
+        write_candidate_artifact(candidate_artifact_path, candidate_artifact)
+        diagnostics_payload = acquisition_result(
+            method='coreset',
+            stage=diagnostics_stage,
+            round_index=round_index,
+            budget=budget,
+            selected_image_ids=selected,
+            inputs={
+                'labeled_pool_json': str(input_paths['labeled']),
+                'unlabeled_pool_json': str(input_paths['unlabeled']),
+                'labeled_features_npz': str(labeled_features),
+                'unlabeled_features_npz': str(unlabeled_features),
+            },
+            outputs={
+                'labeled_pool_json': str(annotations['labeled']),
+                'unlabeled_pool_json': str(annotations['unlabeled']),
+                'diagnostics_json': str(diagnostics_path),
+                **candidate_outputs,
+            },
+            **diagnostics_extra,
+        )
+        write_diagnostics(diagnostics_path, diagnostics_payload)
     else:
         raise ValueError('Unsupported lightweight acquisition method: %s' % method)
 
@@ -1099,7 +1243,7 @@ def _execute_ppal_acquisition(
             repo_root=ROOT,
             round_index=round_index,
             result_json=result_json,
-            image_distance_npy=round_work_dir / 'image_dis.npy',
+            feature_npz=_ppal_candidate_features_npz(cfg, output_dir, round_index),
             last_labeled_json=input_paths['labeled'],
             out_labeled_json=annotations['labeled'],
             out_unlabeled_json=annotations['unlabeled'],
@@ -1123,7 +1267,7 @@ def _execute_ppal_acquisition(
             'labeled_pool_json': str(input_paths['labeled']),
             'unlabeled_pool_json': str(input_paths['unlabeled']),
             'uncertainty_result_json': str(result_json),
-            'image_distance_npy': str(round_work_dir / 'image_dis.npy'),
+            'feature_npz': str(_ppal_candidate_features_npz(cfg, output_dir, round_index)),
         },
         outputs=dict(output.get('outputs', {}), diagnostics_json=str(diagnostics_path)),
         stages=stages,
@@ -1307,7 +1451,7 @@ def _config_path_summary(cfg: Dict[str, Any]) -> Dict[str, Optional[str]]:
     keys = (
         'train_config',
         'uncertainty_infer_config',
-        'diversity_infer_config',
+        'feature_infer_config',
         'pal_infer_config',
         'ecpal_infer_config',
         'pal_embedding_path',
@@ -1723,7 +1867,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         '--method',
         default=None,
-        help='Method or alias: ppal, pal, pal:guide, pal/full, pal:lius, ecpal, random, entropy',
+        help='Method or alias: ppal, pal, pal:guide, pal/full, pal:lius, ecpal, coreset, random, entropy',
     )
     parser.add_argument('--detector', default=None, help='Catalog detector, e.g. retinanet')
     parser.add_argument('--dataset', default=None, help='Catalog dataset, e.g. voc')

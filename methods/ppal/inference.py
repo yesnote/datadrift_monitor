@@ -6,7 +6,6 @@ PPAL method code consumes artifacts produced by the local MMDetection backend:
   ``cls_uncertainty`` for DCUS.
 * ``RetinaQualityEMAHead`` stores ``bbox_head.class_quality`` in
   ``latest.pth`` for DCUS class reweighting.
-* ``RetinaHeadFeat`` writes ``image_dis.npy`` for CCMS diversity selection.
 
 The loaders here keep that backend boundary explicit so ``dcus.py`` and
 ``ccms.py`` can focus on acquisition logic.
@@ -15,7 +14,7 @@ The loaders here keep that backend boundary explicit so ``dcus.py`` and
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List
 
 import numpy as np
 
@@ -73,22 +72,3 @@ def load_class_quality(checkpoint_path: Any) -> np.ndarray:
         raise ValueError('PPAL class quality contains non-finite values: %s' % ckpt_path)
     return qualities
 
-
-def load_image_distance_cache(path: Any) -> Tuple[np.ndarray, np.ndarray]:
-    """Load the ``image_dis.npy`` matrix and its image id vector."""
-
-    cache_path = _as_path(path)
-    with cache_path.open('rb') as handle:
-        distance_matrix = np.load(handle)
-        image_ids = np.load(handle).reshape(-1)
-
-    distance_matrix = np.asarray(distance_matrix, dtype=np.float64)
-    if distance_matrix.ndim != 2 or distance_matrix.shape[0] != distance_matrix.shape[1]:
-        raise ValueError('PPAL image distance cache must be a square matrix: %s' % cache_path)
-    if distance_matrix.shape[0] != image_ids.shape[0]:
-        raise ValueError(
-            'PPAL image distance cache has %d matrix rows but %d image ids: %s'
-            % (distance_matrix.shape[0], image_ids.shape[0], cache_path))
-    if not np.all(np.isfinite(distance_matrix)):
-        raise ValueError('PPAL image distance cache contains non-finite values: %s' % cache_path)
-    return distance_matrix, image_ids

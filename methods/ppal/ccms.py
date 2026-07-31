@@ -2,12 +2,13 @@
 
 import numpy as np
 
+from methods.common.feature_artifacts import filter_feature_artifact, load_feature_artifact
 from methods.common.image_identity import (
     normalize_image_ids,
     validate_image_ids_subset,
 )
 from methods.ppal.base import BaseALSampler
-from methods.ppal.inference import load_image_distance_cache
+from methods.ppal.distance import compute_ppal_image_distance_matrix
 
 
 eps = 1e-10
@@ -72,14 +73,24 @@ class DiversitySampler(BaseALSampler):
             centroids = np.array(new_centroids)
         return centroids.tolist()
 
-    def al_acquisition(self, image_dis_path):
-        image_dis_matrix, distance_image_ids = load_image_distance_cache(image_dis_path)
-        oracle_image_ids = normalize_image_ids(distance_image_ids.reshape(-1).tolist())
+    def al_acquisition(self, feature_artifact_path):
+        feature_artifact = load_feature_artifact(
+            feature_artifact_path,
+            require_detection_features=True,
+        )
+        oracle_image_ids = normalize_image_ids(feature_artifact.image_ids)
         validate_image_ids_subset(
             oracle_image_ids,
             self.oracle_data.keys(),
-            'PPAL diversity cache',
+            'PPAL feature artifact',
         )
+        feature_artifact = filter_feature_artifact(
+            feature_artifact,
+            oracle_image_ids,
+            artifact_name='PPAL feature artifact',
+            require_all=True,
+        )
+        image_dis_matrix = compute_ppal_image_distance_matrix(feature_artifact)
 
         centroids = DiversitySampler.kmeans(
             image_dis_matrix,
@@ -109,9 +120,9 @@ class DiversitySampler(BaseALSampler):
             })
 
         metrics = {
-            'image_distance_npy': str(image_dis_path),
+            'feature_artifact': str(feature_artifact_path),
             'distance_matrix_shape': list(image_dis_matrix.shape),
-            'distance_image_count': int(distance_image_ids.shape[0]),
+            'distance_image_count': len(feature_artifact.image_ids),
             'canonical_distance_image_count': len(oracle_image_ids),
             'selected_candidate_count': len(sampled_img_ids),
             'kmeans_iterations': int(self.kmeans_iterations),
@@ -119,10 +130,10 @@ class DiversitySampler(BaseALSampler):
         }
         return sampled_img_ids, candidate_records, metrics
 
-    def al_round(self, image_dis_path, last_label_path):
+    def al_round(self, feature_artifact_path, last_label_path):
         self.round += 1
         self.latest_labeled = last_label_path
-        sampled_img_ids, candidate_records, metrics = self.al_acquisition(image_dis_path)
+        sampled_img_ids, candidate_records, metrics = self.al_acquisition(feature_artifact_path)
         return {
             'selected_image_ids': sampled_img_ids,
             'candidate_records': candidate_records,

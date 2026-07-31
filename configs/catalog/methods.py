@@ -12,6 +12,7 @@ PAL_FULL_ALIASES = ('pal', 'pal:full', 'pal/full', 'pal:guide', 'pal/guide')
 PAL_LIUS_ALIASES = ('pal:lius', 'pal/lius')
 PPAL_ALIASES = ('ppal', 'ppal:dcus-ccms', 'ppal/dcus-ccms', 'ppal:full', 'ppal/full')
 ECPAL_ALIASES = ('ecpal', 'ecpal:full', 'ecpal/full')
+CORESET_ALIASES = ('coreset', 'core-set', 'core_set', 'kcenter', 'k-center')
 
 
 def normalize_method_alias(value: str) -> str:
@@ -57,6 +58,8 @@ class MethodSpec:
             cfg.update(_pal_config(mode='lius'))
         elif self.key == 'ecpal':
             cfg.update(_ecpal_config())
+        elif self.key == 'coreset':
+            cfg.update(_coreset_config())
         cfg.update(self.cfg_overrides)
         return cfg
 
@@ -132,6 +135,18 @@ def _ecpal_config() -> Dict[str, object]:
     }
 
 
+def _coreset_config() -> Dict[str, object]:
+    return {
+        'coreset_labeled_features': 'coreset_labeled_features.npz',
+        'coreset_unlabeled_features': 'coreset_unlabeled_features.npz',
+        'coreset_candidates_file': 'coreset_candidates.json',
+        'coreset_diagnostics_file': 'coreset_diagnostics.json',
+        'coreset_normalize_features': False,
+        'coreset_distance_batch_size': 512,
+        'coreset_center_batch_size': 2048,
+    }
+
+
 METHODS = (
     MethodSpec(
         key='ppal',
@@ -162,6 +177,13 @@ METHODS = (
         aliases=ECPAL_ALIASES,
         description='ECPAL error-count prediction acquisition.',
         output_name='retinanet_voc_ecpal_7rounds_5percent_to_20percent',
+    ),
+    MethodSpec(
+        key='coreset',
+        method='coreset',
+        aliases=CORESET_ALIASES,
+        description='Core-set greedy k-center acquisition.',
+        output_name='retinanet_voc_coreset_7rounds_5percent_to_20percent',
     ),
     MethodSpec(
         key='random',
