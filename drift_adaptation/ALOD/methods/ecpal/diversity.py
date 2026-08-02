@@ -26,6 +26,17 @@ def _composition_vector(record: Mapping[str, Any]) -> np.ndarray:
     return values / total
 
 
+def _composition_matrix(records: List[Mapping[str, Any]]) -> np.ndarray:
+    vector_by_id = {
+        record['image_id']: _composition_vector(record)
+        for record in records
+    }
+    return np.stack(
+        [vector_by_id[record['image_id']] for record in records],
+        axis=0,
+    )
+
+
 def jensen_shannon_distance(first: Iterable[float], second: Iterable[float]) -> float:
     p = np.asarray(list(first), dtype=np.float64)
     q = np.asarray(list(second), dtype=np.float64)
@@ -47,6 +58,42 @@ def jensen_shannon_distance(first: Iterable[float], second: Iterable[float]) -> 
     return float(math.sqrt(max(divergence, 0.0)))
 
 
+def _jensen_shannon_distance_to_vector(matrix: np.ndarray, vector: np.ndarray) -> np.ndarray:
+    """Return JS distances from each row of ``matrix`` to ``vector``."""
+
+    p = np.asarray(matrix, dtype=np.float64)
+    q = np.asarray(vector, dtype=np.float64).reshape(1, -1)
+    if p.ndim != 2:
+        raise ValueError('JS distance matrix must be 2D')
+    if q.shape[1] != p.shape[1]:
+        raise ValueError('JS distance vectors must have the same shape')
+    if p.shape[1] == 0:
+        return np.zeros((p.shape[0], ), dtype=np.float64)
+
+    p = np.clip(p, 0.0, None)
+    q = np.clip(q, 0.0, None)
+
+    p_sums = p.sum(axis=1, keepdims=True)
+    q_sum = q.sum()
+    p = np.divide(
+        p,
+        p_sums,
+        out=np.full_like(p, 1.0 / p.shape[1]),
+        where=p_sums > 0.0,
+    )
+    if q_sum > 0.0:
+        q = q / q_sum
+    else:
+        q = np.full_like(q, 1.0 / q.shape[1])
+
+    m = 0.5 * (p + q)
+    with np.errstate(divide='ignore', invalid='ignore'):
+        p_terms = np.where(p > 0.0, p * np.log(p / m), 0.0)
+        q_terms = np.where(q > 0.0, q * np.log(q / m), 0.0)
+    divergence = 0.5 * p_terms.sum(axis=1) + 0.5 * q_terms.sum(axis=1)
+    return np.sqrt(np.maximum(divergence, 0.0))
+
+
 def _selection_sort_key(record: Mapping[str, Any], distance: float = 0.0) -> tuple:
     return (
         -float(distance),
@@ -66,11 +113,19 @@ def farthest_first_select(
         return {'selected_image_ids': [], 'selected_records': []}
 
     by_id = {record['image_id']: record for record in records}
-    vectors = {record['image_id']: _composition_vector(record) for record in records}
+    vectors = _composition_matrix(records)
+    image_ids = [record['image_id'] for record in records]
+    indices_by_id: Dict[Any, List[int]] = {}
+    for index, image_id in enumerate(image_ids):
+        indices_by_id.setdefault(image_id, []).append(index)
     selected_ids: List[Any] = []
     selected_records: List[Dict[str, Any]] = []
 
-    first = sorted(records, key=lambda record: _selection_sort_key(record))[0]
+    first_index = min(
+        range(len(records)),
+        key=lambda index: _selection_sort_key(records[index]),
+    )
+    first = records[first_index]
     selected_ids.append(first['image_id'])
     first_record = dict(first)
     first_record.setdefault('metadata', {})
@@ -80,24 +135,29 @@ def farthest_first_select(
     first_record['selection_rank'] = 1
     selected_records.append(first_record)
 
-    while len(selected_ids) < min(int(budget), len(records)):
-        selected_set = set(selected_ids)
-        best_record = None
+    target = min(int(budget), len(records))
+    available = np.ones((len(records), ), dtype=np.bool_)
+    for index in indices_by_id.get(first['image_id'], []):
+        available[index] = False
+    min_distances = _jensen_shannon_distance_to_vector(vectors, vectors[first_index])
+
+    while len(selected_ids) < target:
+        best_index = None
         best_distance = -1.0
-        for record in records:
-            image_id = record['image_id']
-            if image_id in selected_set:
+        for index, record in enumerate(records):
+            if not available[index]:
                 continue
-            distance = min(
-                jensen_shannon_distance(vectors[image_id], vectors[selected_id])
-                for selected_id in selected_ids
-            )
-            if best_record is None or _selection_sort_key(record, distance) < _selection_sort_key(best_record, best_distance):
-                best_record = record
+            distance = float(min_distances[index])
+            if (
+                best_index is None
+                or _selection_sort_key(record, distance)
+                < _selection_sort_key(records[best_index], best_distance)
+            ):
+                best_index = index
                 best_distance = distance
-        if best_record is None:
+        if best_index is None:
             break
-        image_id = best_record['image_id']
+        image_id = records[best_index]['image_id']
         selected_ids.append(image_id)
         selected_record = dict(by_id[image_id])
         selected_record.setdefault('metadata', {})
@@ -106,6 +166,10 @@ def farthest_first_select(
         selected_record['metadata']['selection_reason'] = 'farthest_first'
         selected_record['selection_rank'] = len(selected_ids)
         selected_records.append(selected_record)
+        for index in indices_by_id.get(image_id, []):
+            available[index] = False
+        new_distances = _jensen_shannon_distance_to_vector(vectors, vectors[best_index])
+        min_distances = np.minimum(min_distances, new_distances)
 
     return {
         'selected_image_ids': selected_ids,
