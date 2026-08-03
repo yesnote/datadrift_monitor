@@ -168,7 +168,8 @@ Useful method aliases:
 - `ppal`: PPAL DCUS + CCMS.
 - `pal`, `pal:guide`, `pal/full`: PAL LIUS + GUIDE.
 - `pal:lius`: PAL LIUS only.
-- `ecpal`: ECPAL error-count prediction.
+- `ecpal`: ECPAL error-count prediction + JS diversity.
+- `ecpal:eca`: ECPAL ECA uncertainty only.
 - `coreset`, `core-set`, `kcenter`: Core-set greedy k-center.
 - `random`: random acquisition baseline.
 - `entropy`: entropy acquisition baseline.

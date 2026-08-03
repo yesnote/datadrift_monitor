@@ -12,6 +12,7 @@ PAL_FULL_ALIASES = ('pal', 'pal:full', 'pal/full', 'pal:guide', 'pal/guide')
 PAL_LIUS_ALIASES = ('pal:lius', 'pal/lius')
 PPAL_ALIASES = ('ppal', 'ppal:dcus-ccms', 'ppal/dcus-ccms', 'ppal:full', 'ppal/full')
 ECPAL_ALIASES = ('ecpal', 'ecpal:full', 'ecpal/full')
+ECPAL_ECA_ALIASES = ('ecpal:eca', 'ecpal/eca', 'ecpal:uncertainty', 'ecpal/uncertainty')
 CORESET_ALIASES = ('coreset', 'core-set', 'core_set', 'kcenter', 'k-center')
 
 
@@ -38,6 +39,8 @@ class MethodSpec:
     def default_alias(self) -> str:
         if self.method == 'pal' and self.cfg_overrides.get('pal_mode') == 'lius':
             return 'pal:lius'
+        if self.method == 'ecpal' and self.cfg_overrides.get('ecpal_mode') == 'eca':
+            return 'ecpal:eca'
         return self.method
 
     def output_dir(self) -> str:
@@ -98,6 +101,8 @@ def _pal_config(mode: str) -> Dict[str, object]:
         'pal_labeled_detections': 'pal_labeled_detections.bbox.json',
         'pal_unlabeled_detections': 'pal_unlabeled_detections.bbox.json',
     }
+    if mode == 'lius':
+        cfg['pal_candidate_multiplier'] = 1
     if mode == 'full':
         cfg.update({
             'pal_alpha': 0.9,
@@ -123,6 +128,7 @@ def _pal_config(mode: str) -> Dict[str, object]:
 
 def _ecpal_config() -> Dict[str, object]:
     return {
+        'ecpal_mode': 'ecd',
         'ecpal_candidate_expand_ratio': 2,
         'ecpal_foreground_iou_threshold': 0.5,
         'ecpal_background_iou_threshold': 0.1,
@@ -176,6 +182,19 @@ METHODS = (
         aliases=ECPAL_ALIASES,
         description='ECPAL error-count prediction acquisition.',
         output_name='retinanet_voc_ecpal_7rounds_5percent_to_20percent',
+    ),
+    MethodSpec(
+        key='ecpal_eca',
+        method='ecpal',
+        aliases=ECPAL_ECA_ALIASES,
+        description='ECPAL ECA-only uncertainty acquisition.',
+        output_name='retinanet_voc_ecpal_eca_7rounds_5percent_to_20percent',
+        cfg_overrides={
+            'ecpal_mode': 'eca',
+            'ecpal_candidate_expand_ratio': 1,
+            'ecpal_diagnostics_file': 'ecpal_eca_diagnostics.json',
+            'ecpal_candidates_file': 'ecpal_eca_candidates.json',
+        },
     ),
     MethodSpec(
         key='coreset',

@@ -1001,6 +1001,7 @@ def _execute_lightweight_acquisition(
             mode=pal_mode,
             iou_threshold=float(cfg.get('pal_iou_threshold', 0.5)),
             seed=seed,
+            candidate_multiplier=int(cfg.get('pal_candidate_multiplier', 1)),
             alpha=float(cfg.get('pal_alpha', 0.9)),
             beta=float(cfg.get('pal_beta', 0.04)),
             gamma=float(cfg.get('pal_gamma', 0.02)),
@@ -1072,19 +1073,20 @@ def _execute_lightweight_acquisition(
             labeled_features_json=labeled_features,
             unlabeled_features_json=unlabeled_features,
             budget=budget,
-            candidate_expand_ratio=int(cfg.get('ecpal_candidate_expand_ratio', 2)),
+            candidate_expand_ratio=float(cfg.get('ecpal_candidate_expand_ratio', 2)),
             foreground_iou_threshold=float(cfg.get('ecpal_foreground_iou_threshold', 0.5)),
             background_iou_threshold=float(cfg.get('ecpal_background_iou_threshold', 0.1)),
             eps=float(cfg.get('ecpal_eps', 1e-12)),
             weight_eps=float(cfg.get('ecpal_weight_eps', 1e-6)),
             seed=seed,
+            mode=str(cfg.get('ecpal_mode', 'ecd')),
         )
         selected = diagnostics['selected_image_ids']
         diagnostics_path = _round_relative_file(
             round_work_dir,
             str(cfg.get('ecpal_diagnostics_file', 'ecpal_diagnostics.json')),
         )
-        diagnostics_stage = 'ecd'
+        diagnostics_stage = str(diagnostics.get('stage', cfg.get('ecpal_mode', 'ecd')))
         diagnostics_extra = dict(diagnostics)
         diagnostics_extra.pop('selected_image_ids', None)
         diagnostics_extra.pop('stage', None)
@@ -1872,7 +1874,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         '--method',
         default=None,
-        help='Method or alias: ppal, pal, pal:guide, pal/full, pal:lius, ecpal, coreset, random, entropy',
+        help='Method or alias: ppal, pal, pal:guide, pal/full, pal:lius, ecpal, ecpal:eca, coreset, random, entropy',
     )
     parser.add_argument('--detector', default=None, help='Catalog detector, e.g. retinanet')
     parser.add_argument('--dataset', default=None, help='Catalog dataset, e.g. voc')

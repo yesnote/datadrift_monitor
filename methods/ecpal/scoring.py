@@ -120,6 +120,7 @@ def build_candidate_records(
     scored_records: Iterable[Mapping[str, Any]],
     budget: int,
     candidate_expand_ratio: float = 2.0,
+    source: str = 'ecd',
 ) -> List[Dict[str, Any]]:
     ranked = sorted(scored_records, key=lambda item: (-float(item['score']), image_id_sort_key(item['image_id'])))
     limit = candidate_limit(budget, candidate_expand_ratio, len(ranked))
@@ -140,7 +141,7 @@ def build_candidate_records(
             'image_id': item['image_id'],
             'rank': rank,
             'score': float(item['score']),
-            'source': 'ecd',
+            'source': source,
             'components': components,
             'metadata': {
                 'candidate_rank': rank,
