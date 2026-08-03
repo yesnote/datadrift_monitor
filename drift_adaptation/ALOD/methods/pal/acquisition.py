@@ -184,7 +184,12 @@ def select_lius_images(
     budget: int,
     iou_threshold: float = 0.5,
     seed: int = 0,
+    candidate_multiplier: int = 1,
 ) -> Dict[str, Any]:
+    candidate_multiplier = int(candidate_multiplier)
+    if candidate_multiplier < 1:
+        raise ValueError('PAL LIUS candidate_multiplier must be positive')
+
     labeled_ids = set(image_ids(labeled_pool))
     unlabeled_ids = image_ids(unlabeled_pool)
 
@@ -218,7 +223,7 @@ def select_lius_images(
         if class_budget <= 0:
             continue
         class_candidates = ranked_ids_by_score(class_image_scores.get(category_id, {}))
-        for image_id in class_candidates[:2 * class_budget]:
+        for image_id in class_candidates[:candidate_multiplier * class_budget]:
             score = class_image_scores[category_id][image_id]
             if image_id not in candidate_scores or score > candidate_scores[image_id]:
                 candidate_scores[image_id] = score
@@ -259,6 +264,7 @@ def select_lius_images(
     return {
         'selected_image_ids': selected[:budget],
         'mode': 'lius',
+        'candidate_multiplier': candidate_multiplier,
         'class_budgets': class_budgets,
         'matched_detection_count': len(matched),
         'scored_detection_count': len(scored),
@@ -424,6 +430,7 @@ def sample_lius_only_from_files(
     budget: int,
     iou_threshold: float = 0.5,
     seed: int = 0,
+    candidate_multiplier: int = 1,
 ) -> Dict[str, Any]:
     labeled_pool = read_coco_json(labeled_pool_json)
     unlabeled_pool = read_coco_json(unlabeled_pool_json)
@@ -437,6 +444,7 @@ def sample_lius_only_from_files(
         budget=budget,
         iou_threshold=iou_threshold,
         seed=seed,
+        candidate_multiplier=candidate_multiplier,
     )
 
 
@@ -449,6 +457,7 @@ def sample_pal_from_files(
     mode: str = 'lius',
     iou_threshold: float = 0.5,
     seed: int = 0,
+    candidate_multiplier: int = 1,
     alpha: float = 0.9,
     beta: float = 0.04,
     gamma: float = 0.02,
@@ -469,6 +478,7 @@ def sample_pal_from_files(
             budget=budget,
             iou_threshold=iou_threshold,
             seed=seed,
+            candidate_multiplier=candidate_multiplier,
         )
     if normalized_mode in ('full', 'guide'):
         return select_full_pal_images(

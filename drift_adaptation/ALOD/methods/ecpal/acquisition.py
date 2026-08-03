@@ -31,7 +31,16 @@ def select_ecpal_images(
     eps: float = 1e-12,
     weight_eps: float = 1e-6,
     seed: int = 0,
+    mode: str = 'ecd',
 ) -> Dict[str, Any]:
+    normalized_mode = mode.lower().replace('_', '-')
+    if normalized_mode in ('full', 'diversity'):
+        normalized_mode = 'ecd'
+    if normalized_mode in ('uncertainty', 'eca-only'):
+        normalized_mode = 'eca'
+    if normalized_mode not in ('ecd', 'eca'):
+        raise ValueError('Unsupported ECPAL mode: %s' % mode)
+
     labeled_ids = image_ids(dict(labeled_pool))
     unlabeled_ids = image_ids(dict(unlabeled_pool))
     labeled_records = filter_feature_records(
@@ -62,22 +71,28 @@ def select_ecpal_images(
         weights,
         eps=eps,
     )
+    effective_candidate_expand_ratio = 1.0 if normalized_mode == 'eca' else candidate_expand_ratio
     candidates = build_candidate_records(
         scored,
         budget=budget,
-        candidate_expand_ratio=candidate_expand_ratio,
+        candidate_expand_ratio=effective_candidate_expand_ratio,
+        source=normalized_mode,
     )
-    selection = farthest_first_select(candidates, budget=budget)
-    selected = list(selection['selected_image_ids'])
+    if normalized_mode == 'eca':
+        selected = [candidate['image_id'] for candidate in candidates[:int(budget)]]
+        candidate_records = candidates
+    else:
+        selection = farthest_first_select(candidates, budget=budget)
+        selected = list(selection['selected_image_ids'])
+        candidate_records = attach_selection_metadata(candidates, selection['selected_records'])
     if len(selected) < min(int(budget), len(unlabeled_ids)):
         selected = fill_to_budget(selected, unlabeled_ids, budget, seed=seed)
 
-    candidate_records = attach_selection_metadata(candidates, selection['selected_records'])
     diagnostics = {
         'mode': 'ecpal',
-        'stage': 'ecd',
+        'stage': normalized_mode,
         'budget': int(budget),
-        'candidate_expand_ratio': float(candidate_expand_ratio),
+        'candidate_expand_ratio': float(effective_candidate_expand_ratio),
         'thresholds': {
             'foreground_iou': float(foreground_iou_threshold),
             'background_iou': float(background_iou_threshold),
@@ -104,7 +119,7 @@ def select_ecpal_images(
         'candidate_records': candidate_records,
         'diagnostics': diagnostics,
         'mode': 'ecpal',
-        'stage': 'ecd',
+        'stage': normalized_mode,
     }
 
 
@@ -120,6 +135,7 @@ def sample_ecpal_from_files(
     eps: float = 1e-12,
     weight_eps: float = 1e-6,
     seed: int = 0,
+    mode: str = 'ecd',
     oracle_json: Optional[Path] = None,
 ) -> Dict[str, Any]:
     """Run ECPAL acquisition from compact feature artifacts.
@@ -145,6 +161,7 @@ def sample_ecpal_from_files(
         eps=eps,
         weight_eps=weight_eps,
         seed=seed,
+        mode=mode,
     )
     result['diagnostics']['inputs'] = {
         'labeled_pool_json': str(labeled_pool_json),
