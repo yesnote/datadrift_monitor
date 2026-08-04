@@ -14,6 +14,7 @@ PPAL_ALIASES = ('ppal', 'ppal:dcus-ccms', 'ppal/dcus-ccms', 'ppal:full', 'ppal/f
 ECPAL_ALIASES = ('ecpal', 'ecpal:full', 'ecpal/full')
 ECPAL_ECA_ALIASES = ('ecpal:eca', 'ecpal/eca', 'ecpal:uncertainty', 'ecpal/uncertainty')
 CORESET_ALIASES = ('coreset', 'core-set', 'core_set', 'kcenter', 'k-center')
+MIAL_ALIASES = ('mial', 'mi-aod', 'miaod')
 
 
 def normalize_method_alias(value: str) -> str:
@@ -63,6 +64,8 @@ class MethodSpec:
             cfg.update(_ecpal_config())
         elif self.key == 'coreset':
             cfg.update(_coreset_config())
+        elif self.key == 'mial':
+            cfg.update(_mial_config())
         cfg.update(self.cfg_overrides)
         return cfg
 
@@ -152,6 +155,18 @@ def _coreset_config() -> Dict[str, object]:
     }
 
 
+def _mial_config() -> Dict[str, object]:
+    return {
+        'gpus': 1,
+        'train_config': 'configs/alod_mmdet/retinanet_voc_train_mial.py',
+        'mial_lambda': 0.5,
+        'mial_topk': 10000,
+        'mial_uncertainty_file': 'mial_uncertainty.json',
+        'mial_candidates_file': 'mial_candidates.json',
+        'mial_diagnostics_file': 'mial_diagnostics.json',
+    }
+
+
 METHODS = (
     MethodSpec(
         key='ppal',
@@ -202,6 +217,13 @@ METHODS = (
         aliases=CORESET_ALIASES,
         description='Core-set greedy k-center acquisition.',
         output_name='retinanet_voc_coreset_7rounds_5percent_to_20percent',
+    ),
+    MethodSpec(
+        key='mial',
+        method='mial',
+        aliases=MIAL_ALIASES,
+        description='MIAL/MI-AOD instance-discrepancy acquisition.',
+        output_name='retinanet_voc_mial_7rounds_5percent_to_20percent',
     ),
     MethodSpec(
         key='random',
