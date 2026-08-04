@@ -317,6 +317,10 @@ class RetinaHeadMIAL(RetinaHead):
         losses_bbox = [
             (left + right) / 2 for left, right in zip(branch_1[1], branch_2[1])
         ]
+        if self.mial_phase == 'max':
+            return dict(
+                loss_cls=losses_cls,
+                loss_bbox=losses_bbox)
         return dict(
             loss_cls=losses_cls,
             loss_bbox=losses_bbox,
