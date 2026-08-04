@@ -292,6 +292,64 @@ def _train_plan(
     )
 
 
+def _mial_uncertainty_json(cfg: Dict[str, Any], output_dir: Path, round_index: int) -> Path:
+    round_work_dir = _round_dir(output_dir, round_index)
+    return _round_relative_file(
+        round_work_dir,
+        str(cfg.get('mial_uncertainty_file', 'mial_uncertainty.json')),
+    )
+
+
+def _mial_train_plan(
+    cfg: Dict[str, Any],
+    output_dir: Path,
+    round_index: int,
+    input_paths: Dict[str, Path],
+    seed: int,
+) -> CommandPlan:
+    if int(cfg.get('gpus', 1)) != 1:
+        raise ValueError('MIAL training currently supports --gpus 1 per seed.')
+    round_work_dir = _round_dir(output_dir, round_index)
+    options = {
+        'model.bbox_head.mial_lambda': float(cfg.get('mial_lambda', 0.5)),
+        'mial_topk': int(cfg.get('mial_topk', 10000)),
+    }
+    options.update(cfg.get('mmdet_common_cfg_options', {}))
+    argv = (
+        _python_prefix(cfg)
+        + [
+            'tools/train_mial.py',
+            str(cfg['train_config']),
+            '--work-dir',
+            str(round_work_dir),
+            '--labeled-ann',
+            str(input_paths['labeled']),
+            '--unlabeled-ann',
+            str(input_paths['unlabeled']),
+            '--uncertainty-out',
+            str(_mial_uncertainty_json(cfg, output_dir, round_index)),
+            '--round-index',
+            str(round_index),
+            '--seed',
+            str(seed),
+            '--deterministic',
+            '--gpus',
+            '1',
+            '--launcher',
+            'none',
+            '--cfg-options',
+        ]
+        + _cfg_options(options)
+    )
+    return CommandPlan(
+        'mial_train_round_%02d' % round_index,
+        argv,
+        str(ROOT),
+        round_index=round_index,
+        log_path=str(_round_log_path(output_dir, round_index, 'train.log')),
+    )
+
+
 def _eval_plan(cfg: Dict[str, Any], output_dir: Path, round_index: int) -> CommandPlan:
     round_work_dir = _round_dir(output_dir, round_index)
     latest_ckpt = round_work_dir / 'latest.pth'
@@ -593,6 +651,13 @@ def build_round_plan(
     seed: int,
 ) -> List[PlanStep]:
     input_paths = _input_pool_paths(output_dir, round_index)
+    if method == 'mial':
+        return [
+            _mial_train_plan(cfg, output_dir, round_index, input_paths, seed),
+            _eval_plan(cfg, output_dir, round_index),
+            AcquisitionPlan('mial_acquisition_round_%02d' % round_index, method, round_index),
+        ]
+
     plan: List[PlanStep] = [
         _train_plan(cfg, output_dir, round_index, input_paths, seed),
         _eval_plan(cfg, output_dir, round_index),
@@ -696,9 +761,11 @@ def _step_label(step: PlanStep) -> str:
         ('coreset_acquisition', 'coreset acquisition'),
         ('ppal_uncertainty_acquisition', 'ppal uncertainty acquisition'),
         ('ppal_diversity_acquisition', 'ppal diversity acquisition'),
+        ('mial_acquisition', 'mial acquisition'),
         ('pal_acquisition', 'pal acquisition'),
         ('random_acquisition', 'random acquisition'),
         ('entropy_acquisition', 'entropy acquisition'),
+        ('mial_train', 'mial train'),
         ('train', 'train'),
         ('eval', 'eval'),
     )
@@ -772,6 +839,8 @@ def _train_max_epochs(cfg: Dict[str, Any]) -> Optional[int]:
 
 
 def _progress_kind(step: CommandPlan) -> str:
+    if step.name.startswith('mial_train'):
+        return 'train'
     if step.name.startswith('train'):
         return 'train'
     if (
@@ -798,6 +867,8 @@ def _progress_total_for_step(
     input_paths = _input_pool_paths(output_dir, round_index)
     annotations = _round_annotations(output_dir, round_index)
 
+    if step.name.startswith('mial_train'):
+        return None
     if step.name.startswith('train'):
         image_count = _count_annotation_items(input_paths['labeled'])
         max_epochs = _train_max_epochs(cfg)
@@ -1180,6 +1251,61 @@ def _execute_lightweight_acquisition(
                 'unlabeled_pool_json': str(input_paths['unlabeled']),
                 'labeled_features_npz': str(labeled_features),
                 'unlabeled_features_npz': str(unlabeled_features),
+            },
+            outputs={
+                'labeled_pool_json': str(annotations['labeled']),
+                'unlabeled_pool_json': str(annotations['unlabeled']),
+                'diagnostics_json': str(diagnostics_path),
+                **candidate_outputs,
+            },
+            **diagnostics_extra,
+        )
+        write_diagnostics(diagnostics_path, diagnostics_payload)
+    elif method == 'mial':
+        from methods.mial.acquisition import sample_mial_from_files
+
+        uncertainty_json = _mial_uncertainty_json(cfg, output_dir, round_index)
+        diagnostics = sample_mial_from_files(
+            unlabeled_pool_json=input_paths['unlabeled'],
+            uncertainty_json=uncertainty_json,
+            budget=budget,
+        )
+        selected = diagnostics['selected_image_ids']
+        diagnostics_path = _round_relative_file(
+            round_work_dir,
+            str(cfg.get('mial_diagnostics_file', 'mial_diagnostics.json')),
+        )
+        diagnostics_stage = 'instance_discrepancy'
+        diagnostics_extra = dict(diagnostics)
+        diagnostics_extra.pop('selected_image_ids', None)
+        diagnostics_extra.pop('stage', None)
+        candidate_records = list(diagnostics_extra.pop('candidate_records', []))
+        candidate_artifact_path = _round_relative_file(
+            round_work_dir,
+            str(cfg.get('mial_candidates_file', 'mial_candidates.json')),
+        )
+        candidate_outputs = {
+            'candidates_json': str(candidate_artifact_path),
+        }
+        candidate_artifact = build_candidate_artifact(
+            method='mial',
+            stage=diagnostics_stage,
+            round_index=round_index,
+            budget=budget,
+            candidates=candidate_records,
+            selected_image_ids=selected,
+        )
+        write_candidate_artifact(candidate_artifact_path, candidate_artifact)
+        diagnostics_payload = acquisition_result(
+            method='mial',
+            stage=diagnostics_stage,
+            round_index=round_index,
+            budget=budget,
+            selected_image_ids=selected,
+            inputs={
+                'labeled_pool_json': str(input_paths['labeled']),
+                'unlabeled_pool_json': str(input_paths['unlabeled']),
+                'uncertainty_json': str(uncertainty_json),
             },
             outputs={
                 'labeled_pool_json': str(annotations['labeled']),
@@ -1874,7 +2000,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         '--method',
         default=None,
-        help='Method or alias: ppal, pal, pal:guide, pal/full, pal:lius, ecpal, ecpal:eca, coreset, random, entropy',
+        help='Method or alias: ppal, pal, pal:guide, pal/full, pal:lius, ecpal, ecpal:eca, coreset, mial, random, entropy',
     )
     parser.add_argument('--detector', default=None, help='Catalog detector, e.g. retinanet')
     parser.add_argument('--dataset', default=None, help='Catalog dataset, e.g. voc')

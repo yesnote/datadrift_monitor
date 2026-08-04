@@ -4,4 +4,5 @@ from .al_uncertainty_head import RetinaHeadUncertainty
 from .detection_feature_export_head import RetinaDetectionFeatureExportHead
 from .ecpal_head import RetinaHeadECPAL
 from .image_feature_export_head import RetinaImageFeatureExportHead
+from .mial_head import RetinaHeadMIAL
 from .pal_head import RetinaHeadPAL

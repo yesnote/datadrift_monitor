@@ -42,6 +42,7 @@ _PRESET_NAMES = {
     'ecpal': 'ecpal-retinanet-voc',
     'ecpal_eca': 'ecpal-eca-retinanet-voc',
     'coreset': 'coreset-retinanet-voc',
+    'mial': 'mial-retinanet-voc',
     'random': 'random-retinanet-voc',
     'entropy': 'entropy-retinanet-voc',
 }
