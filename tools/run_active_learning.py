@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import copy
 import json
 import os
 import re
@@ -11,10 +12,12 @@ import shutil
 import subprocess
 import sys
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional, Union
+from threading import Lock
+from typing import Any, Dict, Iterable, List, Optional, Tuple, Union
 
 try:
     from tqdm import tqdm
@@ -24,6 +27,8 @@ except ImportError:  # pragma: no cover - exercised only when tqdm is absent.
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
+
+_PRINT_LOCK = Lock()
 
 from configs.catalog import build_experiment_config, list_presets, resolve_experiment, resolve_method_alias
 
@@ -980,6 +985,7 @@ def _run_subprocess_plan(
     cfg: Dict[str, Any],
     output_dir: Path,
     verbose: bool = False,
+    show_progress: bool = True,
 ) -> None:
     stdout_handle = None
     progress = None
@@ -988,7 +994,7 @@ def _run_subprocess_plan(
             log_path = Path(step.log_path)
             log_path.parent.mkdir(parents=True, exist_ok=True)
             stdout_handle = log_path.open('w', encoding='utf-8')
-        if not verbose:
+        if show_progress and not verbose:
             progress = _new_step_progress(step, cfg, output_dir)
         process = subprocess.Popen(
             step.argv,
@@ -1441,6 +1447,7 @@ def _run_plan_step(
     output_dir: Path,
     seed: int,
     verbose: bool = False,
+    show_progress: bool = True,
 ) -> Dict[str, Any]:
     started = time.time()
     started_at = time.strftime('%Y-%m-%dT%H:%M:%S')
@@ -1455,7 +1462,7 @@ def _run_plan_step(
         result['type'] = 'command'
         if step.log_path:
             result['log_path'] = str(step.log_path)
-        _run_subprocess_plan(step, cfg, output_dir, verbose=verbose)
+        _run_subprocess_plan(step, cfg, output_dir, verbose=verbose, show_progress=show_progress)
     elif isinstance(step, AcquisitionPlan):
         result['type'] = 'acquisition'
         result.update(_run_acquisition_plan(step, cfg, output_dir, seed))
@@ -1492,6 +1499,11 @@ def _format_duration(seconds: float) -> str:
     if hours:
         return '%d:%02d:%02d' % (hours, minutes, seconds)
     return '%02d:%02d' % (minutes, seconds)
+
+
+def _print_runner_line(message: str = '') -> None:
+    with _PRINT_LOCK:
+        print(message, flush=True)
 
 
 def _format_step_result(index: int, total: int, result: Dict[str, Any]) -> str:
@@ -1618,6 +1630,7 @@ def _run_summary_base(
         'start_round': args.start_round,
         'budget': int(cfg.get('budget', 0)),
         'seed': seed,
+        'seed_workers': int(getattr(args, 'seed_workers', 1)),
         'gpus': int(cfg.get('gpus', 1)),
         'output_dir': str(output_dir),
         'plan_path': str(plan_log),
@@ -1635,9 +1648,14 @@ def _seed_output_dir(run_dir: Path, seed: int) -> Path:
 
 
 def _ensure_new_timestamp_run_dir(run_dir: Path) -> None:
-    if run_dir.exists() and any(run_dir.iterdir()):
+    try:
+        run_dir.mkdir(parents=True, exist_ok=False)
+        return
+    except FileExistsError:
+        pass
+    if run_dir.exists():
         raise SystemExit(
-            'Timestamp output directory already exists and is not empty: %s'
+            'Timestamp output directory already exists: %s'
             % _display_path(run_dir)
         )
 
@@ -1670,12 +1688,13 @@ def _print_timestamp_run_header(
     dataset = catalog_selection.preset.dataset if catalog_selection is not None else 'custom'
     print('ALOD run: %s / %s / %s' % (args.method, detector, dataset))
     print(
-        'seeds=%s rounds=%s budget=%s gpus=%s'
+        'seeds=%s rounds=%s budget=%s gpus=%s seed_workers=%s'
         % (
             ','.join(str(seed) for seed in seeds),
             total_rounds,
             int(cfg.get('budget', 0)),
             int(cfg.get('gpus', 1)),
+            int(getattr(args, 'seed_workers', 1)),
         )
     )
     print('output=%s' % _display_path(run_dir))
@@ -1871,6 +1890,7 @@ def _build_aggregate_summary(
         'budget': int(cfg.get('budget', 0)),
         'gpus': int(cfg.get('gpus', 1)),
         'seeds': seeds,
+        'seed_workers': int(getattr(args, 'seed_workers', 1)),
         'seed_runs': seed_runs,
         'rounds_summary': rounds_summary,
     }
@@ -1908,6 +1928,7 @@ def _catalog_epilog() -> str:
         'Examples:',
         '  python -B tools/run_active_learning.py --method pal --detector retinanet --dataset voc --rounds 1 --gpus 1',
         '  python -B tools/run_active_learning.py --method pal --detector retinanet --dataset voc --gpus 1 --seeds 0 1 2',
+        '  python -B tools/run_active_learning.py --method pal --detector retinanet --dataset voc --gpus 1 --seeds 0 1 2 --seed-workers 3',
         '  python -B tools/run_active_learning.py --preset ppal-retinanet-voc --rounds 1 --gpus 1',
         '',
         'Catalog presets:',
@@ -2010,11 +2031,52 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument('--start-round', type=int, default=1, help='First AL round index to execute')
     parser.add_argument('--seed', type=int, default=None, help='Single run seed. Defaults to 0 when --seeds is omitted')
     parser.add_argument('--seeds', type=int, nargs='+', default=None, help='Run one timestamped experiment over multiple seeds')
+    parser.add_argument(
+        '--seed-workers',
+        type=int,
+        default=1,
+        help='Number of seed pipelines to run concurrently. Defaults to sequential execution.',
+    )
     parser.add_argument('--gpus', type=int, default=None, help='Override config gpus for command planning/execution')
     parser.add_argument('--port', type=int, default=None, help='Override distributed master port')
     parser.add_argument('--python-path', default=None, help='Override config python executable')
     parser.add_argument('--verbose', action='store_true', help='Print the full plan and stream subprocess output')
     return parser.parse_args()
+
+
+def _seed_worker_count(args: argparse.Namespace, cfg: Dict[str, Any], seeds: List[int]) -> int:
+    requested_workers = int(getattr(args, 'seed_workers', 1))
+    if requested_workers < 1:
+        raise SystemExit('--seed-workers must be at least 1.')
+    workers = min(requested_workers, len(seeds))
+    if workers > 1:
+        if args.verbose:
+            raise SystemExit('--verbose cannot be combined with --seed-workers > 1.')
+        if int(cfg.get('gpus', 1)) != 1:
+            raise SystemExit('--seed-workers > 1 currently supports --gpus 1 only.')
+    return workers
+
+
+def _read_seed_run_summary_or_failed(seed_dir: Path, seed: int, exc: BaseException) -> Dict[str, Any]:
+    path = _run_summary_path(seed_dir)
+    if path.exists():
+        try:
+            payload = read_json(path)
+        except (OSError, ValueError, TypeError):
+            payload = None
+        if isinstance(payload, dict):
+            if payload.get('status') not in ('done', 'failed'):
+                payload = dict(payload)
+                payload['status'] = 'failed'
+                payload['error'] = str(exc)
+                _write_json(path, payload)
+            return payload
+    return {
+        'status': 'failed',
+        'seed': seed,
+        'output_dir': str(seed_dir),
+        'error': str(exc),
+    }
 
 
 def _run_seed(
@@ -2025,7 +2087,9 @@ def _run_seed(
     total_rounds: int,
     seed: int,
     preparation_results: List[Dict[str, object]],
+    compact_output: bool = False,
 ) -> Dict[str, Any]:
+    seed_prefix = '[seed=%d]' % seed
     init_actions = initialize_round_zero(cfg, output_dir)
     plan: List[PlanStep] = []
     plan_log = _write_plan_log(output_dir, plan)
@@ -2036,25 +2100,39 @@ def _run_seed(
         for action in init_actions:
             print(action)
     elif init_actions:
-        print('initial pools: round_00 annotations ready')
+        if compact_output:
+            _print_runner_line('%s initial pools: round_00 annotations ready' % seed_prefix)
+        else:
+            print('initial pools: round_00 annotations ready')
 
     for round_offset, round_index in enumerate(range(args.start_round, args.start_round + total_rounds), start=1):
+        round_started = time.time()
         round_plan = build_round_plan(cfg, output_dir, args.method, round_index, seed)
         plan.extend(round_plan)
         _write_plan_log(output_dir, plan)
         round_results: List[Dict[str, Any]] = []
-        print('')
-        print('Round %d/%d' % (round_offset, total_rounds))
+        if compact_output:
+            _print_runner_line('%s Round %d/%d started' % (seed_prefix, round_offset, total_rounds))
+        else:
+            print('')
+            print('Round %d/%d' % (round_offset, total_rounds))
         if args.verbose:
             print('round plan:')
             _print_plan(round_plan)
         for step_index, step in enumerate(round_plan, start=1):
             label = _step_label(step)
-            if args.verbose or (tqdm is None and isinstance(step, CommandPlan)):
+            if not compact_output and (args.verbose or (tqdm is None and isinstance(step, CommandPlan))):
                 print('[%d/%d] %-26s running...' % (step_index, len(round_plan), label), flush=True)
             started = time.time()
             try:
-                result = _run_plan_step(step, cfg, output_dir, seed=seed, verbose=args.verbose)
+                result = _run_plan_step(
+                    step,
+                    cfg,
+                    output_dir,
+                    seed=seed,
+                    verbose=args.verbose,
+                    show_progress=not compact_output,
+                )
             except Exception as exc:
                 result = _failed_step_result(step, exc, started)
                 round_results.append(result)
@@ -2066,10 +2144,17 @@ def _run_seed(
                 run_summary['failed_step'] = result
                 run_summary['round_summaries'].append(str(round_summary_path))
                 _write_json(_run_summary_path(output_dir), run_summary)
+                if compact_output:
+                    _print_runner_line(
+                        '%s Round %d/%d failed: %s'
+                        % (seed_prefix, round_offset, total_rounds, result.get('error'))
+                    )
                 if isinstance(exc, RunnerStepError):
                     raise SystemExit(str(exc))
                 raise
             round_results.append(result)
+            if compact_output:
+                continue
             if isinstance(step, AcquisitionPlan) and not args.verbose:
                 print(_format_acquisition_result(result), flush=True)
             elif args.verbose or tqdm is None:
@@ -2080,10 +2165,92 @@ def _run_seed(
         _write_json(round_summary_path, round_payload)
         run_summary['round_summaries'].append(str(round_summary_path))
         _write_json(_run_summary_path(output_dir), run_summary)
+        if compact_output:
+            acquisition = _latest_acquisition_result(round_results)
+            parts = [
+                '%s Round %d/%d done' % (seed_prefix, round_offset, total_rounds),
+                'duration=%s' % _format_duration(time.time() - round_started),
+            ]
+            if acquisition.get('selected_count') is not None:
+                parts.append('selected=%s' % acquisition['selected_count'])
+            _print_runner_line(' '.join(parts))
 
     run_summary['status'] = 'done'
     _write_json(_run_summary_path(output_dir), run_summary)
     return run_summary
+
+
+def _run_seeds(
+    args: argparse.Namespace,
+    cfg: Dict[str, Any],
+    selection: Dict[str, Any],
+    run_dir: Path,
+    total_rounds: int,
+    seeds: List[int],
+    preparation_results: List[Dict[str, object]],
+) -> Tuple[Dict[int, Dict[str, Any]], Dict[int, str]]:
+    workers = _seed_worker_count(args, cfg, seeds)
+    seed_run_summaries: Dict[int, Dict[str, Any]] = {}
+    seed_failures: Dict[int, str] = {}
+
+    if workers == 1:
+        for seed_offset, seed in enumerate(seeds, start=1):
+            print('')
+            print('Seed %d/%d: seed=%d' % (seed_offset, len(seeds), seed))
+            seed_dir = _seed_output_dir(run_dir, seed)
+            seed_run_summaries[seed] = _run_seed(
+                args,
+                cfg,
+                selection,
+                seed_dir,
+                total_rounds,
+                seed,
+                preparation_results,
+            )
+        return seed_run_summaries, seed_failures
+
+    _print_runner_line('')
+    _print_runner_line('Running seed pipelines in parallel: seed_workers=%d' % workers)
+    futures = {}
+    with ThreadPoolExecutor(max_workers=workers) as executor:
+        for seed_offset, seed in enumerate(seeds, start=1):
+            seed_dir = _seed_output_dir(run_dir, seed)
+            _print_runner_line(
+                'Seed %d/%d submitted: seed=%d output=%s'
+                % (seed_offset, len(seeds), seed, _display_path(seed_dir))
+            )
+            future = executor.submit(
+                _run_seed,
+                args,
+                copy.deepcopy(cfg),
+                selection,
+                seed_dir,
+                total_rounds,
+                seed,
+                preparation_results,
+                True,
+            )
+            futures[future] = (seed, seed_dir)
+
+        for future in as_completed(futures):
+            seed, seed_dir = futures[future]
+            try:
+                summary = future.result()
+            except SystemExit as exc:
+                summary = _read_seed_run_summary_or_failed(seed_dir, seed, exc)
+                seed_failures[seed] = str(exc)
+            except Exception as exc:
+                summary = _read_seed_run_summary_or_failed(seed_dir, seed, exc)
+                seed_failures[seed] = str(exc)
+            seed_run_summaries[seed] = summary
+            status = str(summary.get('status', 'unknown'))
+            if status == 'done':
+                _print_runner_line('Seed done: seed=%d output=%s' % (seed, _display_path(seed_dir)))
+            else:
+                reason = seed_failures.get(seed) or str(summary.get('error', 'unknown error'))
+                _print_runner_line('Seed failed: seed=%d output=%s error=%s' % (seed, _display_path(seed_dir), reason))
+
+    return seed_run_summaries, seed_failures
 
 
 def main() -> None:
@@ -2119,26 +2286,22 @@ def main() -> None:
     total_rounds = int(args.rounds if args.rounds is not None else cfg.get('round_num', 1))
     if total_rounds < 1:
         raise ValueError('round count must be positive')
+    args.seed_workers = _seed_worker_count(args, cfg, seeds)
 
     run_id = _run_timestamp()
     run_dir = base_output_dir / run_id
     _ensure_new_timestamp_run_dir(run_dir)
     _print_timestamp_run_header(args, cfg, selection, run_dir, seeds, total_rounds)
 
-    seed_run_summaries: Dict[int, Dict[str, Any]] = {}
-    for seed_offset, seed in enumerate(seeds, start=1):
-        print('')
-        print('Seed %d/%d: seed=%d' % (seed_offset, len(seeds), seed))
-        seed_dir = _seed_output_dir(run_dir, seed)
-        seed_run_summaries[seed] = _run_seed(
-            args,
-            cfg,
-            selection,
-            seed_dir,
-            total_rounds,
-            seed,
-            preparation_results,
-        )
+    seed_run_summaries, seed_failures = _run_seeds(
+        args,
+        cfg,
+        selection,
+        run_dir,
+        total_rounds,
+        seeds,
+        preparation_results,
+    )
 
     aggregate_path = _write_aggregate_summary(
         args,
@@ -2152,8 +2315,11 @@ def main() -> None:
         total_rounds,
     )
     print('')
-    print('ALOD run complete')
     print('aggregate=%s' % _display_path(aggregate_path))
+    if seed_failures:
+        failed = ', '.join('seed=%d' % seed for seed in sorted(seed_failures))
+        raise SystemExit('ALOD run failed for %d seed(s): %s' % (len(seed_failures), failed))
+    print('ALOD run complete')
 
 
 if __name__ == '__main__':
