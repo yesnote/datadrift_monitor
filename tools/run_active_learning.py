@@ -16,6 +16,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
+from queue import Queue
 from threading import Lock
 from typing import Any, Dict, Iterable, List, Optional, Tuple, Union
 
@@ -986,6 +987,7 @@ def _run_subprocess_plan(
     output_dir: Path,
     verbose: bool = False,
     show_progress: bool = True,
+    cpu_affinity: Optional[List[int]] = None,
 ) -> None:
     stdout_handle = None
     progress = None
@@ -1005,6 +1007,11 @@ def _run_subprocess_plan(
             errors='replace',
             env=_subprocess_env(),
         )
+        try:
+            _apply_cpu_affinity(process.pid, cpu_affinity)
+        except Exception:
+            _terminate_process(process)
+            raise
         assert process.stdout is not None
         record = ''
         while True:
@@ -1448,6 +1455,7 @@ def _run_plan_step(
     seed: int,
     verbose: bool = False,
     show_progress: bool = True,
+    cpu_affinity: Optional[List[int]] = None,
 ) -> Dict[str, Any]:
     started = time.time()
     started_at = time.strftime('%Y-%m-%dT%H:%M:%S')
@@ -1462,7 +1470,14 @@ def _run_plan_step(
         result['type'] = 'command'
         if step.log_path:
             result['log_path'] = str(step.log_path)
-        _run_subprocess_plan(step, cfg, output_dir, verbose=verbose, show_progress=show_progress)
+        _run_subprocess_plan(
+            step,
+            cfg,
+            output_dir,
+            verbose=verbose,
+            show_progress=show_progress,
+            cpu_affinity=cpu_affinity,
+        )
     elif isinstance(step, AcquisitionPlan):
         result['type'] = 'acquisition'
         result.update(_run_acquisition_plan(step, cfg, output_dir, seed))
@@ -1612,6 +1627,7 @@ def _run_summary_base(
     plan_log: Path,
     total_rounds: int,
     seed: int,
+    cpu_affinity: Optional[List[int]] = None,
 ) -> Dict[str, Any]:
     catalog_selection = selection.get('catalog_selection')
     detector = None
@@ -1631,6 +1647,8 @@ def _run_summary_base(
         'budget': int(cfg.get('budget', 0)),
         'seed': seed,
         'seed_workers': int(getattr(args, 'seed_workers', 1)),
+        'seed_cpu_cores': getattr(args, 'seed_cpu_cores', None),
+        'cpu_affinity': list(cpu_affinity) if cpu_affinity is not None else None,
         'gpus': int(cfg.get('gpus', 1)),
         'output_dir': str(output_dir),
         'plan_path': str(plan_log),
@@ -1687,16 +1705,16 @@ def _print_timestamp_run_header(
     detector = catalog_selection.preset.detector if catalog_selection is not None else 'custom'
     dataset = catalog_selection.preset.dataset if catalog_selection is not None else 'custom'
     print('ALOD run: %s / %s / %s' % (args.method, detector, dataset))
-    print(
-        'seeds=%s rounds=%s budget=%s gpus=%s seed_workers=%s'
-        % (
-            ','.join(str(seed) for seed in seeds),
-            total_rounds,
-            int(cfg.get('budget', 0)),
-            int(cfg.get('gpus', 1)),
-            int(getattr(args, 'seed_workers', 1)),
-        )
-    )
+    header_parts = [
+        'seeds=%s' % ','.join(str(seed) for seed in seeds),
+        'rounds=%s' % total_rounds,
+        'budget=%s' % int(cfg.get('budget', 0)),
+        'gpus=%s' % int(cfg.get('gpus', 1)),
+        'seed_workers=%s' % int(getattr(args, 'seed_workers', 1)),
+    ]
+    if getattr(args, 'seed_cpu_cores', None) is not None:
+        header_parts.append('seed_cpu_cores=%s' % int(args.seed_cpu_cores))
+    print(' '.join(header_parts))
     print('output=%s' % _display_path(run_dir))
 
 
@@ -1841,6 +1859,7 @@ def _build_aggregate_summary(
             'output_dir': str(seed_dir),
             'run_summary_json': str(_run_summary_path(seed_dir)),
             'round_summary_jsons': round_summary_paths,
+            'cpu_affinity': summary.get('cpu_affinity'),
             'final_metrics': final_metrics,
         })
 
@@ -1891,6 +1910,8 @@ def _build_aggregate_summary(
         'gpus': int(cfg.get('gpus', 1)),
         'seeds': seeds,
         'seed_workers': int(getattr(args, 'seed_workers', 1)),
+        'seed_cpu_cores': getattr(args, 'seed_cpu_cores', None),
+        'cpu_affinity_enabled': getattr(args, 'seed_cpu_cores', None) is not None,
         'seed_runs': seed_runs,
         'rounds_summary': rounds_summary,
     }
@@ -2037,6 +2058,12 @@ def parse_args() -> argparse.Namespace:
         default=1,
         help='Number of seed pipelines to run concurrently. Defaults to sequential execution.',
     )
+    parser.add_argument(
+        '--seed-cpu-cores',
+        type=int,
+        default=None,
+        help='Limit each concurrently running seed pipeline to this many logical CPU cores.',
+    )
     parser.add_argument('--gpus', type=int, default=None, help='Override config gpus for command planning/execution')
     parser.add_argument('--port', type=int, default=None, help='Override distributed master port')
     parser.add_argument('--python-path', default=None, help='Override config python executable')
@@ -2055,6 +2082,86 @@ def _seed_worker_count(args: argparse.Namespace, cfg: Dict[str, Any], seeds: Lis
         if int(cfg.get('gpus', 1)) != 1:
             raise SystemExit('--seed-workers > 1 currently supports --gpus 1 only.')
     return workers
+
+
+def _load_psutil_for_affinity() -> Any:
+    try:
+        import psutil
+    except ImportError as exc:
+        raise ImportError(
+            'psutil is required for --seed-cpu-cores. Install it with `pip install -r requirements.txt`.'
+        ) from exc
+    return psutil
+
+
+def _available_cpu_affinity_ids() -> List[int]:
+    psutil = _load_psutil_for_affinity()
+    process = psutil.Process()
+    if not hasattr(process, 'cpu_affinity'):
+        raise RuntimeError('CPU affinity is not supported by psutil on this platform.')
+    return [int(cpu_id) for cpu_id in process.cpu_affinity()]
+
+
+def _seed_cpu_affinity_slots(seed_workers: int, cores_per_seed: Optional[int]) -> List[Optional[List[int]]]:
+    if seed_workers < 1:
+        raise SystemExit('--seed-workers must be at least 1.')
+    if cores_per_seed is None:
+        return [None for _ in range(seed_workers)]
+    cores_per_seed = int(cores_per_seed)
+    if cores_per_seed < 1:
+        raise SystemExit('--seed-cpu-cores must be at least 1.')
+
+    available = _available_cpu_affinity_ids()
+    required = seed_workers * cores_per_seed
+    if required > len(available):
+        raise SystemExit(
+            '--seed-workers %d with --seed-cpu-cores %d requires %d logical CPU cores, '
+            'but only %d are available to this process: %s'
+            % (seed_workers, cores_per_seed, required, len(available), _format_cpu_affinity(available))
+        )
+    return [
+        available[slot_index * cores_per_seed:(slot_index + 1) * cores_per_seed]
+        for slot_index in range(seed_workers)
+    ]
+
+
+def _format_cpu_affinity(cpu_affinity: Optional[List[int]]) -> str:
+    if not cpu_affinity:
+        return 'none'
+    values = sorted(int(value) for value in cpu_affinity)
+    ranges = []
+    start = values[0]
+    previous = values[0]
+    for value in values[1:]:
+        if value == previous + 1:
+            previous = value
+            continue
+        ranges.append('%d-%d' % (start, previous) if start != previous else str(start))
+        start = value
+        previous = value
+    ranges.append('%d-%d' % (start, previous) if start != previous else str(start))
+    return ','.join(ranges)
+
+
+def _apply_cpu_affinity(pid: int, cpu_affinity: Optional[List[int]]) -> None:
+    if not cpu_affinity:
+        return
+    psutil = _load_psutil_for_affinity()
+    process = psutil.Process(pid)
+    if not hasattr(process, 'cpu_affinity'):
+        raise RuntimeError('CPU affinity is not supported by psutil on this platform.')
+    process.cpu_affinity([int(cpu_id) for cpu_id in cpu_affinity])
+
+
+def _terminate_process(process: subprocess.Popen) -> None:
+    if process.poll() is not None:
+        return
+    process.terminate()
+    try:
+        process.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        process.kill()
+        process.wait()
 
 
 def _read_seed_run_summary_or_failed(seed_dir: Path, seed: int, exc: BaseException) -> Dict[str, Any]:
@@ -2088,12 +2195,22 @@ def _run_seed(
     seed: int,
     preparation_results: List[Dict[str, object]],
     compact_output: bool = False,
+    cpu_affinity: Optional[List[int]] = None,
 ) -> Dict[str, Any]:
     seed_prefix = '[seed=%d]' % seed
     init_actions = initialize_round_zero(cfg, output_dir)
     plan: List[PlanStep] = []
     plan_log = _write_plan_log(output_dir, plan)
-    run_summary = _run_summary_base(args, cfg, selection, output_dir, plan_log, total_rounds, seed)
+    run_summary = _run_summary_base(
+        args,
+        cfg,
+        selection,
+        output_dir,
+        plan_log,
+        total_rounds,
+        seed,
+        cpu_affinity=cpu_affinity,
+    )
     run_summary['preparation'] = preparation_results
     _write_json(_run_summary_path(output_dir), run_summary)
     if args.verbose:
@@ -2132,6 +2249,7 @@ def _run_seed(
                     seed=seed,
                     verbose=args.verbose,
                     show_progress=not compact_output,
+                    cpu_affinity=cpu_affinity,
                 )
             except Exception as exc:
                 result = _failed_step_result(step, exc, started)
@@ -2190,10 +2308,14 @@ def _run_seeds(
     preparation_results: List[Dict[str, object]],
 ) -> Tuple[Dict[int, Dict[str, Any]], Dict[int, str]]:
     workers = _seed_worker_count(args, cfg, seeds)
+    affinity_slots = _seed_cpu_affinity_slots(workers, getattr(args, 'seed_cpu_cores', None))
     seed_run_summaries: Dict[int, Dict[str, Any]] = {}
     seed_failures: Dict[int, str] = {}
 
     if workers == 1:
+        cpu_affinity = affinity_slots[0]
+        if cpu_affinity is not None:
+            print('CPU affinity: cores=%s' % _format_cpu_affinity(cpu_affinity))
         for seed_offset, seed in enumerate(seeds, start=1):
             print('')
             print('Seed %d/%d: seed=%d' % (seed_offset, len(seeds), seed))
@@ -2206,11 +2328,50 @@ def _run_seeds(
                 total_rounds,
                 seed,
                 preparation_results,
+                cpu_affinity=cpu_affinity,
             )
         return seed_run_summaries, seed_failures
 
     _print_runner_line('')
     _print_runner_line('Running seed pipelines in parallel: seed_workers=%d' % workers)
+    if any(slot is not None for slot in affinity_slots):
+        for slot_index, cpu_affinity in enumerate(affinity_slots):
+            _print_runner_line(
+                'CPU affinity slot %d: cores=%s'
+                % (slot_index, _format_cpu_affinity(cpu_affinity))
+            )
+    slot_queue: Queue = Queue()
+    for slot_index in range(workers):
+        slot_queue.put(slot_index)
+
+    def _run_seed_with_affinity_slot(
+        seed_args: argparse.Namespace,
+        seed_cfg: Dict[str, Any],
+        seed_value: int,
+        seed_dir_value: Path,
+    ) -> Dict[str, Any]:
+        slot_index = slot_queue.get()
+        cpu_affinity = affinity_slots[slot_index]
+        try:
+            if cpu_affinity is not None:
+                _print_runner_line(
+                    'Seed started: seed=%d cpu_slot=%d cores=%s'
+                    % (seed_value, slot_index, _format_cpu_affinity(cpu_affinity))
+                )
+            return _run_seed(
+                seed_args,
+                seed_cfg,
+                selection,
+                seed_dir_value,
+                total_rounds,
+                seed_value,
+                preparation_results,
+                True,
+                cpu_affinity=cpu_affinity,
+            )
+        finally:
+            slot_queue.put(slot_index)
+
     futures = {}
     with ThreadPoolExecutor(max_workers=workers) as executor:
         for seed_offset, seed in enumerate(seeds, start=1):
@@ -2220,15 +2381,11 @@ def _run_seeds(
                 % (seed_offset, len(seeds), seed, _display_path(seed_dir))
             )
             future = executor.submit(
-                _run_seed,
+                _run_seed_with_affinity_slot,
                 args,
                 copy.deepcopy(cfg),
-                selection,
-                seed_dir,
-                total_rounds,
                 seed,
-                preparation_results,
-                True,
+                seed_dir,
             )
             futures[future] = (seed, seed_dir)
 

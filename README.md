@@ -105,6 +105,12 @@ Run the three seed pipelines concurrently on the visible GPU:
 python -B tools/run_active_learning.py --method pal --detector retinanet --dataset voc --gpus 1 --seeds 0 1 2 --seed-workers 3
 ```
 
+Limit each concurrent seed pipeline to a fixed CPU core block:
+
+```powershell
+python -B tools/run_active_learning.py --method pal --detector retinanet --dataset voc --gpus 1 --seeds 0 1 2 --seed-workers 3 --seed-cpu-cores 4
+```
+
 The default terminal output is concise. It prepares missing inputs, prints the
 resolved run and output directory, then shows separate progress bars for the
 current round's train, eval, and method inference steps. Acquisition is printed
@@ -112,7 +118,10 @@ as a short result line. Detailed command arguments, MMDetection logs, inference
 logs, input preparation details, and acquisition details are saved under the run
 directory instead of being streamed to the terminal. When `--seed-workers` is
 greater than 1, per-step progress bars are replaced by compact seed/round status
-lines so concurrent seed output does not overwrite itself.
+lines so concurrent seed output does not overwrite itself. `--seed-cpu-cores`
+limits CPU placement only; the visible GPU is still shared by all concurrent
+seed pipelines. Core blocks are assigned to active seed worker slots and reused
+when later seeds start.
 
 Every run is stored under a timestamp directory. Single-seed and multi-seed
 runs use the same layout:
