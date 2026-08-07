@@ -1156,14 +1156,14 @@ def _execute_lightweight_acquisition(
             eps=float(cfg.get('ecpal_eps', 1e-12)),
             weight_eps=float(cfg.get('ecpal_weight_eps', 1e-6)),
             seed=seed,
-            mode=str(cfg.get('ecpal_mode', 'ecd')),
+            mode=str(cfg.get('ecpal_mode', 'eca-full')),
         )
         selected = diagnostics['selected_image_ids']
         diagnostics_path = _round_relative_file(
             round_work_dir,
             str(cfg.get('ecpal_diagnostics_file', 'ecpal_diagnostics.json')),
         )
-        diagnostics_stage = str(diagnostics.get('stage', cfg.get('ecpal_mode', 'ecd')))
+        diagnostics_stage = str(diagnostics.get('stage', cfg.get('ecpal_mode', 'eca-full')))
         diagnostics_extra = dict(diagnostics)
         diagnostics_extra.pop('selected_image_ids', None)
         diagnostics_extra.pop('stage', None)
@@ -2021,7 +2021,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         '--method',
         default=None,
-        help='Method or alias: ppal, pal, pal:guide, pal/full, pal:lius, ecpal, ecpal:eca, coreset, mial, random, entropy',
+        help='Method or alias: ppal, pal, pal:guide, pal:lius, ecpal:eca-only, ecpal:eua-only, ecpal:eca-full, ecpal:eua-full, coreset, mial, random, entropy',
     )
     parser.add_argument('--detector', default=None, help='Catalog detector, e.g. retinanet')
     parser.add_argument('--dataset', default=None, help='Catalog dataset, e.g. voc')

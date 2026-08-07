@@ -11,8 +11,10 @@ from .datasets import DatasetSpec, normalize_token
 PAL_FULL_ALIASES = ('pal', 'pal:full', 'pal/full', 'pal:guide', 'pal/guide')
 PAL_LIUS_ALIASES = ('pal:lius', 'pal/lius')
 PPAL_ALIASES = ('ppal', 'ppal:dcus-ccms', 'ppal/dcus-ccms', 'ppal:full', 'ppal/full')
-ECPAL_ALIASES = ('ecpal', 'ecpal:full', 'ecpal/full')
-ECPAL_ECA_ALIASES = ('ecpal:eca', 'ecpal/eca', 'ecpal:uncertainty', 'ecpal/uncertainty')
+ECPAL_ECA_ONLY_ALIASES = ('ecpal:eca-only', 'ecpal/eca-only')
+ECPAL_EUA_ONLY_ALIASES = ('ecpal:eua-only', 'ecpal/eua-only')
+ECPAL_ECA_FULL_ALIASES = ('ecpal:eca-full', 'ecpal/eca-full')
+ECPAL_EUA_FULL_ALIASES = ('ecpal:eua-full', 'ecpal/eua-full')
 CORESET_ALIASES = ('coreset', 'core-set', 'core_set', 'kcenter', 'k-center')
 MIAL_ALIASES = ('mial', 'mi-aod', 'miaod')
 
@@ -40,8 +42,8 @@ class MethodSpec:
     def default_alias(self) -> str:
         if self.method == 'pal' and self.cfg_overrides.get('pal_mode') == 'lius':
             return 'pal:lius'
-        if self.method == 'ecpal' and self.cfg_overrides.get('ecpal_mode') == 'eca':
-            return 'ecpal:eca'
+        if self.method == 'ecpal':
+            return 'ecpal:%s' % self.cfg_overrides.get('ecpal_mode')
         return self.method
 
     def output_dir(self) -> str:
@@ -60,8 +62,8 @@ class MethodSpec:
             cfg.update(_pal_config(mode='full'))
         elif self.key == 'pal_lius':
             cfg.update(_pal_config(mode='lius'))
-        elif self.key == 'ecpal':
-            cfg.update(_ecpal_config())
+        elif self.key.startswith('ecpal_'):
+            cfg.update(_ecpal_config(str(self.cfg_overrides['ecpal_mode'])))
         elif self.key == 'coreset':
             cfg.update(_coreset_config())
         elif self.key == 'mial':
@@ -129,16 +131,19 @@ def _pal_config(mode: str) -> Dict[str, object]:
     return cfg
 
 
-def _ecpal_config() -> Dict[str, object]:
+def _ecpal_config(mode: str) -> Dict[str, object]:
+    normalized_mode = mode.lower().replace('_', '-')
+    candidate_expand_ratio = 1 if normalized_mode.endswith('-only') else 2
+    file_stem = 'ecpal_%s' % normalized_mode.replace('-', '_')
     return {
-        'ecpal_mode': 'ecd',
-        'ecpal_candidate_expand_ratio': 2,
+        'ecpal_mode': normalized_mode,
+        'ecpal_candidate_expand_ratio': candidate_expand_ratio,
         'ecpal_foreground_iou_threshold': 0.5,
         'ecpal_background_iou_threshold': 0.1,
         'ecpal_eps': 1e-12,
         'ecpal_weight_eps': 1e-6,
-        'ecpal_diagnostics_file': 'ecpal_diagnostics.json',
-        'ecpal_candidates_file': 'ecpal_candidates.json',
+        'ecpal_diagnostics_file': '%s_diagnostics.json' % file_stem,
+        'ecpal_candidates_file': '%s_candidates.json' % file_stem,
         'ecpal_labeled_features': 'ecpal_labeled_features.json',
         'ecpal_unlabeled_features': 'ecpal_unlabeled_features.json',
     }
@@ -192,23 +197,43 @@ METHODS = (
         cfg_overrides={'pal_mode': 'lius'},
     ),
     MethodSpec(
-        key='ecpal',
+        key='ecpal_eca_only',
         method='ecpal',
-        aliases=ECPAL_ALIASES,
-        description='ECPAL error-count prediction acquisition.',
-        output_name='retinanet_voc_ecpal_7rounds_5percent_to_20percent',
+        aliases=ECPAL_ECA_ONLY_ALIASES,
+        description='ECPAL ECA-only uncertainty acquisition.',
+        output_name='retinanet_voc_ecpal_eca_only_7rounds_5percent_to_20percent',
+        cfg_overrides={
+            'ecpal_mode': 'eca-only',
+        },
     ),
     MethodSpec(
-        key='ecpal_eca',
+        key='ecpal_eua_only',
         method='ecpal',
-        aliases=ECPAL_ECA_ALIASES,
-        description='ECPAL ECA-only uncertainty acquisition.',
-        output_name='retinanet_voc_ecpal_eca_7rounds_5percent_to_20percent',
+        aliases=ECPAL_EUA_ONLY_ALIASES,
+        description='ECPAL EUA-only uncertainty acquisition.',
+        output_name='retinanet_voc_ecpal_eua_only_7rounds_5percent_to_20percent',
         cfg_overrides={
-            'ecpal_mode': 'eca',
-            'ecpal_candidate_expand_ratio': 1,
-            'ecpal_diagnostics_file': 'ecpal_eca_diagnostics.json',
-            'ecpal_candidates_file': 'ecpal_eca_candidates.json',
+            'ecpal_mode': 'eua-only',
+        },
+    ),
+    MethodSpec(
+        key='ecpal_eca_full',
+        method='ecpal',
+        aliases=ECPAL_ECA_FULL_ALIASES,
+        description='ECPAL ECA candidate acquisition with ECA-profile diversity.',
+        output_name='retinanet_voc_ecpal_eca_full_7rounds_5percent_to_20percent',
+        cfg_overrides={
+            'ecpal_mode': 'eca-full',
+        },
+    ),
+    MethodSpec(
+        key='ecpal_eua_full',
+        method='ecpal',
+        aliases=ECPAL_EUA_FULL_ALIASES,
+        description='ECPAL EUA candidate acquisition with EUA-profile diversity.',
+        output_name='retinanet_voc_ecpal_eua_full_7rounds_5percent_to_20percent',
+        cfg_overrides={
+            'ecpal_mode': 'eua-full',
         },
     ),
     MethodSpec(
