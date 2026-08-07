@@ -31,7 +31,7 @@ python -B tools/run_active_learning.py --method pal --detector retinanet --datas
 The same option works for other methods:
 
 ```powershell
-python -B tools/run_active_learning.py --method ecpal:eca --detector retinanet --dataset voc --gpus 1 --seeds 0 1 2 --seed-workers 3
+python -B tools/run_active_learning.py --method ecpal:eca-only --detector retinanet --dataset voc --gpus 1 --seeds 0 1 2 --seed-workers 3
 python -B tools/run_active_learning.py --method ppal --detector retinanet --dataset voc --gpus 1 --seeds 0 1 2 --seed-workers 3
 ```
 
@@ -80,4 +80,3 @@ This avoids multiple concurrent tqdm bars overwriting each other.
 - The runner deep-copies the resolved experiment config for each seed worker.
 - Input preparation still runs once before seed workers start.
 - Failed seed summaries are collected before aggregate summary writing.
-

@@ -15,8 +15,12 @@ from methods.ecpal.scoring import (
     actual_mean_counts,
     build_candidate_records,
     inverse_scale_weights,
+    mean_eua_profile,
     score_unlabeled_records,
 )
+
+
+ECPAL_MODES = ('eca-only', 'eua-only', 'eca-full', 'eua-full')
 
 
 def select_ecpal_images(
@@ -31,15 +35,13 @@ def select_ecpal_images(
     eps: float = 1e-12,
     weight_eps: float = 1e-6,
     seed: int = 0,
-    mode: str = 'ecd',
+    mode: str = 'eca-full',
 ) -> Dict[str, Any]:
     normalized_mode = mode.lower().replace('_', '-')
-    if normalized_mode in ('full', 'diversity'):
-        normalized_mode = 'ecd'
-    if normalized_mode in ('uncertainty', 'eca-only'):
-        normalized_mode = 'eca'
-    if normalized_mode not in ('ecd', 'eca'):
+    if normalized_mode not in ECPAL_MODES:
         raise ValueError('Unsupported ECPAL mode: %s' % mode)
+    score_mode = normalized_mode.split('-', 1)[0]
+    use_diversity = normalized_mode.endswith('-full')
 
     labeled_ids = image_ids(dict(labeled_pool))
     unlabeled_ids = image_ids(dict(unlabeled_pool))
@@ -64,21 +66,29 @@ def select_ecpal_images(
     )
     predictors = fit_predictors(label_data)
     mean_counts = actual_mean_counts(label_data.get('image_examples', []))
-    weights = inverse_scale_weights(mean_counts, weight_eps=weight_eps)
+    mean_uncertainties = None
+    if score_mode == 'eca':
+        weights = inverse_scale_weights(mean_counts, weight_eps=weight_eps)
+        scale_basis = 'labeled_true_counts'
+    else:
+        mean_uncertainties = mean_eua_profile(labeled_records, predictors)
+        weights = inverse_scale_weights(mean_uncertainties, weight_eps=weight_eps)
+        scale_basis = 'labeled_predictive_uncertainties'
     scored = score_unlabeled_records(
         unlabeled_records,
         predictors,
         weights,
+        score_mode=score_mode,
         eps=eps,
     )
-    effective_candidate_expand_ratio = 1.0 if normalized_mode == 'eca' else candidate_expand_ratio
+    effective_candidate_expand_ratio = candidate_expand_ratio if use_diversity else 1.0
     candidates = build_candidate_records(
         scored,
         budget=budget,
         candidate_expand_ratio=effective_candidate_expand_ratio,
         source=normalized_mode,
     )
-    if normalized_mode == 'eca':
+    if not use_diversity:
         selected = [candidate['image_id'] for candidate in candidates[:int(budget)]]
         candidate_records = candidates
     else:
@@ -91,6 +101,8 @@ def select_ecpal_images(
     diagnostics = {
         'mode': 'ecpal',
         'stage': normalized_mode,
+        'score_mode': score_mode,
+        'use_diversity': bool(use_diversity),
         'budget': int(budget),
         'candidate_expand_ratio': float(effective_candidate_expand_ratio),
         'thresholds': {
@@ -108,6 +120,8 @@ def select_ecpal_images(
         'label_summary': label_data.get('summary', {}),
         'predictors': predictors.diagnostics,
         'mean_labeled_true_counts': mean_counts,
+        'mean_labeled_uncertainties': mean_uncertainties,
+        'scale_basis': scale_basis,
         'scale_weights': weights,
         'scored_image_count': len(scored),
         'candidate_count': len(candidates),
@@ -135,7 +149,7 @@ def sample_ecpal_from_files(
     eps: float = 1e-12,
     weight_eps: float = 1e-6,
     seed: int = 0,
-    mode: str = 'ecd',
+    mode: str = 'eca-full',
     oracle_json: Optional[Path] = None,
 ) -> Dict[str, Any]:
     """Run ECPAL acquisition from compact feature artifacts.
