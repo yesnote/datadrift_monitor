@@ -21,10 +21,16 @@ work_dirs/<experiment_name>/<MM-DD-YYYY_HH;mm>/
 
 ## Seed Scope
 
-The selected seed is passed to the MMDetection training command through
-`tools/train.py --seed <seed>`.
+The selected seed determines the dataset's deterministic initial labeled and
+unlabeled split. The same dataset and seed always resolve to the same source
+pool, independently of the selected method. A single-seed run, a sequential
+multi-seed run, and a parallel multi-seed run therefore start `seed_0` from the
+same image set.
 
-The same seed is also used by ALOD acquisition code:
+The seed is also passed to the MMDetection training command through
+`tools/train.py --seed <seed>`, so it controls detector training randomness.
+
+Randomized ALOD acquisition operations use the same seed:
 
 - random sampling
 - entropy fallback sampling
@@ -34,9 +40,12 @@ The same seed is also used by ALOD acquisition code:
 PPAL DCUS is deterministic for a fixed model and inference artifact, so it does
 not need a separate random seed.
 
+In summary, one selected seed consistently controls the initial split,
+detector training, and randomized acquisition. Method selection does not alter
+the initial source pool.
+
 ## Aggregate Summary
 
 `aggregate_summary.json` is always written, even when only one seed is run. It
 collects seed run paths and round-wise mAP/AP50 values from each
 `seed_*/round_XX/eval_*.json`, then reports mean and standard deviation.
-

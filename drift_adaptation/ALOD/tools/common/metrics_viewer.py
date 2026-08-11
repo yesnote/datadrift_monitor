@@ -43,10 +43,15 @@ def _load_eval_metrics(seed_dir: Path, round_index: int) -> Dict[str, float]:
 
 
 def _labeled_count(seed_dir: Path, round_index: int) -> Optional[int]:
-    if round_index <= 0:
+    if round_index <= 1:
         path = seed_dir / 'round_00' / 'annotations' / 'labeled.json'
     else:
-        path = seed_dir / ('round_%02d' % round_index) / 'annotations' / 'new_labeled.json'
+        path = (
+            seed_dir
+            / ('round_%02d' % (round_index - 1))
+            / 'annotations'
+            / 'new_labeled.json'
+        )
     if not path.exists():
         return None
     try:
@@ -270,4 +275,3 @@ def load_round_summary_frame(runs: Sequence[RunRef]):
                     **metrics,
                 })
     return pd.DataFrame(rows)
-

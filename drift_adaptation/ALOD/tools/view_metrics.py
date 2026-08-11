@@ -108,7 +108,10 @@ def _validation_section(runs: List[RunRef]) -> None:
         return
 
     metric_options = sorted(df['metric'].dropna().unique().tolist())
-    default_metrics = [metric for metric in ('mAP', 'AP50') if metric in metric_options] or metric_options[:1]
+    preferred_metrics = ('mAP', 'AP50', 'bbox_mAP', 'bbox_mAP_50')
+    default_metrics = [
+        metric for metric in preferred_metrics if metric in metric_options
+    ] or metric_options[:1]
     selected_metrics = st.multiselect('Validation metrics', metric_options, default=default_metrics)
 
     show_seeds = st.checkbox('Show seed curves', value=True)
@@ -130,7 +133,11 @@ def _validation_section(runs: List[RunRef]) -> None:
     curves = sorted(plot_df['curve_label'].unique().tolist())
     default_curves = [
         curve for curve in curves
-        if (' mean ' in (' ' + curve + ' ')) or curve.endswith(' mean mAP') or curve.endswith(' mean AP50')
+        if (' mean ' in (' ' + curve + ' '))
+        or curve.endswith(' mean mAP')
+        or curve.endswith(' mean AP50')
+        or curve.endswith(' mean bbox_mAP')
+        or curve.endswith(' mean bbox_mAP_50')
     ] or curves
     selected_curves = st.multiselect('Validation curves', curves, default=default_curves)
     plot_df = plot_df[plot_df['curve_label'].isin(selected_curves)]
@@ -172,7 +179,8 @@ def _validation_section(runs: List[RunRef]) -> None:
         columns = [
             column for column in [
                 'method', 'dataset', 'run_id', 'seed', 'round',
-                'labeled_images', 'duration_min', 'mAP', 'AP50'
+                'labeled_images', 'duration_min', 'mAP', 'AP50',
+                'bbox_mAP', 'bbox_mAP_50', 'bbox_mAP_75'
             ]
             if column in table_df.columns
         ]
@@ -263,7 +271,9 @@ def main() -> None:
     args = _parse_args()
     st.set_page_config(page_title='ALOD Metrics', layout='wide')
     st.title('ALOD Metrics Dashboard')
-    st.caption('Read-only train loss/lr and validation mAP/AP50 viewer for ALOD work_dirs.')
+    st.caption(
+        'Read-only train loss/lr and validation VOC/COCO metric viewer for ALOD work_dirs.'
+    )
 
     with st.sidebar:
         st.header('Run Selection')

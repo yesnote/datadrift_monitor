@@ -12,6 +12,32 @@ from .methods import list_methods, normalize_method_alias, resolve_method_alias 
 from .methods import resolve_method_spec
 
 
+DATASET_OWNED_CONFIG_KEYS = frozenset({
+    'dataset_name',
+    'oracle_path',
+    'init_label_json',
+    'init_unlabeled_json',
+    'init_label_json_template',
+    'init_unlabeled_json_template',
+    'dataset_prep',
+    'image_root',
+})
+
+
+def validate_no_dataset_owned_overrides(
+    fragment: Dict[str, object],
+    fragment_name: str,
+) -> None:
+    """Reject non-dataset catalog fragments that redefine dataset inputs."""
+
+    overridden = sorted(DATASET_OWNED_CONFIG_KEYS.intersection(fragment))
+    if overridden:
+        raise ValueError(
+            '%s cannot override dataset-owned config key(s): %s'
+            % (fragment_name, ', '.join(overridden))
+        )
+
+
 @dataclass(frozen=True)
 class ExperimentPreset:
     name: str
@@ -35,25 +61,29 @@ class CatalogSelection:
     dataset_spec: Optional[DatasetSpec] = None
 
 
-_PRESET_NAMES = {
-    'ppal': 'ppal-retinanet-voc',
-    'pal_full': 'pal-retinanet-voc',
-    'pal_lius': 'pal-lius-retinanet-voc',
-    'ecpal_eca_only': 'ecpal-eca-only-retinanet-voc',
-    'ecpal_eua_only': 'ecpal-eua-only-retinanet-voc',
-    'ecpal_eca_full': 'ecpal-eca-full-retinanet-voc',
-    'ecpal_eua_full': 'ecpal-eua-full-retinanet-voc',
-    'coreset': 'coreset-retinanet-voc',
-    'mial': 'mial-retinanet-voc',
-    'random': 'random-retinanet-voc',
-    'entropy': 'entropy-retinanet-voc',
+_PRESET_TOKENS = {
+    'ppal': 'ppal',
+    'pal_full': 'pal',
+    'pal_lius': 'pal-lius',
+    'ecpal_eca_only': 'ecpal-eca-only',
+    'ecpal_eua_only': 'ecpal-eua-only',
+    'ecpal_eca_full': 'ecpal-eca-full',
+    'ecpal_eua_full': 'ecpal-eua-full',
+    'coreset': 'coreset',
+    'mial': 'mial',
+    'random': 'random',
+    'entropy': 'entropy',
 }
 
 
 def _build_preset(method: MethodSpec, detector: DetectorSpec, dataset: DatasetSpec) -> ExperimentPreset:
     method_description = method.description.rstrip('.')
     return ExperimentPreset(
-        name=_PRESET_NAMES[method.key],
+        name='%s-%s-%s' % (
+            _PRESET_TOKENS[method.key],
+            detector.name,
+            dataset.name,
+        ),
         method_key=method.key,
         method=method.method,
         detector=detector.name,
@@ -153,8 +183,30 @@ def build_experiment_config(selection: CatalogSelection) -> Dict[str, object]:
         'port': 29500,
         'gpus': gpus,
     }
-    cfg.update(selection.dataset_spec.to_config())
-    cfg.update(selection.detector_spec.to_config())
-    cfg.update(selection.method_spec.to_config(selection.dataset_spec, gpus=gpus))
+    dataset_cfg = selection.dataset_spec.to_config()
+    detector_cfg = selection.detector_spec.to_config(
+        selection.dataset_spec.name,
+        selection.method_spec.key,
+    )
+    method_cfg = selection.method_spec.to_config(
+        selection.dataset_spec,
+        selection.detector_spec.name,
+        gpus=gpus,
+    )
+    validate_no_dataset_owned_overrides(
+        detector_cfg,
+        'Detector catalog fragment %r' % selection.detector_spec.name,
+    )
+    validate_no_dataset_owned_overrides(
+        method_cfg,
+        'Method catalog fragment %r' % selection.method_spec.key,
+    )
+    validate_no_dataset_owned_overrides(
+        selection.cfg_overrides,
+        'Method catalog overrides %r' % selection.method_alias,
+    )
+    cfg.update(dataset_cfg)
+    cfg.update(detector_cfg)
+    cfg.update(method_cfg)
     cfg.update(selection.cfg_overrides)
     return cfg

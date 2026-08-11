@@ -4,12 +4,10 @@ from __future__ import annotations
 
 import xml.etree.ElementTree as ET
 from pathlib import Path
-from typing import Any, Dict, List, Sequence, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
-import numpy as np
-
-from methods.common.coco_pool import build_coco_subset
 from methods.common.io import read_json, write_json
+from tools.common.dataset_pools import ensure_seeded_initial_splits
 
 
 VOC_CLASSES = (
@@ -133,41 +131,11 @@ def build_voc0712_oracle(vocdevkit: Path, split: str = 'trainval') -> Dict[str, 
     }
 
 
-def write_initial_splits(
-    oracle: Dict[str, Any],
-    output_dir: Path,
-    n_labeled: int,
-    n_diff: int,
-    seed: int,
-    dataset_prefix: str = 'voc',
-) -> List[Tuple[Path, Path]]:
-    if n_labeled <= 0:
-        raise ValueError('n_labeled must be positive')
-    all_images = oracle['images']
-    if n_labeled >= len(all_images):
-        raise ValueError('n_labeled must be smaller than image count')
-
-    rng = np.random.RandomState(seed)
-    written = []
-    for split_index in range(1, n_diff + 1):
-        permutation = rng.permutation(len(all_images))
-        labeled_indices = set(int(index) for index in permutation[:n_labeled])
-        labeled_ids = [int(all_images[index]['id']) for index in labeled_indices]
-        unlabeled_ids = [
-            int(image['id']) for index, image in enumerate(all_images)
-            if index not in labeled_indices
-        ]
-
-        stem = '%s_%d' % (dataset_prefix, n_labeled)
-        labeled_path = Path(output_dir) / ('%s_labeled_%d.json' % (stem, split_index))
-        unlabeled_path = Path(output_dir) / ('%s_unlabeled_%d.json' % (stem, split_index))
-        write_json(labeled_path, build_coco_subset(oracle, labeled_ids, include_annotations=True))
-        write_json(unlabeled_path, build_coco_subset(oracle, unlabeled_ids, include_annotations=False))
-        written.append((labeled_path, unlabeled_path))
-    return written
-
-
-def ensure_voc_active_learning(voc_cfg: Dict[str, object], root: Path) -> Dict[str, object]:
+def ensure_voc_active_learning(
+    voc_cfg: Dict[str, object],
+    root: Path,
+    seeds: Optional[Sequence[int]] = None,
+) -> Dict[str, object]:
     vocdevkit = Path(str(voc_cfg.get('vocdevkit', 'data/VOCdevkit')))
     oracle_output = Path(str(voc_cfg.get('oracle_output', 'data/VOC0712/annotations/trainval_0712.json')))
     split_output_dir = Path(str(voc_cfg.get('split_output_dir', 'data/active_learning/voc')))
@@ -179,59 +147,33 @@ def ensure_voc_active_learning(voc_cfg: Dict[str, object], root: Path) -> Dict[s
         split_output_dir = Path(root) / split_output_dir
 
     n_labeled = int(voc_cfg.get('n_labeled', 827))
-    n_diff = int(voc_cfg.get('n_diff', 1))
-    seed = int(voc_cfg.get('seed', 0))
     split = str(voc_cfg.get('split', 'trainval'))
     dataset_prefix = str(voc_cfg.get('dataset_prefix', 'voc'))
-
-    expected_splits = []
-    stem = '%s_%d' % (dataset_prefix, n_labeled)
-    for split_index in range(1, n_diff + 1):
-        expected_splits.append((
-            split_output_dir / ('%s_labeled_%d.json' % (stem, split_index)),
-            split_output_dir / ('%s_unlabeled_%d.json' % (stem, split_index)),
-        ))
-
-    existing = oracle_output.exists() and all(
-        labeled.exists() and unlabeled.exists()
-        for labeled, unlabeled in expected_splits
-    )
-    if existing:
-        return {
-            'component': 'dataset',
-            'type': 'voc0712',
-            'status': 'ready',
-            'action': 'kept',
-            'oracle_path': str(oracle_output),
-            'split_paths': [
-                {'labeled': str(labeled), 'unlabeled': str(unlabeled)}
-                for labeled, unlabeled in expected_splits
-            ],
-        }
 
     oracle = (
         read_json(oracle_output)
         if oracle_output.exists()
         else build_voc0712_oracle(vocdevkit, split=split)
     )
-    if not oracle_output.exists():
+    oracle_created = not oracle_output.exists()
+    if oracle_created:
         write_json(oracle_output, oracle)
-    written = write_initial_splits(
+
+    split_paths = ensure_seeded_initial_splits(
         oracle,
         output_dir=split_output_dir,
-        n_labeled=n_labeled,
-        n_diff=n_diff,
-        seed=seed,
         dataset_prefix=dataset_prefix,
+        n_labeled=n_labeled,
+        seeds=[0] if seeds is None else seeds,
+    )
+    pools_created = any(
+        record.get('status') == 'created' for record in split_paths
     )
     return {
         'component': 'dataset',
         'type': 'voc0712',
         'status': 'ready',
-        'action': 'created',
+        'action': 'created' if oracle_created or pools_created else 'kept',
         'oracle_path': str(oracle_output),
-        'split_paths': [
-            {'labeled': str(labeled), 'unlabeled': str(unlabeled)}
-            for labeled, unlabeled in written
-        ],
+        'split_paths': split_paths,
     }
