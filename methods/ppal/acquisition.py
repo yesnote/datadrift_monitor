@@ -26,7 +26,7 @@ class PPALStep:
 
 PPAL_STEPS = (
     PPALStep('train', 'Train RetinaNet with the labeled pool.'),
-    PPALStep('eval', 'Evaluate the current checkpoint on VOC test data.'),
+    PPALStep('eval', 'Evaluate the current checkpoint on the configured validation data.'),
     PPALStep('uncertainty_inference', 'Run RetinaHeadUncertainty on unlabeled data.'),
     PPALStep('dcus_acquisition', 'Select the expanded uncertainty pool with DCUS.'),
     PPALStep('feature_inference', 'Export detector features for the uncertainty pool.'),

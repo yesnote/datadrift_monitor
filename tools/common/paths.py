@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 from methods.common.paths import is_relative_to
@@ -28,6 +29,21 @@ def resolve_repo_path(
         raise ValueError('Config path must stay inside the repo root: %s' % value)
     assert_not_code_refs(resolved, repo_root)
     return resolved
+
+
+def resolve_repo_input_path(value: str, root: Path) -> Path:
+    """Resolve a repo-relative input while allowing an external junction target."""
+
+    path = Path(value)
+    if path.is_absolute():
+        raise ValueError('Config input path must be relative to the repo root: %s' % value)
+    repo_root = Path(root).resolve()
+    lexical = Path(os.path.abspath(str(Path(root) / path)))
+    if not is_relative_to(lexical, repo_root):
+        raise ValueError('Config input path must start inside the repo root: %s' % value)
+    assert_not_code_refs(lexical, repo_root)
+    assert_not_code_refs(lexical.resolve(), repo_root)
+    return lexical
 
 
 def display_path(path: Path, root: Path) -> str:

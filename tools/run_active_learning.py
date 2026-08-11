@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import copy
+import hashlib
 import json
 import os
 import re
@@ -17,6 +18,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from queue import Queue
+from string import Formatter
 from threading import Lock
 from typing import Any, Dict, Iterable, List, Optional, Tuple, Union
 
@@ -32,6 +34,7 @@ if str(ROOT) not in sys.path:
 _PRINT_LOCK = Lock()
 
 from configs.catalog import build_experiment_config, list_presets, resolve_experiment, resolve_method_alias
+from configs.catalog.experiments import validate_no_dataset_owned_overrides
 
 from methods.common.candidates import (
     build_candidate_artifact,
@@ -48,6 +51,7 @@ from tools.common.paths import (
     assert_not_code_refs as tool_assert_not_code_refs,
     display_path as tool_display_path,
     is_relative_to,
+    resolve_repo_input_path as tool_resolve_repo_input_path,
     resolve_repo_path as tool_resolve_repo_path,
 )
 from tools.common.preparation import prepare_required_inputs
@@ -98,12 +102,41 @@ class AcquisitionPlan:
 PlanStep = Union[CommandPlan, AcquisitionPlan]
 
 
+@dataclass(frozen=True)
+class PoolFileIdentity:
+    path: Path
+    image_count: int
+    image_ids_sha256: str
+
+
+@dataclass(frozen=True)
+class InitialPoolSource:
+    seed: int
+    policy: str
+    labeled: PoolFileIdentity
+    unlabeled: PoolFileIdentity
+
+    def summary(self) -> Dict[str, Any]:
+        return {
+            'policy': self.policy,
+            'seed': self.seed,
+            'labeled_count': self.labeled.image_count,
+            'unlabeled_count': self.unlabeled.image_count,
+            'labeled_image_ids_sha256': self.labeled.image_ids_sha256,
+            'unlabeled_image_ids_sha256': self.unlabeled.image_ids_sha256,
+        }
+
+
 def _assert_not_code_refs(path: Path) -> None:
     tool_assert_not_code_refs(path, ROOT)
 
 
 def _resolve_repo_path(value: str, must_be_relative: bool = True) -> Path:
     return tool_resolve_repo_path(value, ROOT, must_be_relative=must_be_relative)
+
+
+def _resolve_input_path(value: str) -> Path:
+    return tool_resolve_repo_input_path(value, ROOT)
 
 
 def _display_path(path: Path) -> str:
@@ -118,8 +151,9 @@ def load_experiment_config(config_path: Path) -> Dict[str, Any]:
 
 
 def validate_experiment_config_paths(cfg: Dict[str, Any]) -> None:
+    if cfg.get('oracle_path'):
+        _resolve_input_path(str(cfg['oracle_path']))
     path_keys = (
-        'oracle_path',
         'init_label_json',
         'init_unlabeled_json',
         'train_config',
@@ -139,21 +173,150 @@ def validate_experiment_config_paths(cfg: Dict[str, Any]) -> None:
         _resolve_repo_path(str(cfg['init_model']))
 
 
-def validate_initial_pool_files(cfg: Dict[str, Any]) -> None:
+def _initial_pool_path(cfg: Dict[str, Any], key: str, seed: int) -> Optional[Path]:
+    template = cfg.get('%s_template' % key)
+    value = str(template).format(seed=int(seed)) if template else cfg.get(key)
+    if not value:
+        return None
+    return _resolve_repo_path(str(value))
+
+
+def validate_initial_pool_config(cfg: Dict[str, Any], seeds: Iterable[int]) -> str:
+    seed_list = list(seeds)
+    label_template = cfg.get('init_label_json_template')
+    unlabeled_template = cfg.get('init_unlabeled_json_template')
+    label_path = cfg.get('init_label_json')
+    unlabeled_path = cfg.get('init_unlabeled_json')
+
+    if bool(label_template) != bool(unlabeled_template):
+        raise ValueError(
+            'init_label_json_template and init_unlabeled_json_template must be configured together.'
+        )
+    if bool(label_path) != bool(unlabeled_path):
+        raise ValueError('init_label_json and init_unlabeled_json must be configured together.')
+
+    if label_template and unlabeled_template:
+        for key, value in (
+            ('init_label_json_template', label_template),
+            ('init_unlabeled_json_template', unlabeled_template),
+        ):
+            try:
+                fields = {
+                    field_name
+                    for _, field_name, _, _ in Formatter().parse(str(value))
+                    if field_name is not None
+                }
+            except ValueError as exc:
+                raise ValueError('Invalid %s: %s' % (key, value)) from exc
+            if fields != {'seed'}:
+                raise ValueError('%s must contain only the {seed} field: %s' % (key, value))
+        return 'seed_specific'
+
+    if not label_path or not unlabeled_path:
+        raise ValueError('Initial labeled and unlabeled pool paths are required.')
+    if len(seed_list) > 1:
+        raise ValueError(
+            'Multi-seed runs require init_label_json_template and '
+            'init_unlabeled_json_template with {seed}; fixed paths are supported only '
+            'for single-seed custom configs.'
+        )
+    return 'fixed_single_seed'
+
+
+def _pool_file_identity(path: Path) -> PoolFileIdentity:
+    payload = read_json(path)
+    images = payload.get('images') if isinstance(payload, dict) else None
+    if not isinstance(images, list):
+        raise ValueError('Initial pool JSON must contain an images list: %s' % _display_path(path))
+
+    canonical_ids = []
+    for index, image in enumerate(images):
+        if not isinstance(image, dict) or 'id' not in image:
+            raise ValueError(
+                'Initial pool image at index %d has no id: %s'
+                % (index, _display_path(path))
+            )
+        image_id = image['id']
+        if isinstance(image_id, bool) or not isinstance(image_id, (int, str)):
+            raise ValueError(
+                'Initial pool image id must be an integer or string: %s'
+                % _display_path(path)
+            )
+        canonical_ids.append(json.dumps(image_id, ensure_ascii=True, separators=(',', ':')))
+
+    if len(canonical_ids) != len(set(canonical_ids)):
+        raise ValueError('Initial pool contains duplicate image ids: %s' % _display_path(path))
+    canonical_ids.sort()
+    encoded = json.dumps(canonical_ids, ensure_ascii=True, separators=(',', ':')).encode('utf-8')
+    return PoolFileIdentity(
+        path=path,
+        image_count=len(canonical_ids),
+        image_ids_sha256=hashlib.sha256(encoded).hexdigest(),
+    )
+
+
+def resolve_initial_pool_sources(
+    cfg: Dict[str, Any],
+    seeds: Iterable[int],
+    policy: str,
+) -> Dict[int, InitialPoolSource]:
+    resolved_paths: Dict[int, Tuple[Path, Path]] = {}
     missing = []
-    for key in ('init_label_json', 'init_unlabeled_json'):
-        value = cfg.get(key)
-        if not value:
-            missing.append('%s is not configured' % key)
-            continue
-        path = _resolve_repo_path(str(value))
-        if not path.exists():
-            missing.append('%s=%s' % (key, _display_path(path)))
+    for seed in seeds:
+        labeled = _initial_pool_path(cfg, 'init_label_json', seed)
+        unlabeled = _initial_pool_path(cfg, 'init_unlabeled_json', seed)
+        if labeled is None or unlabeled is None:
+            raise ValueError('Initial pool paths are not configured for seed=%d.' % seed)
+        if labeled == unlabeled:
+            raise ValueError(
+                'Initial labeled and unlabeled pool paths resolve identically for seed=%d: %s'
+                % (seed, _display_path(labeled))
+            )
+        resolved_paths[int(seed)] = (labeled, unlabeled)
+        for key, path in (('init_label_json', labeled), ('init_unlabeled_json', unlabeled)):
+            if not path.exists():
+                missing.append('%s(seed=%d)=%s' % (key, seed, _display_path(path)))
     if missing:
         raise SystemExit(
             'Missing initial pool file(s) after automatic preparation: %s'
             % ', '.join(missing)
         )
+
+    seen_paths: Dict[Path, Tuple[int, str]] = {}
+    for seed, paths in resolved_paths.items():
+        for label, path in (('labeled', paths[0]), ('unlabeled', paths[1])):
+            if path in seen_paths:
+                previous_seed, previous_label = seen_paths[path]
+                raise ValueError(
+                    'Initial pool paths resolve identically for seed=%d (%s) and '
+                    'seed=%d (%s): %s'
+                    % (previous_seed, previous_label, seed, label, _display_path(path))
+                )
+            seen_paths[path] = (seed, label)
+
+    sources = {
+        seed: InitialPoolSource(
+            seed=seed,
+            policy=policy,
+            labeled=_pool_file_identity(paths[0]),
+            unlabeled=_pool_file_identity(paths[1]),
+        )
+        for seed, paths in resolved_paths.items()
+    }
+    labeled_fingerprints: Dict[Tuple[int, str], int] = {}
+    for seed, source in sources.items():
+        fingerprint = (
+            source.labeled.image_count,
+            source.labeled.image_ids_sha256,
+        )
+        if fingerprint in labeled_fingerprints:
+            previous_seed = labeled_fingerprints[fingerprint]
+            raise ValueError(
+                'Different seeds resolved to the same labeled initial pool: '
+                'seed=%d and seed=%d.' % (previous_seed, seed)
+            )
+        labeled_fingerprints[fingerprint] = seed
+    return sources
 
 
 def apply_cli_overrides(cfg: Dict[str, Any], args: argparse.Namespace) -> None:
@@ -225,32 +388,42 @@ def _round_annotations(output_dir: Path, round_index: int) -> Dict[str, Path]:
     }
 
 
-def initialize_round_zero(cfg: Dict[str, Any], output_dir: Path) -> List[str]:
+def initialize_round_zero(
+    initial_pool: InitialPoolSource,
+    output_dir: Path,
+) -> List[str]:
     ann_dir = _round_dir(output_dir, 0) / 'annotations'
     ann_dir.mkdir(parents=True, exist_ok=True)
     actions = []
-    missing_initial_pool = False
     copies = (
-        ('init_label_json', ann_dir / 'labeled.json'),
-        ('init_unlabeled_json', ann_dir / 'unlabeled.json'),
+        (initial_pool.labeled, ann_dir / 'labeled.json'),
+        (initial_pool.unlabeled, ann_dir / 'unlabeled.json'),
     )
-    for key, target in copies:
-        source_value = cfg.get(key)
-        if not source_value:
-            actions.append('%s is not configured; skipped %s' % (key, _display_path(target)))
-            continue
-        source = _resolve_repo_path(str(source_value))
-        if not source.exists():
-            actions.append('missing %s; skipped %s' % (_display_path(source), _display_path(target)))
-            missing_initial_pool = True
-            continue
+    for source_identity, target in copies:
+        source = source_identity.path
         if target.exists():
+            target_identity = _pool_file_identity(target)
+            if (
+                target_identity.image_count != source_identity.image_count
+                or target_identity.image_ids_sha256 != source_identity.image_ids_sha256
+            ):
+                raise ValueError(
+                    'Existing round_00 pool does not match its source for seed=%d: %s'
+                    % (initial_pool.seed, _display_path(target))
+                )
             actions.append('kept existing %s' % _display_path(target))
             continue
         shutil.copy2(str(source), str(target))
+        target_identity = _pool_file_identity(target)
+        if (
+            target_identity.image_count != source_identity.image_count
+            or target_identity.image_ids_sha256 != source_identity.image_ids_sha256
+        ):
+            raise RuntimeError(
+                'Copied round_00 pool does not match its source for seed=%d: %s'
+                % (initial_pool.seed, _display_path(target))
+            )
         actions.append('copied %s -> %s' % (_display_path(source), _display_path(target)))
-    if missing_initial_pool:
-        actions.append('initial pool files are missing after automatic preparation')
     return actions
 
 
@@ -371,7 +544,7 @@ def _eval_plan(cfg: Dict[str, Any], output_dir: Path, round_index: int) -> Comma
             '--launcher',
             _launcher_value(cfg),
             '--eval',
-            'mAP',
+            str(cfg.get('eval_metric', 'mAP')),
         ]
     )
     if options:
@@ -1333,7 +1506,7 @@ def _execute_lightweight_acquisition(
         raise ValueError('Unsupported lightweight acquisition method: %s' % method)
 
     write_next_round_pool_split(
-        _resolve_repo_path(str(cfg['oracle_path'])),
+        _resolve_input_path(str(cfg['oracle_path'])),
         input_paths['labeled'],
         selected,
         annotations['labeled'],
@@ -1627,6 +1800,7 @@ def _run_summary_base(
     plan_log: Path,
     total_rounds: int,
     seed: int,
+    initial_pool: InitialPoolSource,
     cpu_affinity: Optional[List[int]] = None,
 ) -> Dict[str, Any]:
     catalog_selection = selection.get('catalog_selection')
@@ -1653,6 +1827,7 @@ def _run_summary_base(
         'output_dir': str(output_dir),
         'plan_path': str(plan_log),
         'config_paths': _config_path_summary(cfg),
+        'initial_pool': initial_pool.summary(),
         'round_summaries': [],
     }
 
@@ -1718,7 +1893,17 @@ def _print_timestamp_run_header(
     print('output=%s' % _display_path(run_dir))
 
 
-def _read_eval_json_metrics(round_dir: Path) -> Optional[Dict[str, float]]:
+def _summary_metric_names(cfg: Dict[str, Any]) -> Tuple[str, ...]:
+    names = cfg.get('summary_metrics', ('mAP', 'AP50'))
+    if isinstance(names, str):
+        return (names,)
+    return tuple(str(name) for name in names)
+
+
+def _read_eval_json_metrics(
+    round_dir: Path,
+    metric_names: Iterable[str],
+) -> Optional[Dict[str, float]]:
     paths = sorted(round_dir.glob('eval_*.json'))
     for path in reversed(paths):
         try:
@@ -1729,7 +1914,7 @@ def _read_eval_json_metrics(round_dir: Path) -> Optional[Dict[str, float]]:
         if not isinstance(metric, dict):
             continue
         values = {}
-        for key in ('mAP', 'AP50'):
+        for key in metric_names:
             if metric.get(key) is not None:
                 values[key] = float(metric[key])
         if values:
@@ -1737,7 +1922,10 @@ def _read_eval_json_metrics(round_dir: Path) -> Optional[Dict[str, float]]:
     return None
 
 
-def _read_eval_log_metrics(round_summary: Dict[str, Any]) -> Optional[Dict[str, float]]:
+def _read_eval_log_metrics(
+    round_summary: Dict[str, Any],
+    metric_names: Iterable[str],
+) -> Optional[Dict[str, float]]:
     steps = round_summary.get('steps', [])
     if not isinstance(steps, list):
         return None
@@ -1757,18 +1945,24 @@ def _read_eval_log_metrics(round_summary: Dict[str, Any]) -> Optional[Dict[str, 
     except OSError:
         return None
     values = {}
-    for key in ('mAP', 'AP50'):
+    for key in metric_names:
         match = re.search(r"\('%s',\s*([0-9.eE+-]+)\)" % re.escape(key), text)
         if match:
             values[key] = float(match.group(1))
     return values or None
 
 
-def _round_metrics(seed_dir: Path, round_index: int, round_summary: Dict[str, Any]) -> Dict[str, float]:
+def _round_metrics(
+    cfg: Dict[str, Any],
+    seed_dir: Path,
+    round_index: int,
+    round_summary: Dict[str, Any],
+) -> Dict[str, float]:
     round_dir = _round_dir(seed_dir, round_index)
-    metrics = _read_eval_json_metrics(round_dir)
+    metric_names = _summary_metric_names(cfg)
+    metrics = _read_eval_json_metrics(round_dir, metric_names)
     if metrics is None:
-        metrics = _read_eval_log_metrics(round_summary)
+        metrics = _read_eval_log_metrics(round_summary, metric_names)
     return metrics or {}
 
 
@@ -1846,7 +2040,12 @@ def _build_aggregate_summary(
             if round_summary is None:
                 continue
             round_summary_paths.append(str(_round_summary_path(seed_dir, round_index)))
-            per_round_metrics[round_index] = _round_metrics(seed_dir, round_index, round_summary)
+            per_round_metrics[round_index] = _round_metrics(
+                cfg,
+                seed_dir,
+                round_index,
+                round_summary,
+            )
         round_metrics_by_seed[seed] = per_round_metrics
         final_metrics = {}
         for round_index in reversed(round_indexes):
@@ -1866,7 +2065,7 @@ def _build_aggregate_summary(
     rounds_summary = []
     for round_index in round_indexes:
         metric_payload = {}
-        for metric_name in ('mAP', 'AP50'):
+        for metric_name in _summary_metric_names(cfg):
             values_by_seed = {
                 seed: round_metrics_by_seed.get(seed, {}).get(round_index, {}).get(metric_name)
                 for seed in seeds
@@ -2045,8 +2244,8 @@ def parse_args() -> argparse.Namespace:
         help='Method or alias: ppal, pal, pal:guide, pal:lius, ecpal:eca-only, ecpal:eua-only, ecpal:eca-full, ecpal:eua-full, coreset, mial, random, entropy',
     )
     parser.add_argument('--detector', default=None, help='Catalog detector, e.g. retinanet')
-    parser.add_argument('--dataset', default=None, help='Catalog dataset, e.g. voc')
-    parser.add_argument('--preset', default=None, help='Catalog preset name, e.g. pal-retinanet-voc')
+    parser.add_argument('--dataset', default=None, help='Catalog dataset, e.g. voc or coco')
+    parser.add_argument('--preset', default=None, help='Catalog preset name, e.g. pal-retinanet-coco')
     parser.add_argument('--list-presets', action='store_true', help='List supported catalog presets and exit')
     parser.add_argument('--rounds', type=int, default=None, help='Number of AL rounds to execute')
     parser.add_argument('--start-round', type=int, default=1, help='First AL round index to execute')
@@ -2193,12 +2392,18 @@ def _run_seed(
     output_dir: Path,
     total_rounds: int,
     seed: int,
+    initial_pool: InitialPoolSource,
     preparation_results: List[Dict[str, object]],
     compact_output: bool = False,
     cpu_affinity: Optional[List[int]] = None,
 ) -> Dict[str, Any]:
     seed_prefix = '[seed=%d]' % seed
-    init_actions = initialize_round_zero(cfg, output_dir)
+    if initial_pool.seed != seed:
+        raise ValueError(
+            'Resolved initial pool seed=%d does not match run seed=%d.'
+            % (initial_pool.seed, seed)
+        )
+    init_actions = initialize_round_zero(initial_pool, output_dir)
     plan: List[PlanStep] = []
     plan_log = _write_plan_log(output_dir, plan)
     run_summary = _run_summary_base(
@@ -2209,6 +2414,7 @@ def _run_seed(
         plan_log,
         total_rounds,
         seed,
+        initial_pool,
         cpu_affinity=cpu_affinity,
     )
     run_summary['preparation'] = preparation_results
@@ -2305,6 +2511,7 @@ def _run_seeds(
     run_dir: Path,
     total_rounds: int,
     seeds: List[int],
+    initial_pools: Dict[int, InitialPoolSource],
     preparation_results: List[Dict[str, object]],
 ) -> Tuple[Dict[int, Dict[str, Any]], Dict[int, str]]:
     workers = _seed_worker_count(args, cfg, seeds)
@@ -2327,6 +2534,7 @@ def _run_seeds(
                 seed_dir,
                 total_rounds,
                 seed,
+                initial_pools[seed],
                 preparation_results,
                 cpu_affinity=cpu_affinity,
             )
@@ -2349,6 +2557,7 @@ def _run_seeds(
         seed_cfg: Dict[str, Any],
         seed_value: int,
         seed_dir_value: Path,
+        initial_pool_value: InitialPoolSource,
     ) -> Dict[str, Any]:
         slot_index = slot_queue.get()
         cpu_affinity = affinity_slots[slot_index]
@@ -2365,6 +2574,7 @@ def _run_seeds(
                 seed_dir_value,
                 total_rounds,
                 seed_value,
+                initial_pool_value,
                 preparation_results,
                 True,
                 cpu_affinity=cpu_affinity,
@@ -2386,6 +2596,7 @@ def _run_seeds(
                 copy.deepcopy(cfg),
                 seed,
                 seed_dir,
+                initial_pools[seed],
             )
             futures[future] = (seed, seed_dir)
 
@@ -2425,9 +2636,14 @@ def main() -> None:
     else:
         config_path = None
         cfg = build_experiment_config(selection['catalog_selection'])
+    validate_no_dataset_owned_overrides(
+        selection['cfg_overrides'],
+        'Method selection overrides %r' % selection['method_arg'],
+    )
     cfg.update(selection['cfg_overrides'])
     cfg['_method_arg'] = selection['method_arg']
     apply_cli_overrides(cfg, args)
+    initial_pool_policy = validate_initial_pool_config(cfg, seeds)
     validate_experiment_config_paths(cfg)
     output_default = Path('work_dirs') / (config_path.stem if config_path is not None else selection['preset_name'])
     base_output_dir = _resolve_repo_path(str(cfg.get('output_dir', output_default)))
@@ -2435,10 +2651,10 @@ def main() -> None:
     preparation_results: List[Dict[str, object]] = []
     if _preparation_requested(cfg):
         print('preparing inputs...', flush=True)
-        preparation_results = prepare_required_inputs(cfg, ROOT)
+        preparation_results = prepare_required_inputs(cfg, ROOT, seeds=seeds)
         _print_preparation_summary(preparation_results)
 
-    validate_initial_pool_files(cfg)
+    initial_pools = resolve_initial_pool_sources(cfg, seeds, initial_pool_policy)
 
     total_rounds = int(args.rounds if args.rounds is not None else cfg.get('round_num', 1))
     if total_rounds < 1:
@@ -2457,6 +2673,7 @@ def main() -> None:
         run_dir,
         total_rounds,
         seeds,
+        initial_pools,
         preparation_results,
     )
 

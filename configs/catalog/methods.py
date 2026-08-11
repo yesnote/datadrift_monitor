@@ -34,10 +34,8 @@ class MethodSpec:
     method: str
     aliases: Tuple[str, ...]
     description: str
-    output_name: str
+    output_token: str
     cfg_overrides: Dict[str, object] = field(default_factory=dict)
-    round_num: int = 7
-    budget: int = 414
 
     def default_alias(self) -> str:
         if self.method == 'pal' and self.cfg_overrides.get('pal_mode') == 'lius':
@@ -46,22 +44,30 @@ class MethodSpec:
             return 'ecpal:%s' % self.cfg_overrides.get('ecpal_mode')
         return self.method
 
-    def output_dir(self) -> str:
-        return 'work_dirs/%s' % self.output_name
+    def output_dir(self, dataset: DatasetSpec, detector_name: str) -> str:
+        return 'work_dirs/%s_%s_%s_%s' % (
+            detector_name,
+            dataset.name,
+            self.output_token,
+            dataset.protocol_slug,
+        )
 
-    def to_config(self, dataset: DatasetSpec, gpus: int) -> Dict[str, object]:
-        budget = self.budget
+    def to_config(
+        self,
+        dataset: DatasetSpec,
+        detector_name: str,
+        gpus: int,
+    ) -> Dict[str, object]:
+        budget = dataset.budget
         cfg: Dict[str, object] = {
-            'round_num': self.round_num,
-            'budget': budget,
-            'output_dir': self.output_dir(),
+            'output_dir': self.output_dir(dataset, detector_name),
         }
         if self.key == 'ppal':
             cfg.update(_ppal_config(dataset, budget=budget, gpus=gpus))
         elif self.key == 'pal_full':
-            cfg.update(_pal_config(mode='full'))
+            cfg.update(_pal_config(mode='full', dataset=dataset))
         elif self.key == 'pal_lius':
-            cfg.update(_pal_config(mode='lius'))
+            cfg.update(_pal_config(mode='lius', dataset=dataset))
         elif self.key.startswith('ecpal_'):
             cfg.update(_ecpal_config(str(self.cfg_overrides['ecpal_mode'])))
         elif self.key == 'coreset':
@@ -99,7 +105,7 @@ def _ppal_config(dataset: DatasetSpec, budget: int, gpus: int) -> Dict[str, obje
     return cfg
 
 
-def _pal_config(mode: str) -> Dict[str, object]:
+def _pal_config(mode: str, dataset: DatasetSpec) -> Dict[str, object]:
     cfg: Dict[str, object] = {
         'pal_mode': mode,
         'pal_iou_threshold': 0.5,
@@ -116,7 +122,10 @@ def _pal_config(mode: str) -> Dict[str, object]:
             'pal_embedding_source': 'external',
             'pal_diagnostics_file': 'pal_diagnostics.json',
         })
-        embedding_path = 'work_dirs/pal_embeddings/voc_google_vit_embeddings.npy'
+        embedding_path = (
+            'work_dirs/pal_embeddings/%s_google_vit_embeddings.npy'
+            % dataset.name
+        )
         cfg['pal_embedding_path'] = embedding_path
         cfg['pal_embedding_prep'] = dict(
             type='google_vit',
@@ -163,7 +172,6 @@ def _coreset_config() -> Dict[str, object]:
 def _mial_config() -> Dict[str, object]:
     return {
         'gpus': 1,
-        'train_config': 'configs/alod_mmdet/retinanet_voc_train_mial.py',
         'mial_lambda': 0.5,
         'mial_topk': 10000,
         'mial_uncertainty_file': 'mial_uncertainty.json',
@@ -178,14 +186,14 @@ METHODS = (
         method='ppal',
         aliases=PPAL_ALIASES,
         description='PPAL DCUS+CCMS acquisition.',
-        output_name='retinanet_voc_ppal_7rounds_5percent_to_20percent',
+        output_token='ppal',
     ),
     MethodSpec(
         key='pal_full',
         method='pal',
         aliases=PAL_FULL_ALIASES,
         description='PAL full LIUS+GUIDE acquisition.',
-        output_name='retinanet_voc_pal_7rounds_5percent_to_20percent',
+        output_token='pal',
         cfg_overrides={'pal_mode': 'full'},
     ),
     MethodSpec(
@@ -193,7 +201,7 @@ METHODS = (
         method='pal',
         aliases=PAL_LIUS_ALIASES,
         description='PAL LIUS-only acquisition.',
-        output_name='retinanet_voc_pal_lius_7rounds_5percent_to_20percent',
+        output_token='pal_lius',
         cfg_overrides={'pal_mode': 'lius'},
     ),
     MethodSpec(
@@ -201,7 +209,7 @@ METHODS = (
         method='ecpal',
         aliases=ECPAL_ECA_ONLY_ALIASES,
         description='ECPAL ECA-only uncertainty acquisition.',
-        output_name='retinanet_voc_ecpal_eca_only_7rounds_5percent_to_20percent',
+        output_token='ecpal_eca_only',
         cfg_overrides={
             'ecpal_mode': 'eca-only',
         },
@@ -211,7 +219,7 @@ METHODS = (
         method='ecpal',
         aliases=ECPAL_EUA_ONLY_ALIASES,
         description='ECPAL EUA-only uncertainty acquisition.',
-        output_name='retinanet_voc_ecpal_eua_only_7rounds_5percent_to_20percent',
+        output_token='ecpal_eua_only',
         cfg_overrides={
             'ecpal_mode': 'eua-only',
         },
@@ -221,7 +229,7 @@ METHODS = (
         method='ecpal',
         aliases=ECPAL_ECA_FULL_ALIASES,
         description='ECPAL ECA candidate acquisition with ECA-profile diversity.',
-        output_name='retinanet_voc_ecpal_eca_full_7rounds_5percent_to_20percent',
+        output_token='ecpal_eca_full',
         cfg_overrides={
             'ecpal_mode': 'eca-full',
         },
@@ -231,7 +239,7 @@ METHODS = (
         method='ecpal',
         aliases=ECPAL_EUA_FULL_ALIASES,
         description='ECPAL EUA candidate acquisition with EUA-profile diversity.',
-        output_name='retinanet_voc_ecpal_eua_full_7rounds_5percent_to_20percent',
+        output_token='ecpal_eua_full',
         cfg_overrides={
             'ecpal_mode': 'eua-full',
         },
@@ -241,28 +249,28 @@ METHODS = (
         method='coreset',
         aliases=CORESET_ALIASES,
         description='Core-set greedy k-center acquisition.',
-        output_name='retinanet_voc_coreset_7rounds_5percent_to_20percent',
+        output_token='coreset',
     ),
     MethodSpec(
         key='mial',
         method='mial',
         aliases=MIAL_ALIASES,
         description='MIAL/MI-AOD instance-discrepancy acquisition.',
-        output_name='retinanet_voc_mial_7rounds_5percent_to_20percent',
+        output_token='mial',
     ),
     MethodSpec(
         key='random',
         method='random',
         aliases=('random',),
         description='Random acquisition baseline.',
-        output_name='retinanet_voc_random_7rounds_5percent_to_20percent',
+        output_token='random',
     ),
     MethodSpec(
         key='entropy',
         method='entropy',
         aliases=('entropy',),
         description='Entropy acquisition baseline.',
-        output_name='retinanet_voc_entropy_7rounds_5percent_to_20percent',
+        output_token='entropy',
     ),
 )
 

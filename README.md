@@ -13,16 +13,17 @@ the local source tree directly. This repository is not installed with
 
 ## Supported Targets
 
-Current implemented target:
+Current implemented targets:
 
 | Method | Detector | Dataset | Notes |
 | --- | --- | --- | --- |
-| PPAL | RetinaNet | PASCAL VOC | DCUS + CCMS reproduction path |
-| PAL | RetinaNet | PASCAL VOC | LIUS + GUIDE reproduction path |
-| ECPAL | RetinaNet | PASCAL VOC | Error-count prediction acquisition |
-| Core-set | RetinaNet | PASCAL VOC | Greedy k-center acquisition |
-| Random | RetinaNet | PASCAL VOC | Baseline acquisition |
-| Entropy | RetinaNet | PASCAL VOC | Baseline acquisition |
+| PPAL | RetinaNet | PASCAL VOC, COCO | DCUS + CCMS reproduction path |
+| PAL | RetinaNet | PASCAL VOC, COCO | LIUS + GUIDE reproduction path |
+| ECPAL | RetinaNet | PASCAL VOC, COCO | ECA/EUA acquisition variants |
+| Core-set | RetinaNet | PASCAL VOC, COCO | Greedy k-center acquisition |
+| MIAL | RetinaNet | PASCAL VOC, COCO | MI-AOD training and acquisition path |
+| Random | RetinaNet | PASCAL VOC, COCO | Baseline acquisition |
+| Entropy | RetinaNet | PASCAL VOC, COCO | Baseline acquisition |
 
 `code_refs/` contains archived upstream/reference implementations only. Runtime
 code is copied into this repository and should be imported from the local ALOD
@@ -74,10 +75,31 @@ data/VOCdevkit/VOC2007
 data/VOCdevkit/VOC2012
 ```
 
-The runner automatically prepares the VOC0712 oracle JSON, initial active
-learning pools, RetinaNet ResNet-50 backbone checkpoint, and PAL GUIDE
-embedding cache when the selected experiment needs them. VOC source data is not
-downloaded automatically.
+Place the original COCO 2017 data under:
+
+```text
+data/coco/train2017
+data/coco/val2017
+data/coco/annotations/instances_train2017.json
+data/coco/annotations/instances_val2017.json
+```
+
+The runner automatically prepares the dataset-specific initial active-learning
+pools, RetinaNet ResNet-50 backbone checkpoint, and PAL GUIDE embedding cache
+when the selected experiment needs them. It also builds the VOC0712 oracle JSON
+from the original VOC files. Source datasets are not downloaded automatically.
+Repository-local junctions or symlinks may point the dataset source paths to an
+external dataset drive; generated pools and experiment outputs retain their
+catalog locations.
+
+The catalog applies the paper protocol for the selected dataset. VOC uses 827
+initial labeled images, a 414-image budget, and seven evaluated pools from 5%
+through 20%. COCO uses 2,365 initial labeled images, a 2,365-image budget, and
+five evaluated pools from 2% through 10%. For both supported datasets, the
+runner deterministically generates an independent initial pool for each
+requested seed. Every method uses the same source pool for a given dataset and
+seed. The generated files follow `voc_827_*_seed_{seed}.json` and
+`coco_2365_*_seed_{seed}.json`; the run commands are unchanged.
 
 ## Run
 
@@ -97,6 +119,12 @@ Run PAL with the three seeds used for paper-style reporting:
 
 ```powershell
 python -B tools/run_active_learning.py --method pal --detector retinanet --dataset voc --gpus 1 --seeds 0 1 2
+```
+
+Run the same PAL protocol on COCO:
+
+```powershell
+python -B tools/run_active_learning.py --method pal --detector retinanet --dataset coco --gpus 1 --seeds 0 1 2
 ```
 
 Run the three seed pipelines concurrently on the visible GPU:
@@ -153,7 +181,8 @@ Important output files:
 - `work_dirs/.../seed_*/round_XX/*_candidates.json`: compact candidate rankings and
   final selection flags for method analysis.
 - `work_dirs/.../aggregate_summary.json`: seed-level run paths plus round-wise
-  mAP/AP50 mean and standard deviation.
+  metric means and standard deviations. VOC records `mAP`/`AP50`; COCO records
+  `bbox_mAP`, `bbox_mAP_50`, and `bbox_mAP_75`.
 
 Use `--verbose` when debugging to print the full plan and stream subprocess
 output:
@@ -176,9 +205,9 @@ Open the read-only local metrics dashboard:
 python tools/run_metrics_dashboard.py
 ```
 
-The dashboard scans `work_dirs` by default and lets you compare validation
-mAP/AP50 and train loss/lr curves across methods, seeds, rounds, and timestamped
-runs from the sidebar.
+The dashboard scans `work_dirs` by default and lets you compare VOC mAP/AP50,
+COCO bbox AP, and train loss/lr curves across methods, seeds, rounds, and
+timestamped runs from the sidebar.
 
 Useful method aliases:
 
@@ -190,5 +219,6 @@ Useful method aliases:
 - `ecpal:eca-full`: ECPAL ECA candidate pool + ECA-profile JS diversity.
 - `ecpal:eua-full`: ECPAL EUA candidate pool + EUA-profile JS diversity.
 - `coreset`, `core-set`, `kcenter`: Core-set greedy k-center.
+- `mial`, `mi-aod`, `miaod`: MIAL/MI-AOD instance-discrepancy acquisition.
 - `random`: random acquisition baseline.
 - `entropy`: entropy acquisition baseline.
