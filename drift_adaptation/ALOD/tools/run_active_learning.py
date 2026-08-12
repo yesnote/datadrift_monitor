@@ -32,6 +32,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 _PRINT_LOCK = Lock()
+_INTERNAL_TOOLS_DIR = Path('tools') / 'internal'
 
 from configs.catalog import build_experiment_config, list_presets, resolve_experiment, resolve_method_alias
 from configs.catalog.experiments import validate_no_dataset_owned_overrides
@@ -55,6 +56,10 @@ from tools.common.paths import (
     resolve_repo_path as tool_resolve_repo_path,
 )
 from tools.common.preparation import prepare_required_inputs
+
+
+def _internal_tool_script(filename: str) -> str:
+    return str(_INTERNAL_TOOLS_DIR / filename)
 
 
 @dataclass
@@ -448,7 +453,7 @@ def _train_plan(
     argv = (
         _command_prefix(cfg)
         + [
-            'tools/train.py',
+            _internal_tool_script('train_detector.py'),
             str(cfg['train_config']),
             '--work-dir',
             str(round_work_dir),
@@ -497,7 +502,7 @@ def _mial_train_plan(
     argv = (
         _python_prefix(cfg)
         + [
-            'tools/train_mial.py',
+            _internal_tool_script('train_mial_detector.py'),
             str(cfg['train_config']),
             '--work-dir',
             str(round_work_dir),
@@ -536,7 +541,7 @@ def _eval_plan(cfg: Dict[str, Any], output_dir: Path, round_index: int) -> Comma
     argv = (
         _command_prefix(cfg)
         + [
-            'tools/test.py',
+            _internal_tool_script('infer_detector.py'),
             str(cfg['train_config']),
             str(latest_ckpt),
             '--work-dir',
@@ -574,7 +579,7 @@ def _uncertainty_infer_plan(
     argv = (
         _command_prefix(cfg)
         + [
-            'tools/test.py',
+            _internal_tool_script('infer_detector.py'),
             str(cfg['uncertainty_infer_config']),
             str(latest_ckpt),
             '--work-dir',
@@ -658,7 +663,7 @@ def _feature_infer_plan(
     argv = (
         _command_prefix(cfg)
         + [
-            'tools/test.py',
+            _internal_tool_script('infer_detector.py'),
             str(cfg[config_key]),
             str(latest_ckpt),
             '--work-dir',
@@ -736,7 +741,7 @@ def _pal_infer_plan(
     argv = (
         _command_prefix(cfg)
         + [
-            'tools/test.py',
+            _internal_tool_script('infer_detector.py'),
             str(cfg['pal_infer_config']),
             str(latest_ckpt),
             '--work-dir',
@@ -799,7 +804,7 @@ def _ecpal_infer_plan(
     argv = (
         _command_prefix(cfg)
         + [
-            'tools/test.py',
+            _internal_tool_script('infer_detector.py'),
             str(cfg['ecpal_infer_config']),
             str(latest_ckpt),
             '--work-dir',

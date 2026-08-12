@@ -7,15 +7,16 @@ import sys
 import time
 from pathlib import Path
 
+ROOT = Path(__file__).resolve().parents[2]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
 import mmcv
 import torch
 from mmcv import Config, DictAction
 from mmcv.parallel import MMDataParallel
-from mmcv.runner import build_optimizer, get_git_hash, save_checkpoint
-
-ROOT = Path(__file__).resolve().parents[1]
-if str(ROOT) not in sys.path:
-    sys.path.insert(0, str(ROOT))
+from mmcv.runner import build_optimizer, save_checkpoint
+from mmcv.utils import get_git_hash
 
 from mmdet import __version__
 from mmdet.apis import set_random_seed
@@ -27,23 +28,7 @@ from methods.common.coco_pool import build_coco_subset, image_ids, read_coco_jso
 from methods.common.selection import deterministic_random_sample
 from mmdet.alod.datasets import *
 from mmdet.alod.models import *
-
-
-def patch_yapf_verify_arg():
-    try:
-        import mmcv.utils.config as mmcv_config
-    except Exception:
-        return
-    original_format_code = getattr(mmcv_config, 'FormatCode', None)
-    if original_format_code is None or getattr(original_format_code, '_alod_compat', False):
-        return
-
-    def format_code_compat(*args, **kwargs):
-        kwargs.pop('verify', None)
-        return original_format_code(*args, **kwargs)
-
-    format_code_compat._alod_compat = True
-    mmcv_config.FormatCode = format_code_compat
+from tools.common.mmcv_compat import patch_yapf_verify_arg
 
 
 def parse_args():
@@ -64,9 +49,11 @@ def parse_args():
     if 'LOCAL_RANK' not in os.environ:
         os.environ['LOCAL_RANK'] = str(args.local_rank)
     if args.launcher != 'none':
-        raise NotImplementedError('tools/train_mial.py currently supports --launcher none only')
+        raise NotImplementedError(
+            'tools/internal/train_mial_detector.py currently supports --launcher none only')
     if args.gpus != 1:
-        raise NotImplementedError('tools/train_mial.py currently supports one GPU per seed')
+        raise NotImplementedError(
+            'tools/internal/train_mial_detector.py currently supports one GPU per seed')
     return args
 
 

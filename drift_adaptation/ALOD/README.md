@@ -31,16 +31,20 @@ source tree, not from `code_refs/`.
 
 ## Repository Layout
 
-- `tools/run_active_learning.py`: main runner for executing AL rounds.
+- `tools/run_active_learning.py`: public runner for executing AL rounds.
+- `tools/run_metrics_dashboard.py`: public launcher for the local metrics dashboard.
+- `tools/internal/`: private detector training, inference, MIAL training, and
+  Streamlit entrypoints invoked by the public launchers.
+- `tools/common/`: reusable runner and input-preparation libraries; these modules
+  do not depend on private entrypoints.
 - `configs/catalog/`: supported method/detector/dataset presets.
 - `configs/alod_mmdet/`: minimal MMDetection configs used by ALOD runs.
 - `methods/ppal/`: PPAL method implementation.
 - `methods/pal/`: PAL method implementation.
 - `methods/ecpal/`: ECPAL method implementation.
 - `methods/coreset/`: Core-set method implementation.
-- `mmdet/`: local MMDetection backend used directly by `tools/train.py` and
-  `tools/test.py`; method code consumes saved artifacts instead of importing it.
-- `tools/common/`: runner support code for path handling and automatic input preparation.
+- `mmdet/`: local MMDetection backend used by the private detector entrypoints;
+  method code consumes saved artifacts instead of importing it.
 - `docs/`: implementation notes, plans, and run logs.
 
 ## Prepare Environment

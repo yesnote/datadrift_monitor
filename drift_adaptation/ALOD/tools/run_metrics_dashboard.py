@@ -4,7 +4,7 @@ On some Windows Python installs, importing Streamlit/Tornado can fail before
 the dashboard script runs because ``ssl.create_default_context`` cannot parse a
 bad certificate entry from the Windows certificate store. This launcher installs
 a narrow fallback before importing Streamlit, then delegates to
-``streamlit run tools/view_metrics.py``.
+``streamlit run tools/internal/metrics_dashboard.py``.
 """
 
 from __future__ import annotations
@@ -66,8 +66,11 @@ def _install_windows_ssl_store_fallback() -> None:
 
 def main() -> None:
     _install_windows_ssl_store_fallback()
-    dashboard_script = Path(__file__).with_name('view_metrics.py').resolve()
-    repo_root = dashboard_script.parents[1]
+    launcher_path = Path(__file__).resolve()
+    dashboard_script = (
+        launcher_path.parent / 'internal' / 'metrics_dashboard.py'
+    ).resolve()
+    repo_root = launcher_path.parents[1]
     if str(repo_root) not in sys.path:
         sys.path.insert(0, str(repo_root))
     os.environ['PYTHONPATH'] = (
