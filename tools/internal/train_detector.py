@@ -8,7 +8,7 @@ import time
 import warnings
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
@@ -26,25 +26,7 @@ from mmdet.utils import collect_env, get_root_logger
 
 from mmdet.alod.datasets import *
 from mmdet.alod.models import *
-
-
-def patch_yapf_verify_arg():
-    """Make MMCV 1.x config formatting work with newer yapf releases."""
-    try:
-        import mmcv.utils.config as mmcv_config
-    except Exception:
-        return
-
-    original_format_code = getattr(mmcv_config, 'FormatCode', None)
-    if original_format_code is None or getattr(original_format_code, '_alod_compat', False):
-        return
-
-    def format_code_compat(*args, **kwargs):
-        kwargs.pop('verify', None)
-        return original_format_code(*args, **kwargs)
-
-    format_code_compat._alod_compat = True
-    mmcv_config.FormatCode = format_code_compat
+from tools.common.mmcv_compat import patch_yapf_verify_arg
 
 
 def parse_args():

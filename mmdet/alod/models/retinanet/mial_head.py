@@ -15,7 +15,8 @@ class RetinaHeadMIAL(RetinaHead):
 
     The head follows the MI-AOD RetinaNet structure with two classifier
     branches, one box regression branch, and one MIL branch. Training phase is
-    controlled explicitly by ``set_mial_phase`` from ``tools/train_mial.py``.
+    controlled explicitly by ``set_mial_phase`` from
+    ``tools/internal/train_mial_detector.py``.
     """
 
     def __init__(self, mial_lambda=0.5, **kwargs):
