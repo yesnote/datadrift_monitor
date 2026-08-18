@@ -1,2 +1,0 @@
-"""MIAL active learning method."""
-
