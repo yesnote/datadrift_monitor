@@ -1,0 +1,13 @@
+# Install the CUDA 11.8 PyTorch wheels and prebuilt MMCV wheel first. See the
+# environment instructions in README.md.
+-r mmdet.txt
+
+matplotlib>=3.5,<4
+numpy>=1.23,<2
+pycocotools>=2.0.6,<3
+scipy>=1.9,<2
+shapely>=1.8,<3
+six>=1.16,<2
+terminaltables>=3.1,<4
+torch==2.0.1
+torchvision==0.15.2

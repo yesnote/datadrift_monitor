@@ -1,0 +1,378 @@
+'''Faster R-CNN student/teacher ownership and ADA-FNP loss routing.'''
+
+import copy
+from typing import Dict, Mapping, Optional, Sequence
+
+import torch
+from torch import Tensor, nn
+
+from methods.ada_fnp.acquisition.mc_dropout import mc_dropout_enabled
+from methods.ada_fnp.training.losses import (
+    domain_discriminator_loss, prefix_losses)
+from methods.ada_fnp.training.pseudo_labels import (
+    classification_only_losses, project_pseudo_labels)
+from methods.common.mmdet.models.layers.gradient_reversal import (
+    gradient_reverse)
+
+from .roi_head import run_rpn_once_for_fixed_roi
+
+
+SOURCE_BRANCH = 'source'
+TARGET_LABELED_BRANCH = 'target_labeled'
+TARGET_UNLABELED_WEAK_BRANCH = 'target_unlabeled_weak'
+TARGET_UNLABELED_STRONG_BRANCH = 'target_unlabeled_strong'
+_ALLOWED_BRANCHES = {
+    SOURCE_BRANCH,
+    TARGET_LABELED_BRANCH,
+    TARGET_UNLABELED_WEAK_BRANCH,
+    TARGET_UNLABELED_STRONG_BRANCH,
+}
+
+
+def validate_loss_branches(inputs: Mapping[str, Tensor],
+                           data_samples: Mapping[str, Sequence]) -> None:
+    '''Validate the explicit ADA-FNP source/target branch contract.'''
+    input_keys = set(inputs)
+    sample_keys = set(data_samples)
+    if input_keys != sample_keys:
+        raise ValueError(
+            'input and data-sample branches must match: {} != {}'.format(
+                sorted(input_keys), sorted(sample_keys)))
+    unknown = input_keys.difference(_ALLOWED_BRANCHES)
+    if unknown:
+        raise ValueError('unknown ADA-FNP branches: {}'.format(
+            ', '.join(sorted(unknown))))
+    required = {
+        SOURCE_BRANCH,
+        TARGET_UNLABELED_WEAK_BRANCH,
+        TARGET_UNLABELED_STRONG_BRANCH,
+    }
+    missing = required.difference(input_keys)
+    if missing:
+        raise ValueError('missing ADA-FNP branches: {}'.format(
+            ', '.join(sorted(missing))))
+    for branch in input_keys:
+        if inputs[branch].shape[0] != len(data_samples[branch]):
+            raise ValueError(
+                '{} input and data-sample batch sizes differ'.format(branch))
+    if (inputs[TARGET_UNLABELED_WEAK_BRANCH].shape[0] !=
+            inputs[TARGET_UNLABELED_STRONG_BRANCH].shape[0]):
+        raise ValueError('target weak and strong batch sizes must match')
+
+
+def select_domain_target_branches(branches: Mapping) -> Sequence[str]:
+    '''Choose one unlabeled DA view, avoiding duplicate weak/strong weighting.
+
+    The strong view is used because it is the student optimization view.  The
+    weak view is reserved for teacher pseudo-label generation.
+    '''
+    return tuple(
+        branch for branch in (
+            TARGET_LABELED_BRANCH, TARGET_UNLABELED_STRONG_BRANCH)
+        if branch in branches)
+
+
+def route_detection_losses(
+        source_losses: Mapping[str, object],
+        target_labeled_losses: Optional[Mapping[str, object]] = None,
+        target_unlabeled_strong_losses: Optional[Mapping[str, object]] = None,
+        enable_unsupervised_loss: bool = True) -> Dict[str, object]:
+    '''Prefix supervised losses and retain only classification pseudo losses.'''
+    routed = prefix_losses(source_losses, SOURCE_BRANCH, weight=1)
+    if target_labeled_losses is not None:
+        routed.update(
+            prefix_losses(
+                target_labeled_losses, TARGET_LABELED_BRANCH, weight=1))
+    if enable_unsupervised_loss:
+        if target_unlabeled_strong_losses is None:
+            raise ValueError('target-unlabeled strong losses are required')
+        classification_losses = classification_only_losses(
+            target_unlabeled_strong_losses)
+        if not classification_losses:
+            raise ValueError(
+                'target-unlabeled strong loss output has no RPN/RoI '
+                'classification terms')
+        routed.update(
+            prefix_losses(
+                classification_losses,
+                TARGET_UNLABELED_STRONG_BRANCH,
+                weight=1))
+    return routed
+
+
+def multi_target_domain_loss(source_logits: Tensor,
+                             target_logits: Sequence[Tensor]) -> Tensor:
+    '''Average source=1/target=0 adversarial losses across target branches.'''
+    if not target_logits:
+        raise ValueError('at least one target-domain logit tensor is required')
+    losses = [
+        domain_discriminator_loss(source_logits, logits)
+        for logits in target_logits
+    ]
+    return torch.stack(losses).mean()
+
+
+try:
+    from mmengine.structures import InstanceData
+    from mmdet.models.detectors import FasterRCNN, SemiBaseDetector
+    from mmdet.registry import MODELS
+except ModuleNotFoundError as exc:
+    _MMDET_IMPORT_ERROR = exc
+
+    class ADAFNPBranch(nn.Module):
+
+        def __init__(self, *args, **kwargs) -> None:
+            raise ModuleNotFoundError(
+                'ADAFNPBranch requires MMDetection 3.3 with MMCV and '
+                'MMEngine.') from _MMDET_IMPORT_ERROR
+
+    class ADAFNPDetector(nn.Module):
+
+        def __init__(self, *args, **kwargs) -> None:
+            raise ModuleNotFoundError(
+                'ADAFNPDetector requires MMDetection 3.3 with MMCV and '
+                'MMEngine.') from _MMDET_IMPORT_ERROR
+else:
+    _MMDET_IMPORT_ERROR = None
+
+    class ADAFNPBranch(nn.Module):
+        '''One EMA branch owning a Faster R-CNN and domain discriminator.'''
+
+        def __init__(self,
+                     detector: Mapping,
+                     domain_discriminator: Mapping,
+                     grl_scale: float = 1.0) -> None:
+            super().__init__()
+            self.detector = MODELS.build(detector)
+            if not isinstance(self.detector, FasterRCNN):
+                raise TypeError('ADA-FNP supports FasterRCNN only')
+            self.domain_discriminator = MODELS.build(domain_discriminator)
+            if grl_scale < 0:
+                raise ValueError('grl_scale must be non-negative')
+            self.grl_scale = float(grl_scale)
+
+        def forward(self,
+                    batch_inputs: Tensor,
+                    batch_data_samples=None,
+                    mode: str = 'tensor'):
+            return self.detector(
+                batch_inputs, batch_data_samples, mode=mode)
+
+        def loss(self, batch_inputs: Tensor, batch_data_samples) -> dict:
+            return self.detector.loss(batch_inputs, batch_data_samples)
+
+        def predict(self,
+                    batch_inputs: Tensor,
+                    batch_data_samples,
+                    rescale: bool = True):
+            return self.detector.predict(
+                batch_inputs, batch_data_samples, rescale=rescale)
+
+        def extract_feat(self, batch_inputs: Tensor):
+            return self.detector.extract_feat(batch_inputs)
+
+        def extract_domain_feature(self, batch_inputs: Tensor) -> Tensor:
+            features = self.extract_feat(batch_inputs)
+            if not isinstance(features, tuple) or len(features) != 1:
+                raise ValueError(
+                    'ADA-FNP VGG16 must expose exactly one conv5_3 feature')
+            return features[0]
+
+        def domain_logits(self,
+                          batch_inputs: Tensor,
+                          reverse_gradient: bool = True) -> Tensor:
+            features = self.extract_domain_feature(batch_inputs)
+            if reverse_gradient:
+                features = gradient_reverse(features, self.grl_scale)
+            return self.domain_discriminator(features)
+
+        def predict_fixed_proposals(self,
+                                    batch_inputs: Tensor,
+                                    batch_data_samples,
+                                    passes: int = 10):
+            '''Run RPN once, then reuse its proposals for all RoI passes.'''
+            features = self.extract_feat(batch_inputs)
+            roi_head = self.detector.roi_head
+            if not hasattr(roi_head, 'predict_fixed_proposals'):
+                raise TypeError(
+                    'FasterRCNN roi_head must be ADAFNPRoIHead')
+            return run_rpn_once_for_fixed_roi(
+                lambda: self.detector.rpn_head.predict(
+                    features, batch_data_samples, rescale=False),
+                lambda proposals: roi_head.predict_fixed_proposals(
+                    features,
+                    proposals,
+                    batch_data_samples,
+                    passes=passes))
+
+    class ADAFNPDetector(SemiBaseDetector):
+        '''ADA-FNP student/teacher detector with explicit loss branches.'''
+
+        def __init__(self,
+                     detector: Mapping,
+                     domain_discriminator: Optional[Mapping] = None,
+                     grl_scale: float = 1.0,
+                     domain_loss_weight: float = 0.01,
+                     enable_unsupervised_loss: bool = True,
+                     mc_passes: int = 10,
+                     localization_variance_threshold: float = 0.1,
+                     semi_train_cfg: Optional[Mapping] = None,
+                     semi_test_cfg: Optional[Mapping] = None,
+                     data_preprocessor: Optional[Mapping] = None,
+                     init_cfg=None) -> None:
+            if domain_loss_weight < 0:
+                raise ValueError('domain_loss_weight must be non-negative')
+            if mc_passes < 2:
+                raise ValueError('mc_passes must be at least two')
+            if localization_variance_threshold < 0:
+                raise ValueError(
+                    'localization_variance_threshold must be non-negative')
+            if domain_discriminator is None:
+                domain_discriminator = dict(
+                    type='ADAFNPDomainDiscriminator',
+                    in_channels=512,
+                    hidden_channels=64)
+            branch = dict(
+                type='ADAFNPBranch',
+                detector=detector,
+                domain_discriminator=domain_discriminator,
+                grl_scale=grl_scale)
+            resolved_train_cfg = dict(freeze_teacher=True)
+            resolved_train_cfg.update(dict(semi_train_cfg or {}))
+            resolved_test_cfg = dict(
+                predict_on='teacher',
+                forward_on='teacher',
+                extract_feat_on='teacher')
+            resolved_test_cfg.update(dict(semi_test_cfg or {}))
+            super().__init__(
+                detector=branch,
+                semi_train_cfg=resolved_train_cfg,
+                semi_test_cfg=resolved_test_cfg,
+                data_preprocessor=data_preprocessor,
+                init_cfg=init_cfg)
+            self.domain_loss_weight = float(domain_loss_weight)
+            self.enable_unsupervised_loss = bool(enable_unsupervised_loss)
+            self.mc_passes = int(mc_passes)
+            self.localization_variance_threshold = float(
+                localization_variance_threshold)
+
+        @staticmethod
+        def _clone_without_unlabeled_annotations(data_samples):
+            '''Clone samples and remove every field that can expose GT.'''
+            cloned_samples = copy.deepcopy(data_samples)
+            for data_sample in cloned_samples:
+                for field in (
+                        'gt_instances', 'ignored_instances',
+                        'gt_sem_seg', 'gt_panoptic_seg'):
+                    if field in data_sample:
+                        delattr(data_sample, field)
+            return cloned_samples
+
+        def _generate_strong_pseudo_samples(self,
+                                            weak_inputs: Tensor,
+                                            weak_data_samples,
+                                            strong_data_samples):
+            clean_weak_samples = self._clone_without_unlabeled_annotations(
+                weak_data_samples)
+            teacher_results = self.predict_teacher_fixed_proposals(
+                weak_inputs,
+                clean_weak_samples,
+                passes=self.mc_passes)
+            if len(teacher_results) != len(strong_data_samples):
+                raise ValueError(
+                    'teacher predictions and strong samples must align')
+
+            clean_strong_samples = self._clone_without_unlabeled_annotations(
+                strong_data_samples)
+            for result, weak_sample, strong_sample in zip(
+                    teacher_results, clean_weak_samples,
+                    clean_strong_samples):
+                reference = result.bboxes
+                weak_homography = torch.as_tensor(
+                    weak_sample.homography_matrix,
+                    device=reference.device,
+                    dtype=reference.dtype)
+                strong_homography = torch.as_tensor(
+                    strong_sample.homography_matrix,
+                    device=reference.device,
+                    dtype=reference.dtype)
+                pseudo = project_pseudo_labels(
+                    result.bboxes,
+                    result.class_probabilities,
+                    result.box_variances,
+                    weak_homography,
+                    strong_homography,
+                    variance_threshold=(
+                        self.localization_variance_threshold))
+                gt_instances = InstanceData()
+                gt_instances.bboxes = pseudo['boxes']
+                gt_instances.labels = pseudo['labels']
+                gt_instances.scores = pseudo['scores']
+                strong_sample.gt_instances = gt_instances
+            return clean_strong_samples
+
+        def loss(self, multi_batch_inputs: Mapping[str, Tensor],
+                 multi_batch_data_samples: Mapping[str, Sequence]) -> dict:
+            validate_loss_branches(
+                multi_batch_inputs, multi_batch_data_samples)
+            source_losses = self.student.loss(
+                multi_batch_inputs[SOURCE_BRANCH],
+                multi_batch_data_samples[SOURCE_BRANCH])
+
+            target_labeled_losses = None
+            if TARGET_LABELED_BRANCH in multi_batch_inputs:
+                target_labeled_losses = self.student.loss(
+                    multi_batch_inputs[TARGET_LABELED_BRANCH],
+                    multi_batch_data_samples[TARGET_LABELED_BRANCH])
+
+            target_unlabeled_strong_losses = None
+            if self.enable_unsupervised_loss:
+                pseudo_strong_samples = self._generate_strong_pseudo_samples(
+                    multi_batch_inputs[TARGET_UNLABELED_WEAK_BRANCH],
+                    multi_batch_data_samples[TARGET_UNLABELED_WEAK_BRANCH],
+                    multi_batch_data_samples[TARGET_UNLABELED_STRONG_BRANCH])
+                target_unlabeled_strong_losses = self.student.loss(
+                    multi_batch_inputs[TARGET_UNLABELED_STRONG_BRANCH],
+                    pseudo_strong_samples)
+
+            losses = route_detection_losses(
+                source_losses,
+                target_labeled_losses,
+                target_unlabeled_strong_losses,
+                enable_unsupervised_loss=self.enable_unsupervised_loss)
+
+            source_logits = self.student.domain_logits(
+                multi_batch_inputs[SOURCE_BRANCH])
+            target_logits = [
+                self.student.domain_logits(multi_batch_inputs[branch])
+                for branch in select_domain_target_branches(
+                    multi_batch_inputs)
+            ]
+            losses['domain.loss_adv'] = self.domain_loss_weight * (
+                multi_target_domain_loss(source_logits, target_logits))
+            return losses
+
+        @torch.no_grad()
+        def predict_teacher_fixed_proposals(self,
+                                            batch_inputs: Tensor,
+                                            batch_data_samples,
+                                            passes: int = 10):
+            bbox_head = self.teacher.detector.roi_head.bbox_head
+            dropout_modules = getattr(bbox_head, 'shared_dropouts', ())
+            with mc_dropout_enabled(self.teacher, dropout_modules):
+                return self.teacher.predict_fixed_proposals(
+                    batch_inputs, batch_data_samples, passes=passes)
+
+
+__all__ = [
+    'ADAFNPBranch',
+    'ADAFNPDetector',
+    'SOURCE_BRANCH',
+    'TARGET_LABELED_BRANCH',
+    'TARGET_UNLABELED_STRONG_BRANCH',
+    'TARGET_UNLABELED_WEAK_BRANCH',
+    'multi_target_domain_loss',
+    'route_detection_losses',
+    'select_domain_target_branches',
+    'validate_loss_branches',
+]
