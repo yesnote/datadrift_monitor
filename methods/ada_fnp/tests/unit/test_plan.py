@@ -9,8 +9,11 @@ def test_round_budget_uses_earliest_remainder():
 
 def test_default_plan_is_complete():
     plan = build_plan(get_config())
-    assert len(plan.stages) == 28
-    assert plan.stages[0].stage_id == 'prepare_datasets'
+    assert len(plan.stages) == 29
+    assert plan.stages[0].stage_id == 'prepare_pretrained'
+    assert plan.stages[0].executor_key == 'common.prepare_pretrained'
+    assert plan.stages[0].payload == {'detector': 'faster-rcnn-vgg16'}
+    assert plan.stages[1].stage_id == 'prepare_datasets'
     assert plan.stages[-1].stage_id == 'evaluate_final_teacher'
     budgets = [
         stage.payload['budget'] for stage in plan.stages

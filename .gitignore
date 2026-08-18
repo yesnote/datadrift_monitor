@@ -2,9 +2,7 @@ code_refs/
 *.sh
 
 # External dataset junctions. Keep the links local and never track their contents.
-data/gtFine/
-data/leftImg8bit/
-data/leftImg8bit_foggy/
+data/Cityscapes/
 
 # Generated experiment artifacts.
 work_dirs/*

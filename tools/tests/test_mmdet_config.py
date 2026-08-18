@@ -5,6 +5,8 @@ import runpy
 
 import pytest
 
+from methods.common.data.cityscapes import CITYSCAPES_CLASSES
+
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 BASE_ROOT = REPOSITORY_ROOT / 'configs' / '_base_'
@@ -30,9 +32,7 @@ def test_c_to_f_dataset_uses_coco_caches_and_multibranch_pipelines() -> None:
     config = _load('datasets/cityscapes_to_foggy.py')
 
     assert config['dataset_type'] == 'CocoDataset'
-    assert config['classes'] == (
-        'person', 'rider', 'car', 'truck', 'bus', 'train',
-        'motorcycle', 'bicycle')
+    assert config['classes'] == CITYSCAPES_CLASSES
 
     annotation_keys = (
         'source_train_ann_file',
@@ -60,6 +60,10 @@ def test_c_to_f_dataset_uses_coco_caches_and_multibranch_pipelines() -> None:
         for dataset in target_datasets
     )
     assert config['val_dataloader']['dataset']['data_prefix'] == dict(img='')
+    assert [
+        transform['type'] for transform in config['test_pipeline']
+    ] == [
+        'LoadImageFromFile', 'Resize', 'LoadAnnotations', 'PackDetInputs']
 
     assert config['foggy_beta'] == 0.02
     assert config['expected_source_train_images'] == 2975
@@ -76,14 +80,14 @@ def test_c_to_f_dataset_uses_coco_caches_and_multibranch_pipelines() -> None:
     assert 'target_unlabeled_weak' in unlabeled_branch
     assert 'target_unlabeled_strong' in unlabeled_branch
     assert config['shared_geometric_pipeline'] == [
-        dict(type='Resize', scale=(1000, 600), keep_ratio=True),
+        dict(type='Resize', scale=(1333, 600), keep_ratio=True),
         dict(type='RandomFlip', prob=0.5),
     ]
     assert [transform['type'] for transform in config['weak_pipeline']] == [
-        'Resize', 'RandomFlip', 'PackDetInputs']
+        'PackDetInputs']
     assert [transform['type'] for transform in config['strong_pipeline']] == [
-        'Resize', 'RandomFlip', 'PTStrongAugmentation', 'PackDetInputs']
-    assert config['strong_pipeline'][2] == dict(
+        'PTStrongAugmentation', 'PackDetInputs']
+    assert config['strong_pipeline'][0] == dict(
         type='PTStrongAugmentation', p=1.0)
     assert sum(
         transform['type'] == 'PTStrongAugmentation'
@@ -92,6 +96,26 @@ def test_c_to_f_dataset_uses_coco_caches_and_multibranch_pipelines() -> None:
         transform['type'] != 'PhotoMetricDistortion'
         for pipeline in (config['weak_pipeline'], config['strong_pipeline'])
         for transform in pipeline)
+    assert [
+        transform['type']
+        for transform in config['target_unlabeled_pipeline'][:-1]
+    ] == [
+        'LoadImageFromFile', 'LoadEmptyAnnotations', 'Resize', 'RandomFlip']
+    assert sum(
+        transform['type'] == 'RandomFlip'
+        for transform in config['target_unlabeled_pipeline']) == 1
+    acquisition_pipeline = config['target_acquisition_pipeline']
+    assert [transform['type'] for transform in acquisition_pipeline] == [
+        'LoadImageFromFile', 'LoadEmptyAnnotations', 'Resize', 'PackDetInputs']
+    assert acquisition_pipeline[2] == dict(
+        type='Resize', scale=(1333, 600), keep_ratio=True)
+    assert all(
+        transform['type'] not in {'RandomFlip', 'PTStrongAugmentation'}
+        for transform in acquisition_pipeline)
+    assert config['target_acquisition_dataset']['ann_file'] == (
+        config['target_pool_ann_file'])
+    assert config['target_acquisition_dataset']['pipeline'] is (
+        config['target_acquisition_pipeline'])
     assert 'homography_matrix' in config['pack_meta_keys']
 
 
@@ -112,11 +136,16 @@ def test_dataset_preserves_annotation_boundary_and_ap50_protocol() -> None:
 
     evaluator = config['val_evaluator']
     assert evaluator == dict(
-        type='VOCMetric', iou_thrs=0.5, metric='mAP', eval_mode='area')
+        type='PTVOCMetric', iou_thrs=0.5, metric='mAP', eval_mode='area')
     assert config['test_evaluator'] is evaluator
 
 
 def test_vgg16_faster_rcnn_is_bn_free_and_single_stride() -> None:
+    from configs._base_.models.faster_rcnn_vgg16_factory import (
+        VGG16_CAFFE_CHECKPOINT,
+        VGG16_CAFFE_SHA256,
+    )
+
     config = _load('models/faster_rcnn_vgg16.py')
     model = config['model']
 
@@ -126,19 +155,38 @@ def test_vgg16_faster_rcnn_is_bn_free_and_single_stride() -> None:
     )
     assert model['type'] == 'FasterRCNN'
     assert model['backbone']['type'] == 'ADAODVGG16'
+    assert model['backbone']['frozen_stages'] == 2
+    assert model['backbone']['pretrained_checkpoint'] == VGG16_CAFFE_CHECKPOINT
+    assert model['backbone']['pretrained_sha256'] == VGG16_CAFFE_SHA256
     assert 'norm_cfg' not in model['backbone']
     assert 'neck' not in model
     assert model['rpn_head']['in_channels'] == 512
+    assert model['rpn_head']['anchor_generator']['scales'] == [8, 16, 32]
     assert model['rpn_head']['anchor_generator']['strides'] == [16]
+    assert model['rpn_head']['anchor_generator']['center_offset'] == 0.0
+    assert model['train_cfg']['rpn']['assigner']['min_pos_iou'] == 0.0
+    assert model['train_cfg']['rpn']['assigner']['match_low_quality'] is True
+    assert model['train_cfg']['rpn']['sampler']['pos_fraction'] == 0.25
+    assert model['train_cfg']['rpn_proposal']['nms_pre'] == 12000
+    assert model['train_cfg']['rpn_proposal']['max_per_img'] == 2000
+    assert model['test_cfg']['rpn']['nms_pre'] == 6000
+    assert model['test_cfg']['rpn']['max_per_img'] == 1000
     assert model['roi_head']['bbox_roi_extractor']['featmap_strides'] == [16]
+    assert model['roi_head']['bbox_roi_extractor']['roi_layer']['aligned'] is True
 
     bbox_head = model['roi_head']['bbox_head']
     assert bbox_head['type'] == 'ADAODVGGShared2FCBBoxHead'
-    assert bbox_head['fc_out_channels'] == 4096
+    assert bbox_head['fc_out_channels'] == 1024
     assert bbox_head['num_classes'] == 8
     assert bbox_head['dropout'] == 0.0
     assert bbox_head['reg_class_agnostic'] is False
-    assert model['data_preprocessor']['type'] == 'DetDataPreprocessor'
+    assert model['data_preprocessor'] == dict(
+        type='DetDataPreprocessor',
+        mean=[103.53, 116.28, 123.675],
+        std=[1.0, 1.0, 1.0],
+        bgr_to_rgb=False,
+        pad_size_divisor=1,
+    )
 
 
 def test_vgg16_factory_returns_independent_detector_configs() -> None:
@@ -152,7 +200,7 @@ def test_vgg16_factory_returns_independent_detector_configs() -> None:
     first['data_preprocessor']['mean'][0] = -1
 
     assert second['roi_head']['bbox_head']['dropout'] == 0.0
-    assert second['data_preprocessor']['mean'][0] == 123.675
+    assert second['data_preprocessor']['mean'][0] == 103.53
 
 
 def test_iter_schedule_and_runtime_are_iteration_based() -> None:
@@ -163,10 +211,20 @@ def test_iter_schedule_and_runtime_are_iteration_based() -> None:
         type='SGD', lr=0.02, momentum=0.9, weight_decay=0.0001)
     assert schedule['train_cfg'] == dict(
         type='IterBasedTrainLoop', max_iters=40000, val_interval=5000)
-    scheduler, = schedule['param_scheduler']
+    warmup, scheduler = schedule['param_scheduler']
+    assert warmup == dict(
+        type='LinearLR',
+        start_factor=0.001,
+        begin=0,
+        end=400,
+        by_epoch=False,
+    )
+    assert scheduler['type'] == 'MultiStepLR'
+    assert scheduler['begin'] == 0
     assert scheduler['by_epoch'] is False
     assert scheduler['end'] == 40000
     assert scheduler['milestones'] == [30000, 35000]
+    assert scheduler['gamma'] == 0.1
     assert runtime['default_hooks']['checkpoint']['by_epoch'] is False
     assert runtime['log_processor']['by_epoch'] is False
     assert runtime['randomness'] == dict(seed=0, deterministic=True)
@@ -185,4 +243,5 @@ def test_mmengine_loads_composed_config_when_available() -> None:
     assert config.model.detector.roi_head.type == 'ADAFNPRoIHead'
     assert config.model.detector.roi_head.bbox_head.dropout == 0.1
     assert config.train_cfg.max_iters == 40000
+    assert config.val_evaluator.type == 'PTVOCMetric'
     assert config.val_evaluator.eval_mode == 'area'

@@ -17,13 +17,13 @@ except ModuleNotFoundError as exc:
 class VGGShared2FCBBoxHead(Shared2FCBBoxHead):
     '''Shared fc6/fc7 bbox head with dropout after each ReLU.
 
-    The 4096-dimensional defaults match ImageNet VGG16 classifier layers and
-    therefore permit direct fc6/fc7 weight mapping.
+    PT uses two newly initialized 1024-dimensional FC layers; its Caffe VGG16
+    checkpoint initializes only the convolutional backbone.
     '''
 
     def __init__(self,
                  *args,
-                 fc_out_channels: int = 4096,
+                 fc_out_channels: int = 1024,
                  dropout: float = 0.1,
                  **kwargs) -> None:
         if dropout < 0 or dropout >= 1:
@@ -35,6 +35,15 @@ class VGGShared2FCBBoxHead(Shared2FCBBoxHead):
         self.dropout = float(dropout)
         self.shared_dropouts = nn.ModuleList(
             nn.Dropout(p=self.dropout) for _ in self.shared_fcs)
+
+    def init_weights(self) -> None:
+        '''Initialize fc6/fc7 with Detectron2's C2 Xavier fill.'''
+
+        super().init_weights()
+        for fc in self.shared_fcs:
+            nn.init.kaiming_uniform_(fc.weight, a=1)
+            if fc.bias is not None:
+                nn.init.constant_(fc.bias, 0)
 
     def forward(
             self, inputs: Tensor

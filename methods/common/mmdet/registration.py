@@ -19,6 +19,7 @@ except ModuleNotFoundError as exc:
 from .models.backbones.vgg16 import VGG16Backbone
 from .models.layers.gradient_reversal import GradientReversal
 from .models.roi_heads.vgg_bbox_head import VGGShared2FCBBoxHead
+from .metrics import PTVOCMetric
 
 MODELS.register_module(name='ADAODVGG16', module=VGG16Backbone)
 MODELS.register_module(
@@ -28,6 +29,7 @@ MODELS.register_module(
 
 __all__ = [
     'GradientReversal',
+    'PTVOCMetric',
     'VGG16Backbone',
     'VGGShared2FCBBoxHead',
 ]

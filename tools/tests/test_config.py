@@ -11,7 +11,9 @@ def test_composition_uses_catalogs_and_preserves_method_defaults():
     method_defaults = manifest.config_factory()
     config = compose_config(manifest)
     assert config['scenario'] == 'cityscapes-to-foggy'
-    assert config['dataset']['source']['image_root'] == 'data/leftImg8bit'
+    assert config['dataset']['source']['image_root'] == (
+        'data/Cityscapes/leftImg8bit'
+    )
     assert config['dataset']['target']['beta'] == 0.02
     assert config['dataset']['target']['train_annotation_access'] == 'oracle_only'
     assert config['detector']['name'] == 'faster-rcnn-vgg16'
@@ -19,6 +21,12 @@ def test_composition_uses_catalogs_and_preserves_method_defaults():
     assert config['detector']['dropout_probability'] == (
         method_defaults['detector']['dropout_probability']
     )
+    assert method_defaults['dataset'] == {
+        'target': {'expected_train_images': 2975}
+    }
+    assert config['detector']['class_agnostic_bbox_regression'] is False
+    assert config['training']['warmup_iterations'] == 400
+    assert config['training']['warmup_start_factor'] == 0.001
     assert config['training'] == method_defaults['training']
     assert config['fnpm'] == method_defaults['fnpm']
     assert config['runtime']['work_root'] == 'work_dirs'

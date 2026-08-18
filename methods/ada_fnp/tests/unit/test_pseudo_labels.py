@@ -9,11 +9,13 @@ from methods.ada_fnp.training.pseudo_labels import (
 
 def test_variance_threshold_is_inclusive_and_has_no_score_cutoff():
     boxes = torch.tensor([[0., 0., 10., 10.], [2., 2., 4., 4.]])
-    probabilities = torch.tensor([[.01, .02, .97], [.2, .1, .7]])
+    labels = torch.tensor([1, 0])
+    scores = torch.tensor([.02, .2])
     variances = torch.tensor([[.1, .1, .1, .1], [.11, .1, .1, .1]])
-    result = select_pseudo_labels(boxes, probabilities, variances)
+    result = select_pseudo_labels(boxes, labels, scores, variances)
     assert result['boxes'].shape == (1, 4)
     assert result['scores'].item() == pytest.approx(.02)
+    assert result['labels'].tolist() == [1]
 
 
 def test_box_projection_translation():
@@ -37,10 +39,8 @@ def test_project_pseudo_labels_filters_only_variance_before_projection():
         [2., 4., 6., 8.],
         [20., 40., 60., 80.],
     ])
-    probabilities = torch.tensor([
-        [.001, .002, .997],
-        [.8, .1, .1],
-    ])
+    labels = torch.tensor([1, 0])
+    scores = torch.tensor([.002, .8])
     variances = torch.tensor([
         [.1, .1, .1, .1],
         [.2, .2, .2, .2],
@@ -49,11 +49,23 @@ def test_project_pseudo_labels_filters_only_variance_before_projection():
     strong = torch.tensor([[1., 0., 3.], [0., 1., 4.], [0., 0., 1.]])
 
     result = project_pseudo_labels(
-        boxes, probabilities, variances, weak, strong)
+        boxes, labels, scores, variances, weak, strong)
 
     assert torch.allclose(result['boxes'], torch.tensor([[4., 6., 6., 8.]]))
     assert result['scores'].item() == pytest.approx(.002)
     assert result['labels'].tolist() == [1]
+
+
+def test_pseudo_labels_preserve_nms_labels_instead_of_reclassifying():
+    boxes = torch.tensor([[1., 2., 3., 4.], [1., 2., 3., 4.]])
+    labels = torch.tensor([0, 1])
+    scores = torch.tensor([.8, .7])
+    variances = torch.zeros_like(boxes)
+
+    result = select_pseudo_labels(boxes, labels, scores, variances)
+
+    assert result['labels'].tolist() == [0, 1]
+    assert torch.equal(result['scores'], scores)
 
 
 def test_only_classification_losses_are_retained():

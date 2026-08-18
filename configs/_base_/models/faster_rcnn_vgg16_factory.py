@@ -2,19 +2,30 @@
 
 from copy import deepcopy
 
+from methods.common.mmdet.models.backbones.vgg16_caffe import (
+    CHECKPOINT_PATH as VGG16_CAFFE_CHECKPOINT,
+    DOWNLOAD_URL as VGG16_CAFFE_URL,
+    MD5 as VGG16_CAFFE_MD5,
+    SHA256 as VGG16_CAFFE_SHA256,
+    SIZE_BYTES as VGG16_CAFFE_SIZE_BYTES,
+)
 
+# PT loads only convolution tensors from this Caffe-converted VGG16 asset.
+# Source: Zenodo record 4515252, file ``vgg16_caffe.pth``.
 _DETECTOR_TEMPLATE = dict(
     type='FasterRCNN',
     data_preprocessor=dict(
         type='DetDataPreprocessor',
-        mean=[123.675, 116.28, 103.53],
-        std=[58.395, 57.12, 57.375],
-        bgr_to_rgb=True,
-        pad_size_divisor=16,
+        mean=[103.53, 116.28, 123.675],
+        std=[1.0, 1.0, 1.0],
+        bgr_to_rgb=False,
+        pad_size_divisor=1,
     ),
     backbone=dict(
         type='ADAODVGG16',
-        frozen_stages=-1,
+        frozen_stages=2,
+        pretrained_checkpoint=VGG16_CAFFE_CHECKPOINT,
+        pretrained_sha256=VGG16_CAFFE_SHA256,
         init_cfg=None,
     ),
     rpn_head=dict(
@@ -23,9 +34,11 @@ _DETECTOR_TEMPLATE = dict(
         feat_channels=512,
         anchor_generator=dict(
             type='AnchorGenerator',
-            scales=[8],
+            scales=[8, 16, 32],
             ratios=[0.5, 1.0, 2.0],
             strides=[16],
+            # Detectron2 v0.5 defaults to anchors centered on integer pixels.
+            center_offset=0.0,
         ),
         bbox_coder=dict(
             type='DeltaXYWHBBoxCoder',
@@ -40,14 +53,19 @@ _DETECTOR_TEMPLATE = dict(
         type='StandardRoIHead',
         bbox_roi_extractor=dict(
             type='SingleRoIExtractor',
-            roi_layer=dict(type='RoIAlign', output_size=7, sampling_ratio=0),
+            roi_layer=dict(
+                type='RoIAlign',
+                output_size=7,
+                sampling_ratio=0,
+                aligned=True,
+            ),
             out_channels=512,
             featmap_strides=[16],
         ),
         bbox_head=dict(
             type='ADAODVGGShared2FCBBoxHead',
             in_channels=512,
-            fc_out_channels=4096,
+            fc_out_channels=1024,
             roi_feat_size=7,
             num_classes=8,
             dropout=0.0,
@@ -71,14 +89,16 @@ _DETECTOR_TEMPLATE = dict(
                 type='MaxIoUAssigner',
                 pos_iou_thr=0.7,
                 neg_iou_thr=0.3,
-                min_pos_iou=0.3,
+                # Detectron2 always retains each GT's best anchor, independent
+                # of the positive IoU threshold.
+                min_pos_iou=0.0,
                 match_low_quality=True,
                 ignore_iof_thr=-1,
             ),
             sampler=dict(
                 type='RandomSampler',
                 num=256,
-                pos_fraction=0.5,
+                pos_fraction=0.25,
                 neg_pos_ub=-1,
                 add_gt_as_proposals=False,
             ),
@@ -87,8 +107,8 @@ _DETECTOR_TEMPLATE = dict(
             debug=False,
         ),
         rpn_proposal=dict(
-            nms_pre=2000,
-            max_per_img=1000,
+            nms_pre=12000,
+            max_per_img=2000,
             nms=dict(type='nms', iou_threshold=0.7),
             min_bbox_size=0,
         ),
@@ -114,7 +134,7 @@ _DETECTOR_TEMPLATE = dict(
     ),
     test_cfg=dict(
         rpn=dict(
-            nms_pre=1000,
+            nms_pre=6000,
             max_per_img=1000,
             nms=dict(type='nms', iou_threshold=0.7),
             min_bbox_size=0,
@@ -134,4 +154,11 @@ def build_faster_rcnn_vgg16() -> dict:
     return deepcopy(_DETECTOR_TEMPLATE)
 
 
-__all__ = ['build_faster_rcnn_vgg16']
+__all__ = [
+    'VGG16_CAFFE_CHECKPOINT',
+    'VGG16_CAFFE_MD5',
+    'VGG16_CAFFE_SHA256',
+    'VGG16_CAFFE_SIZE_BYTES',
+    'VGG16_CAFFE_URL',
+    'build_faster_rcnn_vgg16',
+]

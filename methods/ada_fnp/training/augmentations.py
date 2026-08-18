@@ -68,10 +68,13 @@ class PTStrongAugmentation:
             results['img'] = np.ascontiguousarray(bgr_image)
             return results
 
-        rgb_image = np.ascontiguousarray(bgr_image[..., ::-1])
-        pil_image = Image.fromarray(rgb_image)
-        augmented_rgb = np.asarray(self.augmentation(pil_image))
-        results['img'] = np.ascontiguousarray(augmented_rgb[..., ::-1])
+        # PT reads images in Detectron2's default BGR format, then passes the
+        # array directly to a PIL RGB image. Preserve that literal
+        # channel behavior for reproduction instead of correcting it with a
+        # BGR/RGB swap here.
+        pil_image = Image.fromarray(np.ascontiguousarray(bgr_image))
+        augmented_image = np.asarray(self.augmentation(pil_image))
+        results['img'] = np.ascontiguousarray(augmented_image)
         return results
 
 

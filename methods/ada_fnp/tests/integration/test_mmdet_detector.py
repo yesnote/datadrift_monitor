@@ -113,7 +113,7 @@ def _faster_rcnn_config():
                 roi_feat_size=2,
                 fc_out_channels=16,
                 num_classes=2,
-                reg_class_agnostic=True,
+                reg_class_agnostic=False,
                 bbox_coder=dict(
                     type='DeltaXYWHBBoxCoder',
                     target_means=[0.0, 0.0, 0.0, 0.0],
@@ -127,12 +127,15 @@ def _faster_rcnn_config():
         test_cfg=test_cfg)
 
 
-def _unlabeled_sample(homography, label=99):
+def _unlabeled_sample(homography, label=99, img_id=1):
     data_sample = DetDataSample(
         metainfo=dict(
+            img_id=img_id,
             img_shape=(64, 64),
             ori_shape=(64, 64),
             scale_factor=(1.0, 1.0),
+            flip=False,
+            flip_direction=None,
             homography_matrix=homography))
     data_sample.gt_instances = InstanceData(
         bboxes=torch.tensor([[30.0, 30.0, 40.0, 40.0]]),
@@ -203,11 +206,7 @@ def test_loss_orchestration_uses_weak_teacher_and_strong_student():
         [0.0, 2.0, 0.0],
         [0.0, 0.0, 1.0],
     ])
-    strong_homography = torch.tensor([
-        [1.0, 0.0, 3.0],
-        [0.0, 1.0, 4.0],
-        [0.0, 0.0, 1.0],
-    ])
+    strong_homography = weak_homography.clone()
     weak_sample = _unlabeled_sample(weak_homography)
     strong_sample = _unlabeled_sample(strong_homography)
     branch_inputs = {
@@ -253,6 +252,8 @@ def test_loss_orchestration_uses_weak_teacher_and_strong_student():
             [0.001, 0.002, 0.997],
             [0.8, 0.1, 0.1],
         ]),
+        labels=torch.tensor([1, 0]),
+        scores=torch.tensor([0.002, 0.8]),
         box_variances=torch.tensor([
             [0.1, 0.1, 0.1, 0.1],
             [0.2, 0.2, 0.2, 0.2],
@@ -292,7 +293,7 @@ def test_loss_orchestration_uses_weak_teacher_and_strong_student():
     assert pseudo_samples[0] is not strong_sample
     assert torch.allclose(
         pseudo_samples[0].gt_instances.bboxes,
-        torch.tensor([[4.0, 6.0, 6.0, 8.0]]))
+        torch.tensor([[2.0, 4.0, 6.0, 8.0]]))
     assert pseudo_samples[0].gt_instances.labels.tolist() == [1]
     assert 'ignored_instances' not in pseudo_samples[0]
     assert strong_sample.gt_instances.labels.tolist() == [99]

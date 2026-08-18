@@ -18,14 +18,14 @@ from .pool import PoolState
 
 
 CITYSCAPES_CLASSES: Tuple[str, ...] = (
-    'person',
-    'rider',
-    'car',
     'truck',
-    'bus',
+    'car',
+    'rider',
+    'person',
     'train',
     'motorcycle',
     'bicycle',
+    'bus',
 )
 CATEGORY_IDS = {
     class_name: category_id
@@ -39,6 +39,13 @@ TARGET_TRAIN_NAMESPACE = 'foggy-cityscapes.beta-0.02.train'
 TARGET_VAL_NAMESPACE = 'foggy-cityscapes.beta-0.02.val'
 EXPECTED_TRAIN_IMAGES = 2975
 EXPECTED_VAL_IMAGES = 500
+CACHE_SCHEMA_VERSION = 2
+ANNOTATION_POLICY = {
+    'name': 'pt-voc-8class-exact-v1',
+    'label_matching': 'exact',
+    'group_labels': 'excluded',
+    'coordinates': 'pt-voc-inclusive-to-zero-based-half-open-coco-xywh',
+}
 
 
 @dataclass(frozen=True)
@@ -219,23 +226,26 @@ def _read_png_dimensions(path: Path) -> Tuple[int, int]:
     return width, height
 
 
-def _category(label: Any) -> Optional[Tuple[int, int]]:
+def _category(label: Any) -> Optional[int]:
     if not isinstance(label, str):
         return None
-    if label in CATEGORY_IDS:
-        return CATEGORY_IDS[label], 0
-    if label.endswith('group'):
-        base_label = label[: -len('group')]
-        if base_label in CATEGORY_IDS:
-            return CATEGORY_IDS[base_label], 1
-    return None
+    return CATEGORY_IDS.get(label)
 
 
-def _clipped_polygon(
+def _pt_bbox_from_polygon(
     polygon: Any,
     width: int,
     height: int,
-) -> Optional[Tuple[Sequence[float], Sequence[float], float]]:
+) -> Optional[Tuple[Sequence[float], float]]:
+    '''Return the box produced by PT's VOC converter and Detectron2 loader.
+
+    PT clips its serialized VOC coordinates to ``[1, size - 1]`` only when
+    they cross an image boundary. Detectron2 subtracts one from ``xmin`` and
+    ``ymin`` while retaining the inclusive VOC maxima as exclusive upper
+    bounds. The returned COCO xywh box reproduces those effective zero-based,
+    half-open xyxy coordinates without materializing an intermediate XML.
+    '''
+
     if not isinstance(polygon, Sequence) or isinstance(polygon, (str, bytes)):
         return None
     points = []
@@ -258,28 +268,32 @@ def _clipped_polygon(
         y = float(y)
         if not math.isfinite(x) or not math.isfinite(y):
             return None
-        points.append((min(max(x, 0.0), float(width)), min(max(y, 0.0), float(height))))
-    if len(points) < 3:
+        points.append((x, y))
+    if not points:
         return None
     x_values = [point[0] for point in points]
     y_values = [point[1] for point in points]
     x_min, x_max = min(x_values), max(x_values)
     y_min, y_max = min(y_values), max(y_values)
+    if x_min <= 0.0:
+        x_min = 1.0
+    if x_max >= float(width):
+        x_max = float(width - 1)
+    if y_min <= 0.0:
+        y_min = 1.0
+    if y_max >= float(height):
+        y_max = float(height - 1)
+
+    # Detectron2's Pascal VOC reader shifts only the lower bounds. The VOC
+    # inclusive maxima then serve as half-open upper bounds.
+    x_min -= 1.0
+    y_min -= 1.0
     box_width = x_max - x_min
     box_height = y_max - y_min
     if box_width <= 0.0 or box_height <= 0.0:
         return None
-    double_area = sum(
-        x_first * y_second - x_second * y_first
-        for (x_first, y_first), (x_second, y_second) in zip(
-            points, points[1:] + points[:1]
-        )
-    )
-    area = abs(double_area) / 2.0
-    if area <= 0.0:
-        return None
-    flattened = [coordinate for point in points for coordinate in point]
-    return flattened, (x_min, y_min, box_width, box_height), area
+    area = box_width * box_height
+    return (x_min, y_min, box_width, box_height), area
 
 
 def _repository_relative(path: Path, repository_root: Path) -> str:
@@ -343,20 +357,18 @@ def _build_coco_dataset(
             category = _category(instance.get('label'))
             if category is None:
                 continue
-            geometry = _clipped_polygon(instance.get('polygon'), width, height)
+            geometry = _pt_bbox_from_polygon(instance.get('polygon'), width, height)
             if geometry is None:
                 continue
-            segmentation, bbox, area = geometry
-            category_id, iscrowd = category
+            bbox, area = geometry
             annotations.append(
                 {
                     'id': annotation_id,
                     'image_id': image_id,
-                    'category_id': category_id,
-                    'segmentation': [list(segmentation)],
+                    'category_id': category,
                     'bbox': list(bbox),
                     'area': area,
-                    'iscrowd': iscrowd,
+                    'iscrowd': 0,
                 }
             )
             annotation_id += 1
@@ -646,9 +658,10 @@ def prepare_cityscapes_to_foggy(
         }
 
     manifest_body = {
-        'schema_version': 1,
+        'schema_version': CACHE_SCHEMA_VERSION,
         'scenario': 'cityscapes-to-foggy',
         'beta': '0.02',
+        'annotation_policy': dict(ANNOTATION_POLICY),
         'categories': _categories(),
         'input_fingerprint': _input_fingerprint(layout, repository_root),
         'outputs': output_records,

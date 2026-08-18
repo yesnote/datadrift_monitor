@@ -1,5 +1,7 @@
 '''Cityscapes to Foggy Cityscapes dataset contract for MMDetection 3.3.'''
 
+from methods.common.data.cityscapes import CITYSCAPES_CLASSES
+
 # CocoDataset is MMDetection's concrete BaseDetDataset reader for the
 # generated COCO-format manifests.  The manifests are build artifacts and
 # must never be written beside the source gtFine annotations.
@@ -7,16 +9,7 @@ dataset_type = 'CocoDataset'
 data_root = ''
 backend_args = None
 
-classes = (
-    'person',
-    'rider',
-    'car',
-    'truck',
-    'bus',
-    'train',
-    'motorcycle',
-    'bicycle',
-)
+classes = CITYSCAPES_CLASSES
 metainfo = dict(classes=classes)
 foggy_beta = 0.02
 expected_source_train_images = 2975
@@ -48,24 +41,24 @@ pack_meta_keys = (
     'homography_matrix',
 )
 
-# MMDetection's (max_width, max_height) Resize form is the equivalent of the
-# PT shorter-edge target 600 with a 1000-pixel long-edge cap.
+# Detectron2/PT uses a 600-pixel short edge and its default 1333-pixel maximum
+# long edge. Geometry runs once before MultiBranch so weak and strong target
+# views differ only in photometric appearance.
 shared_geometric_pipeline = [
-    dict(type='Resize', scale=(1000, 600), keep_ratio=True),
+    dict(type='Resize', scale=(1333, 600), keep_ratio=True),
     dict(type='RandomFlip', prob=0.5),
 ]
 weak_pipeline = [
-    *shared_geometric_pipeline,
     dict(type='PackDetInputs', meta_keys=pack_meta_keys),
 ]
 strong_pipeline = [
-    *shared_geometric_pipeline,
     dict(type='PTStrongAugmentation', p=1.0),
     dict(type='PackDetInputs', meta_keys=pack_meta_keys),
 ]
 source_train_pipeline = [
     dict(type='LoadImageFromFile', backend_args=backend_args),
     dict(type='LoadAnnotations', with_bbox=True),
+    *shared_geometric_pipeline,
     dict(
         type='MultiBranch',
         branch_field=branch_field,
@@ -75,6 +68,7 @@ source_train_pipeline = [
 target_labeled_pipeline = [
     dict(type='LoadImageFromFile', backend_args=backend_args),
     dict(type='LoadAnnotations', with_bbox=True),
+    *shared_geometric_pipeline,
     dict(
         type='MultiBranch',
         branch_field=branch_field,
@@ -84,6 +78,7 @@ target_labeled_pipeline = [
 target_unlabeled_pipeline = [
     dict(type='LoadImageFromFile', backend_args=backend_args),
     dict(type='LoadEmptyAnnotations'),
+    *shared_geometric_pipeline,
     dict(
         type='MultiBranch',
         branch_field=branch_field,
@@ -93,9 +88,18 @@ target_unlabeled_pipeline = [
 ]
 test_pipeline = [
     dict(type='LoadImageFromFile', backend_args=backend_args),
-    dict(type='Resize', scale=(1000, 600), keep_ratio=True),
+    dict(type='Resize', scale=(1333, 600), keep_ratio=True),
     dict(type='LoadAnnotations', with_bbox=True),
     dict(type='PackDetInputs', meta_keys=pack_meta_keys[:-1]),
+]
+
+# Pool scoring must not add random data uncertainty to ADA-FNP's MC Dropout
+# uncertainty. It uses the same deterministic resize as evaluation.
+target_acquisition_pipeline = [
+    dict(type='LoadImageFromFile', backend_args=backend_args),
+    dict(type='LoadEmptyAnnotations'),
+    dict(type='Resize', scale=(1333, 600), keep_ratio=True),
+    dict(type='PackDetInputs', meta_keys=pack_meta_keys),
 ]
 
 source_train_dataset = dict(
@@ -127,6 +131,16 @@ target_unlabeled_dataset = dict(
     metainfo=metainfo,
     filter_cfg=dict(filter_empty_gt=False, min_size=1),
     pipeline=target_unlabeled_pipeline,
+    backend_args=backend_args,
+)
+target_acquisition_dataset = dict(
+    type=dataset_type,
+    data_root=data_root,
+    ann_file=target_pool_ann_file,
+    data_prefix=dict(img=''),
+    metainfo=metainfo,
+    filter_cfg=dict(filter_empty_gt=False, min_size=1),
+    pipeline=target_acquisition_pipeline,
     backend_args=backend_args,
 )
 
@@ -174,10 +188,10 @@ val_dataloader = dict(
 )
 test_dataloader = val_dataloader
 
-# VOC2012-style continuous integration at IoU 0.5 reproduces the paper's AP50
-# protocol without enabling VOC's legacy inclusive-coordinate convention.
+# The cache stores Detectron2-compatible zero-based, half-open boxes. Use PT's
+# VOC2012-style continuous AP without MMDetection's legacy ``+1`` arithmetic.
 val_evaluator = dict(
-    type='VOCMetric',
+    type='PTVOCMetric',
     iou_thrs=0.5,
     metric='mAP',
     eval_mode='area',

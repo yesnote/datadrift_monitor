@@ -7,10 +7,11 @@ from methods.ada_fnp.models.detector import (
     SOURCE_BRANCH, TARGET_LABELED_BRANCH, TARGET_UNLABELED_STRONG_BRANCH,
     TARGET_UNLABELED_WEAK_BRANCH, multi_target_domain_loss,
     route_detection_losses, select_domain_target_branches,
-    validate_loss_branches)
+    validate_loss_branches, validate_shared_target_geometry)
 from methods.ada_fnp.models.roi_head import (
     map_multiclass_nms_to_proposals, normalize_xyxy_box_samples,
-    run_rpn_once_for_fixed_roi, summarize_mc_predictions)
+    run_rpn_once_for_fixed_roi, split_multiclass_nms_indices,
+    summarize_mc_predictions)
 
 
 def test_validate_loss_branches_enforces_explicit_contract():
@@ -48,6 +49,45 @@ def test_validate_loss_branches_enforces_explicit_contract():
     }
     with pytest.raises(ValueError, match='weak and strong batch sizes'):
         validate_loss_branches(mismatched_views, mismatched_samples)
+
+    mismatched_spatial = {
+        **inputs,
+        TARGET_UNLABELED_STRONG_BRANCH: torch.zeros(1, 3, 9, 8),
+    }
+    with pytest.raises(ValueError, match='spatial shapes'):
+        validate_loss_branches(mismatched_spatial, samples)
+
+
+def test_shared_target_geometry_requires_the_same_image_and_transform():
+    class Sample:
+        def __init__(self, metainfo):
+            self.metainfo = metainfo
+
+    metadata = dict(
+        img_id=7,
+        ori_shape=(10, 20),
+        img_shape=(6, 12),
+        flip=True,
+        flip_direction='horizontal',
+        homography_matrix=torch.tensor([
+            [-.6, 0., 12.], [0., .6, 0.], [0., 0., 1.],
+        ]),
+    )
+    weak = Sample(metadata)
+    strong = Sample({**metadata})
+
+    validate_shared_target_geometry([weak], [strong])
+
+    different_homography = Sample({
+        **metadata,
+        'homography_matrix': torch.eye(3),
+    })
+    with pytest.raises(ValueError, match='homography matrices'):
+        validate_shared_target_geometry([weak], [different_homography])
+    with pytest.raises(ValueError, match='image ids'):
+        validate_shared_target_geometry([
+            weak
+        ], [Sample({**metadata, 'img_id': 8})])
 
 
 def test_route_detection_losses_keeps_unsupervised_classification_only():
@@ -142,6 +182,31 @@ def test_summarize_mc_predictions_is_mean_before_nms():
         summarize_mc_predictions(probabilities[:1], boxes[:1])
 
 
+def test_summarize_mc_predictions_tracks_each_class_box_trajectory():
+    probabilities = torch.tensor([
+        [[.6, .3, .1]],
+        [[.4, .5, .1]],
+    ])
+    boxes = torch.tensor([
+        [[
+            [0., 0., 2., 2.],
+            [10., 10., 12., 12.],
+        ]],
+        [[
+            [2., 0., 4., 2.],
+            [14., 10., 16., 12.],
+        ]],
+    ])
+
+    mean_probabilities, mean_boxes, variances = summarize_mc_predictions(
+        probabilities, boxes)
+
+    assert mean_boxes.shape == (1, 2, 4)
+    assert torch.allclose(mean_probabilities, probabilities.mean(dim=0))
+    assert torch.allclose(mean_boxes, boxes.mean(dim=0))
+    assert torch.allclose(variances, boxes.var(dim=0, unbiased=True))
+
+
 def test_map_multiclass_nms_indices_back_to_proposals():
     kept_indices = torch.tensor([0, 2, 3, 8], dtype=torch.long)
 
@@ -152,6 +217,11 @@ def test_map_multiclass_nms_indices_back_to_proposals():
     assert local.tolist() == [0, 0, 1, 2]
     assert mapped.tolist() == [10, 10, 20, 30]
 
+    proposal_indices, class_indices = split_multiclass_nms_indices(
+        kept_indices, 3)
+    assert proposal_indices.tolist() == [0, 0, 1, 2]
+    assert class_indices.tolist() == [0, 2, 0, 2]
+
 
 def test_normalize_box_samples_uses_cxcywh_and_image_dimensions():
     samples = torch.tensor([[[10.0, 20.0, 30.0, 60.0]]])
@@ -160,6 +230,14 @@ def test_normalize_box_samples_uses_cxcywh_and_image_dimensions():
 
     assert torch.allclose(
         normalized, torch.tensor([[[0.1, 0.4, 0.1, 0.4]]]))
+
+    class_specific = samples.unsqueeze(2).expand(-1, -1, 2, -1)
+    class_normalized = normalize_xyxy_box_samples(
+        class_specific, (100, 200))
+    assert class_normalized.shape == (1, 1, 2, 4)
+    assert torch.allclose(
+        class_normalized,
+        normalized.unsqueeze(2).expand_as(class_normalized))
 
 
 def test_fixed_roi_wrapper_materializes_rpn_proposals_once():

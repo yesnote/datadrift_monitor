@@ -1,5 +1,6 @@
 '''PyTorch-only tests for the BN-free VGG16 backbone.'''
 
+import pytest
 import torch
 from torch import nn
 
@@ -41,3 +42,20 @@ def test_vgg16_freezes_only_requested_leading_stages():
     assert model.features.conv3_1.weight.requires_grad
     assert not model.features.relu1_1.training
     assert model.features.relu3_1.training
+
+
+def test_vgg16_defaults_to_pt_freeze_at_two():
+    model = VGG16Backbone()
+
+    assert model.frozen_stages == 2
+    assert not model.features.conv1_1.weight.requires_grad
+    assert not model.features.conv2_2.weight.requires_grad
+    assert model.features.conv3_1.weight.requires_grad
+
+
+def test_vgg16_requires_checkpoint_and_digest_together(tmp_path):
+    checkpoint = tmp_path / 'vgg16_caffe.pth'
+    with pytest.raises(ValueError, match='must be set together'):
+        VGG16Backbone(pretrained_checkpoint=str(checkpoint))
+    with pytest.raises(ValueError, match='must be set together'):
+        VGG16Backbone(pretrained_sha256='0' * 64)

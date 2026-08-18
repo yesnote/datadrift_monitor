@@ -9,8 +9,16 @@ from torch import Tensor
 def normalize_xyxy_box_samples(
     box_samples: Tensor, image_shape: Sequence[int]
 ) -> Tensor:
-    if box_samples.ndim != 3 or box_samples.shape[-1] != 4:
-        raise ValueError('box_samples must have shape [passes, boxes, 4]')
+    '''Convert absolute xyxy samples to normalized cxcywh coordinates.
+
+    The leading dimensions are intentionally preserved. ADA-FNP uses both
+    class-agnostic ``[M, N, 4]`` tensors in standalone scoring utilities and
+    class-specific ``[M, N, C, 4]`` tensors in Faster R-CNN MC inference.
+    '''
+    if box_samples.ndim < 2 or box_samples.shape[-1] != 4:
+        raise ValueError(
+            'box_samples must have one or more leading dimensions and a '
+            'final coordinate dimension of four')
     if len(image_shape) < 2:
         raise ValueError('image_shape must provide height and width')
     image_height, image_width = image_shape[:2]

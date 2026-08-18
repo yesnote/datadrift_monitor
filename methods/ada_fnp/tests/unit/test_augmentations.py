@@ -75,6 +75,26 @@ def test_preserves_bgr_array_contract_and_other_keys():
     assert results['img_id'] == 11
 
 
+def test_preserves_literal_pt_bgr_as_pil_channel_behavior():
+    transform = PTStrongAugmentation(p=1.0)
+    image = np.zeros((3, 4, 3), dtype=np.uint8)
+    image[..., 0] = 10
+    image[..., 1] = 20
+    image[..., 2] = 30
+
+    def zero_pil_red_channel(pil_image):
+        array = np.asarray(pil_image).copy()
+        array[..., 0] = 0
+        return Image.fromarray(array)
+
+    transform.augmentation = zero_pil_red_channel
+    augmented = transform({'img': image.copy()})['img']
+
+    assert np.all(augmented[..., 0] == 0)
+    assert np.all(augmented[..., 1] == 20)
+    assert np.all(augmented[..., 2] == 30)
+
+
 @pytest.mark.parametrize(
     'image,exception', [
         (torch.zeros(4, 4, 3), TypeError),
