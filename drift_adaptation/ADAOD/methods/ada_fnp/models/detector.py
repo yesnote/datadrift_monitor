@@ -10,7 +10,7 @@ from methods.ada_fnp.acquisition.mc_dropout import mc_dropout_enabled
 from methods.ada_fnp.training.losses import (
     domain_discriminator_loss, prefix_losses)
 from methods.ada_fnp.training.pseudo_labels import (
-    classification_only_losses, project_pseudo_labels)
+    classification_only_losses, select_pseudo_labels)
 from methods.common.mmdet.models.layers.gradient_reversal import (
     gradient_reverse)
 
@@ -58,6 +58,47 @@ def validate_loss_branches(inputs: Mapping[str, Tensor],
     if (inputs[TARGET_UNLABELED_WEAK_BRANCH].shape[0] !=
             inputs[TARGET_UNLABELED_STRONG_BRANCH].shape[0]):
         raise ValueError('target weak and strong batch sizes must match')
+    if (inputs[TARGET_UNLABELED_WEAK_BRANCH].shape[-2:] !=
+            inputs[TARGET_UNLABELED_STRONG_BRANCH].shape[-2:]):
+        raise ValueError('target weak and strong spatial shapes must match')
+
+
+def validate_shared_target_geometry(weak_samples: Sequence,
+                                    strong_samples: Sequence) -> None:
+    '''Require PT weak/strong views to share one geometric transform.'''
+    if len(weak_samples) != len(strong_samples):
+        raise ValueError('target weak and strong sample counts must match')
+    required_meta = ('img_id', 'ori_shape', 'img_shape', 'homography_matrix')
+    for index, (weak_sample, strong_sample) in enumerate(
+            zip(weak_samples, strong_samples)):
+        weak_meta = weak_sample.metainfo
+        strong_meta = strong_sample.metainfo
+        missing = [
+            key for key in required_meta
+            if key not in weak_meta or key not in strong_meta
+        ]
+        if missing:
+            raise ValueError(
+                'paired target sample {} is missing geometry metadata: {}'
+                .format(index, ', '.join(missing)))
+        if weak_meta['img_id'] != strong_meta['img_id']:
+            raise ValueError('target weak and strong image ids must match')
+        for key in ('ori_shape', 'img_shape', 'flip', 'flip_direction'):
+            if weak_meta.get(key) != strong_meta.get(key):
+                raise ValueError(
+                    'target weak and strong {} metadata must match'.format(
+                        key))
+        weak_homography = torch.as_tensor(weak_meta['homography_matrix'])
+        strong_homography = torch.as_tensor(
+            strong_meta['homography_matrix'],
+            device=weak_homography.device,
+            dtype=weak_homography.dtype)
+        if (weak_homography.shape != (3, 3) or
+                strong_homography.shape != (3, 3)):
+            raise ValueError('target view homographies must have shape [3, 3]')
+        if not torch.equal(weak_homography, strong_homography):
+            raise ValueError(
+                'target weak and strong homography matrices must match')
 
 
 def select_domain_target_branches(branches: Mapping) -> Sequence[str]:
@@ -274,6 +315,10 @@ else:
                                             strong_data_samples):
             clean_weak_samples = self._clone_without_unlabeled_annotations(
                 weak_data_samples)
+            clean_strong_samples = self._clone_without_unlabeled_annotations(
+                strong_data_samples)
+            validate_shared_target_geometry(
+                clean_weak_samples, clean_strong_samples)
             teacher_results = self.predict_teacher_fixed_proposals(
                 weak_inputs,
                 clean_weak_samples,
@@ -282,26 +327,13 @@ else:
                 raise ValueError(
                     'teacher predictions and strong samples must align')
 
-            clean_strong_samples = self._clone_without_unlabeled_annotations(
-                strong_data_samples)
-            for result, weak_sample, strong_sample in zip(
-                    teacher_results, clean_weak_samples,
-                    clean_strong_samples):
-                reference = result.bboxes
-                weak_homography = torch.as_tensor(
-                    weak_sample.homography_matrix,
-                    device=reference.device,
-                    dtype=reference.dtype)
-                strong_homography = torch.as_tensor(
-                    strong_sample.homography_matrix,
-                    device=reference.device,
-                    dtype=reference.dtype)
-                pseudo = project_pseudo_labels(
+            for result, strong_sample in zip(
+                    teacher_results, clean_strong_samples):
+                pseudo = select_pseudo_labels(
                     result.bboxes,
-                    result.class_probabilities,
+                    result.labels,
+                    result.scores,
                     result.box_variances,
-                    weak_homography,
-                    strong_homography,
                     variance_threshold=(
                         self.localization_variance_threshold))
                 gt_instances = InstanceData()
@@ -374,5 +406,6 @@ __all__ = [
     'multi_target_domain_loss',
     'route_detection_losses',
     'select_domain_target_branches',
+    'validate_shared_target_geometry',
     'validate_loss_branches',
 ]

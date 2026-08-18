@@ -51,8 +51,10 @@ def build_parser() -> argparse.ArgumentParser:
 
 def _dataset_junction(repository: Path, value: str) -> Path:
     relative = PurePosixPath(repository_relative_path(value))
-    if not relative.parts or relative.parts[0] != 'data':
-        raise ValueError('dataset inputs must be addressed below the data directory')
+    if len(relative.parts) < 3 or relative.parts[:2] != ('data', 'Cityscapes'):
+        raise ValueError(
+            'dataset inputs must be addressed below data/Cityscapes'
+        )
     return repository.joinpath(*relative.parts)
 
 

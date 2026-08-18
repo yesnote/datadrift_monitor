@@ -24,6 +24,11 @@ def build_plan(config: Mapping) -> ExperimentPlan:
     budgets = split_budget(_total_budget(config), len(milestones))
     stages: List[StageSpec] = [
         StageSpec(
+            'prepare_pretrained',
+            'common.prepare_pretrained',
+            {'detector': config['detector']['name']},
+        ),
+        StageSpec(
             'prepare_datasets',
             'common.prepare_datasets',
             {'scenario': config['scenario']},

@@ -1,10 +1,14 @@
-'''BatchNorm-free VGG16 backbone and torchvision checkpoint mapping.'''
+'''BatchNorm-free VGG16 backbone and PT Caffe checkpoint loading.'''
 
 from collections import OrderedDict
+from pathlib import Path
+import re
 from typing import Dict, Mapping, Optional, Sequence, Tuple
 
 import torch
 from torch import Tensor, nn
+
+from methods.common.assets import AssetVerificationError, sha256_file
 
 try:
     from mmengine.model import BaseModule
@@ -53,6 +57,7 @@ _TORCHVISION_CONV_INDICES = (
 )
 
 _STAGE_CONVS = (2, 2, 3, 3, 3)
+_SHA256_PATTERN = re.compile(r'^[0-9a-fA-F]{64}$')
 
 
 class VGG16Backbone(BaseModule):
@@ -64,26 +69,66 @@ class VGG16Backbone(BaseModule):
     absent.
 
     Args:
-        frozen_stages: Number of leading convolutional stages to freeze.
-            ``-1`` and ``0`` both leave every stage trainable.  Values 1--5
-            freeze that many stages.
-        init_cfg: Optional MMEngine initialization configuration.  Torchvision
-            VGG16 checkpoints require :func:`map_torchvision_vgg16_state_dict`
-            because their state-dict keys do not match this module directly.
+        frozen_stages: Number of leading convolutional stages to freeze. PT
+            freezes the first two stages for its C-to-F detector.
+        pretrained_checkpoint: Local PT ``vgg16_caffe.pth`` path. The asset
+            preparation stage must download this file before model creation.
+        pretrained_sha256: Pinned checksum for ``pretrained_checkpoint``. The
+            backbone verifies it again immediately before deserialization.
+        init_cfg: Optional MMEngine initialization configuration. It cannot be
+            combined with the explicit PT checkpoint path.
     '''
 
     out_channels = 512
     output_stride = 16
 
     def __init__(self,
-                 frozen_stages: int = -1,
+                 frozen_stages: int = 2,
+                 pretrained_checkpoint: Optional[str] = None,
+                 pretrained_sha256: Optional[str] = None,
                  init_cfg: Optional[dict] = None) -> None:
         super().__init__(init_cfg=init_cfg)
         if frozen_stages < -1 or frozen_stages > 5:
             raise ValueError('frozen_stages must be between -1 and 5')
+        if (pretrained_checkpoint is None) != (pretrained_sha256 is None):
+            raise ValueError(
+                'pretrained_checkpoint and pretrained_sha256 must be set together')
+        if pretrained_checkpoint is not None and init_cfg is not None:
+            raise ValueError(
+                'explicit PT checkpoint loading cannot be combined with init_cfg')
         self.frozen_stages = frozen_stages
+        self.pretrained_checkpoint = pretrained_checkpoint
+        self.pretrained_sha256 = pretrained_sha256
         self.features, self.stage_names = self._build_features()
+        if pretrained_checkpoint is not None:
+            self._load_pt_caffe_checkpoint(
+                pretrained_checkpoint, str(pretrained_sha256))
         self._freeze_stages()
+
+    def _load_pt_caffe_checkpoint(self, checkpoint: str, sha256: str) -> None:
+        if not _SHA256_PATTERN.fullmatch(sha256):
+            raise ValueError(
+                'pretrained_sha256 must contain exactly 64 hexadecimal characters')
+        checkpoint_path = Path(checkpoint).expanduser().resolve()
+        if not checkpoint_path.is_file():
+            raise FileNotFoundError(
+                'PT VGG16 Caffe checkpoint does not exist: {}'.format(
+                    checkpoint_path))
+        expected_digest = sha256.lower()
+        actual_digest = sha256_file(checkpoint_path)
+        if actual_digest != expected_digest:
+            raise AssetVerificationError(
+                'PT VGG16 Caffe checkpoint SHA-256 mismatch: expected {}, got {}'.format(
+                    expected_digest, actual_digest))
+        try:
+            source_state_dict = torch.load(
+                checkpoint_path, map_location='cpu', weights_only=True)
+        except TypeError:
+            source_state_dict = torch.load(checkpoint_path, map_location='cpu')
+        if not isinstance(source_state_dict, Mapping):
+            raise TypeError('PT VGG16 Caffe checkpoint must contain a state dict')
+        mapped = map_caffe_vgg16_state_dict(source_state_dict)
+        self.load_state_dict(mapped, strict=True)
 
     @staticmethod
     def _build_features() -> Tuple[nn.Sequential, Tuple[Tuple[str, ...], ...]]:
@@ -126,12 +171,7 @@ class VGG16Backbone(BaseModule):
 
 
 def _required_torchvision_shapes() -> Dict[str, Tuple[int, ...]]:
-    shapes = {}
-    for index, (_, in_channels, out_channels) in zip(
-            _TORCHVISION_CONV_INDICES, _CONV_SPECS):
-        shapes['features.{}.weight'.format(index)] = (
-            out_channels, in_channels, 3, 3)
-        shapes['features.{}.bias'.format(index)] = (out_channels, )
+    shapes = _required_caffe_conv_shapes()
     shapes.update({
         'classifier.0.weight': (4096, 512 * 7 * 7),
         'classifier.0.bias': (4096, ),
@@ -141,12 +181,51 @@ def _required_torchvision_shapes() -> Dict[str, Tuple[int, ...]]:
     return shapes
 
 
+def _required_caffe_conv_shapes() -> Dict[str, Tuple[int, ...]]:
+    shapes = {}
+    for index, (_, in_channels, out_channels) in zip(
+            _TORCHVISION_CONV_INDICES, _CONV_SPECS):
+        shapes['features.{}.weight'.format(index)] = (
+            out_channels, in_channels, 3, 3)
+        shapes['features.{}.bias'.format(index)] = (out_channels, )
+    return shapes
+
+
 def _validate_source_tensor(key: str, tensor: Tensor,
                             expected_shape: Sequence[int]) -> None:
     if tuple(tensor.shape) != tuple(expected_shape):
         raise ValueError(
             'unexpected shape for {!r}: expected {}, got {}'.format(
                 key, tuple(expected_shape), tuple(tensor.shape)))
+
+
+def map_caffe_vgg16_state_dict(
+        source_state_dict: Mapping[str, Tensor],
+        backbone_prefix: str = '') -> Dict[str, Tensor]:
+    '''Map PT's Caffe VGG16 checkpoint to the ADAOD convolutional trunk.
+
+    PT reads the 26 torchvision-style ``features.*`` convolution tensors from
+    ``vgg16_caffe.pth`` and intentionally leaves all detector FC layers newly
+    initialized. Returned tensors reference the source mapping without copies.
+    '''
+
+    expected_shapes = _required_caffe_conv_shapes()
+    missing = sorted(set(expected_shapes).difference(source_state_dict))
+    if missing:
+        raise KeyError('PT Caffe VGG16 state dict is missing: {}'.format(
+            ', '.join(missing)))
+
+    mapped = {}
+    for index, (target_name, _, _) in zip(_TORCHVISION_CONV_INDICES,
+                                          _CONV_SPECS):
+        for suffix in ('weight', 'bias'):
+            source_key = 'features.{}.{}'.format(index, suffix)
+            _validate_source_tensor(source_key, source_state_dict[source_key],
+                                    expected_shapes[source_key])
+            target_key = '{}features.{}.{}'.format(
+                backbone_prefix, target_name, suffix)
+            mapped[target_key] = source_state_dict[source_key]
+    return mapped
 
 
 def map_torchvision_vgg16_state_dict(

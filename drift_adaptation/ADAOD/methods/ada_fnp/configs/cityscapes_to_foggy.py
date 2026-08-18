@@ -4,6 +4,7 @@ from copy import deepcopy
 
 from configs._base_.datasets.cityscapes_to_foggy import (
     source_train_dataset as _source_train_dataset,
+    target_acquisition_dataset as _target_acquisition_dataset,
     target_labeled_dataset as _target_labeled_dataset,
     target_unlabeled_dataset as _target_unlabeled_dataset,
 )
@@ -25,6 +26,9 @@ custom_imports = dict(
 )
 
 experiment_name = 'ada-fnp_cityscapes-to-foggy_faster-rcnn-vgg16'
+_DROPOUT_PROBABILITY = 0.1
+_MC_PASSES = 10
+_LOCALIZATION_VARIANCE_THRESHOLD = 0.1
 
 
 def _train_loader(datasets, batch_size, source_ratio):
@@ -66,13 +70,15 @@ adaptation_stage_train_dataloader = _train_loader(
     source_ratio=(4, 4, 4),
 )
 train_dataloader = deepcopy(initial_stage_train_dataloader)
+# The score-pool executor consumes this deterministic, annotation-free view.
+target_acquisition_dataset = deepcopy(_target_acquisition_dataset)
 
 
 detector = _build_faster_rcnn_vgg16()
 detector['roi_head']['type'] = 'ADAFNPRoIHead'
 detector['roi_head']['bbox_head'].update(
-    dropout=0.1,
-    reg_class_agnostic=True,
+    dropout=_DROPOUT_PROBABILITY,
+    reg_class_agnostic=False,
 )
 
 model = dict(
@@ -91,6 +97,8 @@ model = dict(
     grl_scale=1.0,
     domain_loss_weight=0.01,
     enable_unsupervised_loss=False,
+    mc_passes=_MC_PASSES,
+    localization_variance_threshold=_LOCALIZATION_VARIANCE_THRESHOLD,
     semi_train_cfg=dict(freeze_teacher=True),
     semi_test_cfg=dict(
         predict_on='teacher',
@@ -160,14 +168,14 @@ ada_fnp = dict(
     ),
     acquisition=dict(
         budget_percent=1.0,
-        mc_passes=10,
-        dropout_probability=0.1,
+        mc_passes=_MC_PASSES,
+        dropout_probability=_DROPOUT_PROBABILITY,
         domain_probability_epsilon=0.000001,
         constant_score_normalized_value=0.5,
         empty_detection_final_score=0.0,
     ),
     pseudo_label=dict(
-        localization_variance_threshold=0.1,
+        localization_variance_threshold=_LOCALIZATION_VARIANCE_THRESHOLD,
         hard_confidence_threshold=None,
     ),
     unlabeled_target_losses=[

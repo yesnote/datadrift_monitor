@@ -9,14 +9,19 @@ from configs.catalog import (
 
 
 EXPECTED_CLASSES = (
-    'person', 'rider', 'car', 'truck', 'bus', 'train',
-    'motorcycle', 'bicycle',
+    'truck', 'car', 'rider', 'person', 'train', 'motorcycle', 'bicycle', 'bus',
 )
 
 
 def test_c2f_dataset_catalog_contract():
     assert list_datasets() == ('cityscapes-to-foggy',)
     dataset = get_dataset('cityscapes-to-foggy')
+    assert dataset['source']['image_root'] == 'data/Cityscapes/leftImg8bit'
+    assert dataset['source']['annotation_root'] == 'data/Cityscapes/gtFine'
+    assert dataset['target']['image_root'] == (
+        'data/Cityscapes/leftImg8bit_foggy'
+    )
+    assert dataset['target']['annotation_root'] == 'data/Cityscapes/gtFine'
     assert dataset['source']['split'] == 'train'
     assert dataset['source']['expected_images'] == 2975
     assert dataset['target']['train_split'] == 'train'

@@ -12,6 +12,13 @@ optim_wrapper = dict(
 
 param_scheduler = [
     dict(
+        type='LinearLR',
+        start_factor=0.001,
+        begin=0,
+        end=400,
+        by_epoch=False,
+    ),
+    dict(
         type='MultiStepLR',
         begin=0,
         end=40000,

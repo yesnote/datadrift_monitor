@@ -8,33 +8,15 @@ _CONFIG = {
     'scenario': 'cityscapes-to-foggy',
     'seed': 0,
     'dataset': {
-        'source': {
-            'name': 'cityscapes',
-            'image_root': 'data/leftImg8bit',
-            'annotation_root': 'data/gtFine',
-            'split': 'train',
-            'expected_images': 2975,
-        },
         'target': {
-            'name': 'foggy_cityscapes',
-            'image_root': 'data/leftImg8bit_foggy',
-            'annotation_root': 'data/gtFine',
-            'train_split': 'train',
-            'eval_split': 'val',
-            'beta': 0.02,
             'expected_train_images': 2975,
-            'expected_eval_images': 500,
         },
-        'classes': (
-            'person', 'rider', 'car', 'truck', 'bus', 'train',
-            'motorcycle', 'bicycle',
-        ),
     },
     'detector': {
         'name': 'faster-rcnn-vgg16',
         'num_classes': 8,
         'dropout_probability': 0.1,
-        'class_agnostic_bbox_regression': True,
+        'class_agnostic_bbox_regression': False,
     },
     'training': {
         'max_iterations': 40000,
@@ -42,6 +24,8 @@ _CONFIG = {
         'lr': 0.02,
         'momentum': 0.9,
         'weight_decay': 0.0001,
+        'warmup_iterations': 400,
+        'warmup_start_factor': 0.001,
         'lr_milestones': (30000, 35000),
         'source_batch_size': 4,
         'target_labeled_batch_size': 4,

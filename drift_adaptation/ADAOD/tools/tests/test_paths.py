@@ -13,7 +13,9 @@ def test_repository_root_is_independent_of_current_working_directory():
 
 
 def test_repository_relative_paths_resolve_beneath_requested_root(tmp_path):
-    assert repository_relative_path('data/leftImg8bit') == 'data/leftImg8bit'
+    assert repository_relative_path('data/Cityscapes/leftImg8bit') == (
+        'data/Cityscapes/leftImg8bit'
+    )
     assert resolve_repository_path('work_dirs/run', tmp_path) == (
         tmp_path / 'work_dirs' / 'run'
     ).resolve()

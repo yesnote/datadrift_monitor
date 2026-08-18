@@ -24,9 +24,13 @@ def test_cli_resolves_only_repository_relative_dataset_paths(
     monkeypatch.setattr(prepare_cityscapes, 'prepare_cityscapes_to_foggy', fake_prepare)
 
     assert prepare_cityscapes.main([], repository_root_path=tmp_path) == 0
-    assert captured['clear'] == tmp_path / 'data' / 'leftImg8bit'
-    assert captured['foggy'] == tmp_path / 'data' / 'leftImg8bit_foggy'
-    assert captured['polygons'] == tmp_path / 'data' / 'gtFine'
+    assert captured['clear'] == (
+        tmp_path / 'data' / 'Cityscapes' / 'leftImg8bit'
+    )
+    assert captured['foggy'] == (
+        tmp_path / 'data' / 'Cityscapes' / 'leftImg8bit_foggy'
+    )
+    assert captured['polygons'] == tmp_path / 'data' / 'Cityscapes' / 'gtFine'
     assert captured['cache'] == (
         tmp_path / 'work_dirs' / '.dataset_cache' / 'cityscapes-to-foggy'
     )
@@ -39,6 +43,7 @@ def test_cli_resolves_only_repository_relative_dataset_paths(
         ('--clear-images', 'C:/datasets/Cityscapes/leftImg8bit'),
         ('--foggy-images', '../leftImg8bit_foggy'),
         ('--polygons', 'external/gtFine'),
+        ('--clear-images', 'data/leftImg8bit'),
         ('--cache-directory', '../cache'),
     ],
 )

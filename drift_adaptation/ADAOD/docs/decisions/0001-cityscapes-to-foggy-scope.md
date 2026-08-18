@@ -7,19 +7,25 @@ F setting.
 - Target pool: Foggy Cityscapes train, beta 0.02, 2,975 images
 - Evaluation: Foggy Cityscapes val, beta 0.02, 500 images
 - Detector: Faster R-CNN with a BN-free VGG16
-- Internal class order: person, rider, car, truck, bus, train, motorcycle,
-  bicycle
+- Internal PT class order: `truck`, `car`, `rider`, `person`, `train`,
+  `motorcycle`, `bicycle`, `bus`
 
-Cityscapes val is excluded from source training because it has the same scenes
-and geometry as Foggy Cityscapes val. Foggy beta 0.005 and 0.01 files are not
-part of this scenario.
+Cityscapes val is excluded from source training because it contains the same
+scenes and geometry as Foggy Cityscapes val. Foggy beta 0.005 and 0.01 files
+are outside this scenario.
 
-Annotations are converted from gtFine polygon JSON. Deleted objects and
-non-instance classes are excluded, group objects are marked as crowd, bounding
-boxes use COCO xywh externally and half-open xyxy internally, and empty images
-remain in the pool. AP50 uses continuous-area VOC interpolation to match the
-PT registration of the dataset as VOC 2012.
+Annotations are converted from `gtFine` polygon JSON using exact matching for
+the eight PT labels. Deleted objects, non-instance classes, and `*group`
+regions are excluded; group regions are not added as crowd annotations. The
+converter reproduces PT's VOC serialization followed by Detectron2's loader,
+yielding zero-based lower bounds and half-open upper bounds. Empty images
+remain in the pool.
+
+The required local layout is `data/Cityscapes/{gtFine,leftImg8bit,
+leftImg8bit_foggy}`. These entries are read-only junctions; generated
+annotations are stored only below `work_dirs`.
 
 One percent and five percent budgets are rounded to the nearest image with
 half values rounded upward, producing 30 and 149 images. Remainders are
-assigned to earlier acquisition rounds.
+assigned to earlier acquisition rounds, so the five-round allocations are
+`6,6,6,6,6` and `30,30,30,30,29`.

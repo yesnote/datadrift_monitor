@@ -3,25 +3,15 @@
 from copy import deepcopy
 from typing import Mapping, Tuple
 
-
-_CITYSCAPES_CLASSES: Tuple[str, ...] = (
-    'person',
-    'rider',
-    'car',
-    'truck',
-    'bus',
-    'train',
-    'motorcycle',
-    'bicycle',
-)
+from methods.common.data.cityscapes import CITYSCAPES_CLASSES
 
 
 _DATASETS = {
     'cityscapes-to-foggy': {
         'source': {
             'name': 'cityscapes',
-            'image_root': 'data/leftImg8bit',
-            'annotation_root': 'data/gtFine',
+            'image_root': 'data/Cityscapes/leftImg8bit',
+            'annotation_root': 'data/Cityscapes/gtFine',
             'split': 'train',
             'expected_images': 2975,
             'sample_id_namespace': 'cityscapes.train',
@@ -29,8 +19,8 @@ _DATASETS = {
         },
         'target': {
             'name': 'foggy_cityscapes',
-            'image_root': 'data/leftImg8bit_foggy',
-            'annotation_root': 'data/gtFine',
+            'image_root': 'data/Cityscapes/leftImg8bit_foggy',
+            'annotation_root': 'data/Cityscapes/gtFine',
             'train_split': 'train',
             'eval_split': 'val',
             'beta': 0.02,
@@ -44,7 +34,7 @@ _DATASETS = {
             'train_annotation_access': 'oracle_only',
             'eval_annotation_access': 'evaluator_only',
         },
-        'classes': _CITYSCAPES_CLASSES,
+        'classes': CITYSCAPES_CLASSES,
     },
 }
 

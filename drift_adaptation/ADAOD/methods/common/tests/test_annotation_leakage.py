@@ -36,7 +36,7 @@ def _write_oracle(path: Path, samples, *, duplicate_sample: bool = False) -> dic
     for index, sample in enumerate(samples, start=1):
         image = {
             'id': index * 10,
-            'file_name': 'data/leftImg8bit_foggy/train/{}.png'.format(
+            'file_name': 'data/Cityscapes/leftImg8bit_foggy/train/{}.png'.format(
                 sample.sample_id
             ),
             'width': 10,
@@ -48,7 +48,7 @@ def _write_oracle(path: Path, samples, *, duplicate_sample: bool = False) -> dic
             {
                 'id': index,
                 'image_id': image['id'],
-                'category_id': 3,
+                'category_id': CATEGORY_IDS['car'],
                 'bbox': [1.0, 1.0, 2.0, 2.0],
                 'area': 4.0,
                 'segmentation': [[1.0, 1.0, 3.0, 1.0, 3.0, 3.0]],

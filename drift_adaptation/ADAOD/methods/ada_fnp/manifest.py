@@ -13,6 +13,7 @@ MANIFEST = MethodManifest(
     config_factory=get_config,
     plan_factory=build_plan,
     custom_imports=(
+        'methods.ada_fnp.execution',
         'methods.common.mmdet.registration',
         'methods.ada_fnp.registration',
     ),
