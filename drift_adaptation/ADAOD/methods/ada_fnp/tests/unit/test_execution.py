@@ -15,6 +15,7 @@ from methods.ada_fnp.execution import (
 from methods.ada_fnp.execution.backend import (
     MmdetExecutionBackend,
     MmdetRuntime,
+    _materialize_config_replacement,
     _pool_samples_by_image_id,
     _single_dataset_loader,
     validate_detector_resume_checkpoint,
@@ -218,6 +219,19 @@ def test_unavailable_mmdet_backend_fails_without_writing_placeholder(tmp_path):
     assert not checkpoint.exists()
 
 
+def test_config_replacement_consumes_only_true_delete_directive():
+    source = {'_delete_': True, 'batch_size': 4}
+
+    resolved = _materialize_config_replacement(source, 'train_dataloader')
+
+    assert resolved == {'batch_size': 4}
+    assert source == {'_delete_': True, 'batch_size': 4}
+    with pytest.raises(ValueError, match='must be true'):
+        _materialize_config_replacement(
+            {'_delete_': False}, 'train_dataloader'
+        )
+
+
 class _BranchModel(nn.Module):
     def __init__(self):
         super().__init__()
@@ -269,6 +283,7 @@ def _runtime_config():
         'stage_overrides': {
             'initial': {
                 'train_dataloader': {
+                    '_delete_': True,
                     'sampler': {'seed': 0},
                     'dataset': {'datasets': [source, unlabeled]},
                 },
@@ -277,6 +292,7 @@ def _runtime_config():
             },
             'adaptation': {
                 'train_dataloader': {
+                    '_delete_': True,
                     'sampler': {'seed': 0},
                     'dataset': {'datasets': [source, labeled, unlabeled]},
                 },
@@ -373,6 +389,7 @@ def test_mmdet_train_adapter_preserves_global_schedule_and_atomic_checkpoint(
     assert runner.config['resume'] is False
     assert runner.config['load_from'] is None
     assert runner.config['train_cfg']['max_iters'] == 5000
+    assert '_delete_' not in runner.config['train_dataloader']
     assert runner.config['param_scheduler'][1]['milestones'] == [30000, 35000]
     assert runner.config['val_cfg'] is None
     assert torch.equal(runner.model.teacher.weight, runner.model.student.weight)
@@ -408,6 +425,7 @@ def test_mmdet_train_adapter_preserves_global_schedule_and_atomic_checkpoint(
     assert adaptation.config['resume'] is True
     assert adaptation.config['load_from'] == str(checkpoint)
     assert adaptation.config['train_cfg']['max_iters'] == 10000
+    assert '_delete_' not in adaptation.config['train_dataloader']
     assert adaptation.config['model']['enable_unsupervised_loss'] is True
     assert adaptation.config['custom_hooks'] == [{'type': 'MeanTeacherHook'}]
     datasets = adaptation.config['train_dataloader']['dataset']['datasets']

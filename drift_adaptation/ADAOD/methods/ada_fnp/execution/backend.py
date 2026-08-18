@@ -101,6 +101,7 @@ class MmdetRuntime:
 def _load_mmdet_runtime() -> MmdetRuntime:
     try:
         from mmengine.config import Config
+        from mmengine.registry import init_default_scope
         from mmengine.runner import Runner, load_checkpoint as mm_load_checkpoint
         from mmengine.utils import import_modules_from_strings
         from mmdet.registry import MODELS
@@ -109,6 +110,10 @@ def _load_mmdet_runtime() -> MmdetRuntime:
             'ADA-FNP execution requires the pinned MMCV/MMEngine/MMDetection '
             'environment from requirements/runtime.txt'
         ) from error
+
+    # Runner initializes this scope itself, but FNPM, acquisition, and resume
+    # paths also build models and dataloaders directly from the registries.
+    init_default_scope('mmdet')
 
     def import_custom_modules(config: Mapping[str, Any]) -> None:
         custom_imports = config.get('custom_imports')
@@ -127,6 +132,18 @@ def _load_mmdet_runtime() -> MmdetRuntime:
             model, str(path), map_location='cpu', strict=True
         ),
     )
+
+
+def _materialize_config_replacement(
+    value: Mapping[str, Any], name: str
+) -> MutableMapping[str, Any]:
+    '''Consume an MMEngine merge directive before runtime construction.'''
+
+    resolved = copy.deepcopy(dict(value))
+    delete_directive = resolved.pop('_delete_', None)
+    if delete_directive is not None and delete_directive is not True:
+        raise ValueError('{} _delete_ directive must be true'.format(name))
+    return resolved
 
 
 def _labeled_manifest(context: ExecutionContext) -> Optional[Path]:
@@ -240,7 +257,9 @@ def build_detector_stage_config(
         else 'adaptation'
     )
     override = copy.deepcopy(config['stage_overrides'][mode])
-    config['train_dataloader'] = override['train_dataloader']
+    config['train_dataloader'] = _materialize_config_replacement(
+        override['train_dataloader'], '{} train_dataloader'.format(mode)
+    )
     config['model'].update(override['model'])
     config['custom_hooks'] = override['custom_hooks']
     active_pool = _active_pool(context)

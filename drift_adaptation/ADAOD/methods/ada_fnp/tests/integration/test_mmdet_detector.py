@@ -1,6 +1,9 @@
 '''Integration coverage for the MMDetection 3.3 ADA-FNP registrations.'''
 
 import importlib.util
+from pathlib import Path
+import subprocess
+import sys
 from unittest.mock import patch
 
 import pytest
@@ -26,6 +29,29 @@ import methods.ada_fnp.registration  # noqa: F401, E402
 from methods.ada_fnp.models.detector import (  # noqa: E402
     SOURCE_BRANCH, TARGET_UNLABELED_STRONG_BRANCH,
     TARGET_UNLABELED_WEAK_BRANCH)
+
+
+def test_runtime_loader_initializes_mmdet_scope_in_fresh_process():
+    repository_root = Path(__file__).resolve().parents[4]
+    script = '; '.join((
+        'from mmengine.registry import DefaultScope, init_default_scope',
+        'init_default_scope(\'mmengine\')',
+        'from methods.ada_fnp.execution.backend import _load_mmdet_runtime',
+        'runtime = _load_mmdet_runtime()',
+        'current = DefaultScope.get_current_instance()',
+        'assert current.scope_name == \'mmdet\'',
+        'model = runtime.build_model(dict(type=\'MultiBranchDataPreprocessor\', '
+        'data_preprocessor=dict(type=\'DetDataPreprocessor\')))',
+        'assert type(model).__name__ == \'MultiBranchDataPreprocessor\'',
+    ))
+    completed = subprocess.run(
+        [sys.executable, '-c', script],
+        cwd=str(repository_root),
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert completed.returncode == 0, completed.stdout + completed.stderr
 
 
 def _faster_rcnn_config():
