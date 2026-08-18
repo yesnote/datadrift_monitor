@@ -1,5 +1,7 @@
 '''Cityscapes to Foggy Cityscapes dataset contract for MMDetection 3.3.'''
 
+_base_ = []
+
 from methods.common.data.cityscapes import CITYSCAPES_CLASSES
 
 # CocoDataset is MMDetection's concrete BaseDetDataset reader for the

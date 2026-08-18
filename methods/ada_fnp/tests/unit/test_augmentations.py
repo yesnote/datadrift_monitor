@@ -71,6 +71,7 @@ def test_preserves_bgr_array_contract_and_other_keys():
     assert results['img'].shape == image.shape
     assert results['img'].dtype == np.uint8
     assert results['img'].flags.c_contiguous
+    assert results['img'].flags.writeable
     assert results['annotations'] is annotations
     assert results['img_id'] == 11
 

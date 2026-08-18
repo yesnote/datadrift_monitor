@@ -74,7 +74,9 @@ class PTStrongAugmentation:
         # BGR/RGB swap here.
         pil_image = Image.fromarray(np.ascontiguousarray(bgr_image))
         augmented_image = np.asarray(self.augmentation(pil_image))
-        results['img'] = np.ascontiguousarray(augmented_image)
+        results['img'] = np.array(
+            augmented_image, dtype=np.uint8, copy=True, order='C'
+        )
         return results
 
 

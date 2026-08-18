@@ -281,7 +281,8 @@ class AnchorHead(BaseDenseHead):
                 pos_bbox_targets = sampling_result.pos_gt_bboxes
                 pos_bbox_targets = get_box_tensor(pos_bbox_targets)
             bbox_targets[pos_inds, :] = pos_bbox_targets
-            bbox_weights[pos_inds, :] = 1.0
+            bbox_weights[pos_inds, :] = bbox_weights.new_ones(
+                (pos_inds.numel(), target_dim))
 
             labels[pos_inds] = sampling_result.pos_gt_labels
             if self.train_cfg['pos_weight'] <= 0:

@@ -2,6 +2,7 @@
 
 import argparse
 import json
+import os
 from pathlib import Path, PurePosixPath
 import sys
 
@@ -9,6 +10,11 @@ import sys
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
+
+# PyTorch deterministic CUDA matrix multiplication requires this to be set
+# before the first CUDA context is created. Preserve either user-selected
+# CuBLAS workspace mode and provide the larger documented mode by default.
+os.environ.setdefault('CUBLAS_WORKSPACE_CONFIG', ':4096:8')
 
 from methods.common.artifacts import atomic_write_json
 from methods.common.engine import (

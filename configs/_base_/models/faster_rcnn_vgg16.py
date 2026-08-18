@@ -1,5 +1,7 @@
 '''BN-free VGG16 Faster R-CNN model for MMDetection 3.3.'''
 
+_base_ = []
+
 from configs._base_.models.faster_rcnn_vgg16_factory import (
     build_faster_rcnn_vgg16 as _build_faster_rcnn_vgg16,
 )
