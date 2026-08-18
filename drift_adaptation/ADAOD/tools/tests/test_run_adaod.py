@@ -1,4 +1,5 @@
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -8,6 +9,25 @@ import pytest
 from methods.ada_fnp.manifest import MANIFEST
 from tools.common.config import compose_config
 from tools.run_adaod import _prepare_run
+
+
+def test_cli_sets_deterministic_cublas_workspace_before_execution():
+    environment = os.environ.copy()
+    environment.pop('CUBLAS_WORKSPACE_CONFIG', None)
+    completed = subprocess.run(
+        [
+            sys.executable,
+            '-c',
+            'import os; import tools.run_adaod; '
+            'print(os.environ[\'CUBLAS_WORKSPACE_CONFIG\'])',
+        ],
+        cwd=Path(__file__).resolve().parents[2],
+        env=environment,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    assert completed.stdout.strip() == ':4096:8'
 
 
 def test_run_adaod_supports_direct_script_dry_run():

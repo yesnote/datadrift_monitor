@@ -72,7 +72,10 @@ Detector resume additionally compares model keys and tensor shapes exactly,
 requires optimizer and parameter-scheduler sections, and accepts only the
 expected global iteration before handing the checkpoint to MMEngine. Inference
 loads model state strictly. Randomness uses the configured seed with
-deterministic mode enabled and cuDNN benchmarking disabled.
+deterministic mode enabled and cuDNN benchmarking disabled. The ADAOD CLI also
+sets `CUBLAS_WORKSPACE_CONFIG=:4096:8` before importing the execution stack,
+unless the caller already selected a CuBLAS workspace mode. This is required
+by PyTorch deterministic CUDA matrix multiplication.
 
 ## Current validation boundary
 
@@ -81,10 +84,19 @@ pool scoring, selection, annotation reveal, and teacher evaluation to
 MMEngine/MMDetection. Unit tests can validate its stage configuration and
 state transitions through injected runtime doubles.
 
-The current workstation interpreter is CPU-only and does not provide the
-pinned MMCV/MMEngine runtime. Consequently, a real MMDetection model build,
-CUDA NMS/RoIAlign, an end-to-end 40k training run, and the paper's AP50 values
-have not been validated here. The implementation must not be described as a
-scientific reproduction until these gates are closed. At minimum, report
-source-only, 0 percent, 1 percent, and 5 percent C to F results plus component
-ablations over three seeds before making that claim.
+The pinned Python, PyTorch CUDA 11.8, MMCV, MMEngine, repository-local
+MMDetection, GPU NMS, and GPU RoIAlign forward/backward checks pass on the
+current RTX 3090 environment. The official C-to-F model builds on CUDA, its
+real 4-source plus 4-target initial batch preprocesses correctly, and a direct
+loss/backward check is finite. A minimal vendored-MMDetection compatibility
+patch replaces the failing scalar RPN bbox-weight assignment with an
+equal-shaped tensor while preserving its semantics and deterministic mode.
+The official Runner completes iteration 1, writes `iter_1.pth` with optimizer
+and parameter-scheduler state, loads that checkpoint, and resumes through
+iteration 2. The technical blocker to starting the 40k run is closed.
+
+An end-to-end 40k run and the paper's AP50 values remain unvalidated. The
+implementation must not be described as a scientific reproduction until these
+gates are closed. At minimum, report source-only, 0 percent, 1 percent, and 5
+percent C to F results plus component ablations over three seeds before making
+that claim.

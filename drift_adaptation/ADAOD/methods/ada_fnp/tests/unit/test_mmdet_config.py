@@ -128,6 +128,14 @@ def test_initial_stage_has_no_missing_labeled_target_manifest() -> None:
     assert dataloader['sampler']['batch_size'] == 8
     assert dataloader['sampler']['source_ratio'] == [4, 4]
     assert len(datasets) == 2
+    assert all(
+        dataset['pipeline'][-1]['branch_field'] == [
+            'source',
+            'target_unlabeled_weak',
+            'target_unlabeled_strong',
+        ]
+        for dataset in datasets
+    )
     assert datasets[0]['ann_file'].endswith('/source_train.json')
     assert datasets[1]['ann_file'].endswith('/target_train_unlabeled.json')
     assert 'target_train_labeled.json' not in repr(dataloader)
@@ -155,6 +163,15 @@ def test_adaptation_stage_adds_revealed_target_and_pseudo_labels() -> None:
     assert dataloader['sampler']['batch_size'] == 12
     assert dataloader['sampler']['source_ratio'] == [4, 4, 4]
     assert len(datasets) == 3
+    assert all(
+        dataset['pipeline'][-1]['branch_field'] == [
+            'source',
+            'target_labeled',
+            'target_unlabeled_weak',
+            'target_unlabeled_strong',
+        ]
+        for dataset in datasets
+    )
     assert datasets[1]['ann_file'].endswith('/target_train_labeled.json')
     assert datasets[2]['ann_file'].endswith('/target_train_unlabeled.json')
     assert stage['model'] == dict(enable_unsupervised_loss=True)

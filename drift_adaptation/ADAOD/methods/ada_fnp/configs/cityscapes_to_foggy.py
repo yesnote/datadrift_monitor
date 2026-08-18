@@ -1,5 +1,12 @@
 '''ADA-FNP reproduction config for Cityscapes to Foggy Cityscapes.'''
 
+_base_ = [
+    '../../../configs/_base_/datasets/cityscapes_to_foggy.py',
+    '../../../configs/_base_/models/faster_rcnn_vgg16.py',
+    '../../../configs/_base_/schedules/iter_40k.py',
+    '../../../configs/_base_/default_runtime.py',
+]
+
 from copy import deepcopy
 
 from configs._base_.datasets.cityscapes_to_foggy import (
@@ -13,13 +20,6 @@ from configs._base_.models.faster_rcnn_vgg16_factory import (
 )
 
 
-_base_ = [
-    '../../../configs/_base_/datasets/cityscapes_to_foggy.py',
-    '../../../configs/_base_/models/faster_rcnn_vgg16.py',
-    '../../../configs/_base_/schedules/iter_40k.py',
-    '../../../configs/_base_/default_runtime.py',
-]
-
 custom_imports = dict(
     imports=['methods.ada_fnp.registration'],
     allow_failed_imports=False,
@@ -29,9 +29,29 @@ experiment_name = 'ada-fnp_cityscapes-to-foggy_faster-rcnn-vgg16'
 _DROPOUT_PROBABILITY = 0.1
 _MC_PASSES = 10
 _LOCALIZATION_VARIANCE_THRESHOLD = 0.1
+_INITIAL_BRANCHES = (
+    'source',
+    'target_unlabeled_weak',
+    'target_unlabeled_strong',
+)
+_ADAPTATION_BRANCHES = (
+    'source',
+    'target_labeled',
+    'target_unlabeled_weak',
+    'target_unlabeled_strong',
+)
 
 
-def _train_loader(datasets, batch_size, source_ratio):
+def _dataset_for_branches(dataset, branch_field):
+    resolved = deepcopy(dataset)
+    multi_branch = resolved['pipeline'][-1]
+    if multi_branch['type'] != 'MultiBranch':
+        raise ValueError('training dataset must end with MultiBranch')
+    multi_branch['branch_field'] = list(branch_field)
+    return resolved
+
+
+def _train_loader(datasets, batch_size, source_ratio, branch_field):
     return dict(
         _delete_=True,
         batch_size=batch_size,
@@ -48,7 +68,10 @@ def _train_loader(datasets, batch_size, source_ratio):
         collate_fn=dict(type='pseudo_collate'),
         dataset=dict(
             type='ConcatDataset',
-            datasets=[deepcopy(dataset) for dataset in datasets],
+            datasets=[
+                _dataset_for_branches(dataset, branch_field)
+                for dataset in datasets
+            ],
         ),
     )
 
@@ -59,6 +82,7 @@ initial_stage_train_dataloader = _train_loader(
     (_source_train_dataset, _target_unlabeled_dataset),
     batch_size=8,
     source_ratio=(4, 4),
+    branch_field=_INITIAL_BRANCHES,
 )
 adaptation_stage_train_dataloader = _train_loader(
     (
@@ -68,6 +92,7 @@ adaptation_stage_train_dataloader = _train_loader(
     ),
     batch_size=12,
     source_ratio=(4, 4, 4),
+    branch_field=_ADAPTATION_BRANCHES,
 )
 train_dataloader = deepcopy(initial_stage_train_dataloader)
 # The score-pool executor consumes this deterministic, annotation-free view.

@@ -235,8 +235,16 @@ def test_mmengine_loads_composed_config_when_available() -> None:
     pytest.importorskip('mmdet.registry')
     config_module = pytest.importorskip('mmengine.config')
 
+    dataset_base = config_module.Config.fromfile(
+        str(BASE_ROOT / 'datasets' / 'cityscapes_to_foggy.py')
+    )
+    model_base = config_module.Config.fromfile(
+        str(BASE_ROOT / 'models' / 'faster_rcnn_vgg16.py')
+    )
     config = config_module.Config.fromfile(str(METHOD_CONFIG))
 
+    assert tuple(dataset_base.classes) == CITYSCAPES_CLASSES
+    assert model_base.model.type == 'FasterRCNN'
     assert config.model.type == 'ADAFNPDetector'
     assert config.model.data_preprocessor.type == 'MultiBranchDataPreprocessor'
     assert config.model.detector.backbone.type == 'ADAODVGG16'

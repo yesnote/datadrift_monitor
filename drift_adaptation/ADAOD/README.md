@@ -75,7 +75,9 @@ Use `--run-directory` to choose another repository-relative run directory and
 model run, install the pinned CUDA stack from `requirements/README.md` and run
 `python tools/check_environment.py`.
 
-The execution backend is implemented, but an end-to-end MMDetection/CUDA run
-and reproduction of the paper's AP50 numbers have not been completed in the
-current CPU-only environment. See `docs/reproducibility.md` for the exact
-boundary between implementation parity and scientific reproduction.
+The pinned CUDA environment and MMCV GPU operators pass the environment gate.
+The full model builds, completes a real-batch loss/backward check, runs an
+official C-to-F MMEngine iteration, writes a checkpoint, and resumes through
+the next iteration with optimizer and scheduler state. The 40k experiment is
+technically cleared to start, but its completion and the paper's AP50 values
+remain unvalidated. See `docs/reproducibility.md` for the exact boundary.

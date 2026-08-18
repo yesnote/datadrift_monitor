@@ -100,5 +100,8 @@ python -m tools.run_adaod --method ada-fnp --budget-percent 1 --seed 0 --offline
 Non-dry execution is connected to MMEngine/MMDetection runners for detector
 training, FNPM training, pool scoring, selection, reveal, and final teacher
 evaluation. Model stages fail explicitly when the pinned OpenMMLab packages or
-CUDA are unavailable. This implementation has not yet completed a real
-MMDetection/CUDA training run, so paper-level AP50 parity remains unverified.
+CUDA are unavailable. The pinned CUDA/MMCV gate, full model construction,
+direct real-batch loss/backward, one official C-to-F Runner iteration,
+checkpoint creation, and checkpoint resume through the next iteration pass.
+The 40k command is technically ready to run; completion and paper-level AP50
+parity remain unverified.

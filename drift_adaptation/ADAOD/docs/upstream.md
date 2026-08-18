@@ -1,6 +1,7 @@
 # Upstream framework and assets
 
-The local `mmdet` package is vendored from the official MMDetection v3.3.0 tag.
+The local `mmdet` package is vendored from the official MMDetection v3.3.0 tag,
+with the single compatibility patch documented below.
 
 - Repository: https://github.com/open-mmlab/mmdetection
 - Tag: v3.3.0
@@ -10,6 +11,17 @@ The local `mmdet` package is vendored from the official MMDetection v3.3.0 tag.
 ADAOD-specific Python files are not added inside that package. Project models,
 transforms, and metrics register from `methods` through MMDetection's registry
 mechanism.
+
+## Local compatibility patch
+
+`mmdet/models/dense_heads/anchor_head.py` replaces scalar assignment to the
+sampled RPN bbox-weight rows with an equal-shaped tensor of ones. The values,
+dtype, device, and gradients are unchanged. This avoids a PyTorch 2.0.1
+Windows CUDA internal assertion that occurs only with deterministic algorithms
+enabled. MMDetection does not expose a hook around this assignment; keeping the
+one-line framework patch avoids copying its complete target-generation method
+into project code. The CUDA regression test is
+`methods/common/mmdet/tests/test_rpn_deterministic_cuda.py`.
 
 ## PT VGG16 pretrained asset
 

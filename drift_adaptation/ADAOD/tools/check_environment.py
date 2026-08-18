@@ -5,6 +5,10 @@ import importlib
 import sys
 from pathlib import Path
 
+REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
+if str(REPOSITORY_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPOSITORY_ROOT))
+
 EXPECTED_VERSIONS = {
     'torch': '2.0.1',
     'torchvision': '0.15.2',
@@ -40,8 +44,7 @@ def _import_exact(name: str):
 
 
 def _check_local_mmdet(mmdet_module) -> None:
-    repository_root = Path(__file__).resolve().parents[1]
-    expected_root = (repository_root / 'mmdet').resolve()
+    expected_root = (REPOSITORY_ROOT / 'mmdet').resolve()
     module_path = Path(mmdet_module.__file__).resolve()
     try:
         module_path.relative_to(expected_root)
@@ -54,7 +57,7 @@ def _check_local_mmdet(mmdet_module) -> None:
 
 def _check_mmcv_ops(torch, allow_cpu: bool) -> None:
     try:
-        from mmcv.ops import nms, roi_align
+        from mmcv.ops import RoIAlign, nms
     except Exception as exc:
         raise EnvironmentCheckError(
             'cannot import compiled mmcv.ops (nms, roi_align): {}'.format(
@@ -87,14 +90,13 @@ def _check_mmcv_ops(torch, allow_cpu: bool) -> None:
     features = torch.randn(
         1, 1, 8, 8, device=device, requires_grad=True)
     rois = torch.tensor([[0.0, 1.0, 1.0, 6.0, 6.0]], device=device)
-    pooled = roi_align(
-        features,
-        rois,
+    roi_align = RoIAlign(
         output_size=(2, 2),
         spatial_scale=1.0,
         sampling_ratio=0,
         pool_mode='avg',
         aligned=True)
+    pooled = roi_align(features, rois)
     pooled.sum().backward()
     if features.grad is None or not torch.isfinite(features.grad).all():
         raise EnvironmentCheckError('MMCV RoIAlign backward is invalid')

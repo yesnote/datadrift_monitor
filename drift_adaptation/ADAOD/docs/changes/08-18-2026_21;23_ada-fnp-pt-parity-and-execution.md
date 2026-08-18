@@ -78,10 +78,47 @@ Unit and real-layout validation are coordinated in the final repository-wide
 integration pass and must be reported from commands actually executed there.
 This documentation was checked against the current implementation contracts.
 
-The present interpreter is CPU-only and lacks the pinned MMCV/MMEngine stack.
-No real MMDetection model construction, CUDA NMS/RoIAlign path, end-to-end 40k
-training run, or scientific AP50 reproduction was performed here. The current
-status is a documented reproduction implementation pending GPU validation,
-not a completed scientific reproduction. The MMDetection/OpenCV port also
-does not claim pixel- or RNG-trajectory identity with PT's Detectron2/PIL
-runtime.
+The environment checker now bootstraps the repository root for direct-script
+execution and uses MMCV 2.1's RoIAlign module API. It passed the pinned stack,
+repository-local MMDetection import, CUDA 11.8, GPU NMS, and GPU RoIAlign
+forward/backward checks on an NVIDIA GeForce RTX 3090.
+
+The official C-to-F config now parses through MMEngine, its full
+`ADAFNPDetector` builds on CUDA, and a real 4-source plus 4-target initial batch
+passes preprocessing and direct loss/backward with finite loss. Initial-stage
+datasets now omit the absent labeled-target branch, while adaptation-stage
+datasets retain the full four-branch schema. Strong-augmentation arrays are
+materialized as writable contiguous `uint8` buffers before tensor conversion.
+
+The relevant unit and integration suite initially passed with 201 tests and
+one optional real-layout skip. Running the real-layout Cityscapes tests
+explicitly passed all seven tests. The first one-iteration MMEngine Runner
+smoke then exposed the deterministic RPN compatibility issue described below.
+The MMDetection/OpenCV port does not claim pixel- or RNG-trajectory identity
+with PT's Detectron2/PIL runtime.
+
+## Deterministic CUDA RPN compatibility
+
+The blocking RPN assignment was reduced to PyTorch 2.0.1 Windows CUDA scalar
+advanced indexing under deterministic algorithms. The vendored MMDetection
+line now assigns an equal-shaped tensor of ones instead. This is a semantic
+no-op and keeps deterministic mode enabled. A focused CUDA regression exercises
+the real `RPNHead._get_targets_single` path with 64 sampled positives.
+
+The next Runner gate exposed PyTorch's deterministic CuBLAS workspace
+requirement. `tools.run_adaod` now sets the larger `:4096:8` workspace mode
+before importing the execution stack while preserving an explicit caller
+value.
+
+With both compatibility requirements applied, the official C-to-F Runner
+completed iteration 1 and wrote `iter_1.pth`. The checkpoint contains optimizer
+and parameter-scheduler state; a fresh Runner loaded it and completed iteration
+2. This closes the execution blocker, but it does not constitute a completed
+40k experiment or scientific AP50 reproduction.
+
+Final validation completed with 203 relevant unit/integration tests passing and
+one optional real-layout test skipped in the general suite. The real Cityscapes
+layout suite passed all seven tests when explicitly enabled. The environment
+checker, ADA-FNP dry-run, Python compilation, and `git diff --check` also
+passed. The only vendored MMDetection difference introduced for this blocker
+is the documented RPN bbox-weight assignment change.
