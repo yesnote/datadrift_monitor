@@ -16,7 +16,15 @@ VGG16 Faster R-CNN detector implemented on MMDetection 3.3.0.
 
 Reference implementations under `code_refs` are read-only inputs. Concrete
 method code lives under `methods/<method>`, reusable project behavior lives in
-`methods/common`, and the vendored `mmdet` tree remains unmodified.
+`methods/common`, and ADAOD-specific modules stay outside the vendored `mmdet`
+tree. The one framework compatibility patch is documented in
+`docs/upstream.md`.
+
+The method manifest identifies its execution entry point with
+`executor_module`; the common runner imports that module and calls its
+`create_executor_registry` factory. ADA-FNP exposes
+`methods.ada_fnp.execution.stages`, so method-specific stage names and runtime
+behavior do not leak into the common engine.
 
 ## Prepare the data
 
@@ -63,20 +71,16 @@ python -m tools.run_adaod --list-methods
 python -m tools.run_adaod --method ada-fnp --budget-percent 1 --seed 0
 ```
 
-Resume the same resolved experiment with:
-
-```powershell
-python -m tools.run_adaod --method ada-fnp --budget-percent 1 --seed 0 --resume
-```
-
 Use `--run-directory` to choose another repository-relative run directory and
 `--offline` to require all external assets to be present locally. Before a
 model run, install the pinned CUDA stack from `requirements/README.md` and run
 `python tools/check_environment.py`.
 
-The pinned CUDA environment and MMCV GPU operators pass the environment gate.
-The full model builds, completes a real-batch loss/backward check, runs an
-official C-to-F MMEngine iteration, writes a checkpoint, and resumes through
-the next iteration with optimizer and scheduler state. The 40k experiment is
-technically cleared to start, but its completion and the paper's AP50 values
+The methods-structure refactor introduced manifest API version 2, run-state
+schema version 2, and descriptive MMDetection registry names. Runs created by
+the earlier schema or registry names are intentionally incompatible. Start
+them again in a fresh run directory. ADAOD does not resume an interrupted
+user run or overwrite a nonempty run directory.
+
+Completion of the full 40k experiment and parity with the paper's AP50 values
 remain unvalidated. See `docs/reproducibility.md` for the exact boundary.

@@ -9,7 +9,7 @@ from typing import Any, Callable, Mapping, Tuple
 
 @dataclass(frozen=True)
 class StageSpec:
-    '''One serial, resumable experiment stage.'''
+    '''One serial experiment stage.'''
 
     stage_id: str
     executor_key: str
@@ -20,6 +20,7 @@ class StageSpec:
             raise ValueError('stage_id must be a non-empty path-safe token')
         if not self.executor_key:
             raise ValueError('executor_key must not be empty')
+
 
 @dataclass(frozen=True)
 class ExperimentPlan:
@@ -46,13 +47,15 @@ class MethodManifest:
     description: str
     config_factory: ConfigFactory
     plan_factory: PlanFactory
-    custom_imports: Tuple[str, ...] = ()
+    executor_module: str
 
     def __post_init__(self) -> None:
         if not self.key or self.key == 'common':
             raise ValueError('method key must identify a concrete method')
         if self.api_version < 1:
             raise ValueError('api_version must be positive')
+        if not self.executor_module or self.executor_module != self.executor_module.strip():
+            raise ValueError('executor_module must be a non-empty module path')
 
 
 @dataclass(frozen=True)

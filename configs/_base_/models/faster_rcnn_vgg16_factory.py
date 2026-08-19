@@ -2,7 +2,7 @@
 
 from copy import deepcopy
 
-from methods.common.mmdet.models.backbones.vgg16_caffe import (
+from methods.common.mmdet.models.backbones.vgg16_caffe_checkpoint import (
     CHECKPOINT_PATH as VGG16_CAFFE_CHECKPOINT,
     SHA256 as VGG16_CAFFE_SHA256,
 )
@@ -19,7 +19,7 @@ _DETECTOR_TEMPLATE = dict(
         pad_size_divisor=1,
     ),
     backbone=dict(
-        type='ADAODVGG16',
+        type='VGG16Backbone',
         frozen_stages=2,
         pretrained_checkpoint=VGG16_CAFFE_CHECKPOINT,
         pretrained_sha256=VGG16_CAFFE_SHA256,
@@ -60,7 +60,7 @@ _DETECTOR_TEMPLATE = dict(
             featmap_strides=[16],
         ),
         bbox_head=dict(
-            type='ADAODVGGShared2FCBBoxHead',
+            type='VGGShared2FCBBoxHead',
             in_channels=512,
             fc_out_channels=1024,
             roi_feat_size=7,

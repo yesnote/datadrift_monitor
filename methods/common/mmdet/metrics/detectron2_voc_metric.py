@@ -1,4 +1,4 @@
-'''PT-compatible AP evaluation for zero-based, half-open detector boxes.'''
+'''Detectron2-compatible AP evaluation for zero-based, half-open boxes.'''
 
 import warnings
 from collections import OrderedDict
@@ -9,10 +9,9 @@ from mmengine.logging import MMLogger
 
 from mmdet.evaluation.functional import bbox_overlaps, eval_map
 from mmdet.evaluation.metrics import VOCMetric
-from mmdet.registry import METRICS
 
 
-def tpfp_pt_voc(
+def compute_detectron2_voc_true_false_positives(
         det_bboxes,
         gt_bboxes,
         gt_bboxes_ignore=None,
@@ -20,7 +19,7 @@ def tpfp_pt_voc(
         area_ranges=None,
         use_legacy_coordinate=False,
         **kwargs):
-    '''Classify detections with PT/Detectron2's strict VOC IoU threshold.'''
+    '''Classify detections with Detectron2's strict VOC IoU threshold.'''
 
     extra_length = 1.0 if use_legacy_coordinate else 0.0
     if gt_bboxes_ignore is None:
@@ -115,9 +114,8 @@ def _quantize_detections(predictions):
     return quantized_predictions
 
 
-@METRICS.register_module()
-class PTVOCMetric(VOCMetric):
-    '''Evaluate PT's VOC2012-style AP without legacy inclusive arithmetic.
+class Detectron2PascalVocMetric(VOCMetric):
+    '''Evaluate Detectron2's VOC2012 AP with half-open box arithmetic.
 
     The Cityscapes cache reproduces the boxes returned by Detectron2's VOC
     loader: zero-based lower bounds and half-open upper bounds. MMDetection's
@@ -127,14 +125,16 @@ class PTVOCMetric(VOCMetric):
     coordinate arithmetic. Reported AP values use the paper's percent scale.
     '''
 
-    default_prefix: Optional[str] = 'pt_voc'
+    default_prefix: Optional[str] = 'detectron2_voc'
 
     def __init__(self, *args, **kwargs) -> None:
         kwargs.setdefault('metric', 'mAP')
         kwargs.setdefault('eval_mode', 'area')
         super().__init__(*args, **kwargs)
         if self.metric != 'mAP':
-            raise ValueError('PTVOCMetric supports only mAP evaluation')
+            raise ValueError(
+                'Detectron2PascalVocMetric supports only mAP evaluation'
+            )
 
     def compute_metrics(self, results: list) -> dict:
         logger: MMLogger = MMLogger.get_current_instance()
@@ -146,12 +146,16 @@ class PTVOCMetric(VOCMetric):
             if dataset_type == 'VOC2007' and self.eval_mode != '11points':
                 warnings.warn(
                     'Pascal VOC2007 uses `11points` as its default evaluation '
-                    'mode, but PTVOCMetric is using {!r}.'.format(self.eval_mode)
+                    'mode, but Detectron2PascalVocMetric is using {!r}.'.format(
+                        self.eval_mode
+                    )
                 )
             elif dataset_type == 'VOC2012' and self.eval_mode != 'area':
                 warnings.warn(
                     'Pascal VOC2012 uses `area` as its default evaluation '
-                    'mode, but PTVOCMetric is using {!r}.'.format(self.eval_mode)
+                    'mode, but Detectron2PascalVocMetric is using {!r}.'.format(
+                        self.eval_mode
+                    )
                 )
         else:
             dataset_name = self.dataset_meta['classes']
@@ -170,7 +174,9 @@ class PTVOCMetric(VOCMetric):
                 dataset=dataset_name,
                 logger=logger,
                 eval_mode=self.eval_mode,
-                tpfp_fn=tpfp_pt_voc,
+                tpfp_fn=(
+                    compute_detectron2_voc_true_false_positives
+                ),
                 use_legacy_coordinate=False,
             )
             mean_aps.append(mean_ap)

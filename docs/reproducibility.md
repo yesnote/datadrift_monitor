@@ -20,14 +20,15 @@ comparing AP50 results.
 | optimizer | SGD, LR 0.02, momentum 0.9, weight decay 0.0001 |
 | schedule | linear warm-up 0--400 from 0.001; drops at 30k and 35k |
 | teacher | initialized from student at 5k; EMA decay 0.9996 thereafter |
-| FNPM | Softplus count output; fresh 2k-step optimization per round, LR 1e-4 |
+| false-negative predictor | Softplus count output; fresh 2k-step optimization per round, LR 1e-4 |
 | evaluation | PT-compatible VOC2012 continuous AP at strict IoU greater than 0.5 |
 
 Two choices resolve paper/reference ambiguity rather than establish confirmed
 equivalence. Only the unlabeled target data receives weak-teacher and
 strong-student views; source and selected-target supervision use the weak view
 only. This follows ADA-FNP Figure 2 and Equations 13--14 rather than PT's use of
-both views for labeled/source supervision. FNPM uses Softplus because a
+both views for labeled/source supervision. `FalseNegativePredictor` uses
+Softplus because a
 Sigmoid, despite its label in Figure 4, cannot regress raw false-negative
 counts greater than one. PT's gradient-norm-10 clipping is not applied because
 ADA-FNP does not specify it.
@@ -45,7 +46,8 @@ matching excludes `*group` regions. The prepared cache contract is 52,469
 annotations for source train, 52,469 for the target oracle, zero for the
 unlabeled target index, and 10,180 for target validation.
 
-`PTVOCMetric` avoids MMDetection's legacy inclusive `+1` arithmetic. It also
+`Detectron2PascalVocMetric` avoids MMDetection's legacy inclusive `+1`
+arithmetic. It also
 matches Detectron2's Pascal text quantization (bbox to 0.1, confidence to
 0.001), uses a strict `IoU > 0.5` match, continuous-area interpolation, and
 reports AP50 as a percentage.
@@ -65,13 +67,18 @@ probability; detection count; and the final product. Stored scores are
 recomputed and checked before selection. Empty-detection images have final
 score zero.
 
-The run records its resolved config and fingerprint, atomic stage state,
-content-addressed artifacts, checkpoints, selections, and evaluation metrics.
-Resume validates the config fingerprint and prior checkpoint/artifact hashes.
-Detector resume additionally compares model keys and tensor shapes exactly,
-requires optimizer and parameter-scheduler sections, and accepts only the
-expected global iteration before handing the checkpoint to MMEngine. Inference
-loads model state strictly. Randomness uses the configured seed with
+The run records its resolved config and fingerprint, atomic schema-version-2
+stage state, content-addressed artifacts, checkpoints, selections, and
+evaluation metrics. Shared atomic I/O and hash handling live in
+`methods/common/artifacts.py`; remote asset verification lives in
+`methods/common/external_assets.py`; and the common score/selection schema
+lives in `methods/common/acquisition/score_artifacts.py`.
+Interrupted user runs are restarted rather than resumed, and ADAOD refuses to
+overwrite a nonempty run directory. Internal detector segment continuation
+compares model keys and tensor shapes exactly, requires optimizer and
+parameter-scheduler sections, and accepts only the expected global iteration
+before handing the preceding checkpoint to MMEngine. Inference loads model
+state strictly. Randomness uses the configured seed with
 deterministic mode enabled and cuDNN benchmarking disabled. The ADAOD CLI also
 sets `CUBLAS_WORKSPACE_CONFIG=:4096:8` before importing the execution stack,
 unless the caller already selected a CuBLAS workspace mode. This is required
@@ -79,21 +86,25 @@ by PyTorch deterministic CUDA matrix multiplication.
 
 ## Current validation boundary
 
-The concrete execution adapter now connects detector training, FNPM training,
-pool scoring, selection, annotation reveal, and teacher evaluation to
-MMEngine/MMDetection. Unit tests can validate its stage configuration and
-state transitions through injected runtime doubles.
+The concrete execution modules connect detector training, false-negative
+predictor training, pool scoring, selection, annotation reveal, and teacher
+evaluation to MMEngine/MMDetection. `schedule.py` defines the experiment
+timeline; `execution/stages.py` owns stage orchestration;
+`execution/mmdet_backend.py` owns model work; `execution/mmdet_config.py` owns
+stage configs; `execution/mmdet_checkpoints.py` owns strict detector
+checkpoints; and `execution/run_files.py` owns run-local paths and manifests.
 
-The pinned Python, PyTorch CUDA 11.8, MMCV, MMEngine, repository-local
-MMDetection, GPU NMS, and GPU RoIAlign forward/backward checks pass on the
-current RTX 3090 environment. The official C-to-F model builds on CUDA, its
-real 4-source plus 4-target initial batch preprocesses correctly, and a direct
-loss/backward check is finite. A minimal vendored-MMDetection compatibility
-patch replaces the failing scalar RPN bbox-weight assignment with an
-equal-shaped tensor while preserving its semantics and deterministic mode.
-The official Runner completes iteration 1, writes `iter_1.pth` with optimizer
-and parameter-scheduler state, loads that checkpoint, and resumes through
-iteration 2. The technical blocker to starting the 40k run is closed.
+The pinned environment and vendored-MMDetection compatibility changes predate
+this structural refactor. This refactor is validated statically only: it does
+not run a model, CUDA workflow, synthetic workflow, or abbreviated experiment.
+The resolved ADAOD configuration is explicitly projected onto every
+MMDetection stage config, and the Caffe VGG asset is loaded only for the
+initial 0-to-5k model build. Continuation, predictor, scoring, and evaluation
+builds rely on their strict full detector checkpoint instead.
+
+Manifest API version 2, run-state schema version 2, and the descriptive
+registry/executor names intentionally reject older runs. Reproducibility runs
+created before this refactor must be restarted in a fresh run directory.
 
 An end-to-end 40k run and the paper's AP50 values remain unvalidated. The
 implementation must not be described as a scientific reproduction until these

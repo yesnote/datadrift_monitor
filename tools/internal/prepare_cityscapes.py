@@ -14,10 +14,10 @@ if __package__ in (None, ''):
 
 
 from configs.catalog import get_dataset, get_runtime
-from methods.common.data.cityscapes import (
+from methods.common.data.cityscapes.conversion import prepare_cityscapes_to_foggy
+from methods.common.data.cityscapes.layout import (
     EXPECTED_TRAIN_IMAGES,
     EXPECTED_VAL_IMAGES,
-    prepare_cityscapes_to_foggy,
 )
 from tools.common.paths import repository_relative_path, repository_root
 

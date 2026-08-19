@@ -3,12 +3,18 @@
 Root catalogs contain method-neutral dataset, detector, and runtime metadata.
 A concrete method owns its defaults and experiment preset under its own
 package. The selected manifest is discovered from `methods/*/manifest.py`; no
-second method list is maintained.
+second method list is maintained. Each manifest declares an
+`executor_module`; for ADA-FNP it is `methods.ada_fnp.execution.stages`, whose
+`create_executor_registry` function supplies the method's stage executors.
 
 Resolution order is method defaults, dataset catalog, detector catalog,
 runtime catalog, then explicit command-line overrides. The resolved mapping is
-serialized deterministically and assigned a SHA256 fingerprint. A resume is
-rejected if its saved fingerprint differs from the newly resolved mapping.
+serialized deterministically and assigned a SHA256 fingerprint.
+`execution/mmdet_config.py` projects the resolved detector, optimizer,
+schedule, batch-size, domain-adaptation, teacher-EMA, MC Dropout, and
+pseudo-label settings onto every MMDetection stage config. The generated
+`resolved_config.json` is therefore the runtime source of truth rather than a
+descriptive copy of separate defaults.
 
 The current supported keys are:
 
@@ -26,14 +32,24 @@ normal run uses the deterministic path
 
 All configured repository assets and dataset inputs use repository-relative
 paths. Workstation-specific dataset locations appear only as the targets of
-the junctions below `data/Cityscapes`. During a run, the execution adapter
-resolves cache paths and replaces the generic target-labeled and
+the junctions below `data/Cityscapes`. During a run, the execution modules
+resolve cache paths and replace the generic target-labeled and
 target-unlabeled annotation paths with run-local manifests for the currently
 committed pool.
 
-`--offline` forbids pretrained downloads. `--resume` requires the existing
-resolved config and state under the same run directory. Starting without
-`--resume` refuses to overwrite an existing run. Detector continuation fails
-before MMEngine resume unless the checkpoint has exact model keys and tensor
-shapes, optimizer and parameter-scheduler state, and the expected global
-iteration metadata.
+`--offline` forbids pretrained downloads. ADAOD refuses to start in a nonempty
+run directory; an interrupted experiment must be started again in a new or
+explicitly cleared directory. The internal 5k detector segments still form
+one continuous 40k optimization schedule. A segment continuation fails before
+MMEngine loads the preceding checkpoint unless it has exact model keys and
+tensor shapes, optimizer and parameter-scheduler state, and the expected
+global iteration metadata.
+
+The refactored manifest API and run state are version 2. Configuration uses
+the full `false_negative_predictor`, `domain_adaptation`, and descriptive
+MMDetection registry names (`AdaFnpDetector`, `AdaFnpDetectorBranch`,
+`AdaFnpDomainDiscriminator`, `AdaFnpMonteCarloDropoutRoIHead`,
+`ProbabilisticTeacherStrongAugmentation`, and
+`Detectron2PascalVocMetric`). The former abbreviated keys and schema-1 run
+state are not migrated. Use a fresh `--run-directory` and rerun from the
+beginning when an old run exists.

@@ -2,7 +2,7 @@
 
 _base_ = []
 
-from methods.common.data.cityscapes import CITYSCAPES_CLASSES
+from methods.common.data.cityscapes.layout import CITYSCAPES_CLASSES
 
 # CocoDataset is MMDetection's concrete BaseDetDataset reader for the
 # generated COCO-format manifests.  The manifests are build artifacts and
@@ -50,7 +50,7 @@ weak_pipeline = [
     dict(type='PackDetInputs', meta_keys=pack_meta_keys),
 ]
 strong_pipeline = [
-    dict(type='PTStrongAugmentation'),
+    dict(type='ProbabilisticTeacherStrongAugmentation'),
     dict(type='PackDetInputs', meta_keys=pack_meta_keys),
 ]
 source_train_pipeline = [
@@ -189,7 +189,7 @@ test_dataloader = val_dataloader
 # The cache stores Detectron2-compatible zero-based, half-open boxes. Use PT's
 # VOC2012-style continuous AP without MMDetection's legacy ``+1`` arithmetic.
 val_evaluator = dict(
-    type='PTVOCMetric',
+    type='Detectron2PascalVocMetric',
     iou_thrs=0.5,
     metric='mAP',
     eval_mode='area',

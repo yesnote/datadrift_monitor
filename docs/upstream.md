@@ -28,9 +28,10 @@ corresponding timestamped change document.
 PT loads convolution tensors from a Caffe-converted VGG16 checkpoint. ADAOD
 uses the preserved file below and pins its content before model construction.
 The runtime path, URL, and SHA256 have one canonical specification in
-`methods/common/mmdet/models/backbones/vgg16_caffe.py`; detector configuration,
-asset preparation, and execution import that definition instead of duplicating
-the constants.
+`methods/common/mmdet/models/backbones/vgg16_caffe_checkpoint.py`; detector
+configuration, asset preparation, and execution import that definition instead
+of duplicating the constants. Download and checksum handling is shared through
+`methods/common/external_assets.py`.
 
 - Preservation record: https://zenodo.org/records/4515252
 - Download URL: https://zenodo.org/records/4515252/files/vgg16_caffe.pth?download=1

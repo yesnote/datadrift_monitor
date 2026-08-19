@@ -8,11 +8,9 @@ from .plan import build_plan
 
 MANIFEST = MethodManifest(
     key='ada-fnp',
-    api_version=1,
+    api_version=2,
     description='Active Domain Adaptation with False Negative Prediction',
     config_factory=get_config,
     plan_factory=build_plan,
-    custom_imports=(
-        'methods.ada_fnp.execution',
-    ),
+    executor_module='methods.ada_fnp.execution.stages',
 )

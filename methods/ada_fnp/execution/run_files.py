@@ -1,0 +1,244 @@
+'''Run-local paths, pool manifests, and completed checkpoints for ADA-FNP.'''
+
+from __future__ import annotations
+
+import json
+from pathlib import Path, PurePosixPath
+from typing import Any, Mapping, Optional, Sequence
+
+from methods.common.contracts import ArtifactRef
+from methods.common.data.cityscapes.layout import TARGET_TRAIN_NAMESPACE
+from methods.common.data.image_identity import SampleIdentity
+from methods.common.data.pool import PoolState
+from methods.common.engine.context import ExecutionContext
+
+
+def _round_index(value: int) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        raise ValueError('round index must be a non-negative integer')
+    return value
+
+
+def _read_json_mapping(path: Path, description: str) -> Mapping[str, Any]:
+    if not path.is_file():
+        raise FileNotFoundError('{} is missing: {!s}'.format(description, path))
+    with path.open('r', encoding='utf-8') as stream:
+        value = json.load(stream)
+    if not isinstance(value, Mapping):
+        raise ValueError('{} root must be a JSON object'.format(description))
+    return value
+
+
+def dataset_cache_directory(context: ExecutionContext) -> Path:
+    '''Return the repository-contained cache for the configured scenario.'''
+
+    configured = PurePosixPath(
+        context.config['runtime']['dataset_cache_root']
+    )
+    if configured.is_absolute() or '..' in configured.parts:
+        raise ValueError('dataset cache root must be repository-relative')
+    path = context.repository_root.joinpath(
+        *configured.parts, context.config['scenario']
+    ).resolve()
+    try:
+        path.relative_to(context.repository_root)
+    except ValueError as error:
+        raise ValueError(
+            'dataset cache directory escapes the repository'
+        ) from error
+    return path
+
+
+def pool_state_path(context: ExecutionContext, round_index: int) -> Path:
+    return (
+        context.run_directory
+        / 'artifacts'
+        / 'pool'
+        / 'round_{:02d}.json'.format(_round_index(round_index))
+    )
+
+
+def target_labeled_manifest_path(
+    context: ExecutionContext,
+    round_index: int,
+) -> Path:
+    return (
+        context.run_directory
+        / 'datasets'
+        / 'target_train_labeled_round_{:02d}.json'.format(
+            _round_index(round_index)
+        )
+    )
+
+
+def target_unlabeled_manifest_path(
+    context: ExecutionContext,
+    round_index: int,
+) -> Path:
+    return (
+        context.run_directory
+        / 'datasets'
+        / 'target_train_unlabeled_pool_{:02d}.json'.format(
+            _round_index(round_index)
+        )
+    )
+
+
+def find_completed_checkpoint(
+    context: ExecutionContext,
+    artifact_type: str,
+) -> Optional[Path]:
+    '''Find the latest completed checkpoint after verifying its contents.'''
+
+    for completed in reversed(context.state_store.load().completed_stages):
+        artifact = completed.get('result', {}).get('checkpoint_artifact')
+        if artifact and artifact.get('artifact_type') == artifact_type:
+            reference = ArtifactRef(**artifact)
+            context.artifact_store.verify(reference)
+            return context.run_directory / reference.relative_path
+    return None
+
+
+def read_pool_state(
+    context: ExecutionContext,
+    round_index: int,
+) -> PoolState:
+    '''Read and validate the immutable target-pool state for one round.'''
+
+    path = pool_state_path(context, round_index)
+    value = _read_json_mapping(path, 'pool state')
+    return PoolState.from_dict(value)
+
+
+def write_pool_state(
+    context: ExecutionContext,
+    pool: PoolState,
+    round_index: int,
+    producer_stage_id: str,
+) -> ArtifactRef:
+    '''Atomically persist one validated target-pool state as a run artifact.'''
+
+    if not isinstance(pool, PoolState):
+        raise TypeError('pool must be a PoolState')
+    output = pool_state_path(context, round_index)
+    relative_path = output.relative_to(context.run_directory).as_posix()
+    return context.artifact_store.write_json(
+        relative_path,
+        pool.to_dict(),
+        'target_pool_state',
+        producer_stage_id,
+    )
+
+
+def read_active_pool(context: ExecutionContext) -> PoolState:
+    '''Read the pool selected by the durable run state's active round.'''
+
+    round_index = context.state_store.load().active_round
+    return read_pool_state(context, round_index)
+
+
+def _target_pool_cache(context: ExecutionContext) -> Mapping[str, Any]:
+    path = dataset_cache_directory(context) / 'target_train_unlabeled.json'
+    source = _read_json_mapping(path, 'target-unlabeled dataset cache')
+    images = source.get('images')
+    annotations = source.get('annotations')
+    categories = source.get('categories')
+    if not isinstance(images, list):
+        raise ValueError('target-unlabeled dataset cache images must be a list')
+    if annotations != []:
+        raise ValueError(
+            'target-unlabeled dataset cache must not contain annotations'
+        )
+    if not isinstance(categories, list):
+        raise ValueError(
+            'target-unlabeled dataset cache categories must be a list'
+        )
+    return source
+
+
+def materialize_unlabeled_pool_manifest(
+    context: ExecutionContext,
+    samples: Sequence[SampleIdentity],
+    producer_stage_id: str,
+    *,
+    pool: Optional[PoolState] = None,
+) -> Path:
+    '''Write the current DUT manifest after removing acquired target images.'''
+
+    if pool is None:
+        pool = read_active_pool(context)
+    samples = tuple(samples)
+    if samples != pool.unlabeled:
+        raise ValueError('requested samples do not match the active unlabeled pool')
+    if not samples:
+        raise RuntimeError('ADA-FNP requires a nonempty target-unlabeled pool')
+
+    source = _target_pool_cache(context)
+    images_by_sample = {}
+    for image in source['images']:
+        if not isinstance(image, Mapping):
+            raise ValueError('target pool cache images must be JSON objects')
+        sample = SampleIdentity.parse(image.get('sample_id'))
+        if sample.namespace != TARGET_TRAIN_NAMESPACE:
+            raise ValueError('target pool cache contains an invalid namespace')
+        if sample in images_by_sample:
+            raise ValueError('target pool cache contains duplicate sample IDs')
+        images_by_sample[sample] = image
+    if set(images_by_sample) != set(pool.universe):
+        raise ValueError('target pool cache does not match the committed universe')
+
+    output = target_unlabeled_manifest_path(
+        context,
+        context.state_store.load().active_round,
+    )
+    relative_path = output.relative_to(context.run_directory).as_posix()
+    context.artifact_store.write_json(
+        relative_path,
+        {
+            'info': dict(source.get('info', {})),
+            'images': [images_by_sample[sample] for sample in samples],
+            'annotations': [],
+            'categories': source['categories'],
+        },
+        'target_unlabeled_annotations',
+        producer_stage_id,
+    )
+    return output
+
+
+def map_pool_samples_by_image_id(
+    manifest_path: Path,
+    expected_samples: Sequence[SampleIdentity],
+) -> Mapping[int, SampleIdentity]:
+    '''Map detector image IDs to an exact expected pool of target samples.'''
+
+    expected_samples = tuple(expected_samples)
+    if len(expected_samples) != len(set(expected_samples)):
+        raise ValueError('expected pool contains duplicate sample identities')
+    manifest = _read_json_mapping(
+        Path(manifest_path),
+        'target-unlabeled pool manifest',
+    )
+    images = manifest.get('images')
+    if not isinstance(images, list):
+        raise ValueError('target pool manifest images must be a list')
+
+    mapping = {}
+    for image in images:
+        if not isinstance(image, Mapping):
+            raise ValueError('target pool manifest images must be JSON objects')
+        image_id = image.get('id')
+        if isinstance(image_id, bool) or not isinstance(image_id, int):
+            raise ValueError('target pool image ID must be an integer')
+        sample = SampleIdentity.parse(image.get('sample_id'))
+        if sample.namespace != TARGET_TRAIN_NAMESPACE:
+            raise ValueError('target pool manifest contains an invalid namespace')
+        if image_id in mapping:
+            raise ValueError('target pool manifest contains duplicate image IDs')
+        mapping[image_id] = sample
+    if (
+        len(mapping) != len(expected_samples)
+        or set(mapping.values()) != set(expected_samples)
+    ):
+        raise ValueError('target pool manifest does not cover expected samples')
+    return mapping

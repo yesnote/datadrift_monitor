@@ -1,1 +1,1 @@
-'''ADA-FNP training targets and loss routing.'''
+'''False-negative matching, predictor training, and pseudo-labeling.'''

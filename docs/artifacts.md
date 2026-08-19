@@ -5,11 +5,34 @@ an immutable resolved configuration and plan manifest, mutable atomic state,
 checkpoints, round score shards, merged scores, selections, pool transitions,
 and final evaluation metrics.
 
-JSON artifacts are key-sorted, written to a temporary sibling, flushed, and
-atomically replaced. Their SHA256 is recorded in an artifact reference.
-Resume verifies completed outputs before skipping them. Checkpoints preserve
-model, optimizer, scheduler, scaler, sampler, global iteration, and Python,
-NumPy, PyTorch, and CUDA random state.
+`methods/common/artifacts.py` is the single implementation of canonical JSON
+bytes, atomic bytes/JSON writes, SHA256 calculation, repository-contained run
+paths, and `ArtifactStore`. JSON artifacts are key-sorted, written to a
+temporary sibling, flushed, and atomically replaced. Their SHA256 is recorded
+in an artifact reference.
+
+`methods/common/acquisition/score_artifacts.py` defines the immutable,
+sample-keyed `AcquisitionArtifact` and `AcquisitionArtifactRecord` schema used
+for both round scores and selections. Raw and normalized score fields stay in
+one record instead of using method-specific file readers. External downloads
+use `methods/common/external_assets.py`, which verifies the pinned checksum
+before atomically installing an asset.
+
+Run-local pool state, selected-only labeled manifests, annotation-free
+unlabeled manifests, and preceding-checkpoint lookup belong to
+`methods/ada_fnp/execution/run_files.py`. Detector checkpoint structure and
+strict segment-continuation validation belong to
+`methods/ada_fnp/execution/mmdet_checkpoints.py`. Checkpoints preserve model,
+optimizer, scheduler, and global iteration for segmented detector training.
+The false-negative predictor stores only completed-round model weights because
+an interrupted predictor round is rerun from its beginning.
 
 Converted dataset annotations are generated beneath
 `work_dirs/.dataset_cache`; no generated annotation is written into `data`.
+Layout validation, conversion, and reveal are separate operations in
+`methods/common/data/cityscapes/{layout,conversion,reveal}.py`.
+
+Run state is schema version 2 and records artifact identifiers in the generic
+`artifact_ids` mapping. Schema-1 run state and run artifacts produced under
+former registry/executor names are intentionally incompatible; restart them
+in a fresh run directory rather than editing their files.

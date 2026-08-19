@@ -6,7 +6,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping
 
-from .artifacts import ArtifactStore
+from methods.common.artifacts import ArtifactStore
+
 from .state import RunStateStore
 
 
@@ -19,7 +20,6 @@ class ExecutionContext:
     run_directory: Path
     state_store: RunStateStore
     artifact_store: ArtifactStore
-    resume: bool = False
     offline: bool = False
 
     def __post_init__(self) -> None:

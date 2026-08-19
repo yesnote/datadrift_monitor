@@ -21,6 +21,12 @@ converter reproduces PT's VOC serialization followed by Detectron2's loader,
 yielding zero-based lower bounds and half-open upper bounds. Empty images
 remain in the pool.
 
+Cityscapes handling is split by responsibility under
+`methods/common/data/cityscapes`: `layout.py` validates the junctions and
+declares dataset constants, `conversion.py` prepares the deterministic cache,
+and `reveal.py` creates selected-only target annotations from the read-only
+oracle.
+
 The required local layout is `data/Cityscapes/{gtFine,leftImg8bit,
 leftImg8bit_foggy}`. These entries are read-only junctions; generated
 annotations are stored only below `work_dirs`.

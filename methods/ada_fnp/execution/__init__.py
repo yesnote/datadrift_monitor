@@ -1,5 +1,1 @@
-'''ADA-FNP serial execution plugin.'''
-
-from .executors import create_executor_registry
-
-__all__ = ['create_executor_registry']
+'''ADA-FNP serial execution, MMDetection, and run-file integration.'''

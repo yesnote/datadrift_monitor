@@ -2,44 +2,39 @@
 
 from typing import List, Mapping
 
-from methods.ada_fnp.phases import FNPM_MILESTONES
+from methods.ada_fnp.schedule import (
+    ACQUISITION_MILESTONES,
+    INITIAL_DETECTOR_SEGMENT,
+    resolve_total_budget,
+)
 from methods.common.contracts import ExperimentPlan, StageSpec
 from methods.common.data.pool import split_budget
 
 
-def resolve_total_budget(config: Mapping) -> int:
-    acquisition = config['acquisition']
-    if 'total_budget' in acquisition:
-        return int(acquisition['total_budget'])
-    target_size = int(config['dataset']['target']['expected_train_images'])
-    percentage = float(acquisition['budget_percent'])
-    if not 0.0 <= percentage <= 100.0:
-        raise ValueError('budget_percent must be between 0 and 100')
-    return int(target_size * percentage / 100.0 + 0.5)
-
-
 def build_plan(config: Mapping) -> ExperimentPlan:
     milestones = tuple(config['training']['acquisition_milestones'])
-    if milestones != FNPM_MILESTONES:
+    if milestones != ACQUISITION_MILESTONES:
         raise ValueError('ADA-FNP requires acquisition at 5k through 25k')
     budgets = split_budget(resolve_total_budget(config), len(milestones))
+    initial_start, initial_end = INITIAL_DETECTOR_SEGMENT
     stages: List[StageSpec] = [
         StageSpec(
-            'prepare_pretrained',
-            'common.prepare_pretrained',
-            {'detector': config['detector']['name']},
+            'prepare_vgg16_caffe_weights',
+            'ada_fnp.prepare_vgg16_caffe_weights',
         ),
         StageSpec(
-            'prepare_datasets',
-            'common.prepare_datasets',
-            {'scenario': config['scenario']},
+            'prepare_cityscapes_to_foggy',
+            'ada_fnp.prepare_cityscapes_to_foggy',
         ),
         StageSpec(
-            'train_detector_00000_05000',
+            'train_detector_{:05d}_{:05d}'.format(
+                initial_start,
+                initial_end,
+            ),
             'ada_fnp.train_detector',
             {
-                'start_iteration': 0,
-                'end_iteration': 5000,
+                'start_iteration': initial_start,
+                'end_iteration': initial_end,
             },
         ),
     ]
@@ -47,22 +42,27 @@ def build_plan(config: Mapping) -> ExperimentPlan:
         token = f'{index:02d}'
         stages.extend((
             StageSpec(
-                f'train_fnpm_round_{token}',
-                'ada_fnp.train_fnpm',
-                {'round': index, 'detector_iteration': milestone,
-                 'iterations': config['fnpm']['iterations_per_round']},
+                f'train_false_negative_predictor_round_{token}',
+                'ada_fnp.train_false_negative_predictor',
+                {
+                    'round': index,
+                    'iterations': config['false_negative_predictor'][
+                        'iterations_per_round'
+                    ],
+                },
             ),
             StageSpec(
-                f'score_pool_round_{token}',
-                'ada_fnp.score_pool',
-                {'round': index, 'detector_iteration': milestone},
+                f'score_unlabeled_pool_round_{token}',
+                'ada_fnp.score_unlabeled_pool',
+                {'round': index},
             ),
             StageSpec(
-                f'select_round_{token}', 'common.select',
+                f'select_samples_round_{token}', 'ada_fnp.select_samples',
                 {'round': index, 'budget': budget},
             ),
             StageSpec(
-                f'reveal_round_{token}', 'common.reveal_annotations',
+                f'reveal_selected_annotations_round_{token}',
+                'ada_fnp.reveal_selected_annotations',
                 {'round': index},
             ),
         ))
@@ -80,7 +80,7 @@ def build_plan(config: Mapping) -> ExperimentPlan:
             },
         ))
     stages.append(StageSpec(
-        'evaluate_final_teacher', 'common.evaluate',
-        {'model': 'teacher', 'metric': 'AP50'},
+        'evaluate_final_teacher', 'ada_fnp.evaluate_final_teacher',
+        {'metric': 'AP50'},
     ))
     return ExperimentPlan(tuple(stages))

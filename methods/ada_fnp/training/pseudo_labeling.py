@@ -1,4 +1,6 @@
-'''Uncertainty-filtered pseudo labels and view projection.'''
+'''Uncertainty-filtered pseudo labels and loss selection.'''
+
+from __future__ import annotations
 
 from typing import Dict, Mapping
 
@@ -12,7 +14,7 @@ def select_pseudo_labels(
     coordinate_variances: torch.Tensor,
     variance_threshold: float = 0.1,
 ) -> Dict[str, torch.Tensor]:
-    '''Keep NMS detections whose mean localization variance is small.
+    '''Keep detections whose mean localization variance is small.
 
     Labels and scores must come from the same multiclass-NMS candidate as each
     box. Recomputing an argmax from proposal probabilities can associate a
@@ -38,7 +40,9 @@ def select_pseudo_labels(
         'scores': scores[keep],
         'keep': keep,
     }
-def classification_only_losses(
+
+
+def select_classification_losses(
     losses: Mapping[str, object],
 ) -> Dict[str, object]:
     '''Select the RPN and RoI classification terms from MMDet loss output.'''

@@ -12,20 +12,48 @@ adaptation through detector iteration 5,000. The student detector and domain
 discriminator are copied exactly to the teacher at that boundary. At detector
 iterations 5k, 10k, 15k, 20k, and 25k, the workflow:
 
-1. trains FNPM for 2,000 iterations;
+1. trains the `FalseNegativePredictor` for 2,000 iterations;
 2. scores every sample in the currently committed unlabeled pool;
 3. selects the round budget and commits the pool transition;
 4. reveals annotations only for selected samples; and
-5. resumes detector training from the preceding global iteration.
+5. continues detector training from the preceding global iteration.
 
 The final teacher is evaluated after iteration 40k. Detector checkpoints
-preserve the optimizer and parameter scheduler. FNPM checkpoints preserve its
-model, fresh per-round optimizer and cosine scheduler, local iteration, and
-random state. `--resume` verifies the saved resolved-config fingerprint and
-completed artifact hashes before continuing. Before MMEngine restores a
-detector segment, ADAOD also requires an exact model-key and tensor-shape
-match, nonempty optimizer and parameter-scheduler sections, and the expected
-saved global iteration. Inference checkpoint loading is strict.
+preserve the optimizer and parameter scheduler. False-negative predictor
+checkpoints retain only the completed round's model weights; every round uses
+a fresh optimizer and cosine scheduler, and an interrupted predictor round is
+rerun from its beginning. Before MMEngine continues a detector segment, ADAOD
+also
+requires an exact model-key and tensor-shape match, nonempty optimizer and
+parameter-scheduler sections, and the expected saved global iteration.
+Inference checkpoint loading is strict.
+
+In the paper, this predictor is called the False Negative Prediction Module
+(FNPM). The implementation uses the more direct class name
+`FalseNegativePredictor`; subsequent documentation uses “false-negative
+predictor” for the component.
+
+## Package map
+
+- `schedule.py` is the single source for detector segments, acquisition
+  milestones, round length, and budget resolution.
+- `models/detector.py` contains `AdaFnpDetector` and
+  `AdaFnpDetectorBranch`; `models/domain_adaptation.py` contains
+  `AdaFnpDomainDiscriminator`; `models/mc_dropout_roi_head.py` contains
+  `AdaFnpMonteCarloDropoutRoIHead`; and
+  `models/false_negative_predictor.py` contains `FalseNegativePredictor`.
+- `probabilistic_teacher_augmentation.py` contains
+  `ProbabilisticTeacherStrongAugmentation`.
+- `training/false_negative_matching.py`,
+  `training/false_negative_training.py`, and
+  `training/pseudo_labeling.py` own their corresponding training operations.
+- `acquisition/mc_dropout.py` and `acquisition/scoring.py` own acquisition
+  inference and score computation.
+- `execution/stages.py` registers the serial method stages;
+  `mmdet_backend.py` implements detector, predictor, scoring, and evaluation
+  runtime work; `mmdet_config.py` materializes MMDetection configs;
+  `mmdet_checkpoints.py` handles strict detector checkpoints; and
+  `run_files.py` owns run-local paths, pool manifests, and checkpoint lookup.
 
 ## PT-compatible detector and input path
 
@@ -36,7 +64,9 @@ saved global iteration. Inference checkpoint loading is strict.
   adds only PT photometric augmentation, so weak and strong views have the
   same geometry.
 - VGG16 freezes the first two stages and loads only convolution weights from
-  the checksum-pinned `vgg16_caffe.pth` asset.
+  the checksum-pinned `vgg16_caffe.pth` asset. This initialization runs only
+  for the initial 0-to-5k build; later stages load the full detector
+  checkpoint directly.
 - RPN anchor sizes are 128, 256, and 512 at stride 16 with integer-pixel
   centers; the positive fraction is 0.25. Train proposals use 12,000 pre-NMS
   and 2,000 post-NMS entries; test uses 6,000 and 1,000.
@@ -73,18 +103,18 @@ with no detections receive final score zero. Each scoring and training stage
 materializes `target_train_unlabeled_pool_NN.json` from the committed pool, so
 previously acquired samples cannot re-enter the unlabeled loader.
 
-FNPM ends in Softplus and regresses raw false-negative counts with mean squared
-error. This preserves non-negative values above one, although Figure 4 labels
-the final activation as Sigmoid; the figure conflicts with an unrestricted
-count target. Detector optimization does not apply PT's gradient-norm-10
-clipping because ADA-FNP does not specify it. Both choices are reproduction
-assumptions, not confirmed paper details.
+`FalseNegativePredictor` ends in Softplus and regresses raw false-negative
+counts with mean squared error. This preserves non-negative values above one,
+although Figure 4 labels the final activation as Sigmoid; the figure conflicts
+with an unrestricted count target. Detector optimization does not apply PT's
+gradient-norm-10 clipping because ADA-FNP does not specify it. Both choices
+are reproduction assumptions, not confirmed paper details.
 
 ## Evaluation
 
-`PTVOCMetric` reproduces PT's Detectron2/Pascal-VOC path for the generated
-zero-based, half-open boxes: detection coordinates are serialized to one
-decimal place, scores to three decimals, IoU must be strictly greater than
+`Detectron2PascalVocMetric` reproduces PT's Detectron2/Pascal-VOC path for the
+generated zero-based, half-open boxes: detection coordinates are serialized to
+one decimal place, scores to three decimals, IoU must be strictly greater than
 0.5, legacy `+1` box arithmetic is disabled, and VOC2012 continuous-area AP50
 is returned on the 0--100 percentage scale.
 
@@ -92,15 +122,17 @@ is returned on the 0--100 percentage scale.
 
 ```powershell
 python -m tools.run_adaod --method ada-fnp --budget-percent 1 --seed 0
-python -m tools.run_adaod --method ada-fnp --budget-percent 1 --seed 0 --resume
 python -m tools.run_adaod --method ada-fnp --budget-percent 1 --seed 0 --offline
 ```
 
-Non-dry execution is connected to MMEngine/MMDetection runners for detector
-training, FNPM training, pool scoring, selection, reveal, and final teacher
-evaluation. Model stages fail explicitly when the pinned OpenMMLab packages or
-CUDA are unavailable. The pinned CUDA/MMCV gate, full model construction,
-direct real-batch loss/backward, one official C-to-F Runner iteration,
-checkpoint creation, and checkpoint resume through the next iteration pass.
-The 40k command is technically ready to run; completion and paper-level AP50
-parity remain unverified.
+Execution is connected to MMEngine/MMDetection runners for detector training,
+false-negative predictor training, pool scoring, selection, reveal, and final
+teacher evaluation. Model stages fail explicitly when the pinned OpenMMLab
+packages or CUDA are unavailable. Completion of the 40k command and
+paper-level AP50 parity remain unverified.
+
+Manifest API version 2, run-state schema version 2, and the descriptive model,
+transform, metric, and stage-executor registry names are breaking changes.
+An earlier or interrupted run must be started again in a fresh run directory.
+The CLI has no interrupted-run resume mode and refuses to overwrite a nonempty
+run directory.

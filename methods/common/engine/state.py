@@ -10,23 +10,21 @@ from methods.common.artifacts import atomic_write_json
 
 @dataclass
 class RunState:
-    schema_version: int = 1
+    schema_version: int = 2
     status: str = 'pending'
     active_stage_id: Optional[str] = None
     completed_stages: List[Dict[str, Any]] = field(default_factory=list)
     failed_stage_id: Optional[str] = None
     global_detector_iteration: int = 0
     active_round: int = 0
-    pool_artifact_id: Optional[str] = None
-    detector_checkpoint_artifact_id: Optional[str] = None
-    fnpm_checkpoint_artifact_id: Optional[str] = None
+    artifact_ids: Dict[str, str] = field(default_factory=dict)
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
 
     @classmethod
     def from_dict(cls, value: Dict[str, Any]) -> 'RunState':
-        if value.get('schema_version') != 1:
+        if value.get('schema_version') != 2:
             raise ValueError('unsupported run state schema')
         return cls(**value)
 
