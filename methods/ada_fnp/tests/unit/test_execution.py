@@ -15,12 +15,16 @@ from methods.ada_fnp.execution import (
 from methods.ada_fnp.execution.backend import (
     MmdetExecutionBackend,
     MmdetRuntime,
+    _bind_exact_runner_resume_iteration,
     _materialize_config_replacement,
     _pool_samples_by_image_id,
     _single_dataset_loader,
     validate_detector_resume_checkpoint,
 )
-from methods.ada_fnp.execution.executors import create_executor_registry
+from methods.ada_fnp.execution.executors import (
+    _repository_path,
+    create_executor_registry,
+)
 from methods.ada_fnp.manifest import MANIFEST
 from methods.ada_fnp.models.fnpm import FalseNegativePredictionModule
 from methods.ada_fnp.phases import resolve_detector_phase
@@ -35,6 +39,7 @@ from methods.common.engine import (
     load_executor_factory,
 )
 from methods.common.contracts import StageSpec
+from methods.common.artifacts import sha256_file
 from tools.common.config import compose_config
 
 
@@ -143,6 +148,62 @@ def _context(tmp_path):
         state_store=state_store,
         artifact_store=ArtifactStore(run_directory),
     )
+
+
+def _record_detector_checkpoint(context, stage_id, checkpoint):
+    digest = sha256_file(checkpoint)
+    relative_path = checkpoint.relative_to(
+        context.run_directory
+    ).as_posix()
+    artifact = {
+        'artifact_id': digest,
+        'artifact_type': 'detector_checkpoint',
+        'schema_version': 1,
+        'producer_stage_id': stage_id,
+        'relative_path': relative_path,
+        'sha256': digest,
+    }
+    state = context.state_store.load()
+    state.completed_stages = [
+        completed for completed in state.completed_stages
+        if completed['stage_id'] != stage_id
+    ]
+    state.completed_stages.append({
+        'stage_id': stage_id,
+        'executor_key': 'ada_fnp.train_detector',
+        'result': {'checkpoint_artifact': artifact},
+    })
+    context.state_store.save(state)
+    return artifact
+
+
+def test_repository_path_preserves_read_only_dataset_junction(tmp_path, monkeypatch):
+    _, context = _context(tmp_path)
+    configured = context.repository_root / 'data/Cityscapes/leftImg8bit'
+    external_target = tmp_path.parent / 'datasets/Cityscapes/leftImg8bit'
+    path_type = type(configured)
+    original_resolve = path_type.resolve
+
+    def resolve_external_target(path, *args, **kwargs):
+        if path == configured:
+            return external_target
+        return original_resolve(path, *args, **kwargs)
+
+    monkeypatch.setattr(path_type, 'resolve', resolve_external_target)
+
+    assert _repository_path(
+        context,
+        'data/Cityscapes/leftImg8bit',
+        allow_external_target=True,
+    ) == configured
+    with pytest.raises(ValueError, match='escapes the repository'):
+        _repository_path(context, 'data/Cityscapes/leftImg8bit')
+    with pytest.raises(ValueError, match='repository-relative'):
+        _repository_path(
+            context,
+            '../datasets/Cityscapes/leftImg8bit',
+            allow_external_target=True,
+        )
 
 
 def test_manifest_factory_runs_complete_five_round_fixture(tmp_path):
@@ -268,6 +329,10 @@ class _FakeRunner:
             path,
         )
 
+    def load_checkpoint(self, filename, *args, **kwargs):
+        del args, kwargs
+        return torch.load(filename, map_location='cpu', weights_only=False)
+
 
 def _runtime_config():
     source = dict(type='CocoDataset', ann_file='source_train.json')
@@ -389,12 +454,19 @@ def test_mmdet_train_adapter_preserves_global_schedule_and_atomic_checkpoint(
     assert runner.config['resume'] is False
     assert runner.config['load_from'] is None
     assert runner.config['train_cfg']['max_iters'] == 5000
+    assert runner.config['train_cfg']['type'] == (
+        'ADAODSegmentedIterBasedTrainLoop'
+    )
     assert '_delete_' not in runner.config['train_dataloader']
     assert runner.config['param_scheduler'][1]['milestones'] == [30000, 35000]
     assert runner.config['val_cfg'] is None
     assert torch.equal(runner.model.teacher.weight, runner.model.student.weight)
     assert runner.saved_kwargs['save_optimizer'] is True
     assert runner.saved_kwargs['save_param_scheduler'] is True
+    assert runner.saved_kwargs['meta']['iter'] == 5000
+    assert runner.saved_kwargs['meta']['global_iteration'] == 5000
+
+    _record_detector_checkpoint(context, stage.stage_id, checkpoint)
 
     state = context.state_store.load()
     state.active_round = 1
@@ -448,40 +520,106 @@ def test_mmdet_train_adapter_preserves_global_schedule_and_atomic_checkpoint(
 def test_detector_resume_checkpoint_requires_exact_reproducibility_state(
     tmp_path,
 ):
+    _, context = _context(tmp_path)
     model = _BranchModel()
-    checkpoint = tmp_path / 'resume.pth'
+    checkpoint = context.run_directory / 'checkpoints/resume.pth'
+    checkpoint.parent.mkdir(parents=True)
+    stage_id = 'train_detector_00000_05000'
     valid = {
         'state_dict': model.state_dict(),
         'optimizer': {'state': {}, 'param_groups': []},
         'param_schedulers': [{}],
-        'meta': {'global_iteration': 5000},
+        'meta': {'global_iteration': 5000, 'iter': 5000},
     }
     torch.save(valid, checkpoint)
-    validate_detector_resume_checkpoint(checkpoint, model, (5000,))
+    _record_detector_checkpoint(context, stage_id, checkpoint)
+    validate_detector_resume_checkpoint(
+        checkpoint, model, (5000,), context=context
+    )
+
+    checkpoint.write_bytes(checkpoint.read_bytes() + b'tampered')
+    with pytest.raises(RuntimeError, match='verification'):
+        validate_detector_resume_checkpoint(
+            checkpoint, model, (5000,), context=context
+        )
 
     invalid = copy.deepcopy(valid)
     invalid['state_dict']['student.weight'] = torch.zeros(2, 1)
     torch.save(invalid, checkpoint)
+    _record_detector_checkpoint(context, stage_id, checkpoint)
     with pytest.raises(ValueError, match='tensor shapes'):
-        validate_detector_resume_checkpoint(checkpoint, model, (5000,))
+        validate_detector_resume_checkpoint(
+            checkpoint, model, (5000,), context=context
+        )
 
     invalid = copy.deepcopy(valid)
     del invalid['optimizer']
     torch.save(invalid, checkpoint)
+    _record_detector_checkpoint(context, stage_id, checkpoint)
     with pytest.raises(ValueError, match='missing: optimizer'):
-        validate_detector_resume_checkpoint(checkpoint, model, (5000,))
+        validate_detector_resume_checkpoint(
+            checkpoint, model, (5000,), context=context
+        )
 
     invalid = copy.deepcopy(valid)
     invalid['param_schedulers'] = []
     torch.save(invalid, checkpoint)
+    _record_detector_checkpoint(context, stage_id, checkpoint)
     with pytest.raises(ValueError, match='nonempty param-scheduler'):
-        validate_detector_resume_checkpoint(checkpoint, model, (5000,))
+        validate_detector_resume_checkpoint(
+            checkpoint, model, (5000,), context=context
+        )
 
     invalid = copy.deepcopy(valid)
     invalid['meta']['global_iteration'] = 4999
     torch.save(invalid, checkpoint)
+    _record_detector_checkpoint(context, stage_id, checkpoint)
     with pytest.raises(ValueError, match='global iteration'):
-        validate_detector_resume_checkpoint(checkpoint, model, (5000,))
+        validate_detector_resume_checkpoint(
+            checkpoint, model, (5000,), context=context
+        )
+
+
+def test_detector_resume_accepts_verified_mmengine_history_buffer(tmp_path):
+    history_buffer = pytest.importorskip('mmengine.logging').HistoryBuffer()
+    _, context = _context(tmp_path)
+    model = _BranchModel()
+    checkpoint = context.run_directory / 'checkpoints/resume.pth'
+    checkpoint.parent.mkdir(parents=True)
+    payload = {
+        'state_dict': model.state_dict(),
+        'optimizer': {'state': {}, 'param_groups': []},
+        'param_schedulers': [{}],
+        'meta': {'global_iteration': 5000, 'iter': 5001},
+        'message_hub': {'train/loss': history_buffer},
+    }
+    torch.save(payload, checkpoint)
+    _record_detector_checkpoint(
+        context, 'train_detector_00000_05000', checkpoint
+    )
+
+    validate_detector_resume_checkpoint(
+        checkpoint, model, (5000,), context=context
+    )
+
+
+def test_runner_resume_normalizes_legacy_mmengine_iteration(tmp_path):
+    checkpoint = tmp_path / 'detector.pth'
+    checkpoint.write_bytes(b'checkpoint identity')
+
+    class Runner:
+        def load_checkpoint(self, filename, *args, **kwargs):
+            del args, kwargs
+            assert Path(filename).resolve() == checkpoint.resolve()
+            return {'meta': {'global_iteration': 5000, 'iter': 5001}}
+
+    runner = Runner()
+    _bind_exact_runner_resume_iteration(runner, checkpoint, 5000)
+
+    loaded = runner.load_checkpoint(checkpoint)
+
+    assert loaded['meta']['global_iteration'] == 5000
+    assert loaded['meta']['iter'] == 5000
 
 
 def test_mmdet_evaluator_resolves_prefixed_pt_voc_ap50_as_percent(tmp_path):

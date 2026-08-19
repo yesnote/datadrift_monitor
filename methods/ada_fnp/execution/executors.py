@@ -64,11 +64,23 @@ class ExecutionServices:
     dataset_preparer: DatasetPreparer
 
 
-def _repository_path(context: ExecutionContext, value: str) -> Path:
+def _repository_path(
+    context: ExecutionContext,
+    value: str,
+    *,
+    allow_external_target: bool = False,
+) -> Path:
     path = PurePosixPath(value)
     if path.is_absolute() or '..' in path.parts or not path.parts:
         raise ValueError('execution path must be repository-relative')
-    resolved = context.repository_root.joinpath(*path.parts).resolve()
+    candidate = context.repository_root.joinpath(*path.parts)
+    try:
+        candidate.relative_to(context.repository_root)
+    except ValueError as error:
+        raise ValueError('execution path escapes the repository') from error
+    if allow_external_target:
+        return candidate
+    resolved = candidate.resolve()
     try:
         resolved.relative_to(context.repository_root)
     except ValueError as error:
@@ -88,9 +100,21 @@ def _default_asset_preparer(context: ExecutionContext) -> Path:
 def _default_dataset_preparer(context: ExecutionContext) -> Mapping[str, Any]:
     dataset = context.config['dataset']
     return prepare_cityscapes_to_foggy(
-        _repository_path(context, dataset['source']['image_root']),
-        _repository_path(context, dataset['target']['image_root']),
-        _repository_path(context, dataset['source']['annotation_root']),
+        _repository_path(
+            context,
+            dataset['source']['image_root'],
+            allow_external_target=True,
+        ),
+        _repository_path(
+            context,
+            dataset['target']['image_root'],
+            allow_external_target=True,
+        ),
+        _repository_path(
+            context,
+            dataset['source']['annotation_root'],
+            allow_external_target=True,
+        ),
         dataset_cache_directory(context),
         context.repository_root,
         expected_train_images=int(dataset['target']['expected_train_images']),
@@ -228,11 +252,7 @@ def _train_detector(
         context.run_directory / 'checkpoints' /
         'detector_{:05d}.pth'.format(phase.end_iteration)
     )
-    resume_from = (
-        checkpoint_path
-        if context.resume and checkpoint_path.is_file()
-        else completed_checkpoint(context, 'detector_checkpoint')
-    )
+    resume_from = completed_checkpoint(context, 'detector_checkpoint')
     written = services.backend.train_detector(
         stage, context, phase, checkpoint_path, resume_from
     )

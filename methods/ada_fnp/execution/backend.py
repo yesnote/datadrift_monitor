@@ -22,7 +22,7 @@ from methods.ada_fnp.acquisition.scoring import (
 from methods.ada_fnp.models.fnpm import FalseNegativePredictionModule
 from methods.ada_fnp.phases import DetectorPhase, DetectorStageMode
 from methods.ada_fnp.training.false_negative_targets import count_false_negatives
-from methods.common.contracts import StageSpec
+from methods.common.contracts import ArtifactRef, StageSpec
 from methods.common.data.image_identity import SampleIdentity
 from methods.common.data.pool import PoolState
 from methods.common.engine.checkpoint import load_checkpoint
@@ -273,6 +273,7 @@ def build_detector_stage_config(
         unlabeled_manifest,
     )
     config['train_cfg']['max_iters'] = phase.end_iteration
+    config['train_cfg']['type'] = 'ADAODSegmentedIterBasedTrainLoop'
     config['train_cfg']['val_interval'] = phase.end_iteration + 1
     config['val_cfg'] = None
     config['val_dataloader'] = None
@@ -295,15 +296,49 @@ def validate_detector_resume_checkpoint(
     checkpoint_path: Path,
     model: nn.Module,
     expected_iterations: Sequence[int],
+    *,
+    context: ExecutionContext,
 ) -> None:
     '''Fail before Runner resume if any reproducibility state is incomplete.'''
 
+    checkpoint_path = Path(checkpoint_path).resolve()
+    checkpoint_root = (context.run_directory / 'checkpoints').resolve()
     try:
-        checkpoint = torch.load(
-            checkpoint_path, map_location='cpu', weights_only=True
+        checkpoint_path.relative_to(checkpoint_root)
+    except ValueError as error:
+        raise ValueError(
+            'detector resume checkpoint must stay in the run checkpoint directory'
+        ) from error
+    relative_path = checkpoint_path.relative_to(
+        context.run_directory
+    ).as_posix()
+    artifacts = []
+    for completed in context.state_store.load().completed_stages:
+        if completed.get('executor_key') != 'ada_fnp.train_detector':
+            continue
+        value = completed.get('result', {}).get('checkpoint_artifact')
+        if not value or value.get('relative_path') != relative_path:
+            continue
+        artifact = ArtifactRef(**value)
+        if artifact.artifact_type != 'detector_checkpoint':
+            raise ValueError('resume artifact is not a detector checkpoint')
+        if artifact.producer_stage_id != completed.get('stage_id'):
+            raise ValueError('resume artifact producer does not match its stage')
+        if artifact.artifact_id != artifact.sha256:
+            raise ValueError('resume artifact ID must equal its SHA256')
+        artifacts.append(artifact)
+    if len(artifacts) != 1:
+        raise ValueError(
+            'detector resume checkpoint requires exactly one completed artifact'
         )
-    except TypeError:
-        checkpoint = torch.load(checkpoint_path, map_location='cpu')
+    context.artifact_store.verify(artifacts[0])
+
+    # This full pickle load is allowed only after the run-local path and
+    # recorded SHA256 above have been verified. MMEngine checkpoints contain
+    # HistoryBuffer objects that cannot be loaded through weights_only=True.
+    checkpoint = torch.load(
+        checkpoint_path, map_location='cpu', weights_only=False
+    )
     if not isinstance(checkpoint, Mapping):
         raise TypeError('detector resume checkpoint must be a mapping')
     required = {'state_dict', 'optimizer', 'param_schedulers', 'meta'}
@@ -369,6 +404,41 @@ def validate_detector_resume_checkpoint(
                 iteration, tuple(expected_iterations)
             )
         )
+    runner_iteration = meta.get('iter')
+    if runner_iteration not in (iteration, iteration + 1):
+        raise ValueError(
+            'detector checkpoint runner iteration {} is incompatible with '
+            'global iteration {}'.format(runner_iteration, iteration)
+        )
+
+
+def _bind_exact_runner_resume_iteration(
+    runner: Any,
+    checkpoint_path: Path,
+    expected_iteration: int,
+) -> None:
+    '''Normalize MMEngine's legacy by-iteration checkpoint offset in memory.'''
+
+    checkpoint_path = Path(checkpoint_path).resolve()
+    load_checkpoint = runner.load_checkpoint
+
+    def load_checkpoint_with_exact_iteration(filename, *args, **kwargs):
+        loaded = load_checkpoint(filename, *args, **kwargs)
+        if Path(str(filename)).resolve() != checkpoint_path:
+            raise ValueError('Runner loaded an unexpected resume checkpoint')
+        meta = loaded.get('meta')
+        if not isinstance(meta, MutableMapping):
+            raise TypeError('detector checkpoint meta must be mutable')
+        if meta.get('global_iteration') != expected_iteration:
+            raise ValueError('Runner checkpoint global iteration changed')
+        if meta.get('iter') not in (
+            expected_iteration, expected_iteration + 1
+        ):
+            raise ValueError('Runner checkpoint iteration is incompatible')
+        meta['iter'] = expected_iteration
+        return loaded
+
+    runner.load_checkpoint = load_checkpoint_with_exact_iteration
 
 
 def _atomic_runner_checkpoint(
@@ -387,7 +457,11 @@ def _atomic_runner_checkpoint(
         save_optimizer=True,
         save_param_scheduler=True,
         by_epoch=False,
-        meta={'adaod_stage_id': stage.stage_id, 'global_iteration': iteration},
+        meta={
+            'adaod_stage_id': stage.stage_id,
+            'global_iteration': iteration,
+            'iter': iteration,
+        },
     )
     if not temporary.is_file():
         raise RuntimeError('MMEngine did not write the requested checkpoint')
@@ -579,6 +653,10 @@ class MmdetExecutionBackend:
                 resume_from,
                 runner.model,
                 (phase.start_iteration, phase.end_iteration),
+                context=context,
+            )
+            _bind_exact_runner_resume_iteration(
+                runner, resume_from, phase.start_iteration
             )
         runner.train()
         if int(runner.iter) != phase.end_iteration:
