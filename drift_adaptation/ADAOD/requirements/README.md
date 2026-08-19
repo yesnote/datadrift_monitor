@@ -15,8 +15,8 @@ current environment in place.
 
 Install PyTorch and torchvision from the official CUDA 11.8 wheel index, then
 install the matching prebuilt MMCV wheel with OpenMIM. Avoid an implicit MMCV
-source build, especially on native Windows. Install the remaining runtime and
-development packages only after the CUDA stack is selected.
+source build, especially on native Windows. Install the remaining runtime
+packages only after the CUDA stack is selected.
 
 ```powershell
 python -m pip install torch==2.0.1 torchvision==0.15.2 `
@@ -24,7 +24,6 @@ python -m pip install torch==2.0.1 torchvision==0.15.2 `
 python -m pip install openmim
 mim install mmcv==2.1.0
 python -m pip install -r requirements/runtime.txt
-python -m pip install -r requirements/development.txt
 python tools/check_environment.py
 ```
 
