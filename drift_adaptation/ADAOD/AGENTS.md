@@ -74,18 +74,29 @@ For broad refactors or changes spanning several modules, establish a brief
 implementation plan before editing, then complete the work without stopping
 for trivial decisions.
 
+## Test and Temporary Artifact Policy
+
+* Do not add or retain project-owned test suites, `tests/` directories,
+  `test_*.py` files, pytest fixtures, or test-only dependencies unless the
+  user explicitly requests them.
+* Do not create or run smoke, dry-run, synthetic, benchmark, or disposable
+  experiment workflows unless the user explicitly requests that validation.
+* Do not create validation outputs such as `work_dirs/.smoke/` inside the
+  repository.
+* Do not leave `.pytest_cache/`, `__pycache__/`, `.pyc`, coverage output, or
+  other tool-generated validation artifacts in the repository. If a permitted
+  command creates them, remove them before handoff.
+* Treat runtime implementation and real user experiment outputs separately
+  from validation artifacts. Never delete or overwrite a real run while
+  cleaning temporary files.
+
 ## Validation
 
-* Use testing, linting, formatting, and type-checking commands already configured by the repository.
-* Run targeted tests before running the full test suite.
-* For Python changes, use `pytest` when the repository contains pytest tests.
+* Prefer read-only source inspection, configuration checks, Git diff checks,
+  and the actual user-requested runtime path.
 * Run formatters or linters only when they are already configured.
-* If no automated tests exist, perform an appropriate import, compilation,
-  or focused smoke test.
 * Do not claim that a command passed unless it was actually executed.
 * If validation cannot be completed, state exactly what was not run and why.
-* Do not change expected test results merely to make a failing test pass unless
-  the requested behavior requires that expectation to change.
 
 ## Final Response
 
