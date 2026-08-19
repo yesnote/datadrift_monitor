@@ -20,11 +20,13 @@ silently change the baseline.
   once and ten RoI passes reuse the same proposals. Class probabilities and
   class-specific boxes are averaged before a single multiclass NMS; each
   retained detection's variance follows its proposal/class pair.
-- FNPM predicts a non-negative raw false-negative count with Softplus and is
-  optimized for 2,000 iterations per round at learning rate 1e-4. Each round
-  receives a fresh optimizer and cosine scheduler while retaining FNPM weights.
-  Source and selected-target loaders drop their incomplete tail so every FNPM
-  optimization step preserves the configured per-domain batch size of four.
+- `FalseNegativePredictor` predicts a non-negative raw false-negative count
+  with Softplus and is optimized for 2,000 iterations per round at learning
+  rate 1e-4. Each round receives a fresh optimizer and cosine scheduler while
+  retaining predictor weights.
+  Source and selected-target loaders drop their incomplete tail so every
+  predictor optimization step preserves the configured per-domain batch size
+  of four.
   Figure 4 labels the output as Sigmoid, but that bounded output conflicts with
   direct regression of false-negative counts greater than one; Softplus is the
   chosen resolution of that ambiguity.

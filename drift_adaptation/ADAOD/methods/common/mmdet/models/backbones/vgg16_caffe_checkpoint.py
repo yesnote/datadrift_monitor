@@ -1,4 +1,4 @@
-'''Canonical PT Caffe VGG16 asset specification.'''
+'''Canonical PT Caffe VGG16 checkpoint specification.'''
 
 CHECKPOINT_PATH = 'work_dirs/pretrained/vgg16_caffe.pth'
 DOWNLOAD_URL = (

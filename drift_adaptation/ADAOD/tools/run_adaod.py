@@ -16,16 +16,13 @@ if str(PROJECT_ROOT) not in sys.path:
 # CuBLAS workspace mode and provide the larger documented mode by default.
 os.environ.setdefault('CUBLAS_WORKSPACE_CONFIG', ':4096:8')
 
-from methods.common.artifacts import atomic_write_json
-from methods.common.engine import (
-    ArtifactStore,
-    ExecutionContext,
-    RunStateStore,
-    StageRunner,
-    load_executor_factory,
-)
+from methods.common.artifacts import ArtifactStore, atomic_write_json
+from methods.common.engine.context import ExecutionContext
+from methods.common.engine.executor_loader import load_executor_factory
+from methods.common.engine.runner import StageRunner
+from methods.common.engine.state import RunStateStore
+from methods.common.registry import discover_methods, get_method
 from tools.common.config import compose_config, config_fingerprint
-from tools.common.discovery import discover_method_manifests, get_method_manifest
 from tools.common.paths import repository_relative_path, repository_root
 
 
@@ -41,10 +38,6 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         '--run-directory',
         help='repository-relative run directory (a deterministic default is used)',
-    )
-    parser.add_argument(
-        '--resume', action='store_true',
-        help='resume an existing run after verifying its resolved configuration',
     )
     parser.add_argument(
         '--offline', action='store_true',
@@ -66,31 +59,16 @@ def _run_directory(config, configured_value=None) -> Path:
     return repository_root().joinpath(*relative.parts).resolve()
 
 
-def _prepare_run(config, run_directory: Path, resume: bool) -> RunStateStore:
+def _prepare_run(config, run_directory: Path) -> RunStateStore:
     state_store = RunStateStore(run_directory / 'state.json')
     config_path = run_directory / 'resolved_config.json'
     fingerprint = config_fingerprint(config)
-    if resume:
-        if not config_path.is_file():
-            raise SystemExit('--resume requires an existing resolved config')
-        with config_path.open('r', encoding='utf-8') as stream:
-            saved = json.load(stream)
-        if saved.get('config_fingerprint') != fingerprint:
-            raise SystemExit('resolved config differs from the run being resumed')
-        if not state_store.path.is_file():
-            unexpected = [
-                path for path in run_directory.iterdir()
-                if path.resolve() != config_path.resolve()
-            ]
-            if unexpected:
-                raise SystemExit(
-                    'run state is missing but stage outputs exist; refusing recovery'
-                )
-            state_store.save(state_store.load())
-        return state_store
-    if state_store.path.exists() or config_path.exists():
+    if run_directory.exists() and not run_directory.is_dir():
+        raise SystemExit('run directory path exists and is not a directory')
+    if run_directory.exists() and any(run_directory.iterdir()):
         raise SystemExit(
-            'run state already exists; use --resume or choose --run-directory'
+            'run directory is not empty; choose a new --run-directory or '
+            'remove the previous run explicitly'
         )
     run_directory.mkdir(parents=True, exist_ok=True)
     atomic_write_json(
@@ -103,12 +81,12 @@ def _prepare_run(config, run_directory: Path, resume: bool) -> RunStateStore:
 
 def main(argv=None) -> int:
     args = build_parser().parse_args(argv)
-    manifests = discover_method_manifests()
+    manifests = discover_methods()
     if args.list_methods:
         for key in sorted(manifests):
             print(f'{key}: {manifests[key].description}')
         return 0
-    manifest = get_method_manifest(args.method)
+    manifest = get_method(args.method)
     overrides = {}
     if args.budget_percent is not None:
         overrides['acquisition'] = {'budget_percent': args.budget_percent}
@@ -123,14 +101,13 @@ def main(argv=None) -> int:
     )
     plan = manifest.plan_factory(config)
     run_directory = _run_directory(config, args.run_directory)
-    state_store = _prepare_run(config, run_directory, args.resume)
+    state_store = _prepare_run(config, run_directory)
     context = ExecutionContext(
         config=config,
         repository_root=repository_root(),
         run_directory=run_directory,
         state_store=state_store,
         artifact_store=ArtifactStore(run_directory),
-        resume=args.resume,
         offline=args.offline,
     )
     registry = load_executor_factory(manifest)(context)

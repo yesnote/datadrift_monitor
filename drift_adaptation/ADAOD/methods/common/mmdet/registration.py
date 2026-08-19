@@ -8,7 +8,7 @@ Use this module in an MMEngine config::
 '''
 
 try:
-    from mmdet.registry import LOOPS, MODELS
+    from mmdet.registry import LOOPS, METRICS, MODELS
 except ModuleNotFoundError as exc:
     raise ModuleNotFoundError(
         'ADAOD MMDetection registrations require the repository-local '
@@ -18,13 +18,17 @@ except ModuleNotFoundError as exc:
 
 from .models.backbones.vgg16 import VGG16Backbone
 from .models.roi_heads.vgg_bbox_head import VGGShared2FCBBoxHead
-from .metrics import PTVOCMetric
-from .loops import ADAODSegmentedIterBasedTrainLoop
+from .metrics.detectron2_voc_metric import Detectron2PascalVocMetric
+from .loops.segmented_iter_loop import ADAODSegmentedIterBasedTrainLoop
 
-MODELS.register_module(name='ADAODVGG16', module=VGG16Backbone)
+MODELS.register_module(name='VGG16Backbone', module=VGG16Backbone)
 MODELS.register_module(
-    name='ADAODVGGShared2FCBBoxHead', module=VGGShared2FCBBoxHead)
+    name='VGGShared2FCBBoxHead', module=VGGShared2FCBBoxHead)
 LOOPS.register_module(
     name='ADAODSegmentedIterBasedTrainLoop',
     module=ADAODSegmentedIterBasedTrainLoop,
+)
+METRICS.register_module(
+    name='Detectron2PascalVocMetric',
+    module=Detectron2PascalVocMetric,
 )

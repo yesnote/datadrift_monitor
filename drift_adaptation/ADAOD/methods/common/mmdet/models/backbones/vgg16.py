@@ -10,7 +10,7 @@ from torch import Tensor, nn
 from mmengine.model import BaseModule
 
 from methods.common.artifacts import sha256_file
-from methods.common.assets import AssetVerificationError
+from methods.common.external_assets import AssetVerificationError
 
 
 _CONV_SPECS = (

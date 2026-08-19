@@ -1,4 +1,6 @@
-'''PT strong photometric augmentation for MMDetection BGR images.'''
+'''Probabilistic Teacher strong augmentation for MMDetection BGR images.'''
+
+from __future__ import annotations
 
 import random
 from typing import MutableMapping
@@ -8,19 +10,16 @@ from PIL import Image, ImageFilter
 from torchvision import transforms
 
 
-class _PTGaussianBlur:
-    '''Reference PT Gaussian blur with Python-RNG radius sampling.'''
+class _ProbabilisticTeacherGaussianBlur:
+    '''Reference Probabilistic Teacher blur with Python-RNG radius sampling.'''
 
     def __call__(self, image: Image.Image) -> Image.Image:
         sigma = random.uniform(0.1, 2.0)
         return image.filter(ImageFilter.GaussianBlur(radius=sigma))
 
 
-class PTStrongAugmentation:
-    '''Apply the exact PT strong photometric pipeline to a BGR uint8 image.
-
-    The four PT component probabilities remain fixed.
-    '''
+class ProbabilisticTeacherStrongAugmentation:
+    '''Apply the exact PT strong photometric pipeline to a BGR uint8 image.'''
 
     def __init__(self) -> None:
         self.augmentation = transforms.Compose([
@@ -29,7 +28,7 @@ class PTStrongAugmentation:
             ], p=0.8),
             transforms.RandomGrayscale(p=0.2),
             transforms.RandomApply([
-                _PTGaussianBlur(),
+                _ProbabilisticTeacherGaussianBlur(),
             ], p=0.5),
             transforms.RandomSolarize(threshold=128, p=0.2),
         ])
@@ -51,10 +50,8 @@ class PTStrongAugmentation:
             raise KeyError("results must contain an 'img' entry")
         bgr_image = self._validate_image(results['img'])
 
-        # PT reads images in Detectron2's default BGR format, then passes the
-        # array directly to a PIL RGB image. Preserve that literal
-        # channel behavior for reproduction instead of correcting it with a
-        # BGR/RGB swap here.
+        # Detectron2 reads BGR images and PT passes that array directly to PIL.
+        # Preserve that literal channel behavior for reproduction.
         pil_image = Image.fromarray(np.ascontiguousarray(bgr_image))
         augmented_image = np.asarray(self.augmentation(pil_image))
         results['img'] = np.array(

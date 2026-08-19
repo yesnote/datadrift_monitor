@@ -1,8 +1,7 @@
-'''Canonical JSON acquisition artifacts with content hashes.'''
+'''Canonical acquisition score and selection artifacts.'''
 
 from __future__ import annotations
 
-import hashlib
 import json
 import math
 from dataclasses import dataclass, field
@@ -10,7 +9,12 @@ from pathlib import Path
 from types import MappingProxyType
 from typing import Any, Mapping, Optional, Tuple
 
-from methods.common.artifacts import atomic_write_bytes, resolve_artifact_path
+from methods.common.artifacts import (
+    atomic_write_bytes,
+    canonical_json_bytes,
+    resolve_artifact_path,
+    sha256_bytes,
+)
 from methods.common.contracts import ArtifactRef
 from methods.common.data.image_identity import SampleIdentity
 
@@ -54,8 +58,8 @@ def _require_token(name: str, value: str) -> None:
 
 
 @dataclass(frozen=True)
-class JsonArtifactRecord:
-    '''One sample-keyed record in a canonical JSON artifact.'''
+class AcquisitionArtifactRecord:
+    '''One sample-keyed record in an acquisition artifact.'''
 
     sample: SampleIdentity
     fields: Mapping[str, Any] = field(default_factory=dict)
@@ -69,7 +73,7 @@ class JsonArtifactRecord:
         return {'sample': self.sample.to_dict(), 'fields': _thaw_json(self.fields)}
 
     @classmethod
-    def from_dict(cls, value: Mapping[str, Any]) -> 'JsonArtifactRecord':
+    def from_dict(cls, value: Mapping[str, Any]) -> 'AcquisitionArtifactRecord':
         if set(value) != {'sample', 'fields'}:
             raise ValueError('artifact record must contain sample and fields')
         return cls(
@@ -79,12 +83,12 @@ class JsonArtifactRecord:
 
 
 @dataclass(frozen=True)
-class JsonArtifact:
+class AcquisitionArtifact:
     '''Versioned collection of immutable sample records.'''
 
     artifact_type: str
     producer_stage_id: str
-    records: Tuple[JsonArtifactRecord, ...]
+    records: Tuple[AcquisitionArtifactRecord, ...]
     metadata: Mapping[str, Any] = field(default_factory=dict)
     schema_version: int = ARTIFACT_SCHEMA_VERSION
 
@@ -92,10 +96,15 @@ class JsonArtifact:
         _require_token('artifact_type', self.artifact_type)
         _require_token('producer_stage_id', self.producer_stage_id)
         if self.schema_version != ARTIFACT_SCHEMA_VERSION:
-            raise ValueError('unsupported JSON artifact schema version')
+            raise ValueError('unsupported acquisition artifact schema version')
         object.__setattr__(self, 'records', tuple(self.records))
-        if any(not isinstance(record, JsonArtifactRecord) for record in self.records):
-            raise TypeError('artifact records must be JsonArtifactRecord instances')
+        if any(
+            not isinstance(record, AcquisitionArtifactRecord)
+            for record in self.records
+        ):
+            raise TypeError(
+                'artifact records must be AcquisitionArtifactRecord instances'
+            )
         samples = [record.sample for record in self.records]
         if len(samples) != len(set(samples)):
             raise ValueError('artifact contains duplicate sample records')
@@ -111,7 +120,7 @@ class JsonArtifact:
         }
 
     @classmethod
-    def from_dict(cls, value: Mapping[str, Any]) -> 'JsonArtifact':
+    def from_dict(cls, value: Mapping[str, Any]) -> 'AcquisitionArtifact':
         expected_keys = {
             'schema_version',
             'artifact_type',
@@ -120,43 +129,32 @@ class JsonArtifact:
             'records',
         }
         if set(value) != expected_keys:
-            raise ValueError('JSON artifact has an invalid top-level schema')
+            raise ValueError('acquisition artifact has an invalid top-level schema')
         return cls(
             schema_version=value['schema_version'],
             artifact_type=value['artifact_type'],
             producer_stage_id=value['producer_stage_id'],
             metadata=value['metadata'],
             records=tuple(
-                JsonArtifactRecord.from_dict(record) for record in value['records']
+                AcquisitionArtifactRecord.from_dict(record)
+                for record in value['records']
             ),
         )
 
 
-def canonical_json_bytes(artifact: JsonArtifact) -> bytes:
-    '''Serialize an artifact deterministically for hashing and storage.'''
-
-    if not isinstance(artifact, JsonArtifact):
-        raise TypeError('artifact must be a JsonArtifact')
-    return json.dumps(
-        artifact.to_dict(),
-        ensure_ascii=False,
-        allow_nan=False,
-        sort_keys=True,
-        separators=(',', ':'),
-    ).encode('utf-8')
-
-
-def write_json_artifact(
+def write_acquisition_artifact(
     path: Path,
-    artifact: JsonArtifact,
+    artifact: AcquisitionArtifact,
     *,
     run_directory: Path,
 ) -> ArtifactRef:
-    '''Atomically write an artifact and return its content-addressed reference.'''
+    '''Atomically write an acquisition artifact and return its reference.'''
 
+    if not isinstance(artifact, AcquisitionArtifact):
+        raise TypeError('artifact must be an AcquisitionArtifact')
     target, relative_path = resolve_artifact_path(path, run_directory)
-    payload = canonical_json_bytes(artifact)
-    digest = hashlib.sha256(payload).hexdigest()
+    payload = canonical_json_bytes(artifact.to_dict())
+    digest = sha256_bytes(payload)
     atomic_write_bytes(target, payload)
     return ArtifactRef(
         artifact_id=digest,
@@ -168,21 +166,21 @@ def write_json_artifact(
     )
 
 
-def read_json_artifact(
+def read_acquisition_artifact(
     path: Path,
     *,
     expected_sha256: Optional[str] = None,
-) -> JsonArtifact:
-    '''Read an artifact, optionally verifying its exact stored bytes.'''
+) -> AcquisitionArtifact:
+    '''Read an acquisition artifact and optionally verify its stored bytes.'''
 
     raw = Path(path).read_bytes()
-    digest = hashlib.sha256(raw).hexdigest()
+    digest = sha256_bytes(raw)
     if expected_sha256 is not None and digest != expected_sha256.lower():
-        raise ValueError('JSON artifact SHA256 mismatch')
+        raise ValueError('acquisition artifact SHA256 mismatch')
     try:
         decoded = json.loads(raw.decode('utf-8'))
     except (UnicodeDecodeError, json.JSONDecodeError) as error:
         raise ValueError('artifact is not valid UTF-8 JSON') from error
     if not isinstance(decoded, Mapping):
-        raise ValueError('JSON artifact root must be an object')
-    return JsonArtifact.from_dict(decoded)
+        raise ValueError('acquisition artifact root must be an object')
+    return AcquisitionArtifact.from_dict(decoded)

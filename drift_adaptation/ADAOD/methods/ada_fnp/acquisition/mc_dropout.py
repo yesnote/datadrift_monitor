@@ -7,7 +7,7 @@ from torch import nn
 
 
 @contextmanager
-def mc_dropout_enabled(
+def monte_carlo_dropout_enabled(
     model: nn.Module, dropout_modules: Sequence[nn.Module]
 ) -> Iterator[None]:
     '''Keep the model in eval mode while enabling only selected dropout.'''

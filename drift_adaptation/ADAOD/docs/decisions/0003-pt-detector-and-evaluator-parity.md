@@ -26,10 +26,11 @@ Evaluation decisions:
 - disable legacy `+1` coordinate arithmetic; and
 - use VOC2012 continuous-area AP50 on the percentage scale.
 
-The custom `PTVOCMetric` exists because MMDetection's stock VOC metric forces
-legacy inclusive-coordinate arithmetic, which would change the result for the
-PT-compatible cache. These choices target implementation parity; measured
-paper-level parity remains contingent on the full GPU experiments.
+The custom `Detectron2PascalVocMetric` exists because MMDetection's stock VOC
+metric forces legacy inclusive-coordinate arithmetic, which would change the
+result for the PT-compatible cache. These choices target implementation
+parity; measured paper-level parity remains contingent on the full GPU
+experiments.
 
 MMDetection is still a framework port rather than a bit-identical execution of
 PT. Its OpenCV-backed resize path and random-number consumption can differ

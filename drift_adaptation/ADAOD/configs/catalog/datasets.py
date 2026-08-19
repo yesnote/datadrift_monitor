@@ -3,7 +3,7 @@
 from copy import deepcopy
 from typing import Mapping, Tuple
 
-from methods.common.data.cityscapes import CITYSCAPES_CLASSES
+from methods.common.data.cityscapes.layout import CITYSCAPES_CLASSES
 
 
 _DATASETS = {

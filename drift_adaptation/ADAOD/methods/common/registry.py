@@ -28,4 +28,20 @@ def discover_methods(
         if manifest.key in discovered:
             raise ValueError(f'duplicate method key: {manifest.key}')
         discovered[manifest.key] = manifest
-    return discovered
+    return {key: discovered[key] for key in sorted(discovered)}
+
+
+def get_method(
+    key: str,
+    methods_root: Optional[Path] = None,
+) -> MethodManifest:
+    '''Return one discovered method manifest by its public key.'''
+
+    methods = discover_methods(methods_root)
+    try:
+        return methods[key]
+    except KeyError as error:
+        choices = ', '.join(methods)
+        raise KeyError(
+            f'unknown method {key!r}; available: {choices}'
+        ) from error
