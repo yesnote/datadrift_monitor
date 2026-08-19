@@ -4,10 +4,7 @@ from copy import deepcopy
 
 from methods.common.mmdet.models.backbones.vgg16_caffe import (
     CHECKPOINT_PATH as VGG16_CAFFE_CHECKPOINT,
-    DOWNLOAD_URL as VGG16_CAFFE_URL,
-    MD5 as VGG16_CAFFE_MD5,
     SHA256 as VGG16_CAFFE_SHA256,
-    SIZE_BYTES as VGG16_CAFFE_SIZE_BYTES,
 )
 
 # PT loads only convolution tensors from this Caffe-converted VGG16 asset.
@@ -152,13 +149,3 @@ def build_faster_rcnn_vgg16() -> dict:
     '''Return a mutation-independent Faster R-CNN config dictionary.'''
 
     return deepcopy(_DETECTOR_TEMPLATE)
-
-
-__all__ = [
-    'VGG16_CAFFE_CHECKPOINT',
-    'VGG16_CAFFE_MD5',
-    'VGG16_CAFFE_SHA256',
-    'VGG16_CAFFE_SIZE_BYTES',
-    'VGG16_CAFFE_URL',
-    'build_faster_rcnn_vgg16',
-]

@@ -2,19 +2,20 @@
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
+from dataclasses import asdict
 import json
 import math
 from pathlib import Path, PurePosixPath
-from typing import Any, Callable, Mapping, Optional
+from typing import Any, Mapping
 
 from methods.ada_fnp.acquisition.records import RawAdaFnpScore, normalize_scores
 from methods.ada_fnp.phases import (
     RevealRequest,
     execute_reveal,
     resolve_detector_phase,
-    resolve_fnpm_round_phase,
+    validate_fnpm_round_phase,
 )
+from methods.ada_fnp.plan import resolve_total_budget
 from methods.ada_fnp.training.fnpm_trainer import (
     build_fnpm_resume_payload,
     build_fnpm_round_optimization,
@@ -50,18 +51,12 @@ from methods.common.mmdet.models.backbones.vgg16_caffe import (
 
 from .backend import AdaFnpExecutionBackend, MmdetExecutionBackend
 from .artifacts import completed_checkpoint
-from .paths import dataset_cache_directory
-
-
-AssetPreparer = Callable[[ExecutionContext], Path]
-DatasetPreparer = Callable[[ExecutionContext], Mapping[str, Any]]
-
-
-@dataclass(frozen=True)
-class ExecutionServices:
-    backend: AdaFnpExecutionBackend
-    asset_preparer: AssetPreparer
-    dataset_preparer: DatasetPreparer
+from .paths import (
+    dataset_cache_directory,
+    pool_state_path,
+    target_labeled_manifest_path,
+    target_unlabeled_manifest_path,
+)
 
 
 def _repository_path(
@@ -88,7 +83,7 @@ def _repository_path(
     return resolved
 
 
-def _default_asset_preparer(context: ExecutionContext) -> Path:
+def _prepare_asset(context: ExecutionContext) -> Path:
     return prepare_verified_asset(
         _repository_path(context, VGG16_CAFFE_PATH),
         url=VGG16_CAFFE_URL,
@@ -97,7 +92,7 @@ def _default_asset_preparer(context: ExecutionContext) -> Path:
     )
 
 
-def _default_dataset_preparer(context: ExecutionContext) -> Mapping[str, Any]:
+def _prepare_dataset(context: ExecutionContext) -> Mapping[str, Any]:
     dataset = context.config['dataset']
     return prepare_cityscapes_to_foggy(
         _repository_path(
@@ -120,16 +115,6 @@ def _default_dataset_preparer(context: ExecutionContext) -> Mapping[str, Any]:
         expected_train_images=int(dataset['target']['expected_train_images']),
         expected_val_images=int(dataset['target']['expected_eval_images']),
     )
-
-
-def default_execution_services() -> ExecutionServices:
-    return ExecutionServices(
-        backend=MmdetExecutionBackend(),
-        asset_preparer=_default_asset_preparer,
-        dataset_preparer=_default_dataset_preparer,
-    )
-
-
 def _artifact_result(artifact: ArtifactRef) -> dict:
     return asdict(artifact)
 
@@ -143,14 +128,8 @@ def _update_state(context: ExecutionContext, **updates: Any) -> None:
     context.state_store.save(state)
 
 
-def _pool_path(context: ExecutionContext, round_index: int) -> Path:
-    return context.run_directory / 'artifacts' / 'pool' / 'round_{:02d}.json'.format(
-        round_index
-    )
-
-
 def _read_pool(context: ExecutionContext, round_index: int) -> PoolState:
-    path = _pool_path(context, round_index)
+    path = pool_state_path(context, round_index)
     if not path.is_file():
         raise FileNotFoundError('pool state is missing: {!s}'.format(path))
     with path.open('r', encoding='utf-8') as stream:
@@ -161,7 +140,7 @@ def _read_pool(context: ExecutionContext, round_index: int) -> PoolState:
 def _write_pool(
     context: ExecutionContext, stage: StageSpec, pool: PoolState, round_index: int
 ) -> ArtifactRef:
-    relative = _pool_path(context, round_index).relative_to(
+    relative = pool_state_path(context, round_index).relative_to(
         context.run_directory
     ).as_posix()
     return context.artifact_store.write_json(
@@ -169,18 +148,10 @@ def _write_pool(
     )
 
 
-def _total_budget(config: Mapping[str, Any]) -> int:
-    acquisition = config['acquisition']
-    if 'total_budget' in acquisition:
-        return int(acquisition['total_budget'])
-    target_size = int(config['dataset']['target']['expected_train_images'])
-    return int(target_size * float(acquisition['budget_percent']) / 100.0 + 0.5)
-
-
 def _prepare_pretrained(
-    stage: StageSpec, context: ExecutionContext, services: ExecutionServices
+    stage: StageSpec, context: ExecutionContext
 ) -> Mapping[str, Any]:
-    path = Path(services.asset_preparer(context)).resolve()
+    path = _prepare_asset(context).resolve()
     if not path.is_file():
         raise FileNotFoundError('pretrained asset preparer returned no file')
     try:
@@ -199,9 +170,9 @@ def _prepare_pretrained(
 
 
 def _prepare_datasets(
-    stage: StageSpec, context: ExecutionContext, services: ExecutionServices
+    stage: StageSpec, context: ExecutionContext
 ) -> Mapping[str, Any]:
-    manifest = dict(services.dataset_preparer(context))
+    manifest = dict(_prepare_dataset(context))
     unlabeled_path = (
         dataset_cache_directory(context) / 'target_train_unlabeled.json'
     )
@@ -214,33 +185,16 @@ def _prepare_datasets(
     samples = tuple(
         SampleIdentity.parse(image['sample_id']) for image in unlabeled['images']
     )
-    pool = PoolState.initialize(samples, total_budget=_total_budget(context.config))
+    pool = PoolState.initialize(
+        samples, total_budget=resolve_total_budget(context.config)
+    )
     pool_artifact = _write_pool(context, stage, pool, 0)
     _update_state(context, pool_artifact_id=pool_artifact.artifact_id)
     return {'dataset_manifest': manifest, 'pool_artifact': _artifact_result(pool_artifact)}
 
 
-def _existing_file_artifact(
-    context: ExecutionContext,
-    stage: StageSpec,
-    path: Path,
-    artifact_type: str,
-) -> ArtifactRef:
-    path = Path(path).resolve()
-    if not path.is_file():
-        raise FileNotFoundError('{} was not written: {!s}'.format(artifact_type, path))
-    try:
-        relative = path.relative_to(context.run_directory).as_posix()
-    except ValueError as error:
-        raise ValueError('{} must stay inside the run directory'.format(
-            artifact_type
-        )) from error
-    digest = sha256_file(path)
-    return ArtifactRef(digest, artifact_type, 1, stage.stage_id, relative, digest)
-
-
 def _train_detector(
-    stage: StageSpec, context: ExecutionContext, services: ExecutionServices
+    stage: StageSpec, context: ExecutionContext, backend: AdaFnpExecutionBackend
 ) -> Mapping[str, Any]:
     pool = _read_pool(context, context.state_store.load().active_round)
     phase = resolve_detector_phase(
@@ -253,22 +207,19 @@ def _train_detector(
         'detector_{:05d}.pth'.format(phase.end_iteration)
     )
     resume_from = completed_checkpoint(context, 'detector_checkpoint')
-    written = services.backend.train_detector(
+    written = backend.train_detector(
         stage, context, phase, checkpoint_path, resume_from
     )
-    artifact = _existing_file_artifact(
-        context, stage, written, 'detector_checkpoint'
+    artifact = context.artifact_store.reference_file(
+        written, 'detector_checkpoint', stage.stage_id
     )
     _update_state(
         context,
         global_detector_iteration=phase.end_iteration,
         detector_checkpoint_artifact_id=artifact.artifact_id,
     )
-    pool_manifest = (
-        context.run_directory / 'datasets' /
-        'target_train_unlabeled_pool_{:02d}.json'.format(
-            context.state_store.load().active_round
-        )
+    pool_manifest = target_unlabeled_manifest_path(
+        context, context.state_store.load().active_round
     )
     result = {
         'phase': phase.mode.value,
@@ -276,27 +227,29 @@ def _train_detector(
     }
     if pool_manifest.is_file():
         result['unlabeled_pool_artifact'] = _artifact_result(
-            _existing_file_artifact(
-                context, stage, pool_manifest, 'target_unlabeled_annotations'
+            context.artifact_store.reference_file(
+                pool_manifest, 'target_unlabeled_annotations', stage.stage_id
             )
         )
     return result
 
 
 def _train_fnpm(
-    stage: StageSpec, context: ExecutionContext, services: ExecutionServices
+    stage: StageSpec, context: ExecutionContext, backend: AdaFnpExecutionBackend
 ) -> Mapping[str, Any]:
     round_index = int(stage.payload['round'])
     detector_iteration = int(stage.payload['detector_iteration'])
     end_iteration = int(stage.payload['iterations'])
-    resolve_fnpm_round_phase(round_index, detector_iteration, 0)
+    validate_fnpm_round_phase(round_index, detector_iteration, 0)
     checkpoint_path = (
         context.run_directory / 'checkpoints' /
         'fnpm_round_{:02d}.pth'.format(round_index)
     )
     resume_path = checkpoint_path if context.resume and checkpoint_path.is_file() else None
-    session = services.backend.create_fnpm_session(stage, context, resume_path)
-    optimizer, scheduler = build_fnpm_round_optimization(session.fnpm)
+    session = backend.create_fnpm_session(stage, context, resume_path)
+    optimizer, scheduler = build_fnpm_round_optimization(
+        session.fnpm, float(context.config['fnpm']['lr'])
+    )
     start_iteration = 0
     if resume_path is not None:
         checkpoint = load_checkpoint(resume_path)
@@ -342,8 +295,8 @@ def _train_fnpm(
                 'rng_state': capture_rng_state(),
             },
         )
-    artifact = _existing_file_artifact(
-        context, stage, checkpoint_path, 'fnpm_checkpoint'
+    artifact = context.artifact_store.reference_file(
+        checkpoint_path, 'fnpm_checkpoint', stage.stage_id
     )
     _update_state(context, fnpm_checkpoint_artifact_id=artifact.artifact_id)
     return {
@@ -354,18 +307,27 @@ def _train_fnpm(
 
 
 def _score_pool(
-    stage: StageSpec, context: ExecutionContext, services: ExecutionServices
+    stage: StageSpec, context: ExecutionContext, backend: AdaFnpExecutionBackend
 ) -> Mapping[str, Any]:
     round_index = int(stage.payload['round'])
     pool = _read_pool(context, round_index - 1)
     raw_records = tuple(
-        services.backend.score_pool(stage, context, pool.unlabeled)
+        backend.score_pool(stage, context, pool.unlabeled)
     )
     if any(not isinstance(record, RawAdaFnpScore) for record in raw_records):
         raise TypeError('score backend must return RawAdaFnpScore records')
     if {record.sample for record in raw_records} != set(pool.unlabeled):
         raise ValueError('score backend must cover the current unlabeled pool exactly')
-    scores = normalize_scores(raw_records)
+    acquisition_config = context.config['acquisition']
+    scores = normalize_scores(
+        raw_records,
+        constant_component_value=float(
+            acquisition_config['constant_score_normalized_value']
+        ),
+        empty_detection_score=float(
+            acquisition_config['empty_detection_final_score']
+        ),
+    )
     raw_by_sample = {record.sample: record for record in raw_records}
     artifact = JsonArtifact(
         artifact_type='acquisition_scores',
@@ -397,18 +359,15 @@ def _score_pool(
         artifact,
         run_directory=context.run_directory,
     )
-    pool_manifest = (
-        context.run_directory / 'datasets' /
-        'target_train_unlabeled_pool_{:02d}.json'.format(round_index - 1)
-    )
+    pool_manifest = target_unlabeled_manifest_path(context, round_index - 1)
     result = {
         'score_artifact': _artifact_result(reference),
         'sample_count': len(scores),
     }
     if pool_manifest.is_file():
         result['unlabeled_pool_artifact'] = _artifact_result(
-            _existing_file_artifact(
-                context, stage, pool_manifest, 'target_unlabeled_annotations'
+            context.artifact_store.reference_file(
+                pool_manifest, 'target_unlabeled_annotations', stage.stage_id
             )
         )
     return result
@@ -462,8 +421,17 @@ def _select(stage: StageSpec, context: ExecutionContext) -> Mapping[str, Any]:
             ),
             detection_count=detection_count,
         ))
+    acquisition_config = context.config['acquisition']
     normalized_by_sample = {
-        score.sample: score for score in normalize_scores(tuple(raw_records))
+        score.sample: score for score in normalize_scores(
+            tuple(raw_records),
+            constant_component_value=float(
+                acquisition_config['constant_score_normalized_value']
+            ),
+            empty_detection_score=float(
+                acquisition_config['empty_detection_final_score']
+            ),
+        )
     }
     scores = []
     for record in artifact.records:
@@ -471,6 +439,9 @@ def _select(stage: StageSpec, context: ExecutionContext) -> Mapping[str, Any]:
             record.sample,
             record.fields['normalized'],
             record.fields['detection_count'],
+            empty_detection_score=float(
+                acquisition_config['empty_detection_final_score']
+            ),
         )
         expected = normalized_by_sample[record.sample]
         if dict(score.components) != dict(expected.components):
@@ -509,13 +480,10 @@ def _reveal(stage: StageSpec, context: ExecutionContext) -> Mapping[str, Any]:
     round_index = int(stage.payload['round'])
     pool = _read_pool(context, round_index)
     oracle_path = dataset_cache_directory(context) / 'target_train_oracle.json'
-    output_path = (
-        context.run_directory / 'datasets' /
-        'target_train_labeled_round_{:02d}.json'.format(round_index)
-    )
+    output_path = target_labeled_manifest_path(context, round_index)
     manifest = execute_reveal(RevealRequest(oracle_path, output_path, pool))
-    artifact = _existing_file_artifact(
-        context, stage, manifest.path, 'target_labeled_annotations'
+    artifact = context.artifact_store.reference_file(
+        manifest.path, 'target_labeled_annotations', stage.stage_id
     )
     _update_state(context, active_round=round_index)
     return {
@@ -526,12 +494,12 @@ def _reveal(stage: StageSpec, context: ExecutionContext) -> Mapping[str, Any]:
 
 
 def _evaluate(
-    stage: StageSpec, context: ExecutionContext, services: ExecutionServices
+    stage: StageSpec, context: ExecutionContext, backend: AdaFnpExecutionBackend
 ) -> Mapping[str, Any]:
     checkpoint = completed_checkpoint(context, 'detector_checkpoint')
     if checkpoint is None:
         raise FileNotFoundError('evaluation requires a completed detector checkpoint')
-    metrics = dict(services.backend.evaluate(stage, context, checkpoint))
+    metrics = dict(backend.evaluate(stage, context, checkpoint))
     metric_name = str(stage.payload['metric'])
     if metric_name not in metrics:
         raise ValueError('evaluation backend did not return {}'.format(metric_name))
@@ -545,38 +513,36 @@ def _evaluate(
 
 def create_executor_registry(
     context: ExecutionContext,
-    *,
-    services: Optional[ExecutionServices] = None,
 ) -> StageExecutorRegistry:
     '''Build all common and ADA-FNP stage bindings without method-name branches.'''
 
     if not isinstance(context, ExecutionContext):
         raise TypeError('context must be an ExecutionContext')
-    resolved = services or default_execution_services()
+    backend = MmdetExecutionBackend()
     registry = StageExecutorRegistry()
     registry.register(
         'common.prepare_pretrained',
-        lambda stage, ctx: _prepare_pretrained(stage, ctx, resolved),
+        _prepare_pretrained,
     )
     registry.register(
         'common.prepare_datasets',
-        lambda stage, ctx: _prepare_datasets(stage, ctx, resolved),
+        _prepare_datasets,
     )
     registry.register('common.select', _select)
     registry.register('common.reveal_annotations', _reveal)
     registry.register(
-        'common.evaluate', lambda stage, ctx: _evaluate(stage, ctx, resolved)
+        'common.evaluate', lambda stage, ctx: _evaluate(stage, ctx, backend)
     )
     registry.register(
         'ada_fnp.train_detector',
-        lambda stage, ctx: _train_detector(stage, ctx, resolved),
+        lambda stage, ctx: _train_detector(stage, ctx, backend),
     )
     registry.register(
         'ada_fnp.train_fnpm',
-        lambda stage, ctx: _train_fnpm(stage, ctx, resolved),
+        lambda stage, ctx: _train_fnpm(stage, ctx, backend),
     )
     registry.register(
         'ada_fnp.score_pool',
-        lambda stage, ctx: _score_pool(stage, ctx, resolved),
+        lambda stage, ctx: _score_pool(stage, ctx, backend),
     )
     return registry

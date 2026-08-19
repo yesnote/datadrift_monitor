@@ -91,7 +91,6 @@ is returned on the 0--100 percentage scale.
 ## Commands and current validation boundary
 
 ```powershell
-python -m tools.run_adaod --method ada-fnp --dry-run
 python -m tools.run_adaod --method ada-fnp --budget-percent 1 --seed 0
 python -m tools.run_adaod --method ada-fnp --budget-percent 1 --seed 0 --resume
 python -m tools.run_adaod --method ada-fnp --budget-percent 1 --seed 0 --offline

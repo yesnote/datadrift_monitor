@@ -11,7 +11,7 @@ tools -> method manifest -> methods/<method> -> methods/common -> mmdet
 metadata. A method manifest supplies its config factory, serial plan factory,
 and execution plugin. `tools/run_adaod.py` discovers that manifest, resolves a
 deterministic configuration, and gives the resulting stage list to the common
-runner. The runner knows executor keys, checkpoint policies, and artifacts but
+runner. The runner knows executor keys and artifacts but
 contains no method-name branch.
 
 Concrete ADA-FNP models, training logic, acquisition logic, stage definitions,

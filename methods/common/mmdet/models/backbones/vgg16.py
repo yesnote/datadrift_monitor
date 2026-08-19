@@ -7,21 +7,10 @@ from typing import Dict, Mapping, Optional, Sequence, Tuple
 
 import torch
 from torch import Tensor, nn
+from mmengine.model import BaseModule
 
-from methods.common.assets import AssetVerificationError, sha256_file
-
-try:
-    from mmengine.model import BaseModule
-except ModuleNotFoundError as exc:
-    if exc.name != 'mmengine':
-        raise
-
-    class BaseModule(nn.Module):  # type: ignore[no-redef]
-        '''Small fallback used only by PyTorch-only unit tests.'''
-
-        def __init__(self, init_cfg=None) -> None:
-            super().__init__()
-            self.init_cfg = init_cfg
+from methods.common.artifacts import sha256_file
+from methods.common.assets import AssetVerificationError
 
 
 _CONV_SPECS = (
@@ -40,7 +29,7 @@ _CONV_SPECS = (
     ('conv5_3', 512, 512),
 )
 
-_TORCHVISION_CONV_INDICES = (
+_CAFFE_FEATURE_INDICES = (
     0,
     2,
     5,
@@ -120,11 +109,8 @@ class VGG16Backbone(BaseModule):
             raise AssetVerificationError(
                 'PT VGG16 Caffe checkpoint SHA-256 mismatch: expected {}, got {}'.format(
                     expected_digest, actual_digest))
-        try:
-            source_state_dict = torch.load(
-                checkpoint_path, map_location='cpu', weights_only=True)
-        except TypeError:
-            source_state_dict = torch.load(checkpoint_path, map_location='cpu')
+        source_state_dict = torch.load(
+            checkpoint_path, map_location='cpu', weights_only=True)
         if not isinstance(source_state_dict, Mapping):
             raise TypeError('PT VGG16 Caffe checkpoint must contain a state dict')
         mapped = map_caffe_vgg16_state_dict(source_state_dict)
@@ -170,21 +156,10 @@ class VGG16Backbone(BaseModule):
         return (self.features(inputs), )
 
 
-def _required_torchvision_shapes() -> Dict[str, Tuple[int, ...]]:
-    shapes = _required_caffe_conv_shapes()
-    shapes.update({
-        'classifier.0.weight': (4096, 512 * 7 * 7),
-        'classifier.0.bias': (4096, ),
-        'classifier.3.weight': (4096, 4096),
-        'classifier.3.bias': (4096, ),
-    })
-    return shapes
-
-
 def _required_caffe_conv_shapes() -> Dict[str, Tuple[int, ...]]:
     shapes = {}
     for index, (_, in_channels, out_channels) in zip(
-            _TORCHVISION_CONV_INDICES, _CONV_SPECS):
+            _CAFFE_FEATURE_INDICES, _CONV_SPECS):
         shapes['features.{}.weight'.format(index)] = (
             out_channels, in_channels, 3, 3)
         shapes['features.{}.bias'.format(index)] = (out_channels, )
@@ -216,7 +191,7 @@ def map_caffe_vgg16_state_dict(
             ', '.join(missing)))
 
     mapped = {}
-    for index, (target_name, _, _) in zip(_TORCHVISION_CONV_INDICES,
+    for index, (target_name, _, _) in zip(_CAFFE_FEATURE_INDICES,
                                           _CONV_SPECS):
         for suffix in ('weight', 'bias'):
             source_key = 'features.{}.{}'.format(index, suffix)
@@ -225,52 +200,4 @@ def map_caffe_vgg16_state_dict(
             target_key = '{}features.{}.{}'.format(
                 backbone_prefix, target_name, suffix)
             mapped[target_key] = source_state_dict[source_key]
-    return mapped
-
-
-def map_torchvision_vgg16_state_dict(
-        source_state_dict: Mapping[str, Tensor],
-        backbone_prefix: str = '',
-        bbox_head_prefix: str = '') -> Dict[str, Tensor]:
-    '''Map torchvision VGG16 ImageNet weights to the ADAOD detector modules.
-
-    The ImageNet classifier's final 1000-class layer is deliberately ignored.
-    Returned tensors are references to the source tensors; this helper does not
-    duplicate the approximately 500 MB VGG16 state dictionary.
-
-    Args:
-        source_state_dict: A torchvision VGG16 state dictionary.
-        backbone_prefix: Prefix for backbone target keys, for example
-            ``'backbone.'``.
-        bbox_head_prefix: Prefix for bbox-head target keys, for example
-            ``'roi_head.bbox_head.'``.
-    '''
-    expected_shapes = _required_torchvision_shapes()
-    missing = sorted(set(expected_shapes).difference(source_state_dict))
-    if missing:
-        raise KeyError('torchvision VGG16 state dict is missing: {}'.format(
-            ', '.join(missing)))
-
-    mapped = {}
-    for index, (target_name, _, _) in zip(_TORCHVISION_CONV_INDICES,
-                                          _CONV_SPECS):
-        for suffix in ('weight', 'bias'):
-            source_key = 'features.{}.{}'.format(index, suffix)
-            _validate_source_tensor(source_key, source_state_dict[source_key],
-                                    expected_shapes[source_key])
-            target_key = '{}features.{}.{}'.format(
-                backbone_prefix, target_name, suffix)
-            mapped[target_key] = source_state_dict[source_key]
-
-    classifier_mapping = {
-        'classifier.0.weight': 'shared_fcs.0.weight',
-        'classifier.0.bias': 'shared_fcs.0.bias',
-        'classifier.3.weight': 'shared_fcs.1.weight',
-        'classifier.3.bias': 'shared_fcs.1.bias',
-    }
-    for source_key, target_name in classifier_mapping.items():
-        _validate_source_tensor(source_key, source_state_dict[source_key],
-                                expected_shapes[source_key])
-        mapped['{}{}'.format(bbox_head_prefix,
-                             target_name)] = source_state_dict[source_key]
     return mapped

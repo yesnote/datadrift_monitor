@@ -2,25 +2,24 @@
 
 from copy import deepcopy
 
+from methods.ada_fnp.phases import (
+    FNPM_ITERATIONS_PER_ROUND,
+    FNPM_MILESTONES,
+)
+
 
 _CONFIG = {
     'method': 'ada-fnp',
     'scenario': 'cityscapes-to-foggy',
     'seed': 0,
-    'dataset': {
-        'target': {
-            'expected_train_images': 2975,
-        },
-    },
     'detector': {
         'name': 'faster-rcnn-vgg16',
-        'num_classes': 8,
         'dropout_probability': 0.1,
         'class_agnostic_bbox_regression': False,
     },
     'training': {
         'max_iterations': 40000,
-        'acquisition_milestones': (5000, 10000, 15000, 20000, 25000),
+        'acquisition_milestones': FNPM_MILESTONES,
         'lr': 0.02,
         'momentum': 0.9,
         'weight_decay': 0.0001,
@@ -35,7 +34,7 @@ _CONFIG = {
         'adversarial_weight': 0.01,
     },
     'fnpm': {
-        'iterations_per_round': 2000,
+        'iterations_per_round': FNPM_ITERATIONS_PER_ROUND,
         'lr': 0.0001,
         'matcher_iou_threshold': 0.5,
         'max_detections': 100,

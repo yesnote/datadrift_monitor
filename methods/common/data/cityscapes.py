@@ -8,7 +8,7 @@ import math
 import struct
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, Iterable, Mapping, Optional, Sequence, Tuple
+from typing import Any, Dict, Mapping, Optional, Sequence, Tuple
 
 from methods.common.artifacts import atomic_write_bytes, sha256_file
 
@@ -74,11 +74,6 @@ class LabeledTargetManifest:
     sha256: str
     image_count: int
     annotation_count: int
-
-    @property
-    def has_samples(self) -> bool:
-        return self.image_count > 0
-
 
 def _require_directory(path: Path, description: str) -> None:
     if not path.is_dir():

@@ -51,6 +51,8 @@ def lower_clamped_standardize(
 
 def standardize_components(
     components: Mapping[str, Mapping[SampleIdentity, float]],
+    *,
+    constant_component_value: float = 0.5,
 ) -> Dict[str, Dict[SampleIdentity, float]]:
     '''Standardize each component over one identical unlabeled sample set.'''
 
@@ -71,7 +73,8 @@ def standardize_components(
             raise ValueError('all score components must cover the same sample set')
         ordered_samples = sorted(sample_set)
         normalized_values = lower_clamped_standardize(
-            [sample_scores[sample] for sample in ordered_samples]
+            [sample_scores[sample] for sample in ordered_samples],
+            offset=constant_component_value,
         )
         standardized[component_name] = {
             sample: value for sample, value in zip(ordered_samples, normalized_values)

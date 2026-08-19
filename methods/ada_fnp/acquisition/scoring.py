@@ -2,23 +2,6 @@
 
 import torch
 
-from .geometry import normalize_xyxy_box_samples
-
-
-def localization_score(
-    box_samples: torch.Tensor, image_height: int, image_width: int
-) -> torch.Tensor:
-    if box_samples.ndim != 3 or box_samples.shape[-1] != 4:
-        raise ValueError('box_samples must have shape [passes, boxes, 4]')
-    if box_samples.shape[0] < 2:
-        raise ValueError('at least two box samples are required')
-    if box_samples.shape[1] == 0:
-        return box_samples.new_zeros(())
-    normalized = normalize_xyxy_box_samples(
-        box_samples, (image_height, image_width)
-    )
-    return normalized.var(dim=0, unbiased=True).mean()
-
 
 def foreground_entropy(
     probabilities: torch.Tensor, background_index: int = -1

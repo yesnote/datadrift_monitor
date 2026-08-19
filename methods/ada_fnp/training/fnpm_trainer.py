@@ -11,10 +11,9 @@ import torch
 from torch import nn
 
 from methods.ada_fnp.models.fnpm import fnpm_loss
+from methods.ada_fnp.phases import FNPM_ITERATIONS_PER_ROUND
 
 
-FNPM_LEARNING_RATE = 1e-4
-FNPM_ITERATIONS_PER_ROUND = 2000
 FNPM_STATE_SCHEMA_VERSION = 1
 
 TeacherBatchExtractor = Callable[[nn.Module, Any], Tuple[torch.Tensor, torch.Tensor]]
@@ -61,7 +60,6 @@ class FnpmRunResult:
 
     iteration: int
     losses: Tuple[float, ...]
-    teacher_state_sha256: str
 
 
 def _integer(value: int, name: str) -> int:
@@ -128,15 +126,19 @@ def module_state_sha256(module: nn.Module) -> str:
 
 def build_fnpm_round_optimization(
     fnpm: nn.Module,
+    learning_rate: float,
 ) -> Tuple[torch.optim.SGD, torch.optim.lr_scheduler.CosineAnnealingLR]:
     '''Create a fresh SGD and 2k cosine schedule without touching FNPM weights.'''
 
     if not isinstance(fnpm, nn.Module):
         raise TypeError('fnpm must be a torch module')
+    learning_rate = float(learning_rate)
+    if learning_rate <= 0:
+        raise ValueError('FNPM learning rate must be positive')
     parameters = tuple(parameter for parameter in fnpm.parameters() if parameter.requires_grad)
     if not parameters:
         raise ValueError('fnpm has no trainable parameters')
-    optimizer = torch.optim.SGD(parameters, lr=FNPM_LEARNING_RATE)
+    optimizer = torch.optim.SGD(parameters, lr=learning_rate)
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
         optimizer, T_max=FNPM_ITERATIONS_PER_ROUND
     )
@@ -283,7 +285,7 @@ def run_fnpm_steps(
     final_teacher_hash = module_state_sha256(teacher)
     if final_teacher_hash != teacher_hash:
         raise RuntimeError('teacher state changed during FNPM feature extraction')
-    return FnpmRunResult(end_iteration, tuple(losses), final_teacher_hash)
+    return FnpmRunResult(end_iteration, tuple(losses))
 
 
 def build_fnpm_resume_payload(

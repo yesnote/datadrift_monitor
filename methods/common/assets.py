@@ -2,18 +2,18 @@
 
 from __future__ import annotations
 
-import hashlib
 import os
 import re
 import tempfile
 import urllib.request
 from pathlib import Path
-from typing import Callable, Optional, Union
+from typing import Union
 from urllib.parse import urlparse
+
+from methods.common.artifacts import sha256_file
 
 
 PathLike = Union[str, os.PathLike]
-Downloader = Callable[[str, Path], None]
 _SHA256_PATTERN = re.compile(r"^[0-9a-fA-F]{64}$")
 
 
@@ -23,18 +23,6 @@ class AssetPreparationError(RuntimeError):
 
 class AssetVerificationError(AssetPreparationError):
     """Raised when an asset does not match its pinned digest."""
-
-
-def sha256_file(path: PathLike, chunk_size: int = 1024 * 1024) -> str:
-    """Return the SHA-256 digest of a file without loading it into memory."""
-
-    if chunk_size <= 0:
-        raise ValueError("chunk_size must be positive")
-    digest = hashlib.sha256()
-    with Path(path).open("rb") as stream:
-        for chunk in iter(lambda: stream.read(chunk_size), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
 
 
 def _validate_source(url: str, expected_sha256: str) -> str:
@@ -69,7 +57,6 @@ def prepare_verified_asset(
     url: str,
     expected_sha256: str,
     allow_download: bool = True,
-    downloader: Optional[Downloader] = None,
 ) -> Path:
     """Ensure that ``destination`` contains the pinned asset.
 
@@ -108,10 +95,8 @@ def prepare_verified_asset(
     )
     os.close(temporary_fd)
     temporary_path = Path(temporary_name)
-    download = downloader or _download_https
-
     try:
-        download(url, temporary_path)
+        _download_https(url, temporary_path)
         if not temporary_path.is_file():
             raise AssetPreparationError("asset downloader did not create a file")
         actual_digest = sha256_file(temporary_path)
