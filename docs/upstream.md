@@ -20,8 +20,8 @@ dtype, device, and gradients are unchanged. This avoids a PyTorch 2.0.1
 Windows CUDA internal assertion that occurs only with deterministic algorithms
 enabled. MMDetection does not expose a hook around this assignment; keeping the
 one-line framework patch avoids copying its complete target-generation method
-into project code. The CUDA regression test is
-`methods/common/mmdet/tests/test_rpn_deterministic_cuda.py`.
+into project code. The original CUDA validation result remains recorded in the
+corresponding timestamped change document.
 
 ## PT VGG16 pretrained asset
 
