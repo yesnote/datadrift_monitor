@@ -5,7 +5,7 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from .artifacts import atomic_write_json
+from methods.common.artifacts import atomic_write_json
 
 
 @dataclass

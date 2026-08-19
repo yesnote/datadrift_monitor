@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import copy
 from dataclasses import dataclass
+from functools import partial
 import json
 import math
 import os
@@ -30,7 +31,12 @@ from methods.common.engine.context import ExecutionContext
 from methods.common.mmdet.models.backbones.vgg16_caffe import CHECKPOINT_PATH
 
 from .artifacts import completed_checkpoint
-from .paths import dataset_cache_directory
+from .paths import (
+    dataset_cache_directory,
+    pool_state_path,
+    target_labeled_manifest_path,
+    target_unlabeled_manifest_path,
+)
 
 
 class ExecutionDependencyError(EnvironmentError):
@@ -150,10 +156,7 @@ def _labeled_manifest(context: ExecutionContext) -> Optional[Path]:
     round_index = context.state_store.load().active_round
     if round_index == 0:
         return None
-    path = (
-        context.run_directory / 'datasets' /
-        'target_train_labeled_round_{:02d}.json'.format(round_index)
-    )
+    path = target_labeled_manifest_path(context, round_index)
     if not path.is_file():
         raise FileNotFoundError('selected-target manifest is missing: {!s}'.format(path))
     return path
@@ -530,11 +533,8 @@ def _write_unlabeled_pool_manifest(
                 unknown[0].qualified_id
             )
         )
-    output = (
-        context.run_directory / 'datasets' /
-        'target_train_unlabeled_pool_{:02d}.json'.format(
-            context.state_store.load().active_round
-        )
+    output = target_unlabeled_manifest_path(
+        context, context.state_store.load().active_round
     )
     relative = output.relative_to(context.run_directory).as_posix()
     context.artifact_store.write_json(relative, {
@@ -548,10 +548,7 @@ def _write_unlabeled_pool_manifest(
 
 def _active_pool(context: ExecutionContext) -> PoolState:
     round_index = context.state_store.load().active_round
-    path = (
-        context.run_directory / 'artifacts/pool' /
-        'round_{:02d}.json'.format(round_index)
-    )
+    path = pool_state_path(context, round_index)
     if not path.is_file():
         raise FileNotFoundError('active target pool is missing: {!s}'.format(path))
     with path.open('r', encoding='utf-8') as stream:
@@ -579,7 +576,13 @@ def _pool_samples_by_image_id(
     return mapping
 
 
-def _teacher_supervision_extractor(teacher: nn.Module, value: Any):
+def _teacher_supervision_extractor(
+    teacher: nn.Module,
+    value: Any,
+    *,
+    iou_threshold: float,
+    max_detections: int,
+):
     branch, batch = value
     branch_batch = {
         'inputs': batch['inputs'][branch],
@@ -600,8 +603,8 @@ def _teacher_supervision_extractor(teacher: nn.Module, value: Any):
             instances.labels,
             ground_truth.bboxes,
             ground_truth.labels,
-            iou_threshold=0.5,
-            max_detections=100,
+            iou_threshold=iou_threshold,
+            max_detections=max_detections,
         ))
     return features, features.new_tensor(counts)
 
@@ -609,18 +612,9 @@ def _teacher_supervision_extractor(teacher: nn.Module, value: Any):
 class MmdetExecutionBackend:
     '''Run ADA-FNP stages through the pinned MMEngine/MMDetection stack.'''
 
-    def __init__(
-        self,
-        runtime_loader: Callable[[], MmdetRuntime] = _load_mmdet_runtime,
-        *,
-        require_cuda: bool = True,
-    ) -> None:
-        self.runtime_loader = runtime_loader
-        self.require_cuda = require_cuda
-
     def _runtime(self) -> MmdetRuntime:
-        runtime = self.runtime_loader()
-        if self.require_cuda and not torch.cuda.is_available():
+        runtime = _load_mmdet_runtime()
+        if not torch.cuda.is_available():
             raise ExecutionDependencyError(
                 'ADA-FNP model stages require a CUDA-enabled PyTorch runtime'
             )
@@ -635,8 +629,7 @@ class MmdetExecutionBackend:
         config = _base_config(runtime, context)
         model = runtime.build_model(config['model'])
         runtime.load_model_checkpoint(model, checkpoint_path)
-        if self.require_cuda:
-            model = model.cuda()
+        model = model.cuda()
         model.eval()
         return model, config
 
@@ -666,7 +659,7 @@ class MmdetExecutionBackend:
                 )
             )
         model = _unwrap_model(runner.model)
-        if phase.initialize_teacher_at_end:
+        if phase.mode is DetectorStageMode.INITIALIZATION:
             model.teacher.load_state_dict(model.student.state_dict(), strict=True)
         return _atomic_runner_checkpoint(
             runner, checkpoint_path, stage, phase.end_iteration
@@ -688,8 +681,7 @@ class MmdetExecutionBackend:
             if previous is not None:
                 payload = load_checkpoint(previous)
                 fnpm.load_state_dict(payload['fnpm']['model'], strict=True)
-        if self.require_cuda:
-            fnpm = fnpm.cuda()
+        fnpm = fnpm.cuda()
 
         initial_datasets = config['stage_overrides']['initial'][
             'train_dataloader'
@@ -724,7 +716,13 @@ class MmdetExecutionBackend:
             fnpm=fnpm,
             teacher=model.teacher,
             source_batch_provider=_CyclingProvider(source_loader, 'source'),
-            teacher_batch_extractor=_teacher_supervision_extractor,
+            teacher_batch_extractor=partial(
+                _teacher_supervision_extractor,
+                iou_threshold=float(
+                    context.config['fnpm']['matcher_iou_threshold']
+                ),
+                max_detections=int(context.config['fnpm']['max_detections']),
+            ),
             labeled_target_batch_provider=labeled_provider,
         )
 
@@ -741,8 +739,7 @@ class MmdetExecutionBackend:
         fnpm = FalseNegativePredictionModule(in_channels=512)
         payload = load_checkpoint(fnpm_checkpoint)
         fnpm.load_state_dict(payload['fnpm']['model'], strict=True)
-        if self.require_cuda:
-            fnpm = fnpm.cuda()
+        fnpm = fnpm.cuda()
         fnpm.eval()
         acquisition_dataset = copy.deepcopy(config['target_acquisition_dataset'])
         pool_manifest = _write_unlabeled_pool_manifest(
@@ -808,7 +805,14 @@ class MmdetExecutionBackend:
                     )
                     entropy = foreground_entropy(prediction.class_probabilities)
                     source_probability = source_probabilities[index].mean()
-                    diversity = domain_diversity(source_probability)
+                    diversity = domain_diversity(
+                        source_probability,
+                        epsilon=float(
+                            context.config['acquisition'][
+                                'domain_probability_epsilon'
+                            ]
+                        ),
+                    )
                     records.append(RawAdaFnpScore(
                         sample=sample,
                         false_negative=float(fn_scores[index].detach().cpu()),
@@ -841,13 +845,3 @@ class MmdetExecutionBackend:
         if not math.isfinite(ap50) or not 0.0 <= ap50 <= 100.0:
             raise ValueError('PT VOC AP50 must be a finite percentage in [0, 100]')
         return {'AP50': ap50}
-
-
-__all__ = [
-    'AdaFnpExecutionBackend',
-    'ExecutionDependencyError',
-    'FnpmSession',
-    'MmdetExecutionBackend',
-    'MmdetRuntime',
-    'build_detector_stage_config',
-]

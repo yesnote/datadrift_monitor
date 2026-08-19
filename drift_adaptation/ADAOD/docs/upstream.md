@@ -27,7 +27,7 @@ corresponding timestamped change document.
 
 PT loads convolution tensors from a Caffe-converted VGG16 checkpoint. ADAOD
 uses the preserved file below and pins its content before model construction.
-The path, URL, SHA256, MD5, and byte size have one canonical specification in
+The runtime path, URL, and SHA256 have one canonical specification in
 `methods/common/mmdet/models/backbones/vgg16_caffe.py`; detector configuration,
 asset preparation, and execution import that definition instead of duplicating
 the constants.

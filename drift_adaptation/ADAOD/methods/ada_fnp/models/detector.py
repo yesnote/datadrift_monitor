@@ -394,18 +394,3 @@ else:
             with mc_dropout_enabled(self.teacher, dropout_modules):
                 return self.teacher.predict_fixed_proposals(
                     batch_inputs, batch_data_samples, passes=passes)
-
-
-__all__ = [
-    'ADAFNPBranch',
-    'ADAFNPDetector',
-    'SOURCE_BRANCH',
-    'TARGET_LABELED_BRANCH',
-    'TARGET_UNLABELED_STRONG_BRANCH',
-    'TARGET_UNLABELED_WEAK_BRANCH',
-    'multi_target_domain_loss',
-    'route_detection_losses',
-    'select_domain_target_branches',
-    'validate_shared_target_geometry',
-    'validate_loss_branches',
-]

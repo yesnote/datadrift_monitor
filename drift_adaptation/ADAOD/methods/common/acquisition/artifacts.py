@@ -8,9 +8,9 @@ import math
 from dataclasses import dataclass, field
 from pathlib import Path
 from types import MappingProxyType
-from typing import Any, Mapping, Optional, Sequence, Tuple
+from typing import Any, Mapping, Optional, Tuple
 
-from methods.common.artifacts import atomic_write_bytes, sha256_file
+from methods.common.artifacts import atomic_write_bytes, resolve_artifact_path
 from methods.common.contracts import ArtifactRef
 from methods.common.data.image_identity import SampleIdentity
 
@@ -146,19 +146,6 @@ def canonical_json_bytes(artifact: JsonArtifact) -> bytes:
     ).encode('utf-8')
 
 
-def _resolve_artifact_path(path: Path, run_directory: Path) -> Tuple[Path, str]:
-    run_root = Path(run_directory).resolve()
-    candidate = Path(path)
-    target = candidate.resolve() if candidate.is_absolute() else (run_root / candidate).resolve()
-    try:
-        relative_path = target.relative_to(run_root).as_posix()
-    except ValueError as error:
-        raise ValueError('artifact path must stay inside the run directory') from error
-    if target == run_root:
-        raise ValueError('artifact path must identify a file')
-    return target, relative_path
-
-
 def write_json_artifact(
     path: Path,
     artifact: JsonArtifact,
@@ -167,7 +154,7 @@ def write_json_artifact(
 ) -> ArtifactRef:
     '''Atomically write an artifact and return its content-addressed reference.'''
 
-    target, relative_path = _resolve_artifact_path(path, run_directory)
+    target, relative_path = resolve_artifact_path(path, run_directory)
     payload = canonical_json_bytes(artifact)
     digest = hashlib.sha256(payload).hexdigest()
     atomic_write_bytes(target, payload)

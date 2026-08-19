@@ -41,22 +41,12 @@ class RawAdaFnpScore:
         ):
             raise ValueError('empty detections require zero localization and entropy')
 
-    def to_dict(self) -> dict:
-        return {
-            'sample': self.sample.to_dict(),
-            'raw': {
-                'false_negative': self.false_negative,
-                'localization': self.localization,
-                'entropy': self.entropy,
-                'diversity': self.diversity,
-            },
-            'source_domain_probability': self.source_domain_probability,
-            'detection_count': self.detection_count,
-        }
-
 
 def normalize_scores(
     records: Sequence[RawAdaFnpScore],
+    *,
+    constant_component_value: float = 0.5,
+    empty_detection_score: float = 0.0,
 ) -> Tuple[AcquisitionScore, ...]:
     samples = [record.sample for record in records]
     if len(samples) != len(set(samples)):
@@ -69,8 +59,14 @@ def normalize_scores(
         'entropy': {record.sample: record.entropy for record in records},
         'diversity': {record.sample: record.diversity for record in records},
     }
-    normalized = standardize_components(components)
+    normalized = standardize_components(
+        components, constant_component_value=constant_component_value
+    )
     detection_counts = {
         record.sample: record.detection_count for record in records
     }
-    return build_product_scores(normalized, detection_counts)
+    return build_product_scores(
+        normalized,
+        detection_counts,
+        empty_detection_score=empty_detection_score,
+    )

@@ -40,28 +40,6 @@ def summarize_mc_predictions(
     return mean_probabilities, mean_boxes, box_variances
 
 
-def map_multiclass_nms_to_proposals(
-        kept_flat_indices: Tensor,
-        num_foreground_classes: int,
-        proposal_indices: Tensor = None) -> Tensor:
-    '''Map MMDet multiclass-NMS flattened indices back to proposal indices.'''
-    if kept_flat_indices.ndim != 1:
-        raise ValueError('kept_flat_indices must be one-dimensional')
-    if kept_flat_indices.dtype != torch.long:
-        raise TypeError('kept_flat_indices must use torch.long dtype')
-    if num_foreground_classes <= 0:
-        raise ValueError('num_foreground_classes must be positive')
-    local_indices, _ = split_multiclass_nms_indices(
-        kept_flat_indices, num_foreground_classes)
-    if proposal_indices is None:
-        return local_indices
-    if proposal_indices.ndim != 1:
-        raise ValueError('proposal_indices must be one-dimensional')
-    if local_indices.numel() and local_indices.max() >= len(proposal_indices):
-        raise IndexError('NMS index exceeds the proposal index mapping')
-    return proposal_indices[local_indices]
-
-
 def split_multiclass_nms_indices(
         kept_flat_indices: Tensor,
         num_foreground_classes: int) -> Tuple[Tensor, Tensor]:
@@ -243,13 +221,3 @@ else:
                     proposal_indices, class_indices]
                 results.append(result)
             return results
-
-
-__all__ = [
-    'ADAFNPRoIHead',
-    'map_multiclass_nms_to_proposals',
-    'normalize_xyxy_box_samples',
-    'run_rpn_once_for_fixed_roi',
-    'split_multiclass_nms_indices',
-    'summarize_mc_predictions',
-]

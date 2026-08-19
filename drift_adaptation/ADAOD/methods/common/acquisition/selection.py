@@ -28,6 +28,7 @@ class AcquisitionScore:
     sample: SampleIdentity
     components: Mapping[str, float]
     detection_count: int
+    empty_detection_score: float = 0.0
     final_score: float = field(init=False)
 
     def __post_init__(self) -> None:
@@ -39,6 +40,10 @@ class AcquisitionScore:
             raise TypeError('detection_count must be an integer')
         if self.detection_count < 0:
             raise ValueError('detection_count must not be negative')
+        empty_detection_score = _score_value(
+            self.empty_detection_score, 'empty_detection_score'
+        )
+        object.__setattr__(self, 'empty_detection_score', empty_detection_score)
         if not self.components:
             raise ValueError('at least one normalized component is required')
         normalized_components = {}
@@ -52,24 +57,17 @@ class AcquisitionScore:
             self, 'components', MappingProxyType(normalized_components)
         )
         final_score = (
-            0.0
+            empty_detection_score
             if self.detection_count == 0
             else math.prod(normalized_components[name] for name in sorted(normalized_components))
         )
         object.__setattr__(self, 'final_score', final_score)
 
-    def to_dict(self) -> dict:
-        return {
-            'sample': self.sample.to_dict(),
-            'components': dict(self.components),
-            'detection_count': self.detection_count,
-            'final_score': self.final_score,
-        }
-
-
 def build_product_scores(
     components: Mapping[str, Mapping[SampleIdentity, float]],
     detection_counts: Mapping[SampleIdentity, int],
+    *,
+    empty_detection_score: float = 0.0,
 ) -> Tuple[AcquisitionScore, ...]:
     '''Combine same-domain normalized components for every unlabeled sample.'''
 
@@ -91,6 +89,7 @@ def build_product_scores(
                 for component_name in sorted(components)
             },
             detection_count=detection_counts[sample],
+            empty_detection_score=empty_detection_score,
         )
         for sample in sorted(reference_samples)
     )

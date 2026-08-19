@@ -3,17 +3,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from enum import Enum
 from pathlib import PurePosixPath
 from typing import Any, Callable, Mapping, Tuple
-
-
-class ResumePolicy(str, Enum):
-    '''How an interrupted stage may be resumed.'''
-
-    VERIFY_AND_SKIP = 'verify_and_skip'
-    RESTART = 'restart'
-    CONTINUE_FROM_CHECKPOINT = 'continue_from_checkpoint'
 
 
 @dataclass(frozen=True)
@@ -23,22 +14,12 @@ class StageSpec:
     stage_id: str
     executor_key: str
     payload: Mapping[str, Any] = field(default_factory=dict)
-    resume_policy: ResumePolicy = ResumePolicy.VERIFY_AND_SKIP
 
     def __post_init__(self) -> None:
         if not self.stage_id or '/' in self.stage_id or chr(92) in self.stage_id:
             raise ValueError('stage_id must be a non-empty path-safe token')
         if not self.executor_key:
             raise ValueError('executor_key must not be empty')
-
-    def to_dict(self) -> dict:
-        return {
-            'stage_id': self.stage_id,
-            'executor_key': self.executor_key,
-            'payload': dict(self.payload),
-            'resume_policy': self.resume_policy.value,
-        }
-
 
 @dataclass(frozen=True)
 class ExperimentPlan:
@@ -50,9 +31,6 @@ class ExperimentPlan:
         stage_ids = [stage.stage_id for stage in self.stages]
         if len(stage_ids) != len(set(stage_ids)):
             raise ValueError('experiment plan contains duplicate stage IDs')
-
-    def to_dict(self) -> dict:
-        return {'stages': [stage.to_dict() for stage in self.stages]}
 
 
 ConfigFactory = Callable[[], Mapping[str, Any]]

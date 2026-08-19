@@ -1,4 +1,4 @@
-'''Resolve a method plugin and inspect its serial stage plan.'''
+'''Run an active domain-adaptation method from its resolved configuration.'''
 
 import argparse
 import json
@@ -33,7 +33,6 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--method', default='ada-fnp')
     parser.add_argument('--list-methods', action='store_true')
-    parser.add_argument('--dry-run', action='store_true')
     parser.add_argument('--budget-percent', type=float)
     parser.add_argument('--seed', type=int)
     parser.add_argument('--dataset')
@@ -123,13 +122,6 @@ def main(argv=None) -> int:
         overrides=overrides,
     )
     plan = manifest.plan_factory(config)
-    if args.dry_run:
-        print(json.dumps({
-            'config': config,
-            'config_fingerprint': config_fingerprint(config),
-            'plan': plan.to_dict(),
-        }, indent=2))
-        return 0
     run_directory = _run_directory(config, args.run_directory)
     state_store = _prepare_run(config, run_directory, args.resume)
     context = ExecutionContext(

@@ -1,6 +1,6 @@
 '''Method-independent serial stage runner.'''
 
-from typing import Callable, Dict, Mapping, Optional, Union
+from typing import Callable, Dict, Mapping
 
 from methods.common.contracts import ArtifactRef, ExperimentPlan, StageSpec
 
@@ -8,9 +8,7 @@ from .state import RunStateStore
 from .context import ExecutionContext
 
 
-LegacyStageExecutor = Callable[[StageSpec], Mapping]
-ContextStageExecutor = Callable[[StageSpec, ExecutionContext], Mapping]
-StageExecutor = Union[LegacyStageExecutor, ContextStageExecutor]
+StageExecutor = Callable[[StageSpec, ExecutionContext], Mapping]
 
 
 class StageExecutorRegistry:
@@ -33,7 +31,7 @@ class StageRunner:
         self,
         registry: StageExecutorRegistry,
         state_store: RunStateStore,
-        context: Optional[ExecutionContext] = None,
+        context: ExecutionContext,
     ):
         self.registry = registry
         self.state_store = state_store
@@ -41,13 +39,9 @@ class StageRunner:
 
     def _execute(self, stage: StageSpec) -> Mapping:
         executor = self.registry.resolve(stage.executor_key)
-        if self.context is None:
-            return executor(stage)  # type: ignore[call-arg]
-        return executor(stage, self.context)  # type: ignore[call-arg]
+        return executor(stage, self.context)
 
     def _verify_result_artifacts(self, value) -> None:
-        if self.context is None:
-            return
         if isinstance(value, Mapping):
             artifact_fields = {
                 'artifact_id', 'artifact_type', 'schema_version',

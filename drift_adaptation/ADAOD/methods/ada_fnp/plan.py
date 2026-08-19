@@ -2,11 +2,12 @@
 
 from typing import List, Mapping
 
-from methods.common.contracts import ExperimentPlan, ResumePolicy, StageSpec
+from methods.ada_fnp.phases import FNPM_MILESTONES
+from methods.common.contracts import ExperimentPlan, StageSpec
 from methods.common.data.pool import split_budget
 
 
-def _total_budget(config: Mapping) -> int:
+def resolve_total_budget(config: Mapping) -> int:
     acquisition = config['acquisition']
     if 'total_budget' in acquisition:
         return int(acquisition['total_budget'])
@@ -19,9 +20,9 @@ def _total_budget(config: Mapping) -> int:
 
 def build_plan(config: Mapping) -> ExperimentPlan:
     milestones = tuple(config['training']['acquisition_milestones'])
-    if milestones != (5000, 10000, 15000, 20000, 25000):
+    if milestones != FNPM_MILESTONES:
         raise ValueError('ADA-FNP requires acquisition at 5k through 25k')
-    budgets = split_budget(_total_budget(config), len(milestones))
+    budgets = split_budget(resolve_total_budget(config), len(milestones))
     stages: List[StageSpec] = [
         StageSpec(
             'prepare_pretrained',
@@ -39,10 +40,7 @@ def build_plan(config: Mapping) -> ExperimentPlan:
             {
                 'start_iteration': 0,
                 'end_iteration': 5000,
-                'initialize_teacher_at_end': True,
-                'use_pseudo_labels': False,
             },
-            ResumePolicy.CONTINUE_FROM_CHECKPOINT,
         ),
     ]
     for index, (milestone, budget) in enumerate(zip(milestones, budgets), 1):
@@ -53,13 +51,11 @@ def build_plan(config: Mapping) -> ExperimentPlan:
                 'ada_fnp.train_fnpm',
                 {'round': index, 'detector_iteration': milestone,
                  'iterations': config['fnpm']['iterations_per_round']},
-                ResumePolicy.CONTINUE_FROM_CHECKPOINT,
             ),
             StageSpec(
                 f'score_pool_round_{token}',
                 'ada_fnp.score_pool',
                 {'round': index, 'detector_iteration': milestone},
-                ResumePolicy.CONTINUE_FROM_CHECKPOINT,
             ),
             StageSpec(
                 f'select_round_{token}', 'common.select',
@@ -81,10 +77,7 @@ def build_plan(config: Mapping) -> ExperimentPlan:
             {
                 'start_iteration': milestone,
                 'end_iteration': end_iteration,
-                'initialize_teacher_at_end': False,
-                'use_pseudo_labels': True,
             },
-            ResumePolicy.CONTINUE_FROM_CHECKPOINT,
         ))
     stages.append(StageSpec(
         'evaluate_final_teacher', 'common.evaluate',

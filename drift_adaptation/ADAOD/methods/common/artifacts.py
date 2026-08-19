@@ -5,7 +5,7 @@ import json
 import os
 import tempfile
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Mapping, Tuple
 
 
 def sha256_file(path: Path) -> str:
@@ -14,6 +14,25 @@ def sha256_file(path: Path) -> str:
         for block in iter(lambda: stream.read(1024 * 1024), b''):
             digest.update(block)
     return digest.hexdigest()
+
+
+def resolve_artifact_path(path: Path, run_directory: Path) -> Tuple[Path, str]:
+    '''Resolve one artifact file beneath a run directory.'''
+
+    run_root = Path(run_directory).resolve()
+    candidate = Path(path)
+    target = (
+        candidate.resolve()
+        if candidate.is_absolute()
+        else (run_root / candidate).resolve()
+    )
+    try:
+        relative_path = target.relative_to(run_root).as_posix()
+    except ValueError as error:
+        raise ValueError('artifact path must stay inside the run directory') from error
+    if target == run_root:
+        raise ValueError('artifact path must identify a file')
+    return target, relative_path
 
 
 def atomic_write_bytes(path: Path, payload: bytes) -> None:

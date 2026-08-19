@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
-from typing import Optional, Tuple
+from typing import Tuple
 
 from methods.common.data.cityscapes import (
     LabeledTargetManifest,
@@ -37,21 +37,7 @@ class DetectorPhase:
 
     start_iteration: int
     end_iteration: int
-    labeled_sample_count: int
     mode: DetectorStageMode
-    initialize_teacher_at_end: bool
-    use_pseudo_labels: bool
-    use_target_labeled_sampler: bool
-
-
-@dataclass(frozen=True)
-class FnpmRoundPhase:
-    '''Validated position inside one fresh 2k FNPM optimization round.'''
-
-    round_index: int
-    detector_iteration: int
-    iteration: int
-    max_iterations: int = FNPM_ITERATIONS_PER_ROUND
 
 
 def _iteration(value: int, name: str) -> int:
@@ -79,11 +65,7 @@ def resolve_detector_phase(
         return DetectorPhase(
             start_iteration=start_iteration,
             end_iteration=end_iteration,
-            labeled_sample_count=0,
             mode=DetectorStageMode.INITIALIZATION,
-            initialize_teacher_at_end=True,
-            use_pseudo_labels=False,
-            use_target_labeled_sampler=False,
         )
     if segment not in ADAPTATION_SEGMENTS:
         raise ValueError(
@@ -92,19 +74,15 @@ def resolve_detector_phase(
     return DetectorPhase(
         start_iteration=start_iteration,
         end_iteration=end_iteration,
-        labeled_sample_count=labeled_sample_count,
         mode=DetectorStageMode.ADAPTATION,
-        initialize_teacher_at_end=False,
-        use_pseudo_labels=True,
-        use_target_labeled_sampler=labeled_sample_count > 0,
     )
 
 
-def resolve_fnpm_round_phase(
+def validate_fnpm_round_phase(
     round_index: int,
     detector_iteration: int,
     iteration: int = 0,
-) -> FnpmRoundPhase:
+) -> None:
     '''Validate the round/milestone pair and its resumable local iteration.'''
 
     round_index = _iteration(round_index, 'round_index')
@@ -117,7 +95,6 @@ def resolve_fnpm_round_phase(
         raise ValueError('FNPM round does not match its detector milestone')
     if iteration > FNPM_ITERATIONS_PER_ROUND:
         raise ValueError('FNPM local iteration must not exceed 2000')
-    return FnpmRoundPhase(round_index, detector_iteration, iteration)
 
 
 @dataclass(frozen=True)
@@ -145,20 +122,3 @@ def execute_reveal(request: RevealRequest) -> LabeledTargetManifest:
         request.pool_state,
         request.output_path,
     )
-
-
-def labeled_manifest_for_sampler(
-    phase: DetectorPhase,
-    manifest: Optional[LabeledTargetManifest],
-) -> Optional[Path]:
-    '''Return a labeled manifest only when the phase may sample selected targets.'''
-
-    if not isinstance(phase, DetectorPhase):
-        raise TypeError('phase must be a DetectorPhase')
-    if not phase.use_target_labeled_sampler:
-        return None
-    if manifest is None or not manifest.has_samples:
-        raise RuntimeError('adaptation requested a nonempty target-labeled manifest')
-    if manifest.image_count != phase.labeled_sample_count:
-        raise ValueError('phase labeled count does not match the revealed manifest')
-    return manifest.path

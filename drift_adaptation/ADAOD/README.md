@@ -60,7 +60,6 @@ the VGG convolution tensors. A missing or corrupt asset is an explicit error;
 
 ```powershell
 python -m tools.run_adaod --list-methods
-python -m tools.run_adaod --method ada-fnp --dry-run
 python -m tools.run_adaod --method ada-fnp --budget-percent 1 --seed 0
 ```
 

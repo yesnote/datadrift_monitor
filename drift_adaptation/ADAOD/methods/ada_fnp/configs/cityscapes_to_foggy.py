@@ -18,6 +18,7 @@ from configs._base_.datasets.cityscapes_to_foggy import (
 from configs._base_.models.faster_rcnn_vgg16_factory import (
     build_faster_rcnn_vgg16 as _build_faster_rcnn_vgg16,
 )
+from methods.ada_fnp.configs.default import get_config as _get_method_config
 
 
 custom_imports = dict(
@@ -25,10 +26,19 @@ custom_imports = dict(
     allow_failed_imports=False,
 )
 
-experiment_name = 'ada-fnp_cityscapes-to-foggy_faster-rcnn-vgg16'
-_DROPOUT_PROBABILITY = 0.1
-_MC_PASSES = 10
-_LOCALIZATION_VARIANCE_THRESHOLD = 0.1
+_METHOD_CONFIG = _get_method_config()
+_DROPOUT_PROBABILITY = _METHOD_CONFIG['detector']['dropout_probability']
+_MC_PASSES = _METHOD_CONFIG['acquisition']['mc_passes']
+_LOCALIZATION_VARIANCE_THRESHOLD = _METHOD_CONFIG['pseudo_label'][
+    'localization_variance_threshold'
+]
+_SOURCE_BATCH_SIZE = _METHOD_CONFIG['training']['source_batch_size']
+_TARGET_LABELED_BATCH_SIZE = _METHOD_CONFIG['training'][
+    'target_labeled_batch_size'
+]
+_TARGET_UNLABELED_BATCH_SIZE = _METHOD_CONFIG['training'][
+    'target_unlabeled_batch_size'
+]
 _INITIAL_BRANCHES = (
     'source',
     'target_unlabeled_weak',
@@ -80,8 +90,8 @@ def _train_loader(datasets, batch_size, source_ratio, branch_field):
 # selected-only target dataset after each reveal stage has materialized it.
 initial_stage_train_dataloader = _train_loader(
     (_source_train_dataset, _target_unlabeled_dataset),
-    batch_size=8,
-    source_ratio=(4, 4),
+    batch_size=_SOURCE_BATCH_SIZE + _TARGET_UNLABELED_BATCH_SIZE,
+    source_ratio=(_SOURCE_BATCH_SIZE, _TARGET_UNLABELED_BATCH_SIZE),
     branch_field=_INITIAL_BRANCHES,
 )
 adaptation_stage_train_dataloader = _train_loader(
@@ -90,8 +100,16 @@ adaptation_stage_train_dataloader = _train_loader(
         _target_labeled_dataset,
         _target_unlabeled_dataset,
     ),
-    batch_size=12,
-    source_ratio=(4, 4, 4),
+    batch_size=(
+        _SOURCE_BATCH_SIZE
+        + _TARGET_LABELED_BATCH_SIZE
+        + _TARGET_UNLABELED_BATCH_SIZE
+    ),
+    source_ratio=(
+        _SOURCE_BATCH_SIZE,
+        _TARGET_LABELED_BATCH_SIZE,
+        _TARGET_UNLABELED_BATCH_SIZE,
+    ),
     branch_field=_ADAPTATION_BRANCHES,
 )
 train_dataloader = deepcopy(initial_stage_train_dataloader)
@@ -103,7 +121,9 @@ detector = _build_faster_rcnn_vgg16()
 detector['roi_head']['type'] = 'ADAFNPRoIHead'
 detector['roi_head']['bbox_head'].update(
     dropout=_DROPOUT_PROBABILITY,
-    reg_class_agnostic=False,
+    reg_class_agnostic=_METHOD_CONFIG['detector'][
+        'class_agnostic_bbox_regression'
+    ],
 )
 
 model = dict(
@@ -120,7 +140,7 @@ model = dict(
         hidden_channels=64,
     ),
     grl_scale=1.0,
-    domain_loss_weight=0.01,
+    domain_loss_weight=_METHOD_CONFIG['training']['adversarial_weight'],
     enable_unsupervised_loss=False,
     mc_passes=_MC_PASSES,
     localization_variance_threshold=_LOCALIZATION_VARIANCE_THRESHOLD,
@@ -134,7 +154,7 @@ model = dict(
 
 mean_teacher_hook = dict(
     type='MeanTeacherHook',
-    momentum=0.0004,
+    momentum=_METHOD_CONFIG['training']['mmdet_ema_momentum'],
     interval=1,
     skip_buffer=True,
     priority=49,
@@ -148,32 +168,11 @@ stage_overrides = dict(
         train_dataloader=deepcopy(initial_stage_train_dataloader),
         model=dict(enable_unsupervised_loss=False),
         custom_hooks=[],
-        use_pseudo_labels=False,
-        branch_routing=dict(
-            detector_inputs=[
-                'source',
-                'target_unlabeled_weak',
-                'target_unlabeled_strong',
-            ],
-            pseudo_teacher=None,
-            pseudo_student=None,
-        ),
     ),
     adaptation=dict(
         train_dataloader=deepcopy(adaptation_stage_train_dataloader),
         model=dict(enable_unsupervised_loss=True),
         custom_hooks=[deepcopy(mean_teacher_hook)],
-        use_pseudo_labels=True,
-        branch_routing=dict(
-            detector_inputs=[
-                'source',
-                'target_labeled',
-                'target_unlabeled_weak',
-                'target_unlabeled_strong',
-            ],
-            pseudo_teacher='target_unlabeled_weak',
-            pseudo_student='target_unlabeled_strong',
-        ),
     ),
 )
 
@@ -181,30 +180,4 @@ stage_overrides = dict(
 # student branch at 5k, then installs the adaptation hook below.
 custom_hooks = []
 
-ada_fnp = dict(
-    acquisition_milestones=[5000, 10000, 15000, 20000, 25000],
-    adversarial_loss_weight=0.01,
-    ema_decay=0.9996,
-    fnpm=dict(
-        iterations_per_round=2000,
-        lr=0.0001,
-        matcher_iou_threshold=0.5,
-        max_detections=100,
-    ),
-    acquisition=dict(
-        budget_percent=1.0,
-        mc_passes=_MC_PASSES,
-        dropout_probability=_DROPOUT_PROBABILITY,
-        domain_probability_epsilon=0.000001,
-        constant_score_normalized_value=0.5,
-        empty_detection_final_score=0.0,
-    ),
-    pseudo_label=dict(
-        localization_variance_threshold=_LOCALIZATION_VARIANCE_THRESHOLD,
-        hard_confidence_threshold=None,
-    ),
-    unlabeled_target_losses=[
-        'rpn_cls',
-        'roi_cls',
-    ],
-)
+del _METHOD_CONFIG

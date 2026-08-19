@@ -1,9 +1,8 @@
 '''Fixed-proposal Monte Carlo Dropout utilities.'''
 
 from contextlib import contextmanager
-from typing import Callable, Iterator, Sequence, Tuple
+from typing import Iterator, Sequence
 
-import torch
 from torch import nn
 
 
@@ -29,27 +28,3 @@ def mc_dropout_enabled(
     finally:
         for module, training in states:
             module.training = training
-
-
-def collect_fixed_proposal_predictions(
-    predict_roi: Callable[[torch.Tensor], Tuple[torch.Tensor, torch.Tensor]],
-    proposals: torch.Tensor,
-    passes: int,
-) -> Tuple[torch.Tensor, torch.Tensor]:
-    '''Run a stochastic RoI callback repeatedly on the exact same proposals.'''
-
-    if passes < 2:
-        raise ValueError('Monte Carlo inference requires at least two passes')
-    probabilities = []
-    boxes = []
-    for _ in range(passes):
-        pass_probabilities, pass_boxes = predict_roi(proposals)
-        probabilities.append(pass_probabilities)
-        boxes.append(pass_boxes)
-    probability_samples = torch.stack(probabilities)
-    box_samples = torch.stack(boxes)
-    if probability_samples.shape[1] != len(proposals):
-        raise ValueError('RoI probability count does not match fixed proposals')
-    if box_samples.shape[1] != len(proposals):
-        raise ValueError('RoI box count does not match fixed proposals')
-    return probability_samples, box_samples

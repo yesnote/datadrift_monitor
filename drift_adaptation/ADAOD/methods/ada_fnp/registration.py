@@ -21,11 +21,3 @@ MODELS.register_module(name='ADAFNPDetector', module=ADAFNPDetector)
 MODELS.register_module(name='ADAFNPRoIHead', module=ADAFNPRoIHead)
 TRANSFORMS.register_module(
     name='PTStrongAugmentation', module=PTStrongAugmentation)
-
-__all__ = [
-    'ADAFNPBranch',
-    'ADAFNPDetector',
-    'ADAFNPRoIHead',
-    'DomainDiscriminator',
-    'PTStrongAugmentation',
-]

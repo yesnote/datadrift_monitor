@@ -13,10 +13,6 @@ backend_args = None
 
 classes = CITYSCAPES_CLASSES
 metainfo = dict(classes=classes)
-foggy_beta = 0.02
-expected_source_train_images = 2975
-expected_target_train_images = 2975
-expected_target_val_images = 500
 
 dataset_cache_root = 'work_dirs/.dataset_cache/cityscapes-to-foggy'
 source_train_ann_file = f'{dataset_cache_root}/source_train.json'
@@ -54,7 +50,7 @@ weak_pipeline = [
     dict(type='PackDetInputs', meta_keys=pack_meta_keys),
 ]
 strong_pipeline = [
-    dict(type='PTStrongAugmentation', p=1.0),
+    dict(type='PTStrongAugmentation'),
     dict(type='PackDetInputs', meta_keys=pack_meta_keys),
 ]
 source_train_pipeline = [
