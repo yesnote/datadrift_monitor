@@ -163,6 +163,14 @@ def _configure_multi_source_loader(
     sampler['source_ratio'] = list(source_ratio)
 
 
+def _positive_batch_size(value: Any, name: str) -> int:
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise TypeError('{} must be an integer'.format(name))
+    if value <= 0:
+        raise ValueError('{} must be positive'.format(name))
+    return value
+
+
 def apply_resolved_experiment_config(
     config: MutableMapping[str, Any],
     context: ExecutionContext,
@@ -174,6 +182,7 @@ def apply_resolved_experiment_config(
     detector = resolved['detector']
     domain_adaptation = resolved['domain_adaptation']
     acquisition = resolved['acquisition']
+    inference = resolved['inference']
     pseudo_label = resolved['pseudo_label']
 
     model = config['model']
@@ -213,6 +222,15 @@ def apply_resolved_experiment_config(
             target_unlabeled_batch_size,
         ),
     )
+
+    evaluation_batch_size = _positive_batch_size(
+        inference['evaluation_batch_size'],
+        'evaluation_batch_size',
+    )
+    for dataloader_name in ('val_dataloader', 'test_dataloader'):
+        dataloader = config.get(dataloader_name)
+        if dataloader is not None:
+            dataloader['batch_size'] = evaluation_batch_size
 
     optimizer = config['optim_wrapper']['optimizer']
     optimizer['lr'] = float(training['lr'])
@@ -376,10 +394,7 @@ def build_single_dataset_dataloader(
 ) -> MutableMapping[str, Any]:
     '''Build a dataloader config for one detector dataset.'''
 
-    if isinstance(batch_size, bool) or not isinstance(batch_size, int):
-        raise TypeError('batch_size must be an integer')
-    if batch_size <= 0:
-        raise ValueError('batch_size must be positive')
+    batch_size = _positive_batch_size(batch_size, 'batch_size')
     return dict(
         batch_size=batch_size,
         num_workers=4,

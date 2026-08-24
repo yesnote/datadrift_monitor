@@ -464,7 +464,7 @@ class MmdetExecutionBackend:
         )
         dataloader_config = build_single_dataset_dataloader(
             acquisition_dataset,
-            1,
+            context.config['inference']['acquisition_batch_size'],
             shuffle=False,
             drop_last=False,
         )
