@@ -32,6 +32,14 @@ Converted dataset annotations are generated beneath
 Layout validation, conversion, and reveal are separate operations in
 `methods/common/data/cityscapes/{layout,conversion,reveal}.py`.
 
+Compact terminal progress does not replace experiment records. The MMEngine
+`LoggerHook` continues to write its complete 50-iteration tag set to the
+timestamped `.log` and `vis_data/scalars.json`; the run root still contains
+`resolved_config.json`. Only the non-file console handler suppresses routine
+INFO output. ADA-FNP initialization records source detector and domain losses,
+while adaptation records source, domain, labeled-target, and strong
+unlabeled-target classification values.
+
 Run state is schema version 2 and records artifact identifiers in the generic
 `artifact_ids` mapping. Schema-1 run state and run artifacts produced under
 former registry/executor names are intentionally incompatible; restart them

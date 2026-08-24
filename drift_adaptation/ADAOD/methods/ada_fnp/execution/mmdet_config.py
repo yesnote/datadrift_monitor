@@ -219,6 +219,18 @@ def apply_resolved_experiment_config(
     optimizer['momentum'] = float(training['momentum'])
     optimizer['weight_decay'] = float(training['weight_decay'])
 
+    gradient_clip_max_norm = float(training['gradient_clip_max_norm'])
+    gradient_clip_norm_type = float(training['gradient_clip_norm_type'])
+    if gradient_clip_max_norm <= 0:
+        raise ValueError('gradient clip max norm must be positive')
+    if gradient_clip_norm_type <= 0:
+        raise ValueError('gradient clip norm type must be positive')
+    config['optim_wrapper']['clip_grad'] = dict(
+        max_norm=gradient_clip_max_norm,
+        norm_type=gradient_clip_norm_type,
+        error_if_nonfinite=True,
+    )
+
     scheduler_configs = config['param_scheduler']
     schedulers = {
         scheduler['type']: scheduler

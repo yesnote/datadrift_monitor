@@ -106,9 +106,9 @@ previously acquired samples cannot re-enter the unlabeled loader.
 `FalseNegativePredictor` ends in Softplus and regresses raw false-negative
 counts with mean squared error. This preserves non-negative values above one,
 although Figure 4 labels the final activation as Sigmoid; the figure conflicts
-with an unrestricted count target. Detector optimization does not apply PT's
-gradient-norm-10 clipping because ADA-FNP does not specify it. Both choices
-are reproduction assumptions, not confirmed paper details.
+with an unrestricted count target. Detector optimization applies PT's global
+gradient-norm-10 clipping. Non-finite gradients stop the run before the
+optimizer can update the detector.
 
 ## Evaluation
 
@@ -124,6 +124,15 @@ is returned on the 0--100 percentage scale.
 python -m tools.run_adaod --method ada-fnp --budget-percent 1 --seed 0
 python -m tools.run_adaod --method ada-fnp --budget-percent 1 --seed 0 --offline
 ```
+
+The interactive terminal contains one `tqdm` line. During detector and
+false-negative predictor optimization its only scalar is total `loss`.
+MMEngine still writes the complete 50-iteration records to its timestamped
+`.log` and `vis_data/scalars.json`. The initialization segment records the
+five `source.*` detector values and `domain.loss_adv`; adaptation segments
+also require and record the five `target_labeled.*` values and the two
+`target_unlabeled_strong.*` classification losses. Missing required keys are
+an execution error rather than a silently shortened log.
 
 Execution is connected to MMEngine/MMDetection runners for detector training,
 false-negative predictor training, pool scoring, selection, reveal, and final

@@ -40,8 +40,10 @@ silently change the baseline.
   trainer supervises both weak and strong labeled/source views, but ADA-FNP
   Figure 2 and Equations 13--14 assign weak-teacher/strong-student routing to
   the unlabeled target data; the implementation follows the paper here.
-- Detector optimization does not use gradient clipping. PT clips gradient norm
-  at 10, but ADA-FNP does not state that it carries this setting forward.
+- Detector optimization follows PT by clipping the global gradient norm at 10.
+  The optimizer wrapper also rejects non-finite gradients before updating the
+  detector. This setting is required for stable adaptation training in the
+  MMDetection port.
 
 These decisions define the official ADA-FNP reproduction config. Alternative
 thresholds, no-augmentation training, or special handling of empty detections

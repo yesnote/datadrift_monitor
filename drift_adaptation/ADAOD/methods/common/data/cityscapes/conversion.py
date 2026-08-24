@@ -6,7 +6,7 @@ import json
 import math
 import struct
 from pathlib import Path
-from typing import Any, Mapping, Optional, Sequence, Tuple
+from typing import TYPE_CHECKING, Any, Mapping, Optional, Sequence, Tuple
 
 from methods.common.artifacts import (
     atomic_write_bytes,
@@ -15,6 +15,9 @@ from methods.common.artifacts import (
     sha256_file,
 )
 from methods.common.data.image_identity import SampleIdentity
+
+if TYPE_CHECKING:
+    from methods.common.progress import ProgressReporter
 
 from .layout import (
     ANNOTATION_POLICY,
@@ -151,6 +154,7 @@ def _build_coco_dataset(
     *,
     include_annotations: bool,
     split_name: str,
+    progress: Optional['ProgressReporter'] = None,
 ) -> dict:
     images = []
     annotations = []
@@ -168,6 +172,8 @@ def _build_coco_dataset(
             }
         )
         if not include_annotations:
+            if progress is not None:
+                progress.advance()
             continue
         polygon_data = _read_polygon_file(asset.polygon_path)
         polygon_width = _positive_dimension(
@@ -204,6 +210,8 @@ def _build_coco_dataset(
                 }
             )
             annotation_id += 1
+        if progress is not None:
+            progress.advance()
     return {
         'info': {'scenario': 'cityscapes-to-foggy', 'split': split_name},
         'images': images,
@@ -215,6 +223,7 @@ def _build_coco_dataset(
 def _input_fingerprint(
     layout: CityscapesToFoggyLayout,
     repository_root: Path,
+    progress: Optional['ProgressReporter'] = None,
 ) -> str:
     entries = []
     paths = {
@@ -227,6 +236,8 @@ def _input_fingerprint(
         for assets in (layout.source_train, layout.target_train, layout.target_val)
         for asset in assets
     }
+    if progress is not None:
+        progress.start_task(len(paths) + len(polygon_paths), 'file')
     for path in sorted(paths, key=lambda value: value.as_posix()):
         entries.append(
             {
@@ -234,6 +245,8 @@ def _input_fingerprint(
                 'size': path.stat().st_size,
             }
         )
+        if progress is not None:
+            progress.advance()
     for path in sorted(polygon_paths, key=lambda value: value.as_posix()):
         entries.append(
             {
@@ -242,6 +255,8 @@ def _input_fingerprint(
                 'sha256': sha256_file(path),
             }
         )
+        if progress is not None:
+            progress.advance()
     return sha256_bytes(canonical_json_bytes({'files': entries}))
 
 
@@ -271,6 +286,7 @@ def prepare_cityscapes_to_foggy(
     *,
     expected_train_images: Optional[int] = EXPECTED_TRAIN_IMAGES,
     expected_val_images: Optional[int] = EXPECTED_VAL_IMAGES,
+    progress: Optional['ProgressReporter'] = None,
 ) -> Mapping[str, Any]:
     '''Create the four C-to-F COCO caches and a fingerprinted manifest.'''
 
@@ -282,7 +298,15 @@ def prepare_cityscapes_to_foggy(
         polygon_root,
         expected_train_images=expected_train_images,
         expected_val_images=expected_val_images,
+        progress=progress,
     )
+    if progress is not None:
+        progress.start_task(
+            len(layout.source_train)
+            + len(layout.target_train) * 2
+            + len(layout.target_val),
+            'image',
+        )
     datasets = {
         'source_train': _build_coco_dataset(
             layout.source_train,
@@ -290,6 +314,7 @@ def prepare_cityscapes_to_foggy(
             repository_root,
             include_annotations=True,
             split_name='source_train',
+            progress=progress,
         ),
         'target_train_unlabeled': _build_coco_dataset(
             layout.target_train,
@@ -297,6 +322,7 @@ def prepare_cityscapes_to_foggy(
             repository_root,
             include_annotations=False,
             split_name='target_train_unlabeled',
+            progress=progress,
         ),
         'target_train_oracle': _build_coco_dataset(
             layout.target_train,
@@ -304,6 +330,7 @@ def prepare_cityscapes_to_foggy(
             repository_root,
             include_annotations=True,
             split_name='target_train_oracle',
+            progress=progress,
         ),
         'target_val': _build_coco_dataset(
             layout.target_val,
@@ -311,10 +338,13 @@ def prepare_cityscapes_to_foggy(
             repository_root,
             include_annotations=True,
             split_name='target_val',
+            progress=progress,
         ),
     }
 
     output_records = {}
+    if progress is not None:
+        progress.start_task(len(datasets), 'file')
     for output_name in sorted(datasets):
         output_path = cache_directory / '{}.json'.format(output_name)
         payload = canonical_json_bytes(datasets[output_name])
@@ -325,6 +355,8 @@ def prepare_cityscapes_to_foggy(
             'images': len(datasets[output_name]['images']),
             'annotations': len(datasets[output_name]['annotations']),
         }
+        if progress is not None:
+            progress.advance()
 
     manifest_body = {
         'schema_version': CACHE_SCHEMA_VERSION,
@@ -332,12 +364,20 @@ def prepare_cityscapes_to_foggy(
         'beta': '0.02',
         'annotation_policy': dict(ANNOTATION_POLICY),
         'categories': cityscapes_categories(),
-        'input_fingerprint': _input_fingerprint(layout, repository_root),
+        'input_fingerprint': _input_fingerprint(
+            layout,
+            repository_root,
+            progress,
+        ),
         'outputs': output_records,
     }
     manifest = dict(manifest_body)
     manifest['fingerprint'] = sha256_bytes(canonical_json_bytes(manifest_body))
+    if progress is not None:
+        progress.start_task(1, 'file')
     atomic_write_bytes(
         cache_directory / 'manifest.json', canonical_json_bytes(manifest)
     )
+    if progress is not None:
+        progress.advance()
     return manifest

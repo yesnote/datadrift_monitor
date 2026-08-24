@@ -4,7 +4,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, Mapping, Optional, Tuple
+from typing import TYPE_CHECKING, Dict, Mapping, Optional, Tuple
+
+if TYPE_CHECKING:
+    from methods.common.progress import ProgressReporter
 
 
 CITYSCAPES_CLASSES: Tuple[str, ...] = (
@@ -69,7 +72,12 @@ def _require_directory(path: Path, description: str) -> None:
         raise FileNotFoundError('{} directory does not exist: {}'.format(description, path))
 
 
-def _inventory(root: Path, split: str, suffix: str) -> Dict[str, Path]:
+def _inventory(
+    root: Path,
+    split: str,
+    suffix: str,
+    progress: Optional['ProgressReporter'] = None,
+) -> Dict[str, Path]:
     split_root = root / split
     _require_directory(split_root, '{} split'.format(split))
     inventory = {}
@@ -83,6 +91,8 @@ def _inventory(root: Path, split: str, suffix: str) -> Dict[str, Path]:
         if scene_id in inventory:
             raise ValueError('duplicate scene ID {} in {}'.format(scene_id, split_root))
         inventory[scene_id] = path
+        if progress is not None:
+            progress.advance()
     return inventory
 
 
@@ -144,6 +154,7 @@ def validate_cityscapes_to_foggy_layout(
     *,
     expected_train_images: Optional[int] = EXPECTED_TRAIN_IMAGES,
     expected_val_images: Optional[int] = EXPECTED_VAL_IMAGES,
+    progress: Optional['ProgressReporter'] = None,
 ) -> CityscapesToFoggyLayout:
     '''Validate exact counts and scene bijections needed by C-to-F only.'''
 
@@ -154,11 +165,18 @@ def validate_cityscapes_to_foggy_layout(
     _require_directory(foggy_image_root, 'Foggy Cityscapes image root')
     _require_directory(polygon_root, 'gtFine polygon root')
 
-    clear_train = _inventory(clear_image_root, 'train', CLEAR_SUFFIX)
-    foggy_train = _inventory(foggy_image_root, 'train', FOGGY_002_SUFFIX)
-    foggy_val = _inventory(foggy_image_root, 'val', FOGGY_002_SUFFIX)
-    polygon_train = _inventory(polygon_root, 'train', POLYGON_SUFFIX)
-    polygon_val = _inventory(polygon_root, 'val', POLYGON_SUFFIX)
+    if progress is not None:
+        progress.start_task(None, 'file')
+    clear_train = _inventory(
+        clear_image_root, 'train', CLEAR_SUFFIX, progress)
+    foggy_train = _inventory(
+        foggy_image_root, 'train', FOGGY_002_SUFFIX, progress)
+    foggy_val = _inventory(
+        foggy_image_root, 'val', FOGGY_002_SUFFIX, progress)
+    polygon_train = _inventory(
+        polygon_root, 'train', POLYGON_SUFFIX, progress)
+    polygon_val = _inventory(
+        polygon_root, 'val', POLYGON_SUFFIX, progress)
 
     for name, inventory, expected in (
         ('source train', clear_train, expected_train_images),

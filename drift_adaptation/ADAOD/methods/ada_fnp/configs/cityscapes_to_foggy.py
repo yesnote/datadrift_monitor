@@ -178,6 +178,11 @@ custom_hooks = []
 
 optim_wrapper = dict(
     type='OptimWrapper',
+    clip_grad=dict(
+        max_norm=_METHOD_CONFIG['training']['gradient_clip_max_norm'],
+        norm_type=_METHOD_CONFIG['training']['gradient_clip_norm_type'],
+        error_if_nonfinite=True,
+    ),
     optimizer=dict(
         type='SGD',
         lr=_METHOD_CONFIG['training']['lr'],

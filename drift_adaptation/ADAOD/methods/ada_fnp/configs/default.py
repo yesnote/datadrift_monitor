@@ -24,6 +24,8 @@ _CONFIG = {
         'lr': 0.02,
         'momentum': 0.9,
         'weight_decay': 0.0001,
+        'gradient_clip_max_norm': 10.0,
+        'gradient_clip_norm_type': 2.0,
         'warmup_iterations': 400,
         'warmup_start_factor': 0.001,
         'lr_milestones': (30000, 35000),

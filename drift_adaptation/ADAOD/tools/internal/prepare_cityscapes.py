@@ -19,6 +19,7 @@ from methods.common.data.cityscapes.layout import (
     EXPECTED_TRAIN_IMAGES,
     EXPECTED_VAL_IMAGES,
 )
+from methods.common.progress import ProgressReporter
 from tools.common.paths import repository_relative_path, repository_root
 
 
@@ -73,23 +74,34 @@ def main(
     parser = build_parser()
     args = parser.parse_args(argv)
     root = (repository_root_path or repository_root()).absolute()
+    progress = ProgressReporter()
+    progress.start_stage(1, 1, 'prepare_cityscapes_to_foggy')
     try:
-        clear_images = _dataset_junction(root, args.clear_images)
-        foggy_images = _dataset_junction(root, args.foggy_images)
-        polygons = _dataset_junction(root, args.polygons)
-        cache_directory = _repository_output(root, args.cache_directory)
-        manifest = prepare_cityscapes_to_foggy(
-            clear_images,
-            foggy_images,
-            polygons,
-            cache_directory,
-            root,
-            expected_train_images=expected_train_images,
-            expected_val_images=expected_val_images,
-        )
-    except (FileNotFoundError, TypeError, ValueError) as error:
-        parser.error(str(error))
-    print(json.dumps(manifest, indent=2, sort_keys=True))
+        try:
+            clear_images = _dataset_junction(root, args.clear_images)
+            foggy_images = _dataset_junction(root, args.foggy_images)
+            polygons = _dataset_junction(root, args.polygons)
+            cache_directory = _repository_output(root, args.cache_directory)
+            manifest = prepare_cityscapes_to_foggy(
+                clear_images,
+                foggy_images,
+                polygons,
+                cache_directory,
+                root,
+                expected_train_images=expected_train_images,
+                expected_val_images=expected_val_images,
+                progress=progress,
+            )
+        except (FileNotFoundError, TypeError, ValueError) as error:
+            progress.close()
+            parser.error(str(error))
+    finally:
+        progress.close()
+    print(json.dumps({
+        'status': 'complete',
+        'fingerprint': manifest['fingerprint'],
+        'outputs': len(manifest['outputs']),
+    }, separators=(',', ':'), sort_keys=True))
     return 0
 
 
