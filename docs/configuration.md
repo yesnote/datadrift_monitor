@@ -16,6 +16,11 @@ pseudo-label settings onto every MMDetection stage config. The generated
 `resolved_config.json` is therefore the runtime source of truth rather than a
 descriptive copy of separate defaults.
 
+ADA-FNP uses an acquisition inference batch size of 4 and a final evaluation
+batch size of 4. These values live under the resolved `inference` mapping;
+they are independent of the per-domain training batch sizes and are included
+in the run fingerprint.
+
 The current supported keys are:
 
 | Kind | Key | Meaning |

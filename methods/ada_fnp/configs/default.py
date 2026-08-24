@@ -54,6 +54,10 @@ _CONFIG = {
         'constant_score_normalized_value': 0.5,
         'empty_detection_final_score': 0.0,
     },
+    'inference': {
+        'acquisition_batch_size': 4,
+        'evaluation_batch_size': 4,
+    },
     'pseudo_label': {
         'localization_variance_threshold': 0.1,
     },
