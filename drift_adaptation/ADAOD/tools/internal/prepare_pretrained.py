@@ -32,11 +32,6 @@ def _parser() -> argparse.ArgumentParser:
         required=True,
         help="Destination path. Relative paths are resolved from the repository root.",
     )
-    parser.add_argument(
-        "--offline",
-        action="store_true",
-        help="Only verify an existing cached file; do not access the network.",
-    )
     return parser
 
 
@@ -54,7 +49,6 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 output,
                 url=args.url,
                 expected_sha256=args.sha256,
-                allow_download=not args.offline,
                 progress=progress,
             )
         except (AssetPreparationError, ValueError) as exc:

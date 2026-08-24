@@ -27,8 +27,11 @@ The current supported keys are:
 
 Command-line overrides currently exposed by `tools.run_adaod` are acquisition
 budget percentage, seed, dataset, detector, runtime, and run directory. A
-normal run uses the deterministic path
-`work_dirs/runs/<method>/<scenario>/<detector>/seed-<seed>`.
+normal run uses the timestamped path
+`work_dirs/runs/<method>/<scenario>/<detector>/seed-<seed>/MM-DD-YYYY_HH_mm`,
+where the final component is the local start time on a 24-hour clock. An
+explicit `--run-directory` remains an exact override and does not receive an
+additional timestamp.
 
 All configured repository assets and dataset inputs use repository-relative
 paths. Workstation-specific dataset locations appear only as the targets of
@@ -37,13 +40,14 @@ resolve cache paths and replace the generic target-labeled and
 target-unlabeled annotation paths with run-local manifests for the currently
 committed pool.
 
-`--offline` forbids pretrained downloads. ADAOD refuses to start in a nonempty
-run directory; an interrupted experiment must be started again in a new or
-explicitly cleared directory. The internal 5k detector segments still form
-one continuous 40k optimization schedule. A segment continuation fails before
-MMEngine loads the preceding checkpoint unless it has exact model keys and
-tensor shapes, optimizer and parameter-scheduler state, and the expected
-global iteration metadata.
+The pinned pretrained checkpoint is reused when present and downloaded
+automatically when missing. A cached file with the wrong SHA-256 is rejected.
+ADAOD refuses to start in a nonempty run directory; an interrupted experiment
+must be started again in a new or explicitly cleared directory. The internal
+5k detector segments still form one continuous 40k optimization schedule. A
+segment continuation fails before MMEngine loads the preceding checkpoint
+unless it has exact model keys and tensor shapes, optimizer and
+parameter-scheduler state, and the expected global iteration metadata.
 
 The refactored manifest API and run state are version 2. Configuration uses
 the full `false_negative_predictor`, `domain_adaptation`, and descriptive
