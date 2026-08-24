@@ -16,6 +16,7 @@ from methods.common.external_assets import (
     AssetPreparationError,
     prepare_verified_asset,
 )
+from methods.common.progress import ProgressReporter
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -45,16 +46,23 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     if not output.is_absolute():
         output = PROJECT_ROOT / output
 
+    progress = ProgressReporter()
+    progress.start_stage(1, 1, 'prepare_pretrained_asset')
     try:
-        prepared_path = prepare_verified_asset(
-            output,
-            url=args.url,
-            expected_sha256=args.sha256,
-            allow_download=not args.offline,
-        )
-    except (AssetPreparationError, ValueError) as exc:
-        print("error: {}".format(exc), file=sys.stderr)
-        return 1
+        try:
+            prepared_path = prepare_verified_asset(
+                output,
+                url=args.url,
+                expected_sha256=args.sha256,
+                allow_download=not args.offline,
+                progress=progress,
+            )
+        except (AssetPreparationError, ValueError) as exc:
+            progress.close()
+            print("error: {}".format(exc), file=sys.stderr)
+            return 1
+    finally:
+        progress.close()
 
     print(prepared_path)
     return 0

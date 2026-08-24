@@ -58,6 +58,29 @@ from .run_files import (
 _DETECTOR_CHECKPOINT_TYPE = 'detector_checkpoint'
 _FALSE_NEGATIVE_CHECKPOINT_TYPE = 'false_negative_predictor_checkpoint'
 
+_SOURCE_TRAIN_LOG_KEYS = (
+    'source.loss_rpn_cls',
+    'source.loss_rpn_bbox',
+    'source.loss_cls',
+    'source.acc',
+    'source.loss_bbox',
+)
+_INITIAL_TRAIN_LOG_KEYS = (
+    *_SOURCE_TRAIN_LOG_KEYS,
+    'domain.loss_adv',
+)
+_ADAPTATION_TRAIN_LOG_KEYS = (
+    *_SOURCE_TRAIN_LOG_KEYS,
+    'domain.loss_adv',
+    'target_labeled.loss_rpn_cls',
+    'target_labeled.loss_rpn_bbox',
+    'target_labeled.loss_cls',
+    'target_labeled.acc',
+    'target_labeled.loss_bbox',
+    'target_unlabeled_strong.loss_rpn_cls',
+    'target_unlabeled_strong.loss_cls',
+)
+
 
 class MissingMmdetDependencyError(EnvironmentError):
     '''Raised before execution when the pinned OpenMMLab stack is unavailable.'''
@@ -83,6 +106,7 @@ class _MmdetRuntime:
     load_config: Callable[[Path], MutableMapping[str, Any]]
     import_custom_modules: Callable[[Mapping[str, Any]], None]
     build_runner: Callable[[Mapping[str, Any]], Any]
+    progress_hook: Callable[..., Any]
     build_model: Callable[[Mapping[str, Any]], nn.Module]
     build_dataloader: Callable[[Mapping[str, Any], int], Iterable]
     load_model_checkpoint: Callable[[nn.Module, Path], None]
@@ -95,6 +119,10 @@ def _load_mmdet_runtime() -> _MmdetRuntime:
         from mmengine.runner import Runner, load_checkpoint as mm_load_checkpoint
         from mmengine.utils import import_modules_from_strings
         from mmdet.registry import MODELS
+        from methods.common.mmdet.progress import (
+            AdaodConsoleQuietRunner,
+            TqdmProgressHook,
+        )
     except ImportError as error:
         raise MissingMmdetDependencyError(
             'ADA-FNP execution requires the pinned MMCV/MMEngine/MMDetection '
@@ -116,7 +144,8 @@ def _load_mmdet_runtime() -> _MmdetRuntime:
             import_custom_modules=False,
         ),
         import_custom_modules=import_custom_modules,
-        build_runner=Runner.from_cfg,
+        build_runner=AdaodConsoleQuietRunner.from_cfg,
+        progress_hook=TqdmProgressHook,
         build_model=MODELS.build,
         build_dataloader=lambda config, seed: Runner.build_dataloader(
             config,
@@ -226,6 +255,20 @@ class MmdetExecutionBackend:
             stage.stage_id,
         )
         runner = runtime.build_runner(config)
+        required_keys = (
+            _INITIAL_TRAIN_LOG_KEYS
+            if phase.mode is DetectorTrainingMode.INITIALIZATION
+            else _ADAPTATION_TRAIN_LOG_KEYS
+        )
+        runner.register_hook(
+            runtime.progress_hook(
+                context.progress,
+                task_total=phase.end_iteration - phase.start_iteration,
+                task_unit='iter',
+                required_keys=required_keys,
+            ),
+            priority='LOWEST',
+        )
         if continuation_checkpoint is not None:
             validate_detector_continuation_checkpoint(
                 continuation_checkpoint,
@@ -373,6 +416,7 @@ class MmdetExecutionBackend:
         context: ExecutionContext,
         samples: Sequence[SampleIdentity],
     ) -> Sequence[RawAcquisitionScore]:
+        context.progress.start_task(len(samples), 'image')
         runtime = self._runtime()
         detector_checkpoint = find_completed_checkpoint(
             context,
@@ -504,6 +548,7 @@ class MmdetExecutionBackend:
                         )
                     )
                     seen_samples.add(sample)
+                    context.progress.advance(1)
         if seen_samples != set(samples):
             raise ValueError('acquisition dataloader does not cover the pool')
         return tuple(records)
@@ -523,7 +568,15 @@ class MmdetExecutionBackend:
         config['work_dir'] = str(
             context.run_directory / 'mmengine/evaluation'
         )
-        metrics = dict(runtime.build_runner(config).test())
+        runner = runtime.build_runner(config)
+        runner.register_hook(
+            runtime.progress_hook(
+                context.progress,
+                task_unit='batch',
+            ),
+            priority='LOWEST',
+        )
+        metrics = dict(runner.test())
         ap50_keys = [
             key for key in metrics if key.split('/')[-1] == 'AP50'
         ]

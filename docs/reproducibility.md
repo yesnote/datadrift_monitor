@@ -30,8 +30,10 @@ only. This follows ADA-FNP Figure 2 and Equations 13--14 rather than PT's use of
 both views for labeled/source supervision. `FalseNegativePredictor` uses
 Softplus because a
 Sigmoid, despite its label in Figure 4, cannot regress raw false-negative
-counts greater than one. PT's gradient-norm-10 clipping is not applied because
-ADA-FNP does not specify it.
+counts greater than one. Detector optimization follows PT's global
+gradient-norm-10 clipping and rejects non-finite gradients before the
+optimizer step. This prevents a numerically invalid detector from being
+carried into later false-negative prediction stages.
 
 The MMDetection port matches PT's configured resize and augmentation
 distribution, but its OpenCV resize implementation and random-number

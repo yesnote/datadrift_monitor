@@ -27,6 +27,9 @@ The shared layer is intentionally small:
 - `methods/common/artifacts.py` owns atomic bytes/JSON, SHA256, contained
   artifact paths, and `ArtifactStore`.
 - `methods/common/external_assets.py` owns checksum-pinned HTTPS assets.
+- `methods/common/progress.py` owns the process-wide terminal progress line;
+  long-running stages receive the same reporter instead of creating nested
+  progress displays.
 - `methods/common/acquisition/score_artifacts.py` owns the common score and
   selection artifact schema.
 - `methods/common/data/cityscapes/layout.py`, `conversion.py`, and `reveal.py`
@@ -70,6 +73,13 @@ common StageRunner
         +-- next MMEngine detector segment
         `-- final teacher Detectron2-compatible Pascal-VOC evaluation
 ```
+
+`tools/run_adaod.py` creates one runtime-only progress reporter and passes it
+through `ExecutionContext`. `StageRunner`, MMEngine hooks, acquisition,
+dataset preparation, and verified asset downloads reset and update that same
+line. `methods/common/mmdet/progress.py` also separates the MMEngine console
+handler from its file handler: repetitive INFO output is hidden from the
+terminal while the timestamped file remains at INFO level.
 
 `methods/ada_fnp/execution/stages.py` is the boundary between method-neutral
 stage orchestration and the MMEngine/MMDetection runtime. It registers the

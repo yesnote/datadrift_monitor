@@ -8,10 +8,13 @@ import tempfile
 import urllib.error
 import urllib.request
 from pathlib import Path
-from typing import Union
+from typing import TYPE_CHECKING, Optional, Union
 from urllib.parse import urlparse
 
 from methods.common.artifacts import sha256_file
+
+if TYPE_CHECKING:
+    from methods.common.progress import ProgressReporter
 
 
 PathLike = Union[str, os.PathLike]
@@ -39,7 +42,22 @@ def _validate_source(url: str, expected_sha256: str) -> str:
     return expected_sha256.lower()
 
 
-def _download_https(url: str, destination: Path) -> None:
+def _response_content_length(response) -> Optional[int]:
+    value = response.headers.get('Content-Length')
+    if value is None:
+        return None
+    try:
+        length = int(value)
+    except (TypeError, ValueError):
+        return None
+    return length if length >= 0 else None
+
+
+def _download_https(
+    url: str,
+    destination: Path,
+    progress: Optional['ProgressReporter'] = None,
+) -> None:
     request = urllib.request.Request(
         url,
         headers={'User-Agent': 'ADAOD-asset-preparer/1'},
@@ -48,11 +66,29 @@ def _download_https(url: str, destination: Path) -> None:
         with urllib.request.urlopen(request) as response, destination.open(
             'wb'
         ) as output:
+            expected_size = _response_content_length(response)
+            bytes_written = 0
+            if progress is not None:
+                progress.start_task(expected_size, 'B')
             while True:
                 chunk = response.read(1024 * 1024)
                 if not chunk:
                     break
                 output.write(chunk)
+                if progress is not None:
+                    next_bytes_written = bytes_written + len(chunk)
+                    if (
+                        expected_size is not None
+                        and next_bytes_written > expected_size
+                    ):
+                        progress.start_task(
+                            None,
+                            'B',
+                            initial=bytes_written,
+                        )
+                        expected_size = None
+                    progress.advance(len(chunk))
+                    bytes_written = next_bytes_written
             output.flush()
             os.fsync(output.fileno())
     except (OSError, urllib.error.URLError) as error:
@@ -67,6 +103,7 @@ def prepare_verified_asset(
     url: str,
     expected_sha256: str,
     allow_download: bool = True,
+    progress: Optional['ProgressReporter'] = None,
 ) -> Path:
     '''Ensure that a destination contains exactly the pinned asset.'''
 
@@ -78,7 +115,7 @@ def prepare_verified_asset(
             raise AssetPreparationError(
                 'asset destination is not a file: {!s}'.format(destination_path)
             )
-        actual_digest = sha256_file(destination_path)
+        actual_digest = sha256_file(destination_path, progress=progress)
         if actual_digest != expected_digest:
             raise AssetVerificationError(
                 'cached asset SHA-256 mismatch for {!s}: expected {}, got {}'.format(
@@ -105,10 +142,10 @@ def prepare_verified_asset(
     os.close(temporary_fd)
     temporary_path = Path(temporary_name)
     try:
-        _download_https(url, temporary_path)
+        _download_https(url, temporary_path, progress)
         if not temporary_path.is_file():
             raise AssetPreparationError('asset downloader did not create a file')
-        actual_digest = sha256_file(temporary_path)
+        actual_digest = sha256_file(temporary_path, progress=progress)
         if actual_digest != expected_digest:
             raise AssetVerificationError(
                 'downloaded asset SHA-256 mismatch: expected {}, got {}'.format(

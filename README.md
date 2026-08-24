@@ -71,6 +71,13 @@ python -m tools.run_adaod --list-methods
 python -m tools.run_adaod --method ada-fnp --budget-percent 1 --seed 0
 ```
 
+Interactive runs use one reusable `tqdm` line for all 29 stages. Detector and
+false-negative predictor training show only total loss beside the current
+progress; pool scoring and evaluation show completed work. Routine
+MMEngine configuration and interval output are kept out of the terminal but
+remain in the timestamped `.log`, `vis_data/scalars.json`, and resolved run
+configuration. A successful run ends with one compact JSON summary.
+
 Use `--run-directory` to choose another repository-relative run directory and
 `--offline` to require all external assets to be present locally. Before a
 model run, install the pinned CUDA stack from `requirements/README.md` and run

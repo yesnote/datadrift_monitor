@@ -120,6 +120,7 @@ def _prepare_vgg16_caffe_weights(
         url=VGG16_CAFFE_URL,
         expected_sha256=VGG16_CAFFE_SHA256,
         allow_download=not context.offline,
+        progress=context.progress,
     ).resolve()
     if not path.is_file():
         raise FileNotFoundError('pretrained asset preparer returned no file')
@@ -169,6 +170,7 @@ def _prepare_cityscapes_to_foggy(
         context.repository_root,
         expected_train_images=int(dataset['target']['expected_train_images']),
         expected_val_images=int(dataset['target']['expected_eval_images']),
+        progress=context.progress,
     ))
     unlabeled_path = (
         dataset_cache_directory(context) / 'target_train_unlabeled.json'
@@ -286,6 +288,7 @@ def _train_false_negative_predictor(
         session.predictor,
         float(predictor_config['lr']),
     )
+    context.progress.start_task(end_iteration, 'iter')
     result = run_false_negative_training_steps(
         session.predictor,
         session.teacher,
@@ -297,6 +300,12 @@ def _train_false_negative_predictor(
         end_iteration=end_iteration,
         labeled_target_batch_provider=(
             session.labeled_target_batch_provider
+        ),
+        step_completed_callback=lambda completed_iteration, loss: (
+            context.progress.set_completed(
+                completed_iteration,
+                loss=loss,
+            )
         ),
     )
     save_checkpoint(

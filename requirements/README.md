@@ -18,6 +18,10 @@ install the matching prebuilt MMCV wheel with OpenMIM. Avoid an implicit MMCV
 source build, especially on native Windows. Install the remaining runtime
 packages only after the CUDA stack is selected.
 
+`tqdm` is a direct runtime dependency used only for the compact terminal
+progress line. It does not change the resolved scientific configuration,
+training schedule, or artifact formats.
+
 ```powershell
 python -m pip install torch==2.0.1 torchvision==0.15.2 `
   --index-url https://download.pytorch.org/whl/cu118

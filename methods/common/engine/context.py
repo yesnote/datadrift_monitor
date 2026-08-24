@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Mapping
 
 from methods.common.artifacts import ArtifactStore
+from methods.common.progress import NullProgressReporter, ProgressReporter
 
 from .state import RunStateStore
 
@@ -21,6 +22,7 @@ class ExecutionContext:
     state_store: RunStateStore
     artifact_store: ArtifactStore
     offline: bool = False
+    progress: ProgressReporter = field(default_factory=NullProgressReporter)
 
     def __post_init__(self) -> None:
         repository_root = Path(self.repository_root).resolve()

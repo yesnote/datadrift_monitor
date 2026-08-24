@@ -23,6 +23,7 @@ TeacherBatchExtractor = Callable[
     [nn.Module, Any], Tuple[torch.Tensor, torch.Tensor]
 ]
 BatchProvider = Callable[[int], Any]
+StepCompletedCallback = Callable[[int, float], None]
 
 
 @dataclass(frozen=True)
@@ -257,6 +258,7 @@ def run_false_negative_training_steps(
     start_iteration: int,
     end_iteration: int,
     labeled_target_batch_provider: Optional[BatchProvider] = None,
+    step_completed_callback: Optional[StepCompletedCallback] = None,
 ) -> FalseNegativeTrainingResult:
     '''Run one contiguous section of a predictor-training round.'''
 
@@ -281,6 +283,10 @@ def run_false_negative_training_steps(
         labeled_target_batch_provider
     ):
         raise TypeError('labeled-target provider must be callable or None')
+    if step_completed_callback is not None and not callable(
+        step_completed_callback
+    ):
+        raise TypeError('step-completed callback must be callable or None')
 
     previous_teacher_training = teacher.training
     losses = []
@@ -303,15 +309,16 @@ def run_false_negative_training_steps(
                         teacher_batch_extractor,
                         allow_empty=True,
                     )
-            losses.append(
-                train_false_negative_step(
-                    predictor,
-                    source,
-                    labeled_target,
-                    optimizer,
-                    scheduler,
-                )
+            loss = train_false_negative_step(
+                predictor,
+                source,
+                labeled_target,
+                optimizer,
+                scheduler,
             )
+            losses.append(loss)
+            if step_completed_callback is not None:
+                step_completed_callback(iteration + 1, loss)
     finally:
         teacher.train(previous_teacher_training)
     return FalseNegativeTrainingResult(end_iteration, tuple(losses))

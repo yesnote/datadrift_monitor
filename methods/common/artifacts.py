@@ -7,9 +7,12 @@ import json
 import os
 import tempfile
 from pathlib import Path
-from typing import Any, Mapping, Optional, Tuple, Union
+from typing import TYPE_CHECKING, Any, Mapping, Optional, Tuple, Union
 
 from methods.common.contracts import ArtifactRef
+
+if TYPE_CHECKING:
+    from methods.common.progress import ProgressReporter
 
 
 PathLike = Union[str, os.PathLike]
@@ -21,13 +24,32 @@ def sha256_bytes(payload: bytes) -> str:
     return hashlib.sha256(payload).hexdigest()
 
 
-def sha256_file(path: PathLike) -> str:
-    '''Return the hexadecimal SHA-256 digest of a file.'''
+def sha256_file(
+    path: PathLike,
+    *,
+    progress: Optional['ProgressReporter'] = None,
+) -> str:
+    '''Return a file digest and optionally report bytes read.'''
 
     digest = hashlib.sha256()
-    with Path(path).open('rb') as stream:
+    file_path = Path(path)
+    expected_size = file_path.stat().st_size
+    bytes_read = 0
+    if progress is not None:
+        progress.start_task(expected_size, 'B')
+    with file_path.open('rb') as stream:
         for block in iter(lambda: stream.read(1024 * 1024), b''):
             digest.update(block)
+            if progress is not None:
+                next_bytes_read = bytes_read + len(block)
+                if (
+                    expected_size is not None
+                    and next_bytes_read > expected_size
+                ):
+                    progress.start_task(None, 'B', initial=bytes_read)
+                    expected_size = None
+                progress.advance(len(block))
+                bytes_read = next_bytes_read
     return digest.hexdigest()
 
 

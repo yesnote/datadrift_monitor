@@ -45,14 +45,21 @@ class StageRunner:
         state = self.state_store.load()
         if state.completed_stages or state.active_stage_id is not None:
             raise RuntimeError('stage runner requires a fresh run directory')
-        for stage in plan.stages:
+        stage_count = len(plan.stages)
+        for stage_index, stage in enumerate(plan.stages, start=1):
             state.status = 'running'
             state.active_stage_id = stage.stage_id
             state.failed_stage_id = None
             self.state_store.save(state)
+            self.context.progress.start_stage(
+                stage_index,
+                stage_count,
+                stage.stage_id.replace('_', ' '),
+            )
             try:
                 result = dict(self._execute(stage))
             except Exception:
+                self.context.progress.fail_stage()
                 state = self.state_store.load()
                 state.status = 'failed'
                 state.failed_stage_id = stage.stage_id
@@ -66,6 +73,7 @@ class StageRunner:
             })
             state.active_stage_id = None
             self.state_store.save(state)
+            self.context.progress.finish_stage()
         state.status = 'complete'
         state.active_stage_id = None
         state.failed_stage_id = None

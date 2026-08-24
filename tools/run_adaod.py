@@ -21,6 +21,7 @@ from methods.common.engine.context import ExecutionContext
 from methods.common.engine.executor_loader import load_executor_factory
 from methods.common.engine.runner import StageRunner
 from methods.common.engine.state import RunStateStore
+from methods.common.progress import ProgressReporter
 from methods.common.registry import discover_methods, get_method
 from tools.common.config import compose_config, config_fingerprint
 from tools.common.paths import repository_relative_path, repository_root
@@ -102,22 +103,35 @@ def main(argv=None) -> int:
     plan = manifest.plan_factory(config)
     run_directory = _run_directory(config, args.run_directory)
     state_store = _prepare_run(config, run_directory)
-    context = ExecutionContext(
-        config=config,
-        repository_root=repository_root(),
-        run_directory=run_directory,
-        state_store=state_store,
-        artifact_store=ArtifactStore(run_directory),
-        offline=args.offline,
-    )
-    registry = load_executor_factory(manifest)(context)
-    StageRunner(registry, state_store, context).run(plan)
+    progress = ProgressReporter(enabled=os.environ.get('RANK', '0') == '0')
+    try:
+        context = ExecutionContext(
+            config=config,
+            repository_root=repository_root(),
+            run_directory=run_directory,
+            state_store=state_store,
+            artifact_store=ArtifactStore(run_directory),
+            offline=args.offline,
+            progress=progress,
+        )
+        registry = load_executor_factory(manifest)(context)
+        StageRunner(registry, state_store, context).run(plan)
+    finally:
+        progress.close()
     state = state_store.load()
-    print(json.dumps({
-        'run_directory': run_directory.relative_to(repository_root()).as_posix(),
+    summary = {
+        'run_directory': (
+            run_directory.relative_to(repository_root()).as_posix()
+        ),
         'status': state.status,
         'completed_stages': len(state.completed_stages),
-    }, indent=2))
+    }
+    if state.completed_stages:
+        final_result = state.completed_stages[-1].get('result', {})
+        metrics = final_result.get('metrics', {})
+        if 'AP50' in metrics:
+            summary['AP50'] = metrics['AP50']
+    print(json.dumps(summary, separators=(',', ':')))
     return 0
 
 
