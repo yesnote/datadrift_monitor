@@ -61,8 +61,8 @@ python tools/internal/prepare_pretrained.py `
 ```
 
 The loader verifies the SHA256 before using the checkpoint and imports only
-the VGG convolution tensors. A missing or corrupt asset is an explicit error;
-`--offline` disables downloading.
+the VGG convolution tensors. An existing valid file is reused. A missing file
+is downloaded automatically, while a corrupt cached file is an explicit error.
 
 ## Inspect or run ADA-FNP
 
@@ -78,9 +78,11 @@ MMEngine configuration and interval output are kept out of the terminal but
 remain in the timestamped `.log`, `vis_data/scalars.json`, and resolved run
 configuration. A successful run ends with one compact JSON summary.
 
-Use `--run-directory` to choose another repository-relative run directory and
-`--offline` to require all external assets to be present locally. Before a
-model run, install the pinned CUDA stack from `requirements/README.md` and run
+By default, each execution is stored under
+`work_dirs/runs/<method>/<scenario>/<detector>/seed-<seed>/MM-DD-YYYY_HH_mm`
+using the local 24-hour clock. Use `--run-directory` to choose an exact
+repository-relative run directory instead. Before a model run, install the
+pinned CUDA stack from `requirements/README.md` and run
 `python tools/check_environment.py`.
 
 The methods-structure refactor introduced manifest API version 2, run-state

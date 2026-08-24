@@ -119,7 +119,6 @@ def _prepare_vgg16_caffe_weights(
         _repository_path(context, VGG16_CAFFE_PATH),
         url=VGG16_CAFFE_URL,
         expected_sha256=VGG16_CAFFE_SHA256,
-        allow_download=not context.offline,
         progress=context.progress,
     ).resolve()
     if not path.is_file():

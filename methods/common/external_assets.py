@@ -102,7 +102,6 @@ def prepare_verified_asset(
     *,
     url: str,
     expected_sha256: str,
-    allow_download: bool = True,
     progress: Optional['ProgressReporter'] = None,
 ) -> Path:
     '''Ensure that a destination contains exactly the pinned asset.'''
@@ -125,13 +124,6 @@ def prepare_verified_asset(
                 )
             )
         return destination_path
-
-    if not allow_download:
-        raise AssetPreparationError(
-            'asset is missing and downloads are disabled: {!s}'.format(
-                destination_path
-            )
-        )
 
     destination_path.parent.mkdir(parents=True, exist_ok=True)
     temporary_fd, temporary_name = tempfile.mkstemp(

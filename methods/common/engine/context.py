@@ -21,7 +21,6 @@ class ExecutionContext:
     run_directory: Path
     state_store: RunStateStore
     artifact_store: ArtifactStore
-    offline: bool = False
     progress: ProgressReporter = field(default_factory=NullProgressReporter)
 
     def __post_init__(self) -> None:

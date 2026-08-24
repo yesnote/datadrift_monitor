@@ -122,8 +122,16 @@ is returned on the 0--100 percentage scale.
 
 ```powershell
 python -m tools.run_adaod --method ada-fnp --budget-percent 1 --seed 0
-python -m tools.run_adaod --method ada-fnp --budget-percent 1 --seed 0 --offline
 ```
+
+Without `--run-directory`, each run is written below
+`work_dirs/runs/ada-fnp/cityscapes-to-foggy/faster-rcnn-vgg16/seed-<seed>/`
+in a local-time `MM-DD-YYYY_HH_mm` directory. Passing `--run-directory`
+continues to select the exact repository-relative output path.
+
+The pinned Caffe VGG16 checkpoint is SHA-256 verified when present and
+downloaded automatically when missing. A mismatched cached file stops the run
+instead of being overwritten or used silently.
 
 The interactive terminal contains one `tqdm` line. During detector and
 false-negative predictor optimization its only scalar is total `loss`.

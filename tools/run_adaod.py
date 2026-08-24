@@ -1,6 +1,7 @@
 '''Run an active domain-adaptation method from its resolved configuration.'''
 
 import argparse
+from datetime import datetime
 import json
 import os
 from pathlib import Path, PurePosixPath
@@ -38,23 +39,23 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument('--runtime', default='default')
     parser.add_argument(
         '--run-directory',
-        help='repository-relative run directory (a deterministic default is used)',
-    )
-    parser.add_argument(
-        '--offline', action='store_true',
-        help='forbid downloads and require cached external assets',
+        help='repository-relative run directory (a timestamped default is used)',
     )
     return parser
 
 
 def _run_directory(config, configured_value=None) -> Path:
     if configured_value is None:
-        configured_value = '{}/runs/{}/{}/{}/seed-{}'.format(
+        run_timestamp = datetime.now().astimezone().strftime(
+            '%m-%d-%Y_%H_%M'
+        )
+        configured_value = '{}/runs/{}/{}/{}/seed-{}/{}'.format(
             config['runtime']['work_root'],
             config['method'],
             config['scenario'],
             config['detector']['name'],
             config['seed'],
+            run_timestamp,
         )
     relative = PurePosixPath(repository_relative_path(configured_value))
     return repository_root().joinpath(*relative.parts).resolve()
@@ -111,7 +112,6 @@ def main(argv=None) -> int:
             run_directory=run_directory,
             state_store=state_store,
             artifact_store=ArtifactStore(run_directory),
-            offline=args.offline,
             progress=progress,
         )
         registry = load_executor_factory(manifest)(context)
