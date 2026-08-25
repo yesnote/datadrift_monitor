@@ -201,6 +201,9 @@ def apply_resolved_experiment_config(
     model['localization_variance_threshold'] = float(
         pseudo_label['localization_variance_threshold']
     )
+    model['confidence_threshold'] = float(
+        pseudo_label['confidence_threshold']
+    )
 
     source_batch_size = int(training['source_batch_size'])
     target_labeled_batch_size = int(

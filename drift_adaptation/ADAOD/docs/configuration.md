@@ -21,6 +21,12 @@ batch size of 4. These values live under the resolved `inference` mapping;
 they are independent of the per-domain training batch sizes and are included
 in the run fingerprint.
 
+The resolved `pseudo_label` mapping fixes Supplementary indicator thresholds:
+`localization_variance_threshold=0.1` in RoI bbox-delta space and
+`confidence_threshold=0.5` over the mean foreground class probability. The
+detector's separate 0.05 score cutoff only removes low-score candidates before
+NMS and is not the pseudo-label confidence threshold.
+
 The current supported keys are:
 
 | Kind | Key | Meaning |

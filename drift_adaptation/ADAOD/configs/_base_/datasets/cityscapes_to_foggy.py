@@ -60,7 +60,7 @@ source_train_pipeline = [
     dict(
         type='MultiBranch',
         branch_field=branch_field,
-        source=weak_pipeline,
+        source=strong_pipeline,
     ),
 ]
 target_labeled_pipeline = [
@@ -70,7 +70,7 @@ target_labeled_pipeline = [
     dict(
         type='MultiBranch',
         branch_field=branch_field,
-        target_labeled=weak_pipeline,
+        target_labeled=strong_pipeline,
     ),
 ]
 target_unlabeled_pipeline = [

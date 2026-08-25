@@ -22,6 +22,9 @@ _MC_PASSES = _METHOD_CONFIG['acquisition']['mc_passes']
 _LOCALIZATION_VARIANCE_THRESHOLD = _METHOD_CONFIG['pseudo_label'][
     'localization_variance_threshold'
 ]
+_CONFIDENCE_THRESHOLD = _METHOD_CONFIG['pseudo_label'][
+    'confidence_threshold'
+]
 _SOURCE_BATCH_SIZE = _METHOD_CONFIG['training']['source_batch_size']
 _TARGET_LABELED_BATCH_SIZE = _METHOD_CONFIG['training'][
     'target_labeled_batch_size'
@@ -140,6 +143,7 @@ model = dict(
     enable_unsupervised_loss=False,
     mc_passes=_MC_PASSES,
     localization_variance_threshold=_LOCALIZATION_VARIANCE_THRESHOLD,
+    confidence_threshold=_CONFIDENCE_THRESHOLD,
     semi_train_cfg=dict(freeze_teacher=True),
     semi_test_cfg=dict(
         predict_on='teacher',
@@ -217,6 +221,7 @@ test_cfg = dict(type='TestLoop')
 
 del (
     _ADAPTATION_BRANCHES,
+    _CONFIDENCE_THRESHOLD,
     _DROPOUT_PROBABILITY,
     _INITIAL_BRANCHES,
     _LOCALIZATION_VARIANCE_THRESHOLD,

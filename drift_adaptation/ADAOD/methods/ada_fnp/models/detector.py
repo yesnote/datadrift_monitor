@@ -28,6 +28,12 @@ SOURCE_BRANCH = 'source'
 TARGET_LABELED_BRANCH = 'target_labeled'
 TARGET_UNLABELED_WEAK_BRANCH = 'target_unlabeled_weak'
 TARGET_UNLABELED_STRONG_BRANCH = 'target_unlabeled_strong'
+_PSEUDO_METRIC_KEYS = (
+    'target_unlabeled_strong.pseudo_candidates',
+    'target_unlabeled_strong.pseudo_variance_kept',
+    'target_unlabeled_strong.pseudo_confidence_kept',
+    'target_unlabeled_strong.pseudo_kept',
+)
 _ALLOWED_BRANCHES = {
     SOURCE_BRANCH,
     TARGET_LABELED_BRANCH,
@@ -277,6 +283,7 @@ class AdaFnpDetector(SemiBaseDetector):
         enable_unsupervised_loss: bool = True,
         mc_passes: int = 10,
         localization_variance_threshold: float = 0.1,
+        confidence_threshold: float = 0.5,
         semi_train_cfg: Optional[Mapping] = None,
         semi_test_cfg: Optional[Mapping] = None,
         data_preprocessor: Optional[Mapping] = None,
@@ -290,6 +297,8 @@ class AdaFnpDetector(SemiBaseDetector):
             raise ValueError(
                 'localization_variance_threshold must be non-negative'
             )
+        if confidence_threshold < 0 or confidence_threshold > 1:
+            raise ValueError('confidence_threshold must be in [0, 1]')
         if domain_discriminator is None:
             domain_discriminator = dict(
                 type='AdaFnpDomainDiscriminator',
@@ -323,6 +332,7 @@ class AdaFnpDetector(SemiBaseDetector):
         self.localization_variance_threshold = float(
             localization_variance_threshold
         )
+        self.confidence_threshold = float(confidence_threshold)
 
     @staticmethod
     def _clone_without_unlabeled_annotations(data_samples):
@@ -359,6 +369,12 @@ class AdaFnpDetector(SemiBaseDetector):
                 'teacher predictions and strong samples must align'
             )
 
+        pseudo_metrics = {
+            key: weak_inputs.new_zeros(()) for key in _PSEUDO_METRIC_KEYS
+        }
+        candidate_key, variance_key, confidence_key, kept_key = (
+            _PSEUDO_METRIC_KEYS
+        )
         for result, strong_sample in zip(
             teacher_results, clean_strong_samples
         ):
@@ -368,13 +384,30 @@ class AdaFnpDetector(SemiBaseDetector):
                 result.scores,
                 result.box_variances,
                 variance_threshold=self.localization_variance_threshold,
+                confidence_threshold=self.confidence_threshold,
+            )
+            pseudo_metrics[candidate_key] = (
+                pseudo_metrics[candidate_key]
+                + result.scores.new_tensor(len(result.scores))
+            )
+            pseudo_metrics[variance_key] = (
+                pseudo_metrics[variance_key]
+                + pseudo['variance_keep'].sum().to(weak_inputs.dtype)
+            )
+            pseudo_metrics[confidence_key] = (
+                pseudo_metrics[confidence_key]
+                + pseudo['confidence_keep'].sum().to(weak_inputs.dtype)
+            )
+            pseudo_metrics[kept_key] = (
+                pseudo_metrics[kept_key]
+                + pseudo['keep'].sum().to(weak_inputs.dtype)
             )
             gt_instances = InstanceData()
             gt_instances.bboxes = pseudo['boxes']
             gt_instances.labels = pseudo['labels']
             gt_instances.scores = pseudo['scores']
             strong_sample.gt_instances = gt_instances
-        return clean_strong_samples
+        return clean_strong_samples, pseudo_metrics
 
     def loss(
         self,
@@ -397,11 +430,16 @@ class AdaFnpDetector(SemiBaseDetector):
             )
 
         target_unlabeled_strong_losses = None
+        pseudo_metrics = {}
         if self.enable_unsupervised_loss:
-            pseudo_strong_samples = self._generate_strong_pseudo_samples(
-                multi_batch_inputs[TARGET_UNLABELED_WEAK_BRANCH],
-                multi_batch_data_samples[TARGET_UNLABELED_WEAK_BRANCH],
-                multi_batch_data_samples[TARGET_UNLABELED_STRONG_BRANCH],
+            pseudo_strong_samples, pseudo_metrics = (
+                self._generate_strong_pseudo_samples(
+                    multi_batch_inputs[TARGET_UNLABELED_WEAK_BRANCH],
+                    multi_batch_data_samples[TARGET_UNLABELED_WEAK_BRANCH],
+                    multi_batch_data_samples[
+                        TARGET_UNLABELED_STRONG_BRANCH
+                    ],
+                )
             )
             target_unlabeled_strong_losses = self.student.loss(
                 multi_batch_inputs[TARGET_UNLABELED_STRONG_BRANCH],
@@ -414,6 +452,7 @@ class AdaFnpDetector(SemiBaseDetector):
             target_unlabeled_strong_losses,
             enable_unsupervised_loss=self.enable_unsupervised_loss,
         )
+        losses.update(pseudo_metrics)
 
         source_logits = self.student.domain_logits(
             multi_batch_inputs[SOURCE_BRANCH]

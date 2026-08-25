@@ -18,6 +18,11 @@ one record instead of using method-specific file readers. External downloads
 use `methods/common/external_assets.py`, which verifies the pinned checksum
 before atomically installing an asset.
 
+ADA-FNP score metadata records the MC pass count, `roi_bbox_delta` variance
+space, localization threshold, and confidence threshold. Detector scalar logs
+also retain pseudo-label candidate, variance-pass, confidence-pass, and final
+keep counts without adding them to terminal progress output.
+
 Run-local pool state, selected-only labeled manifests, annotation-free
 unlabeled manifests, and preceding-checkpoint lookup belong to
 `methods/ada_fnp/execution/run_files.py`. Detector checkpoint structure and

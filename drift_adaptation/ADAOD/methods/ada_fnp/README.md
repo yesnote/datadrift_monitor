@@ -82,23 +82,24 @@ The dataset uses exactly eight labels in PT registry order: `truck`, `car`,
 `persongroup` and `cargroup` are excluded rather than converted to crowd
 instances.
 
-Source and selected target samples use the weak view only; weak-teacher and
-strong-student views are created only for the unlabeled target branch. PT's
-trainer applies both views to labeled/source supervision, whereas ADA-FNP
-Figure 2 and Equations 13--14 describe the weak/strong split for unlabeled
-target data. The baseline records this as an explicit paper-first decision.
+Source and selected target samples receive PT strong photometric augmentation,
+as specified by Supplementary Equations S2 and S9. Unlabeled target samples
+retain the weak-teacher and strong-student views used for pseudo-labeling.
 
 ## ADA-FNP scoring decisions
 
 False-negative targets use score-ordered, class-aware, one-to-one matching at
-IoU 0.5 or greater over at most 100 post-NMS detections, with no
-additional confidence threshold. MC Dropout uses ten fixed-proposal RoI passes
-with dropout 0.1 after both fully connected layers. Class probabilities and
-class-specific boxes are averaged before one multiclass NMS; localization
-variance follows the selected proposal/class pair.
+IoU 0.5 or greater over at most 100 post-NMS detections. MC Dropout uses ten
+fixed-proposal RoI passes with dropout 0.1 after both fully connected layers.
+Mean foreground probability selects the class for each proposal. The matching
+class-specific bbox-head delta is averaged and decoded once, while its
+unbiased delta variance is retained through one class-aware NMS call.
+Pseudo-labels require both mean delta variance at most 0.1 and foreground
+confidence at least 0.5.
 
 The acquisition artifact stores the four raw components, their normalized
-values, source-domain probability, detection count, and final product. Images
+values, source-domain probability, detection count, final product, and the MC
+delta-variance and pseudo-label threshold metadata. Images
 with no detections receive final score zero. Each scoring and training stage
 materializes `target_train_unlabeled_pool_NN.json` from the committed pool, so
 previously acquired samples cannot re-enter the unlabeled loader.
