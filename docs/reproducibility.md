@@ -21,13 +21,12 @@ comparing AP50 results.
 | schedule | linear warm-up 0--400 from 0.001; drops at 30k and 35k |
 | teacher | initialized from student at 5k; EMA decay 0.9996 thereafter |
 | false-negative predictor | Softplus count output; fresh 2k-step optimization per round, LR 1e-4 |
+| pseudo-label filter | RoI bbox-delta variance at most 0.1 and foreground confidence at least 0.5 |
 | evaluation | PT-compatible VOC2012 continuous AP at strict IoU greater than 0.5 |
 
-Two choices resolve paper/reference ambiguity rather than establish confirmed
-equivalence. Only the unlabeled target data receives weak-teacher and
-strong-student views; source and selected-target supervision use the weak view
-only. This follows ADA-FNP Figure 2 and Equations 13--14 rather than PT's use of
-both views for labeled/source supervision. `FalseNegativePredictor` uses
+Source and selected-target supervision receive PT strong photometric
+augmentation according to Supplementary Equations S2 and S9. Unlabeled target
+data uses weak-teacher and strong-student views. `FalseNegativePredictor` uses
 Softplus because a
 Sigmoid, despite its label in Figure 4, cannot regress raw false-negative
 counts greater than one. Detector optimization follows PT's global
@@ -65,7 +64,9 @@ are removed from subsequent unlabeled training and scoring.
 
 Every acquisition-score record stores raw false-negative, localization,
 entropy, and diversity values; their normalized values; source-domain
-probability; detection count; and the final product. Stored scores are
+probability; detection count; and the final product. Artifact metadata records
+the MC pass count, RoI bbox-delta variance space, and both pseudo-label
+thresholds. Stored scores are
 recomputed and checked before selection. Empty-detection images have final
 score zero.
 

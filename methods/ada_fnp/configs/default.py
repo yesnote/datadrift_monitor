@@ -60,6 +60,7 @@ _CONFIG = {
     },
     'pseudo_label': {
         'localization_variance_threshold': 0.1,
+        'confidence_threshold': 0.5,
     },
 }
 

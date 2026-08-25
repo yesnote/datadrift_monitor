@@ -369,10 +369,21 @@ def _score_unlabeled_pool(
         ),
     )
     raw_by_sample = {record.sample: record for record in raw_records}
+    pseudo_label_config = context.config['pseudo_label']
     artifact = AcquisitionArtifact(
         artifact_type='acquisition_scores',
         producer_stage_id=stage.stage_id,
-        metadata={'round': round_index},
+        metadata={
+            'round': round_index,
+            'mc_passes': int(acquisition_config['mc_passes']),
+            'bbox_variance_space': 'roi_bbox_delta',
+            'localization_variance_threshold': float(
+                pseudo_label_config['localization_variance_threshold']
+            ),
+            'confidence_threshold': float(
+                pseudo_label_config['confidence_threshold']
+            ),
+        },
         records=tuple(
             AcquisitionArtifactRecord(
                 score.sample,
