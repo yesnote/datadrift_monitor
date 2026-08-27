@@ -62,7 +62,7 @@ def domain_discriminator_loss(
     source_logits: Tensor,
     target_logits: Tensor,
 ) -> Tensor:
-    '''Compute balanced source=1 and target=0 discriminator loss.'''
+    '''Sum separately averaged source=1 and target=0 discriminator losses.'''
 
     source_loss = functional.binary_cross_entropy_with_logits(
         source_logits,
@@ -72,7 +72,7 @@ def domain_discriminator_loss(
         target_logits,
         torch.zeros_like(target_logits),
     )
-    return 0.5 * (source_loss + target_loss)
+    return source_loss + target_loss
 
 
 def compute_multi_target_domain_loss(
