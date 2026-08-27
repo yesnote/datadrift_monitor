@@ -1,0 +1,1 @@
+'''AADA acquisition score.'''

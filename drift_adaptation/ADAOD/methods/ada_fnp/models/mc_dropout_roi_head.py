@@ -6,8 +6,11 @@ import torch
 from mmcv.ops import batched_nms
 from torch import Tensor
 from mmengine.structures import InstanceData
-from mmdet.models.roi_heads import StandardRoIHead
 from mmdet.structures.bbox import bbox2roi, get_box_tensor
+
+from methods.common.mmdet.models.roi_heads.class_probability_roi_head import (
+    ClassProbabilityRoIHead,
+)
 
 P = TypeVar('P')
 R = TypeVar('R')
@@ -21,23 +24,8 @@ def run_rpn_once_for_fixed_roi(
     return roi_predict(proposals)
 
 
-class AdaFnpMonteCarloDropoutRoIHead(StandardRoIHead):
+class AdaFnpMonteCarloDropoutRoIHead(ClassProbabilityRoIHead):
     '''Standard Faster R-CNN RoI head with fixed-proposal MC inference.'''
-
-    def _fixed_bbox_features(
-        self, features: Tuple[Tensor, ...], rois: Tensor
-    ) -> Tensor:
-        bbox_features = self.bbox_roi_extractor(
-            features[:self.bbox_roi_extractor.num_inputs], rois
-        )
-        if self.with_shared_head:
-            bbox_features = self.shared_head(bbox_features)
-        return bbox_features
-
-    def _class_probabilities(self, class_logits: Tensor) -> Tensor:
-        if self.bbox_head.custom_cls_channels:
-            return self.bbox_head.loss_cls.get_activation(class_logits)
-        return class_logits.softmax(dim=-1)
 
     def _empty_fixed_result(self, reference: Tensor) -> InstanceData:
         result = InstanceData()

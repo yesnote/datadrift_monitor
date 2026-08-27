@@ -13,7 +13,6 @@ from methods.ada_fnp.models.detector import (
     AdaFnpDetector,
     AdaFnpDetectorBranch,
 )
-from methods.ada_fnp.models.domain_adaptation import AdaFnpDomainDiscriminator
 from methods.ada_fnp.models.mc_dropout_roi_head import (
     AdaFnpMonteCarloDropoutRoIHead,
 )
@@ -21,8 +20,6 @@ from methods.ada_fnp.probabilistic_teacher_augmentation import (
     ProbabilisticTeacherStrongAugmentation,
 )
 
-MODELS.register_module(
-    name='AdaFnpDomainDiscriminator', module=AdaFnpDomainDiscriminator)
 MODELS.register_module(
     name='AdaFnpDetectorBranch', module=AdaFnpDetectorBranch)
 MODELS.register_module(name='AdaFnpDetector', module=AdaFnpDetector)

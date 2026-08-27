@@ -1,0 +1,1 @@
+'''AADA model components.'''

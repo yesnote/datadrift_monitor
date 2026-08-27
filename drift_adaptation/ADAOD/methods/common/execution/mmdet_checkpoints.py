@@ -13,13 +13,10 @@ from methods.common.engine.checkpoint import load_checkpoint
 from methods.common.engine.context import ExecutionContext
 
 
-_DETECTOR_EXECUTOR_KEY = 'ada_fnp.train_detector'
-_DETECTOR_CHECKPOINT_TYPE = 'detector_checkpoint'
+DETECTOR_CHECKPOINT_TYPE = 'detector_checkpoint'
 
 
 def unwrap_distributed_model(model: nn.Module) -> nn.Module:
-    '''Return the underlying model wrapped by distributed containers.'''
-
     while hasattr(model, 'module'):
         model = model.module
     return model
@@ -31,9 +28,8 @@ def validate_detector_continuation_checkpoint(
     expected_iterations: Sequence[int],
     *,
     context: ExecutionContext,
+    executor_key: str,
 ) -> None:
-    '''Validate a detector checkpoint before continuing the 40k schedule.'''
-
     checkpoint_path = Path(checkpoint_path).resolve()
     checkpoint_root = (context.run_directory / 'checkpoints').resolve()
     try:
@@ -43,13 +39,12 @@ def validate_detector_continuation_checkpoint(
             'detector continuation checkpoint must stay in the run checkpoint '
             'directory'
         ) from error
-
     relative_path = checkpoint_path.relative_to(
         context.run_directory
     ).as_posix()
     matching_artifacts = []
     for completed_stage in context.state_store.load().completed_stages:
-        if completed_stage.get('executor_key') != _DETECTOR_EXECUTOR_KEY:
+        if completed_stage.get('executor_key') != executor_key:
             continue
         artifact_value = completed_stage.get('result', {}).get(
             'checkpoint_artifact'
@@ -60,7 +55,7 @@ def validate_detector_continuation_checkpoint(
         ):
             continue
         artifact = ArtifactRef(**artifact_value)
-        if artifact.artifact_type != _DETECTOR_CHECKPOINT_TYPE:
+        if artifact.artifact_type != DETECTOR_CHECKPOINT_TYPE:
             raise ValueError(
                 'continuation artifact is not a detector checkpoint'
             )
@@ -69,9 +64,7 @@ def validate_detector_continuation_checkpoint(
                 'continuation artifact producer does not match its stage'
             )
         if artifact.artifact_id != artifact.sha256:
-            raise ValueError(
-                'continuation artifact ID must equal its SHA256'
-            )
+            raise ValueError('continuation artifact ID must equal its SHA256')
         matching_artifacts.append(artifact)
     if len(matching_artifacts) != 1:
         raise ValueError(
@@ -79,9 +72,6 @@ def validate_detector_continuation_checkpoint(
             'artifact'
         )
     context.artifact_store.verify(matching_artifacts[0])
-
-    # MMEngine checkpoints contain HistoryBuffer objects, so the full pickle
-    # load is permitted only after the run-local path and digest are verified.
     checkpoint = load_checkpoint(checkpoint_path)
     if not isinstance(checkpoint, Mapping):
         raise TypeError('detector continuation checkpoint must be a mapping')
@@ -93,7 +83,6 @@ def validate_detector_continuation_checkpoint(
                 ', '.join(missing_sections)
             )
         )
-
     state_dict = checkpoint['state_dict']
     if not isinstance(state_dict, Mapping):
         raise TypeError('detector checkpoint state_dict must be a mapping')
@@ -108,7 +97,6 @@ def validate_detector_continuation_checkpoint(
             key[len('module.'):]: value
             for key, value in checkpoint_state.items()
         }
-
     missing_keys = sorted(set(expected_state).difference(checkpoint_state))
     unexpected_keys = sorted(set(checkpoint_state).difference(expected_state))
     if missing_keys or unexpected_keys:
@@ -128,13 +116,10 @@ def validate_detector_continuation_checkpoint(
                 ', '.join(shape_mismatches)
             )
         )
-
     optimizer_state = checkpoint['optimizer']
     scheduler_state = checkpoint['param_schedulers']
     if not isinstance(optimizer_state, Mapping) or not optimizer_state:
-        raise ValueError(
-            'detector continuation requires nonempty optimizer state'
-        )
+        raise ValueError('detector continuation requires nonempty optimizer state')
     if (
         not isinstance(scheduler_state, (Mapping, Sequence))
         or isinstance(scheduler_state, (str, bytes))
@@ -143,7 +128,6 @@ def validate_detector_continuation_checkpoint(
         raise ValueError(
             'detector continuation requires nonempty param-scheduler state'
         )
-
     meta = checkpoint['meta']
     if not isinstance(meta, Mapping):
         raise TypeError('detector checkpoint meta must be a mapping')
@@ -152,7 +136,8 @@ def validate_detector_continuation_checkpoint(
     if global_iteration not in expected_iteration_set:
         raise ValueError(
             'detector checkpoint global iteration {} is not one of {}'.format(
-                global_iteration, tuple(expected_iterations)
+                global_iteration,
+                tuple(expected_iterations),
             )
         )
     runner_iteration = meta.get('iter')
@@ -168,17 +153,13 @@ def bind_exact_continuation_iteration(
     checkpoint_path: Path,
     expected_iteration: int,
 ) -> None:
-    '''Normalize MMEngine's offset while continuing a detector segment.'''
-
     checkpoint_path = Path(checkpoint_path).resolve()
     original_load_checkpoint = runner.load_checkpoint
 
     def load_checkpoint_with_exact_iteration(filename, *args, **kwargs):
         loaded = original_load_checkpoint(filename, *args, **kwargs)
         if Path(str(filename)).resolve() != checkpoint_path:
-            raise ValueError(
-                'Runner loaded an unexpected continuation checkpoint'
-            )
+            raise ValueError('Runner loaded an unexpected continuation checkpoint')
         meta = loaded.get('meta')
         if not isinstance(meta, MutableMapping):
             raise TypeError('detector checkpoint meta must be mutable')
@@ -198,8 +179,6 @@ def save_atomic_runner_checkpoint(
     stage: StageSpec,
     iteration: int,
 ) -> Path:
-    '''Persist detector continuation state and atomically install the file.'''
-
     checkpoint_path = Path(checkpoint_path)
     checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
     temporary_path = checkpoint_path.with_name(

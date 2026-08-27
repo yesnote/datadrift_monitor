@@ -1,4 +1,4 @@
-'''ADA-FNP values projected onto shared MMDetection configuration plumbing.'''
+'''AADA values projected onto shared MMDetection configuration plumbing.'''
 
 from pathlib import Path
 from typing import Any, MutableMapping, Optional
@@ -6,7 +6,6 @@ from typing import Any, MutableMapping, Optional
 from methods.common.engine.context import ExecutionContext
 from methods.common.mmdet.configuration import (
     build_segment_config,
-    build_single_dataset_dataloader,
     configure_dataloader,
     load_method_config,
 )
@@ -14,50 +13,19 @@ from methods.common.protocols.ada_fnp_detection import DetectorTrainingPhase
 
 
 def _config_path(context: ExecutionContext) -> Path:
-    return (
-        context.repository_root
-        / 'methods/ada_fnp/configs/cityscapes_to_foggy.py'
-    )
+    return context.repository_root / 'methods/aada/configs/cityscapes_to_foggy.py'
 
 
 def apply_resolved_experiment_config(
     config: MutableMapping[str, Any],
     context: ExecutionContext,
 ) -> None:
-    resolved = context.config
-    training = resolved['training']
-    detector = resolved['detector']
-    domain_adaptation = resolved['domain_adaptation']
-    acquisition = resolved['acquisition']
-    pseudo_label = resolved['pseudo_label']
+    domain_adaptation = context.config['domain_adaptation']
     model = config['model']
-    bbox_head = model['detector']['roi_head']['bbox_head']
-    bbox_head['dropout'] = float(detector['dropout_probability'])
     model['grl_scale'] = float(
         domain_adaptation['gradient_reversal_scale']
     )
     model['domain_loss_weight'] = float(domain_adaptation['loss_weight'])
-    model['mc_passes'] = int(acquisition['mc_passes'])
-    model['localization_variance_threshold'] = float(
-        pseudo_label['localization_variance_threshold']
-    )
-    model['confidence_threshold'] = float(
-        pseudo_label['confidence_threshold']
-    )
-    teacher_decay = float(training['teacher_ema_decay'])
-    if not 0.0 <= teacher_decay <= 1.0:
-        raise ValueError('teacher EMA decay must be between zero and one')
-    for mode in ('unlabeled_adaptation', 'adaptation'):
-        teacher_hooks = [
-            hook
-            for hook in config['stage_overrides'][mode]['custom_hooks']
-            if hook.get('type') == 'MeanTeacherHook'
-        ]
-        if len(teacher_hooks) != 1:
-            raise ValueError(
-                '{} requires exactly one MeanTeacherHook'.format(mode)
-            )
-        teacher_hooks[0]['momentum'] = 1.0 - teacher_decay
 
 
 def load_base_config(
@@ -94,7 +62,6 @@ def build_detector_stage_config(
 
 __all__ = [
     'build_detector_stage_config',
-    'build_single_dataset_dataloader',
     'configure_dataloader',
     'load_base_config',
 ]

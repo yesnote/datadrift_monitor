@@ -14,8 +14,8 @@ resolves a deterministic configuration, imports the executor module, and gives
 the resulting stage list and executor registry to the common runner. The
 runner knows executor keys and artifacts but contains no method-name branch.
 
-Concrete ADA-FNP models, training logic, acquisition logic, stage definitions,
-and execution adapters live under `methods/ada_fnp`. Behavior is placed in
+Concrete model, training, acquisition, stage, and execution code lives under
+`methods/<method>`. Behavior is placed in
 `methods/common` only when its input/output contract and lifecycle are shared
 by more than one method or are inherently method-neutral. The `mmdet` package
 does not import project modules; project models, transforms, and metrics enter
@@ -32,10 +32,19 @@ The shared layer is intentionally small:
   progress displays.
 - `methods/common/acquisition/score_artifacts.py` owns the common score and
   selection artifact schema.
+- `methods/common/acquisition/budget.py` and `domain_uncertainty.py` own the
+  percentage budget and entropy/domain-diversity primitives shared by
+  ADA-FNP and AADA.
 - `methods/common/data/cityscapes/layout.py`, `conversion.py`, and `reveal.py`
   separate layout validation, deterministic conversion, and annotation reveal.
 - `methods/common/engine/executor_loader.py` loads only the module named by a
   manifest's `executor_module` field.
+- `methods/common/protocols` owns the ADA-FNP comparison schedule and generic
+  active-detection plan.
+- `methods/common/execution` owns C-to-F preparation, pool paths, strict
+  detector continuation, selection, reveal, and checkpoint evaluation.
+- `methods/common/mmdet` owns shared configuration plumbing, runtime, the
+  Progressive-DA discriminator, and deterministic probability RoI head.
 
 ADA-FNP is separated by responsibility rather than lifecycle fragments:
 
@@ -44,16 +53,26 @@ methods/ada_fnp/
 |-- schedule.py
 |-- probabilistic_teacher_augmentation.py
 |-- acquisition/{mc_dropout.py,scoring.py}
-|-- models/{detector.py,domain_adaptation.py,
+|-- models/{detector.py,
 |           false_negative_predictor.py,mc_dropout_roi_head.py}
 |-- training/{false_negative_matching.py,false_negative_training.py,
 |             pseudo_labeling.py}
-`-- execution/{stages.py,mmdet_backend.py,mmdet_config.py,
-               mmdet_checkpoints.py,run_files.py}
+`-- execution/{stages.py,mmdet_backend.py,mmdet_config.py}
+```
+
+AADA keeps only the behavior that differs from ADA-FNP:
+
+```text
+methods/aada/
+|-- acquisition/scoring.py
+|-- models/detector.py
+|-- configs/{default.py,cityscapes_to_foggy.py}
+`-- execution/{stages.py,mmdet_backend.py,mmdet_config.py}
 ```
 
 The MMDetection registry names mirror those responsibilities:
-`AdaFnpDetector`, `AdaFnpDetectorBranch`, `AdaFnpDomainDiscriminator`,
+`AdaFnpDetector`, `AdaFnpDetectorBranch`, `AadaDetector`,
+`ProgressiveDomainDiscriminator`,
 `AdaFnpMonteCarloDropoutRoIHead`,
 `ProbabilisticTeacherStrongAugmentation`, and
 `Detectron2PascalVocMetric`.
@@ -81,15 +100,11 @@ line. `methods/common/mmdet/progress.py` also separates the MMEngine console
 handler from its file handler: repetitive INFO output is hidden from the
 terminal while the timestamped file remains at INFO level.
 
-`methods/ada_fnp/execution/stages.py` is the boundary between method-neutral
-stage orchestration and the MMEngine/MMDetection runtime. It registers the
-descriptive `ada_fnp.*` executor keys. `mmdet_backend.py` performs model work,
-`mmdet_config.py` builds stage-specific configs, `mmdet_checkpoints.py` owns
-strict detector checkpoint handling, and `run_files.py` owns run-local paths
-and pool manifests. Detector segments retain a single global iteration
-schedule from `schedule.py`. The first 5k segment has no target labels or
-teacher pseudo-label loss; later segments use the latest selected-only labeled
-manifest and the committed unlabeled-pool manifest.
+Each method's `execution/stages.py` binds its scorer and model work to common
+active-detection stages. Detector segments retain one global 40k schedule from
+`methods/common/protocols`. The first 5k segment has no target labels; later
+segments use the latest selected-only labeled manifest and committed
+unlabeled-pool manifest.
 
 Dataset inputs below `data/Cityscapes` are read-only junctions. Stable converted
 data belong under `work_dirs/.dataset_cache`; run-local labeled and unlabeled

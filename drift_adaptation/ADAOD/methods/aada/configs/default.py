@@ -1,10 +1,7 @@
-'''ADA-FNP defaults for Cityscapes to Foggy Cityscapes.'''
+'''AADA defaults under the ADA-FNP Cityscapes-to-Foggy protocol.'''
 
 from copy import deepcopy
 
-from methods.ada_fnp.schedule import (
-    FALSE_NEGATIVE_TRAINING_ITERATIONS_PER_ROUND,
-)
 from methods.common.protocols.ada_fnp_detection import (
     ACQUISITION_MILESTONES,
     MAXIMUM_DETECTOR_ITERATION,
@@ -12,12 +9,11 @@ from methods.common.protocols.ada_fnp_detection import (
 
 
 _CONFIG = {
-    'method': 'ada-fnp',
+    'method': 'aada',
     'scenario': 'cityscapes-to-foggy',
     'seed': 0,
     'detector': {
         'name': 'faster-rcnn-vgg16',
-        'dropout_probability': 0.1,
         'class_agnostic_bbox_regression': False,
     },
     'training': {
@@ -35,39 +31,21 @@ _CONFIG = {
         'source_batch_size': 4,
         'target_labeled_batch_size': 4,
         'target_unlabeled_batch_size': 4,
-        'teacher_ema_decay': 0.9996,
     },
     'domain_adaptation': {
         'loss_weight': 0.01,
         'gradient_reversal_scale': 1.0,
     },
-    'false_negative_predictor': {
-        'iterations_per_round': (
-            FALSE_NEGATIVE_TRAINING_ITERATIONS_PER_ROUND
-        ),
-        'lr': 0.0001,
-        'matcher_iou_threshold': 0.5,
-        'max_detections': 100,
-    },
     'acquisition': {
         'budget_percent': 1.0,
-        'mc_passes': 10,
         'domain_probability_epsilon': 0.000001,
-        'constant_score_normalized_value': 0.5,
-        'empty_detection_final_score': 0.0,
     },
     'inference': {
         'acquisition_batch_size': 4,
         'evaluation_batch_size': 4,
     },
-    'pseudo_label': {
-        'localization_variance_threshold': 0.1,
-        'confidence_threshold': 0.5,
-    },
 }
 
 
 def get_config() -> dict:
-    '''Return an independent mutable copy of the default configuration.'''
-
     return deepcopy(_CONFIG)

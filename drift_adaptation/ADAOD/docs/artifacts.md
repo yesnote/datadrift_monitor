@@ -5,8 +5,8 @@ an immutable resolved configuration and plan manifest, mutable atomic state,
 checkpoints, round score shards, merged scores, selections, pool transitions,
 and final evaluation metrics.
 
-ADA-FNP evaluates the teacher immediately after detector iterations 5k, 10k,
-15k, 20k, 25k, and 40k. The corresponding artifacts are
+ADA-FNP evaluates its teacher and AADA evaluates its detector immediately
+after iterations 5k, 10k, 15k, 20k, 25k, and 40k. The corresponding artifacts are
 `artifacts/evaluations/detector_05000.json` through
 `artifacts/evaluations/detector_40000.json`; each stores the exact checkpoint
 iteration and AP50. The 40k metric is duplicated in
@@ -33,9 +33,9 @@ keep counts without adding them to terminal progress output.
 
 Run-local pool state, selected-only labeled manifests, annotation-free
 unlabeled manifests, and exact-iteration checkpoint lookup belong to
-`methods/ada_fnp/execution/run_files.py`. Detector checkpoint structure and
+`methods/common/execution/run_files.py`. Detector checkpoint structure and
 strict segment-continuation validation belong to
-`methods/ada_fnp/execution/mmdet_checkpoints.py`. Checkpoints preserve model,
+`methods/common/execution/mmdet_checkpoints.py`. Checkpoints preserve model,
 optimizer, scheduler, and global iteration for segmented detector training.
 The false-negative predictor stores only completed-round model weights because
 an interrupted predictor round is rerun from its beginning.
