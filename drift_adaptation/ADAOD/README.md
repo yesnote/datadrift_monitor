@@ -11,7 +11,8 @@ VGG16 Faster R-CNN detector implemented on MMDetection 3.3.0.
 - Target pool: Foggy Cityscapes train, 2,975 images
 - Evaluation: Foggy Cityscapes val, 500 images
 - Categories: the eight PT instance categories in PT registry order
-- Budgets: 1 percent by default (30 images), or 5 percent (149 images)
+- Budgets: 0 percent UDA, 1 percent by default (30 images), or 5 percent
+  (149 images)
 - Training: 40,000 detector iterations with five acquisitions at 5k--25k
 
 Reference implementations under `code_refs` are read-only inputs. Concrete
@@ -71,12 +72,18 @@ python -m tools.run_adaod --list-methods
 python -m tools.run_adaod --method ada-fnp --budget-percent 1 --seed 0
 ```
 
-Interactive runs use one reusable `tqdm` line for all 29 stages. Detector and
+Interactive runs use one reusable `tqdm` line for the 14 zero-budget stages
+or 34 active-learning stages. Detector and
 false-negative predictor training show only total loss beside the current
 progress; pool scoring and evaluation show completed work. Routine
 MMEngine configuration and interval output are kept out of the terminal but
 remain in the timestamped `.log`, `vis_data/scalars.json`, and resolved run
 configuration. A successful run ends with one compact JSON summary.
+
+Every detector checkpoint at 5k, 10k, 15k, 20k, 25k, and 40k is evaluated
+immediately and prints one permanent `checkpoint NNNNN: AP50=...` line. Use
+`--budget-percent 0` for the UDA-only path; it skips false-negative predictor
+training, scoring, selection, and annotation reveal.
 
 By default, each execution is stored under
 `work_dirs/runs/<method>/<scenario>/<detector>/seed-<seed>/MM-DD-YYYY_HH_mm`

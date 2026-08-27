@@ -31,7 +31,7 @@ The current supported keys are:
 
 | Kind | Key | Meaning |
 | --- | --- | --- |
-| method | `ada-fnp` | ADA-FNP five-round active adaptation |
+| method | `ada-fnp` | ADA-FNP active adaptation or zero-budget UDA |
 | dataset | `cityscapes-to-foggy` | Cityscapes to Foggy, beta 0.02 |
 | detector | `faster-rcnn-vgg16` | PT-compatible BN-free VGG16 Faster R-CNN |
 | runtime | `default` | deterministic local work directory, no launcher |
@@ -43,6 +43,11 @@ normal run uses the timestamped path
 where the final component is the local start time on a 24-hour clock. An
 explicit `--run-directory` remains an exact override and does not receive an
 additional timestamp.
+
+A budget percentage of zero selects the UDA-only plan. It preserves the full
+40k detector schedule but omits all acquisition and annotation stages. Active
+runs have 34 stages and zero-budget runs have 14 because every detector
+checkpoint is followed by a teacher evaluation stage.
 
 All configured repository assets and dataset inputs use repository-relative
 paths. Workstation-specific dataset locations appear only as the targets of

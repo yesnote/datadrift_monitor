@@ -14,6 +14,7 @@ from methods.ada_fnp.acquisition.scoring import (
 )
 from methods.ada_fnp.schedule import (
     ACQUISITION_MILESTONES,
+    DETECTOR_CHECKPOINT_ITERATIONS,
     resolve_detector_training_phase,
     resolve_total_budget,
     validate_false_negative_training_round,
@@ -54,6 +55,7 @@ from .mmdet_backend import MmdetExecutionBackend
 from .run_files import (
     dataset_cache_directory,
     find_completed_checkpoint,
+    find_completed_detector_checkpoint,
     read_active_pool,
     read_pool_state,
     target_labeled_manifest_path,
@@ -626,15 +628,28 @@ def _reveal_selected_annotations(
     }
 
 
-def _evaluate_final_teacher(
+def _evaluate_teacher_checkpoint(
     stage: StageSpec,
     context: ExecutionContext,
     backend: MmdetExecutionBackend,
 ) -> Mapping[str, Any]:
-    checkpoint = find_completed_checkpoint(context, 'detector_checkpoint')
+    iteration = int(stage.payload['iteration'])
+    if iteration not in DETECTOR_CHECKPOINT_ITERATIONS:
+        raise ValueError(
+            'evaluation iteration must be an ADA-FNP detector checkpoint'
+        )
+    if context.state_store.load().global_detector_iteration != iteration:
+        raise RuntimeError(
+            'checkpoint evaluation requires detector iteration {}'.format(
+                iteration
+            )
+        )
+    checkpoint = find_completed_detector_checkpoint(context, iteration)
     if checkpoint is None:
         raise FileNotFoundError(
-            'evaluation requires a completed detector checkpoint'
+            'evaluation requires completed detector checkpoint {}'.format(
+                iteration
+            )
         )
     metrics = dict(backend.evaluate(stage, context, checkpoint))
     metric_name = str(stage.payload['metric'])
@@ -644,17 +659,40 @@ def _evaluate_final_teacher(
         )
     if not math.isfinite(float(metrics[metric_name])):
         raise ValueError('evaluation metric must be finite')
+    evaluation = {'iteration': iteration, **metrics}
     artifact = context.artifact_store.write_json(
-        'artifacts/evaluation.json',
-        metrics,
-        'evaluation_metrics',
+        'artifacts/evaluations/detector_{:05d}.json'.format(iteration),
+        evaluation,
+        'checkpoint_evaluation_metrics',
         stage.stage_id,
     )
-    _record_artifact(context, 'evaluation_metrics', artifact)
-    return {
+    _record_artifact(
+        context,
+        'evaluation_metrics_{:05d}'.format(iteration),
+        artifact,
+    )
+    context.progress.write_message(
+        'checkpoint {:05d}: {}={:.3f}'.format(
+            iteration,
+            metric_name,
+            float(metrics[metric_name]),
+        )
+    )
+    result = {
+        'iteration': iteration,
         'metrics': metrics,
         'metrics_artifact': _artifact_result(artifact),
     }
+    if iteration == int(context.config['training']['max_iterations']):
+        final_artifact = context.artifact_store.write_json(
+            'artifacts/evaluation.json',
+            metrics,
+            'evaluation_metrics',
+            stage.stage_id,
+        )
+        _record_artifact(context, 'evaluation_metrics', final_artifact)
+        result['final_metrics_artifact'] = _artifact_result(final_artifact)
+    return result
 
 
 def create_executor_registry(
@@ -696,7 +734,11 @@ def create_executor_registry(
         _reveal_selected_annotations,
     )
     registry.register(
-        'ada_fnp.evaluate_final_teacher',
-        lambda stage, ctx: _evaluate_final_teacher(stage, ctx, backend),
+        'ada_fnp.evaluate_teacher_checkpoint',
+        lambda stage, ctx: _evaluate_teacher_checkpoint(
+            stage,
+            ctx,
+            backend,
+        ),
     )
     return registry

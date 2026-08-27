@@ -218,6 +218,10 @@ def apply_resolved_experiment_config(
         (source_batch_size, target_unlabeled_batch_size),
     )
     _configure_multi_source_loader(
+        stage_overrides['unlabeled_adaptation']['train_dataloader'],
+        (source_batch_size, target_unlabeled_batch_size),
+    )
+    _configure_multi_source_loader(
         stage_overrides['adaptation']['train_dataloader'],
         (
             source_batch_size,
@@ -284,15 +288,17 @@ def apply_resolved_experiment_config(
     teacher_decay = float(training['teacher_ema_decay'])
     if not 0.0 <= teacher_decay <= 1.0:
         raise ValueError('teacher EMA decay must be between zero and one')
-    adaptation_hooks = stage_overrides['adaptation']['custom_hooks']
-    teacher_hooks = [
-        hook
-        for hook in adaptation_hooks
-        if hook.get('type') == 'MeanTeacherHook'
-    ]
-    if len(teacher_hooks) != 1:
-        raise ValueError('adaptation requires exactly one MeanTeacherHook')
-    teacher_hooks[0]['momentum'] = 1.0 - teacher_decay
+    for mode in ('unlabeled_adaptation', 'adaptation'):
+        teacher_hooks = [
+            hook
+            for hook in stage_overrides[mode]['custom_hooks']
+            if hook.get('type') == 'MeanTeacherHook'
+        ]
+        if len(teacher_hooks) != 1:
+            raise ValueError(
+                '{} requires exactly one MeanTeacherHook'.format(mode)
+            )
+        teacher_hooks[0]['momentum'] = 1.0 - teacher_decay
 
 
 def load_base_config(
@@ -343,11 +349,14 @@ def build_detector_stage_config(
             and continuation_checkpoint is None
         ),
     )
-    mode = (
-        'initial'
-        if phase.mode is DetectorTrainingMode.INITIALIZATION
-        else 'adaptation'
-    )
+    modes = {
+        DetectorTrainingMode.INITIALIZATION: 'initial',
+        DetectorTrainingMode.UNLABELED_ADAPTATION: (
+            'unlabeled_adaptation'
+        ),
+        DetectorTrainingMode.ADAPTATION: 'adaptation',
+    }
+    mode = modes[phase.mode]
     override = copy.deepcopy(config['stage_overrides'][mode])
     config['train_dataloader'] = materialize_config_replacement(
         override['train_dataloader'],

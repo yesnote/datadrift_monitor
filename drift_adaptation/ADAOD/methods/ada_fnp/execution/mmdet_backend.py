@@ -2,13 +2,16 @@
 
 from __future__ import annotations
 
+from contextlib import contextmanager
 from dataclasses import dataclass
 from functools import partial
 import math
 from pathlib import Path
+import random
 from typing import Any, Callable, Iterable, Mapping, MutableMapping, Optional
 from typing import Sequence, Tuple
 
+import numpy as np
 import torch
 from torch import nn
 
@@ -69,6 +72,12 @@ _INITIAL_TRAIN_LOG_KEYS = (
     *_SOURCE_TRAIN_LOG_KEYS,
     'domain.loss_adv',
 )
+_UNLABELED_ADAPTATION_TRAIN_LOG_KEYS = (
+    *_SOURCE_TRAIN_LOG_KEYS,
+    'domain.loss_adv',
+    'target_unlabeled_strong.loss_rpn_cls',
+    'target_unlabeled_strong.loss_cls',
+)
 _ADAPTATION_TRAIN_LOG_KEYS = (
     *_SOURCE_TRAIN_LOG_KEYS,
     'domain.loss_adv',
@@ -80,6 +89,26 @@ _ADAPTATION_TRAIN_LOG_KEYS = (
     'target_unlabeled_strong.loss_rpn_cls',
     'target_unlabeled_strong.loss_cls',
 )
+
+
+@contextmanager
+def _preserve_random_state():
+    '''Keep observational checkpoint evaluation from changing training RNG.'''
+
+    python_state = random.getstate()
+    numpy_state = np.random.get_state()
+    torch_state = torch.get_rng_state()
+    cuda_states = (
+        torch.cuda.get_rng_state_all() if torch.cuda.is_available() else None
+    )
+    try:
+        yield
+    finally:
+        random.setstate(python_state)
+        np.random.set_state(numpy_state)
+        torch.set_rng_state(torch_state)
+        if cuda_states is not None:
+            torch.cuda.set_rng_state_all(cuda_states)
 
 
 class MissingMmdetDependencyError(EnvironmentError):
@@ -255,11 +284,14 @@ class MmdetExecutionBackend:
             stage.stage_id,
         )
         runner = runtime.build_runner(config)
-        required_keys = (
-            _INITIAL_TRAIN_LOG_KEYS
-            if phase.mode is DetectorTrainingMode.INITIALIZATION
-            else _ADAPTATION_TRAIN_LOG_KEYS
-        )
+        required_keys_by_mode = {
+            DetectorTrainingMode.INITIALIZATION: _INITIAL_TRAIN_LOG_KEYS,
+            DetectorTrainingMode.UNLABELED_ADAPTATION: (
+                _UNLABELED_ADAPTATION_TRAIN_LOG_KEYS
+            ),
+            DetectorTrainingMode.ADAPTATION: _ADAPTATION_TRAIN_LOG_KEYS,
+        }
+        required_keys = required_keys_by_mode[phase.mode]
         runner.register_hook(
             runtime.progress_hook(
                 context.progress,
@@ -559,24 +591,27 @@ class MmdetExecutionBackend:
         context: ExecutionContext,
         checkpoint_path: Path,
     ) -> Mapping[str, float]:
-        del stage
-        runtime = self._runtime()
-        config = load_base_config(runtime, context)
-        configure_dataloader(config['test_dataloader'], context)
-        config['load_from'] = str(checkpoint_path)
-        config['resume'] = False
-        config['work_dir'] = str(
-            context.run_directory / 'mmengine/evaluation'
-        )
-        runner = runtime.build_runner(config)
-        runner.register_hook(
-            runtime.progress_hook(
-                context.progress,
-                task_unit='batch',
-            ),
-            priority='LOWEST',
-        )
-        metrics = dict(runner.test())
+        iteration = int(stage.payload['iteration'])
+        with _preserve_random_state():
+            runtime = self._runtime()
+            config = load_base_config(runtime, context)
+            configure_dataloader(config['test_dataloader'], context)
+            config['load_from'] = str(checkpoint_path)
+            config['resume'] = False
+            config['work_dir'] = str(
+                context.run_directory
+                / 'mmengine/evaluations'
+                / 'iter_{:05d}'.format(iteration)
+            )
+            runner = runtime.build_runner(config)
+            runner.register_hook(
+                runtime.progress_hook(
+                    context.progress,
+                    task_unit='batch',
+                ),
+                priority='LOWEST',
+            )
+            metrics = dict(runner.test())
         ap50_keys = [
             key for key in metrics if key.split('/')[-1] == 'AP50'
         ]

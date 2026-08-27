@@ -13,6 +13,13 @@ ADAPTATION_DETECTOR_SEGMENTS: Tuple[Tuple[int, int], ...] = (
     (20000, 25000),
     (25000, 40000),
 )
+DETECTOR_TRAINING_SEGMENTS: Tuple[Tuple[int, int], ...] = (
+    INITIAL_DETECTOR_SEGMENT,
+    *ADAPTATION_DETECTOR_SEGMENTS,
+)
+DETECTOR_CHECKPOINT_ITERATIONS: Tuple[int, ...] = tuple(
+    end_iteration for _, end_iteration in DETECTOR_TRAINING_SEGMENTS
+)
 ACQUISITION_MILESTONES: Tuple[int, ...] = tuple(
     start_iteration
     for start_iteration, _ in ADAPTATION_DETECTOR_SEGMENTS
@@ -24,6 +31,7 @@ FALSE_NEGATIVE_TRAINING_ITERATIONS_PER_ROUND = 2000
 
 class DetectorTrainingMode(str, Enum):
     INITIALIZATION = 'initialization'
+    UNLABELED_ADAPTATION = 'unlabeled_adaptation'
     ADAPTATION = 'adaptation'
 
 
@@ -69,6 +77,12 @@ def resolve_detector_training_phase(
         )
     if segment not in ADAPTATION_DETECTOR_SEGMENTS:
         raise ValueError('unsupported detector-training segment')
+    if labeled_sample_count == 0:
+        return DetectorTrainingPhase(
+            start_iteration,
+            end_iteration,
+            DetectorTrainingMode.UNLABELED_ADAPTATION,
+        )
     return DetectorTrainingPhase(
         start_iteration,
         end_iteration,
