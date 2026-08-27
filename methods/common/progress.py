@@ -143,6 +143,19 @@ class ProgressReporter:
             self._bar.set_postfix_str('', refresh=False)
             self._bar.clear()
 
+    def write_message(self, message: str) -> None:
+        '''Write one permanent line without corrupting an active progress bar.'''
+
+        message = str(message).strip()
+        if not message:
+            raise ValueError('progress message must not be empty')
+        if '\n' in message or '\r' in message:
+            raise ValueError('progress message must contain exactly one line')
+        if self._enabled:
+            tqdm.write(message, file=self._stream)
+        else:
+            print(message, file=self._stream, flush=True)
+
     def fail_stage(self) -> None:
         if self._bar is not None:
             self._bar.clear()

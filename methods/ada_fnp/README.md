@@ -6,19 +6,25 @@ only supported detector is Faster R-CNN with a BN-free VGG16 backbone.
 
 ## Reproduction contract
 
-The serial plan contains 29 stages. It first prepares the pretrained asset and
-dataset cache, then trains source-supervised plus source/target adversarial
-adaptation through detector iteration 5,000. The student detector and domain
-discriminator are copied exactly to the teacher at that boundary. At detector
+The serial plan first prepares the pretrained asset and dataset cache, then
+trains source-supervised plus source/target adversarial adaptation through
+detector iteration 5,000. The student detector and domain discriminator are
+copied exactly to the teacher at that boundary. At detector
 iterations 5k, 10k, 15k, 20k, and 25k, the workflow:
 
 1. trains the `FalseNegativePredictor` for 2,000 iterations;
 2. scores every sample in the currently committed unlabeled pool;
 3. selects the round budget and commits the pool transition;
 4. reveals annotations only for selected samples; and
-5. continues detector training from the preceding global iteration.
+5. continues detector training from the preceding global iteration; and
+6. evaluates the teacher at the end of each detector segment.
 
-The final teacher is evaluated after iteration 40k. Detector checkpoints
+An active run contains 34 stages. A zero-budget run contains 14 stages and
+skips false-negative predictor training, pool scoring, selection, and reveal.
+After the shared 0-to-5k initialization it continues source plus unlabeled
+target UDA with pseudo-labeling and teacher EMA, without constructing a
+target-labeled loader. Both paths evaluate the teacher at 5k, 10k, 15k, 20k,
+25k, and 40k. Detector checkpoints
 preserve the optimizer and parameter scheduler. False-negative predictor
 checkpoints retain only the completed round's model weights; every round uses
 a fresh optimizer and cosine scheduler, and an interrupted predictor round is
@@ -123,6 +129,7 @@ is returned on the 0--100 percentage scale.
 
 ```powershell
 python -m tools.run_adaod --method ada-fnp --budget-percent 1 --seed 0
+python -m tools.run_adaod --method ada-fnp --budget-percent 0 --seed 0
 ```
 
 Without `--run-directory`, each run is written below
@@ -139,9 +146,16 @@ false-negative predictor optimization its only scalar is total `loss`.
 MMEngine still writes the complete 50-iteration records to its timestamped
 `.log` and `vis_data/scalars.json`. The initialization segment records the
 five `source.*` detector values and `domain.loss_adv`; adaptation segments
-also require and record the five `target_labeled.*` values and the two
-`target_unlabeled_strong.*` classification losses. Missing required keys are
-an execution error rather than a silently shortened log.
+also require and record the two `target_unlabeled_strong.*` classification
+losses. Active runs additionally require the five `target_labeled.*` values.
+Missing required keys are an execution error rather than a silently shortened
+log.
+
+Checkpoint metrics are stored under
+`artifacts/evaluations/detector_NNNNN.json`. Evaluation uses an isolated
+MMEngine work directory per iteration and restores Python, NumPy, Torch, and
+CUDA random states before training continues. The 40k metric is also written
+to `artifacts/evaluation.json` for compatibility with existing result readers.
 
 Execution is connected to MMEngine/MMDetection runners for detector training,
 false-negative predictor training, pool scoring, selection, reveal, and final

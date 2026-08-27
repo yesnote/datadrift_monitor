@@ -99,6 +99,42 @@ def find_completed_checkpoint(
     return None
 
 
+def find_completed_detector_checkpoint(
+    context: ExecutionContext,
+    iteration: int,
+) -> Optional[Path]:
+    '''Find and verify the detector checkpoint for one exact iteration.'''
+
+    if isinstance(iteration, bool) or not isinstance(iteration, int):
+        raise TypeError('detector checkpoint iteration must be an integer')
+    if iteration <= 0:
+        raise ValueError('detector checkpoint iteration must be positive')
+    expected_path = 'checkpoints/detector_{:05d}.pth'.format(iteration)
+    for completed in reversed(context.state_store.load().completed_stages):
+        if completed.get('executor_key') != 'ada_fnp.train_detector':
+            continue
+        artifact = completed.get('result', {}).get('checkpoint_artifact')
+        if not artifact:
+            continue
+        if (
+            artifact.get('artifact_type') != 'detector_checkpoint'
+            or artifact.get('relative_path') != expected_path
+        ):
+            continue
+        reference = ArtifactRef(**artifact)
+        if reference.producer_stage_id != completed.get('stage_id'):
+            raise ValueError(
+                'detector checkpoint producer does not match its stage'
+            )
+        if reference.artifact_id != reference.sha256:
+            raise ValueError(
+                'detector checkpoint artifact ID must equal its SHA256'
+            )
+        context.artifact_store.verify(reference)
+        return context.run_directory / reference.relative_path
+    return None
+
+
 def read_pool_state(
     context: ExecutionContext,
     round_index: int,

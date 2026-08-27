@@ -17,6 +17,7 @@ comparing AP50 results.
 | input size | short edge 600, long edge at most 1,333 |
 | normalization | Caffe BGR mean, unit standard deviation |
 | detector duration | 40k iterations; acquisitions at 5k, 10k, 15k, 20k, 25k |
+| checkpoint evaluation | final teacher AP50 at 5k, 10k, 15k, 20k, 25k, and 40k |
 | optimizer | SGD, LR 0.02, momentum 0.9, weight decay 0.0001 |
 | schedule | linear warm-up 0--400 from 0.001; drops at 30k and 35k |
 | teacher | initialized from student at 5k; EMA decay 0.9996 thereafter |
@@ -86,6 +87,24 @@ deterministic mode enabled and cuDNN benchmarking disabled. The ADAOD CLI also
 sets `CUBLAS_WORKSPACE_CONFIG=:4096:8` before importing the execution stack,
 unless the caller already selected a CuBLAS workspace mode. This is required
 by PyTorch deterministic CUDA matrix multiplication.
+
+## Zero-budget UDA and checkpoint diagnostics
+
+`--budget-percent 0` is an explicit UDA-only experiment, not a five-round
+active run with zero-sized selections. It trains the common 0-to-5k
+initialization, then continues the same global optimizer and learning-rate
+schedule through 40k using source supervision, target adversarial loss, and
+unlabeled-target pseudo-labeling with teacher EMA. It never trains the
+false-negative predictor, scores the pool, selects samples, reveals target
+annotations, or constructs a target-labeled dataloader.
+
+Both zero-budget and active runs evaluate the exact completed detector
+checkpoint at 5k, 10k, 15k, 20k, 25k, and 40k. Each checkpoint reference is
+SHA-256 verified before evaluation. Python, NumPy, Torch CPU, and Torch CUDA
+random states are restored afterward so diagnostic evaluation cannot change
+subsequent training randomness. Intermediate AP50 values are intended for
+early trajectory diagnosis; the paper comparison for Ours (0%) remains the
+final 40k AP50, reported as 52.0 for C to F.
 
 ## Current validation boundary
 

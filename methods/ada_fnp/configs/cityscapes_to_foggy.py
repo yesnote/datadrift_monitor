@@ -41,6 +41,7 @@ _INITIAL_BRANCHES = (
     'target_unlabeled_weak',
     'target_unlabeled_strong',
 )
+_UNLABELED_ADAPTATION_BRANCHES = _INITIAL_BRANCHES
 _ADAPTATION_BRANCHES = (
     'source',
     'target_labeled',
@@ -90,6 +91,12 @@ _initial_stage_train_dataloader = _train_loader(
     batch_size=_SOURCE_BATCH_SIZE + _TARGET_UNLABELED_BATCH_SIZE,
     source_ratio=(_SOURCE_BATCH_SIZE, _TARGET_UNLABELED_BATCH_SIZE),
     branch_field=_INITIAL_BRANCHES,
+)
+_unlabeled_adaptation_stage_train_dataloader = _train_loader(
+    (_source_train_dataset, _target_unlabeled_dataset),
+    batch_size=_SOURCE_BATCH_SIZE + _TARGET_UNLABELED_BATCH_SIZE,
+    source_ratio=(_SOURCE_BATCH_SIZE, _TARGET_UNLABELED_BATCH_SIZE),
+    branch_field=_UNLABELED_ADAPTATION_BRANCHES,
 )
 _adaptation_stage_train_dataloader = _train_loader(
     (
@@ -169,6 +176,13 @@ stage_overrides = dict(
         model=dict(enable_unsupervised_loss=False),
         custom_hooks=[],
     ),
+    unlabeled_adaptation=dict(
+        train_dataloader=deepcopy(
+            _unlabeled_adaptation_stage_train_dataloader
+        ),
+        model=dict(enable_unsupervised_loss=True),
+        custom_hooks=[deepcopy(_mean_teacher_hook)],
+    ),
     adaptation=dict(
         train_dataloader=deepcopy(_adaptation_stage_train_dataloader),
         model=dict(enable_unsupervised_loss=True),
@@ -230,6 +244,7 @@ del (
     _SOURCE_BATCH_SIZE,
     _TARGET_LABELED_BATCH_SIZE,
     _TARGET_UNLABELED_BATCH_SIZE,
+    _UNLABELED_ADAPTATION_BRANCHES,
     _adaptation_stage_train_dataloader,
     _detector,
     _initial_stage_train_dataloader,
@@ -238,4 +253,5 @@ del (
     _target_acquisition_dataset,
     _target_labeled_dataset,
     _target_unlabeled_dataset,
+    _unlabeled_adaptation_stage_train_dataloader,
 )
