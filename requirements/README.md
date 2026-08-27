@@ -8,6 +8,7 @@ The initial compatibility target for the MMDetection 3.3 spike is:
 - MMCV 2.1.0
 - MMEngine 0.10.5
 - repository-local MMDetection 3.3.0
+- NumPy 1.x (`numpy>=1.23,<2`) for the PyTorch 2.0.1 compiled ABI
 
 This is a candidate, not a claim that the environment has passed the GPU
 acceptance gate. Keep it isolated from other projects. Do not update the

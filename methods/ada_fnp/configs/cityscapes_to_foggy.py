@@ -3,6 +3,7 @@
 _base_ = [
     '../../../configs/_base_/datasets/cityscapes_to_foggy.py',
     '../../../configs/_base_/models/faster_rcnn_vgg16.py',
+    '../../../configs/_base_/schedules/ada_fnp_40k.py',
     '../../../configs/_base_/default_runtime.py',
 ]
 
@@ -139,7 +140,7 @@ model = dict(
         data_preprocessor=deepcopy(_detector['data_preprocessor']),
     ),
     domain_discriminator=dict(
-        type='AdaFnpDomainDiscriminator',
+        type='ProgressiveDomainDiscriminator',
         in_channels=512,
         hidden_channels=64,
     ),
@@ -193,45 +194,6 @@ stage_overrides = dict(
 # The initial UDA segment has no running teacher. The stage executor copies the
 # student branch at 5k, then installs the adaptation hook below.
 custom_hooks = []
-
-optim_wrapper = dict(
-    type='OptimWrapper',
-    clip_grad=dict(
-        max_norm=_METHOD_CONFIG['training']['gradient_clip_max_norm'],
-        norm_type=_METHOD_CONFIG['training']['gradient_clip_norm_type'],
-        error_if_nonfinite=True,
-    ),
-    optimizer=dict(
-        type='SGD',
-        lr=_METHOD_CONFIG['training']['lr'],
-        momentum=_METHOD_CONFIG['training']['momentum'],
-        weight_decay=_METHOD_CONFIG['training']['weight_decay'],
-    ),
-)
-param_scheduler = [
-    dict(
-        type='LinearLR',
-        start_factor=_METHOD_CONFIG['training']['warmup_start_factor'],
-        begin=0,
-        end=_METHOD_CONFIG['training']['warmup_iterations'],
-        by_epoch=False,
-    ),
-    dict(
-        type='MultiStepLR',
-        begin=0,
-        end=_METHOD_CONFIG['training']['max_iterations'],
-        by_epoch=False,
-        milestones=list(_METHOD_CONFIG['training']['lr_milestones']),
-        gamma=_METHOD_CONFIG['training']['lr_decay_factor'],
-    ),
-]
-train_cfg = dict(
-    type='IterBasedTrainLoop',
-    max_iters=_METHOD_CONFIG['training']['max_iterations'],
-    val_interval=_METHOD_CONFIG['training']['acquisition_milestones'][0],
-)
-val_cfg = dict(type='ValLoop')
-test_cfg = dict(type='TestLoop')
 
 del (
     _ADAPTATION_BRANCHES,

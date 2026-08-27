@@ -32,6 +32,7 @@ The current supported keys are:
 | Kind | Key | Meaning |
 | --- | --- | --- |
 | method | `ada-fnp` | ADA-FNP active adaptation or zero-budget UDA |
+| method | `aada` | AADA acquisition under the ADA-FNP C-to-F protocol |
 | dataset | `cityscapes-to-foggy` | Cityscapes to Foggy, beta 0.02 |
 | detector | `faster-rcnn-vgg16` | PT-compatible BN-free VGG16 Faster R-CNN |
 | runtime | `default` | deterministic local work directory, no launcher |
@@ -45,9 +46,12 @@ explicit `--run-directory` remains an exact override and does not receive an
 additional timestamp.
 
 A budget percentage of zero selects the UDA-only plan. It preserves the full
-40k detector schedule but omits all acquisition and annotation stages. Active
-runs have 34 stages and zero-budget runs have 14 because every detector
-checkpoint is followed by a teacher evaluation stage.
+40k detector schedule but omits all acquisition and annotation stages.
+
+ADA-FNP active runs have 34 stages because each round trains the
+false-negative predictor. AADA active runs have 29 because each round consists
+of score, select, and reveal before the next detector segment. Both use the
+same percentage budget and checkpoint evaluations.
 
 All configured repository assets and dataset inputs use repository-relative
 paths. Workstation-specific dataset locations appear only as the targets of
@@ -68,7 +72,7 @@ parameter-scheduler state, and the expected global iteration metadata.
 The refactored manifest API and run state are version 2. Configuration uses
 the full `false_negative_predictor`, `domain_adaptation`, and descriptive
 MMDetection registry names (`AdaFnpDetector`, `AdaFnpDetectorBranch`,
-`AdaFnpDomainDiscriminator`, `AdaFnpMonteCarloDropoutRoIHead`,
+`ProgressiveDomainDiscriminator`, `AdaFnpMonteCarloDropoutRoIHead`,
 `ProbabilisticTeacherStrongAugmentation`, and
 `Detectron2PascalVocMetric`). The former abbreviated keys and schema-1 run
 state are not migrated. Use a fresh `--run-directory` and rerun from the

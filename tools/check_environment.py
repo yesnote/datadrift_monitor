@@ -55,6 +55,22 @@ def _check_local_mmdet(mmdet_module) -> None:
     print('[ok] repository-local mmdet: {}'.format(module_path))
 
 
+def _check_numpy() -> None:
+    try:
+        numpy = importlib.import_module('numpy')
+    except Exception as exc:
+        raise EnvironmentCheckError(
+            'cannot import numpy: {}'.format(exc)
+        ) from exc
+    major_version = int(numpy.__version__.split('.', 1)[0])
+    if major_version >= 2:
+        raise EnvironmentCheckError(
+            'NumPy {} is installed; PyTorch 2.0.1 requires NumPy <2 for '
+            'the compiled NumPy ABI'.format(numpy.__version__)
+        )
+    print('[ok] numpy {}'.format(numpy.__version__))
+
+
 def _check_mmcv_ops(torch, allow_cpu: bool) -> None:
     try:
         from mmcv.ops import RoIAlign, nms
@@ -111,6 +127,7 @@ def check_environment(allow_cpu: bool = False) -> None:
     print('[ok] Python {}'.format(sys.version.split()[0]))
 
     torch = _import_exact('torch')
+    _check_numpy()
     _import_exact('torchvision')
     _import_exact('mmengine')
     _import_exact('mmcv')

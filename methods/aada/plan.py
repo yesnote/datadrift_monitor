@@ -1,4 +1,4 @@
-'''ADA-FNP stages under the shared five-round comparison protocol.'''
+'''AADA stages under the ADA-FNP five-round comparison protocol.'''
 
 from methods.common.contracts import StageSpec
 from methods.common.protocols.active_detection_plan import (
@@ -7,31 +7,22 @@ from methods.common.protocols.active_detection_plan import (
 
 
 def _round_stages(index, budget, config):
+    del config
     token = '{:02d}'.format(index)
     return (
         StageSpec(
-            'train_false_negative_predictor_round_{}'.format(token),
-            'ada_fnp.train_false_negative_predictor',
-            {
-                'round': index,
-                'iterations': config['false_negative_predictor'][
-                    'iterations_per_round'
-                ],
-            },
-        ),
-        StageSpec(
             'score_unlabeled_pool_round_{}'.format(token),
-            'ada_fnp.score_unlabeled_pool',
+            'aada.score_unlabeled_pool',
             {'round': index},
         ),
         StageSpec(
             'select_samples_round_{}'.format(token),
-            'ada_fnp.select_samples',
+            'aada.select_samples',
             {'round': index, 'budget': budget},
         ),
         StageSpec(
             'reveal_selected_annotations_round_{}'.format(token),
-            'ada_fnp.reveal_selected_annotations',
+            'aada.reveal_selected_annotations',
             {'round': index},
         ),
     )
@@ -40,7 +31,7 @@ def _round_stages(index, budget, config):
 def build_plan(config):
     return build_active_detection_plan(
         config,
-        executor_prefix='ada_fnp',
+        executor_prefix='aada',
         round_stage_factory=_round_stages,
-        evaluation_executor='ada_fnp.evaluate_teacher_checkpoint',
+        evaluation_executor='aada.evaluate_detector_checkpoint',
     )

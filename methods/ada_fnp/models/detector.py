@@ -16,8 +16,9 @@ from methods.ada_fnp.training.pseudo_labeling import (
     select_classification_losses,
     select_pseudo_labels,
 )
+from methods.common.mmdet.losses import prefix_losses
 
-from .domain_adaptation import (
+from methods.common.mmdet.models.progressive_domain_adaptation import (
     compute_multi_target_domain_loss,
     gradient_reverse,
 )
@@ -40,17 +41,6 @@ _ALLOWED_BRANCHES = {
     TARGET_UNLABELED_WEAK_BRANCH,
     TARGET_UNLABELED_STRONG_BRANCH,
 }
-
-
-def _prefix_losses(
-    losses: Mapping[str, object], prefix: str, weight: float = 1.0
-) -> Dict[str, object]:
-    if weight < 0:
-        raise ValueError('loss weight must be non-negative')
-    return {
-        f'{prefix}.{key}': value * weight
-        for key, value in losses.items()
-    }
 
 
 def validate_loss_branches(
@@ -167,10 +157,10 @@ def route_detection_losses(
     enable_unsupervised_loss: bool = True,
 ) -> Dict[str, object]:
     '''Prefix supervised losses and retain only classification pseudo losses.'''
-    routed = _prefix_losses(source_losses, SOURCE_BRANCH, weight=1)
+    routed = prefix_losses(source_losses, SOURCE_BRANCH, weight=1)
     if target_labeled_losses is not None:
         routed.update(
-            _prefix_losses(
+            prefix_losses(
                 target_labeled_losses, TARGET_LABELED_BRANCH, weight=1
             )
         )
@@ -186,7 +176,7 @@ def route_detection_losses(
                 'classification terms'
             )
         routed.update(
-            _prefix_losses(
+            prefix_losses(
                 classification_losses,
                 TARGET_UNLABELED_STRONG_BRANCH,
                 weight=1,
@@ -301,7 +291,7 @@ class AdaFnpDetector(SemiBaseDetector):
             raise ValueError('confidence_threshold must be in [0, 1]')
         if domain_discriminator is None:
             domain_discriminator = dict(
-                type='AdaFnpDomainDiscriminator',
+                type='ProgressiveDomainDiscriminator',
                 in_channels=512,
                 hidden_channels=64,
             )

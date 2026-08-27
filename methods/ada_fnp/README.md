@@ -41,11 +41,12 @@ predictor” for the component.
 
 ## Package map
 
-- `schedule.py` is the single source for detector segments, acquisition
-  milestones, round length, and budget resolution.
+- `schedule.py` owns the false-negative predictor round length. Detector
+  segments, milestones, and percentage budget resolution are shared under
+  `methods/common` with comparison baselines such as AADA.
 - `models/detector.py` contains `AdaFnpDetector` and
-  `AdaFnpDetectorBranch`; `models/domain_adaptation.py` contains
-  `AdaFnpDomainDiscriminator`; `models/mc_dropout_roi_head.py` contains
+  `AdaFnpDetectorBranch`; the shared Progressive-DA discriminator lives under
+  `methods/common/mmdet`; `models/mc_dropout_roi_head.py` contains
   `AdaFnpMonteCarloDropoutRoIHead`; and
   `models/false_negative_predictor.py` contains `FalseNegativePredictor`.
 - `probabilistic_teacher_augmentation.py` contains
@@ -56,10 +57,10 @@ predictor” for the component.
 - `acquisition/mc_dropout.py` and `acquisition/scoring.py` own acquisition
   inference and score computation.
 - `execution/stages.py` registers the serial method stages;
-  `mmdet_backend.py` implements detector, predictor, scoring, and evaluation
-  runtime work; `mmdet_config.py` materializes MMDetection configs;
-  `mmdet_checkpoints.py` handles strict detector checkpoints; and
-  `run_files.py` owns run-local paths, pool manifests, and checkpoint lookup.
+  `mmdet_backend.py` implements predictor and ADA-FNP scoring model work, and
+  `mmdet_config.py` projects ADA-FNP values. Shared detector stages,
+  checkpoints, pool manifests, MMDetection runtime, and evaluation live under
+  `methods/common`.
 
 ## PT-compatible detector and input path
 

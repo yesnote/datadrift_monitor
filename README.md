@@ -1,7 +1,7 @@
 # ADAOD
 
 ADAOD is a structured implementation workspace for active domain adaptation
-methods for object detection. The first supported experiment is ADA-FNP on
+methods for object detection. The supported experiments are ADA-FNP and AADA on
 Cityscapes to Foggy Cityscapes (`beta=0.02`) with a PT-compatible, BN-free
 VGG16 Faster R-CNN detector implemented on MMDetection 3.3.0.
 
@@ -23,9 +23,9 @@ tree. The one framework compatibility patch is documented in
 
 The method manifest identifies its execution entry point with
 `executor_module`; the common runner imports that module and calls its
-`create_executor_registry` factory. ADA-FNP exposes
-`methods.ada_fnp.execution.stages`, so method-specific stage names and runtime
-behavior do not leak into the common engine.
+`create_executor_registry` factory. ADA-FNP and AADA expose their own stage
+bindings, while the five-round protocol, pool operations, detector
+continuation, dataset setup, and evaluation stay under `methods/common`.
 
 ## Prepare the data
 
@@ -65,16 +65,16 @@ The loader verifies the SHA256 before using the checkpoint and imports only
 the VGG convolution tensors. An existing valid file is reused. A missing file
 is downloaded automatically, while a corrupt cached file is an explicit error.
 
-## Inspect or run ADA-FNP
+## Inspect or run a method
 
 ```powershell
 python -m tools.run_adaod --list-methods
 python -m tools.run_adaod --method ada-fnp --budget-percent 1 --seed 0
+python -m tools.run_adaod --method aada --budget-percent 1 --seed 0
 ```
 
-Interactive runs use one reusable `tqdm` line for the 14 zero-budget stages
-or 34 active-learning stages. Detector and
-false-negative predictor training show only total loss beside the current
+Interactive runs use one reusable `tqdm` line for each stage. Detector and
+false-negative predictor training, when applicable, show total loss beside the current
 progress; pool scoring and evaluation show completed work. Routine
 MMEngine configuration and interval output are kept out of the terminal but
 remain in the timestamped `.log`, `vis_data/scalars.json`, and resolved run

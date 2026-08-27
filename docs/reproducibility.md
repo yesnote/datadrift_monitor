@@ -71,6 +71,16 @@ thresholds. Stored scores are
 recomputed and checked before selection. Empty-detection images have final
 score zero.
 
+AADA uses the same target pool, percentage budget, five acquisition rounds,
+detector, optimizer, schedule, and evaluator. Only its algorithm differs: it
+trains source and revealed-target detection losses plus source/target domain
+adversarial loss, and ranks the unlabeled pool by foreground entropy times
+`(1-D)/D`. It has no teacher, false-negative predictor, MC Dropout,
+pseudo-label loss, or four-component ADA-FNP normalization. Its score artifact
+stores entropy, diversity, source-domain probability, detection count, and the
+raw product. Under this protocol, the ADA-FNP paper reports AADA at AP50 37.2
+for 1 percent and 38.5 for 5 percent on C to F.
+
 The run records its resolved config and fingerprint, atomic schema-version-2
 stage state, content-addressed artifacts, checkpoints, selections, and
 evaluation metrics. Shared atomic I/O and hash handling live in
@@ -112,9 +122,10 @@ The concrete execution modules connect detector training, false-negative
 predictor training, pool scoring, selection, annotation reveal, and teacher
 evaluation to MMEngine/MMDetection. `schedule.py` defines the experiment
 timeline; `execution/stages.py` owns stage orchestration;
-`execution/mmdet_backend.py` owns model work; `execution/mmdet_config.py` owns
-stage configs; `execution/mmdet_checkpoints.py` owns strict detector
-checkpoints; and `execution/run_files.py` owns run-local paths and manifests.
+`execution/mmdet_backend.py` owns method-specific model work and
+`execution/mmdet_config.py` owns method-specific stage values. Shared
+protocol, checkpoint, run-file, selection, reveal, runtime, and evaluation
+code lives in `methods/common` and is used by both ADA-FNP and AADA.
 
 The pinned environment and vendored-MMDetection compatibility changes predate
 this structural refactor. This refactor is validated statically only: it does
