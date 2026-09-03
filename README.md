@@ -105,10 +105,10 @@ seed. The generated files follow `voc_827_*_seed_{seed}.json` and
 `coco_2365_*_seed_{seed}.json`; the run commands are unchanged.
 
 The current VOC configuration is optimized for single-GPU PoC iteration. The
-standard QualityEMA training path uses batch 8, four persistent workers, AMP
-with dynamic loss scaling, learning rate 0.016, 63 warm-up iterations, and a
-Quality EMA base momentum of 0.9227446944279201. VOC evaluation and acquisition
-inference use batch 16 with four workers in FP32. The seven evaluated pools and
+standard QualityEMA training path uses batch 16, four persistent workers, AMP
+with dynamic loss scaling, learning rate 0.032, 32 warm-up iterations, and a
+Quality EMA base momentum of 0.8514577710948755. VOC evaluation and acquisition
+inference use batch 32 with four workers in FP32. The seven evaluated pools and
 26-epoch schedule are unchanged. After evaluating round 7 at the final 20%
 labeled pool, the runner carries that pool into the round-7 artifact layout and
 skips the unused acquisition for a 22.5% pool. COCO settings are unchanged.
