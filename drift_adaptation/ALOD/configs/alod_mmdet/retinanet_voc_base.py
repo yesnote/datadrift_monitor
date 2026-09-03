@@ -116,13 +116,13 @@ data = dict(
         type='ALVOCDataset',
         ann_file='data/VOCdevkit/VOC2007/ImageSets/Main/test.txt',
         img_prefix='data/VOCdevkit/VOC2007/',
-        samples_per_gpu=32,
+        samples_per_gpu=16,
         pipeline=test_pipeline),
     test=dict(
         type='ALVOCDataset',
         ann_file='data/VOCdevkit/VOC2007/ImageSets/Main/test.txt',
         img_prefix='data/VOCdevkit/VOC2007/',
-        samples_per_gpu=32,
+        samples_per_gpu=16,
         pipeline=test_pipeline))
 
 optimizer = dict(type='SGD', lr=0.02, momentum=0.9, weight_decay=0.0001)
