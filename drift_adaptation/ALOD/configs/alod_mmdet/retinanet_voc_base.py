@@ -103,7 +103,7 @@ test_pipeline = [
 ]
 
 data = dict(
-    samples_per_gpu=8,
+    samples_per_gpu=16,
     workers_per_gpu=4,
     persistent_workers=True,
     train=dict(
@@ -116,13 +116,13 @@ data = dict(
         type='ALVOCDataset',
         ann_file='data/VOCdevkit/VOC2007/ImageSets/Main/test.txt',
         img_prefix='data/VOCdevkit/VOC2007/',
-        samples_per_gpu=16,
+        samples_per_gpu=32,
         pipeline=test_pipeline),
     test=dict(
         type='ALVOCDataset',
         ann_file='data/VOCdevkit/VOC2007/ImageSets/Main/test.txt',
         img_prefix='data/VOCdevkit/VOC2007/',
-        samples_per_gpu=16,
+        samples_per_gpu=32,
         pipeline=test_pipeline))
 
 optimizer = dict(type='SGD', lr=0.02, momentum=0.9, weight_decay=0.0001)
@@ -131,7 +131,7 @@ lr_config = dict(policy='step', warmup='linear', warmup_iters=500, warmup_ratio=
 runner = dict(type='EpochBasedRunner', max_epochs=12)
 checkpoint_config = dict(interval=1)
 log_config = dict(
-    interval=50,
+    interval=1,
     hooks=[dict(type='TextLoggerHook', by_epoch=False)])
 custom_hooks = [dict(type='NumClassCheckHook')]
 
