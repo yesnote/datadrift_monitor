@@ -127,7 +127,12 @@ optimizer_config = dict(grad_clip=None)
 lr_config = dict(policy='step', warmup='linear', warmup_iters=500, warmup_ratio=0.001, step=[8, 11])
 runner = dict(type='EpochBasedRunner', max_epochs=12)
 checkpoint_config = dict(interval=1)
-log_config = dict(interval=50, hooks=[dict(type='TextLoggerHook', by_epoch=False)])
+log_config = dict(
+    interval=50,
+    hooks=[
+        dict(type='TextLoggerHook', by_epoch=False),
+        dict(type='TensorboardLoggerHook', by_epoch=False),
+    ])
 custom_hooks = [dict(type='NumClassCheckHook')]
 
 dist_params = dict(backend='nccl')

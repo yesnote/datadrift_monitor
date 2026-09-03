@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import math
 import os
 import re
 import runpy
@@ -51,7 +52,6 @@ from tools.common.paths import (
     resolve_repo_path as tool_resolve_repo_path,
 )
 from tools.common.preparation import prepare_required_inputs
-from tools.common.tensorboard_export import export_run_directory, require_tensorboard
 
 
 def _internal_tool_script(filename: str) -> str:
@@ -1964,6 +1964,105 @@ def _round_duration_sec(round_summary: Dict[str, Any]) -> Optional[float]:
     return round(sum(durations), 3)
 
 
+def _summary_writer_type() -> Any:
+    try:
+        from torch.utils.tensorboard import SummaryWriter
+    except ImportError as exc:
+        raise RuntimeError(
+            'TensorBoard is required for ALOD runs. '
+            'Install it with "pip install -r requirements.txt".'
+        ) from exc
+    return SummaryWriter
+
+
+def _tensorboard_number(value: Any) -> Optional[float]:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    number = float(value)
+    return number if math.isfinite(number) else None
+
+
+def _write_tensorboard_points(
+    log_dir: Path,
+    points: Iterable[Tuple[str, float, int]],
+) -> None:
+    points = list(points)
+    if not points:
+        return
+    writer = _summary_writer_type()(log_dir=str(log_dir))
+    try:
+        for tag, value, step in points:
+            writer.add_scalar(tag, value, step)
+        writer.flush()
+    finally:
+        writer.close()
+
+
+def _write_round_tensorboard(
+    cfg: Dict[str, Any],
+    seed_dir: Path,
+    round_index: int,
+    round_summary: Dict[str, Any],
+) -> None:
+    points = [
+        ('validation/%s' % metric_name, value, round_index)
+        for metric_name, value in sorted(
+            _round_metrics(cfg, seed_dir, round_index, round_summary).items()
+        )
+    ]
+    labeled_count = _count_annotation_items(
+        _input_pool_paths(seed_dir, round_index)['labeled']
+    )
+    if labeled_count is not None:
+        points.append(('pool/labeled_images', float(labeled_count), round_index))
+    selected_count = _tensorboard_number(round_summary.get('selected_count'))
+    if selected_count is not None:
+        points.append(('acquisition/selected_count', selected_count, round_index))
+    duration = _round_duration_sec(round_summary)
+    if duration is not None:
+        points.append(('runtime/round_duration_sec', duration, round_index))
+
+    log_dir = seed_dir.parent / 'tensorboard' / seed_dir.name / 'active_learning'
+    _write_tensorboard_points(log_dir, points)
+
+
+def _write_aggregate_tensorboard(run_dir: Path, payload: Dict[str, Any]) -> None:
+    points = []
+    for round_summary in payload.get('rounds_summary', []):
+        if not isinstance(round_summary, dict):
+            continue
+        round_index = int(round_summary.get('round_index', 0) or 0)
+        if round_index <= 0:
+            continue
+        metrics = round_summary.get('metrics', {})
+        if isinstance(metrics, dict):
+            for metric_name, metric_summary in sorted(metrics.items()):
+                if not isinstance(metric_summary, dict):
+                    continue
+                for statistic in ('mean', 'std'):
+                    value = _tensorboard_number(metric_summary.get(statistic))
+                    if value is not None:
+                        points.append((
+                            'validation_%s/%s' % (statistic, metric_name),
+                            value,
+                            round_index,
+                        ))
+        for metric_name in ('selected_count', 'duration_sec'):
+            metric_summary = round_summary.get(metric_name, {})
+            if not isinstance(metric_summary, dict):
+                continue
+            for statistic in ('mean', 'std'):
+                value = _tensorboard_number(metric_summary.get(statistic))
+                if value is not None:
+                    points.append((
+                        '%s/%s' % (metric_name, statistic),
+                        value,
+                        round_index,
+                    ))
+
+    _write_tensorboard_points(run_dir / 'tensorboard' / 'aggregate', points)
+
+
 def _numeric_summary(values_by_seed: Dict[int, float], seeds: List[int]) -> Dict[str, Any]:
     values = [float(values_by_seed[seed]) for seed in seeds if seed in values_by_seed]
     payload: Dict[str, Any] = {
@@ -2124,6 +2223,7 @@ def _write_aggregate_summary(
         total_rounds,
     )
     _write_json(path, payload)
+    _write_aggregate_tensorboard(run_dir, payload)
     return path
 
 
@@ -2331,6 +2431,7 @@ def _run_seed(
         _write_json(round_summary_path, round_payload)
         run_summary['round_summaries'].append(str(round_summary_path))
         _write_json(_run_summary_path(output_dir), run_summary)
+        _write_round_tensorboard(cfg, output_dir, round_index, round_payload)
 
     run_summary['status'] = 'done'
     _write_json(_run_summary_path(output_dir), run_summary)
@@ -2370,7 +2471,7 @@ def main() -> None:
     if args.list_presets:
         _print_presets()
         return
-    require_tensorboard()
+    _summary_writer_type()
 
     selection = resolve_runner_selection(args)
     args.method = selection['method']
@@ -2432,10 +2533,9 @@ def main() -> None:
         seed_run_summaries,
         total_rounds,
     )
-    tensorboard_summary = export_run_directory(run_dir)
     print('')
     print('aggregate=%s' % _display_path(aggregate_path))
-    print('tensorboard=%s' % _display_path(Path(tensorboard_summary.log_dir)))
+    print('tensorboard=%s' % _display_path(run_dir / 'tensorboard'))
     print('ALOD run complete')
 
 
