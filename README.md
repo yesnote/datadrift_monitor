@@ -7,9 +7,9 @@ detection. It is organized around one user choice:
 method + detector + dataset
 ```
 
-The runner resolves the paper reproduction settings from that choice and uses
-the local source tree directly. This repository is not installed with
-`pip install -e .` or `setup.py install`.
+The runner resolves the cataloged experiment protocol and current runtime
+settings from that choice, then uses the local source tree directly. This
+repository is not installed with `pip install -e .` or `setup.py install`.
 
 ## Supported Targets
 
@@ -104,6 +104,15 @@ requested seed. Every method uses the same source pool for a given dataset and
 seed. The generated files follow `voc_827_*_seed_{seed}.json` and
 `coco_2365_*_seed_{seed}.json`; the run commands are unchanged.
 
+The current VOC configuration is optimized for single-GPU PoC iteration. The
+standard QualityEMA training path uses batch 8, four persistent workers, AMP
+with dynamic loss scaling, learning rate 0.016, 63 warm-up iterations, and a
+Quality EMA base momentum of 0.9227446944279201. VOC evaluation and acquisition
+inference use batch 16 with four workers in FP32. The seven evaluated pools and
+26-epoch schedule are unchanged. After evaluating round 7 at the final 20%
+labeled pool, the runner carries that pool into the round-7 artifact layout and
+skips the unused acquisition for a 22.5% pool. COCO settings are unchanged.
+
 ## Run
 
 List supported presets:
@@ -122,6 +131,13 @@ Run PAL with a specific seed:
 
 ```powershell
 python -B tools/run_active_learning.py --method pal --detector retinanet --dataset voc --gpus 1 --seed 0
+```
+
+Run the current EUA-only VOC experiment with the default seed 0 and all seven
+rounds:
+
+```powershell
+python -B tools/run_active_learning.py --method ecpal:eua-only --detector retinanet --dataset voc --gpus 1
 ```
 
 Run the three reporting seeds sequentially:
@@ -166,7 +182,8 @@ Important output files:
 - `work_dirs/.../seed_*/run_summary.json`: resolved method, detector, dataset, rounds,
   budget, output directory, prepared inputs, and round summary paths.
 - `work_dirs/.../seed_*/round_XX/round_summary.json`: per-round step status, durations,
-  logs, and acquisition outputs.
+  logs, and acquisition outputs. VOC round 7 records the terminal acquisition
+  skip explicitly and keeps `selected_count` empty.
 - `work_dirs/.../seed_*/round_XX/logs/train.log`: training stdout/stderr.
 - `work_dirs/.../seed_*/round_XX/logs/eval.log`: evaluation stdout/stderr.
 - `work_dirs/.../seed_*/round_XX/logs/*_inference.log`: method inference stdout/stderr.

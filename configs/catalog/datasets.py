@@ -28,6 +28,7 @@ class DatasetSpec:
     dataset_prep: Dict[str, object] = field(default_factory=dict)
     mmdet_common_cfg_options: Dict[str, object] = field(default_factory=dict)
     mmdet_eval_cfg_options: Dict[str, object] = field(default_factory=dict)
+    skip_terminal_acquisition: bool = False
 
     def __post_init__(self) -> None:
         label_template = self.init_label_json_template
@@ -86,6 +87,8 @@ class DatasetSpec:
             cfg['init_unlabeled_json_template'] = self.init_unlabeled_json_template
         if self.dataset_prep:
             cfg['dataset_prep'] = dict(self.dataset_prep)
+        if self.skip_terminal_acquisition:
+            cfg['skip_terminal_acquisition'] = True
         return cfg
 
 
@@ -107,6 +110,8 @@ VOC = DatasetSpec(
     final_percent=20,
     eval_metric='mAP',
     summary_metrics=('mAP', 'AP50'),
+    mmdet_eval_cfg_options=dict(fp16=None),
+    skip_terminal_acquisition=True,
     dataset_prep=dict(
         type='voc0712',
         vocdevkit='data/VOCdevkit',
