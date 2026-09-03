@@ -64,15 +64,15 @@ class CommandPlan:
     argv: List[str]
     cwd: str
     round_index: int = 0
-    log_path: Optional[str] = None
+    tensorboard_dir: Optional[str] = None
     note: str = ''
 
     def to_dict(self) -> Dict[str, Any]:
         data = {'name': self.name, 'argv': self.argv, 'cwd': self.cwd}
         if self.round_index:
             data['round_index'] = self.round_index
-        if self.log_path:
-            data['log_path'] = self.log_path
+        if self.tensorboard_dir:
+            data['tensorboard_dir'] = self.tensorboard_dir
         if self.note:
             data['note'] = self.note
         return data
@@ -371,8 +371,8 @@ def _round_dir(output_dir: Path, round_index: int) -> Path:
     return output_dir / ('round_%02d' % round_index)
 
 
-def _round_log_path(output_dir: Path, round_index: int, filename: str) -> Path:
-    return _round_dir(output_dir, round_index) / 'logs' / filename
+def _round_tensorboard_dir(output_dir: Path, round_index: int) -> Path:
+    return _round_dir(output_dir, round_index) / 'logs'
 
 
 def _round_annotations(output_dir: Path, round_index: int) -> Dict[str, Path]:
@@ -468,7 +468,7 @@ def _train_plan(
         argv,
         str(ROOT),
         round_index=round_index,
-        log_path=str(_round_log_path(output_dir, round_index, 'train.log')),
+        tensorboard_dir=str(_round_tensorboard_dir(output_dir, round_index)),
     )
 
 
@@ -526,7 +526,7 @@ def _mial_train_plan(
         argv,
         str(ROOT),
         round_index=round_index,
-        log_path=str(_round_log_path(output_dir, round_index, 'train.log')),
+        tensorboard_dir=str(_round_tensorboard_dir(output_dir, round_index)),
     )
 
 
@@ -555,7 +555,7 @@ def _eval_plan(cfg: Dict[str, Any], output_dir: Path, round_index: int) -> Comma
         argv,
         str(ROOT),
         round_index=round_index,
-        log_path=str(_round_log_path(output_dir, round_index, 'eval.log')),
+        tensorboard_dir=str(_round_tensorboard_dir(output_dir, round_index)),
     )
 
 
@@ -594,7 +594,7 @@ def _uncertainty_infer_plan(
         argv,
         str(ROOT),
         round_index=round_index,
-        log_path=str(_round_log_path(output_dir, round_index, 'uncertainty_inference.log')),
+        tensorboard_dir=str(_round_tensorboard_dir(output_dir, round_index)),
     )
 
 
@@ -678,7 +678,7 @@ def _feature_infer_plan(
         argv,
         str(ROOT),
         round_index=round_index,
-        log_path=str(_round_log_path(output_dir, round_index, log_name)),
+        tensorboard_dir=str(_round_tensorboard_dir(output_dir, round_index)),
     )
 
 
@@ -756,7 +756,7 @@ def _pal_infer_plan(
         argv,
         str(ROOT),
         round_index=round_index,
-        log_path=str(_round_log_path(output_dir, round_index, 'pal_%s_inference.log' % pool_name)),
+        tensorboard_dir=str(_round_tensorboard_dir(output_dir, round_index)),
     )
 
 
@@ -819,7 +819,7 @@ def _ecpal_infer_plan(
         argv,
         str(ROOT),
         round_index=round_index,
-        log_path=str(_round_log_path(output_dir, round_index, 'ecpal_%s_inference.log' % pool_name)),
+        tensorboard_dir=str(_round_tensorboard_dir(output_dir, round_index)),
     )
 
 
@@ -971,6 +971,11 @@ _TRAIN_ITER_RE = re.compile(r'Iter \[(\d+)/(\d+)\]')
 _PROGRESS_COUNT_RE = re.compile(r'(\d+)\s*/\s*(\d+)')
 _LOSS_RE = re.compile(r'(?:^|,\s)loss:\s*([0-9.eE+-]+)')
 _ETA_RE = re.compile(r'eta:\s*([^,]+)')
+_TRAIN_SCALAR_RE = re.compile(
+    r'(?:^|[,\t]\s*)'
+    r'(lr|loss(?:_[A-Za-z0-9_.-]+)?|grad_norm):\s*'
+    r'([+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?)'
+)
 
 
 def _count_coco_images(path: Path) -> Optional[int]:
@@ -1155,6 +1160,36 @@ def _finish_progress(progress: Optional[Dict[str, Any]]) -> None:
     bar.close()
 
 
+def _tensorboard_command_tag(step: CommandPlan) -> str:
+    return re.sub(r'[^A-Za-z0-9_.-]+', '_', _step_label(step)).strip('_')
+
+
+def _record_command_output(
+    writer: Any,
+    step: CommandPlan,
+    record: str,
+    text_step: int,
+) -> int:
+    if not record:
+        return text_step
+    text_step += 1
+    writer.add_text('console/%s' % _tensorboard_command_tag(step), record, text_step)
+    if step.name.startswith(('train_', 'mial_train_')):
+        iteration = _TRAIN_ITER_RE.search(record)
+        if iteration:
+            global_step = int(iteration.group(1))
+            for name, raw_value in _TRAIN_SCALAR_RE.findall(record):
+                writer.add_scalar('train/%s' % name, float(raw_value), global_step)
+    return text_step
+
+
+def _remove_internal_text_logs(output_dir: Path, round_index: int) -> None:
+    round_dir = _round_dir(output_dir, round_index)
+    for pattern in ('*.log', '*.log.json'):
+        for path in round_dir.glob(pattern):
+            path.unlink()
+
+
 def _run_subprocess_plan(
     step: CommandPlan,
     cfg: Dict[str, Any],
@@ -1162,13 +1197,14 @@ def _run_subprocess_plan(
     verbose: bool = False,
     show_progress: bool = True,
 ) -> None:
-    stdout_handle = None
+    writer = None
     progress = None
+    text_step = 0
     try:
-        if step.log_path:
-            log_path = Path(step.log_path)
-            log_path.parent.mkdir(parents=True, exist_ok=True)
-            stdout_handle = log_path.open('w', encoding='utf-8')
+        if step.tensorboard_dir:
+            tensorboard_dir = Path(step.tensorboard_dir)
+            tensorboard_dir.mkdir(parents=True, exist_ok=True)
+            writer = _summary_writer_type()(log_dir=str(tensorboard_dir))
         if show_progress and not verbose:
             progress = _new_step_progress(step, cfg, output_dir)
         process = subprocess.Popen(
@@ -1186,17 +1222,19 @@ def _run_subprocess_plan(
             chunk = process.stdout.read(1)
             if not chunk:
                 break
-            if stdout_handle is not None:
-                stdout_handle.write(chunk)
             if verbose:
                 print(chunk, end='')
             if chunk in ('\r', '\n'):
                 if record:
+                    if writer is not None:
+                        text_step = _record_command_output(writer, step, record, text_step)
                     _update_progress_from_record(progress, record)
                     record = ''
             else:
                 record += chunk
         if record:
+            if writer is not None:
+                _record_command_output(writer, step, record, text_step)
             _update_progress_from_record(progress, record)
         return_code = process.wait()
         if return_code:
@@ -1204,16 +1242,22 @@ def _run_subprocess_plan(
         _finish_progress(progress)
         progress = None
     except subprocess.CalledProcessError as exc:
-        log_text = _display_path(Path(step.log_path)) if step.log_path else 'terminal'
+        event_text = (
+            _display_path(Path(step.tensorboard_dir))
+            if step.tensorboard_dir
+            else 'terminal'
+        )
         raise RunnerStepError(
-            'step failed: round=%s step=%s exit_code=%s log=%s'
-            % (step.round_index or '?', _step_label(step), exc.returncode, log_text)
+            'step failed: round=%s step=%s exit_code=%s tensorboard=%s'
+            % (step.round_index or '?', _step_label(step), exc.returncode, event_text)
         ) from exc
     finally:
         if progress is not None:
             progress['bar'].close()
-        if stdout_handle is not None:
-            stdout_handle.close()
+        if writer is not None:
+            writer.flush()
+            writer.close()
+        _remove_internal_text_logs(output_dir, step.round_index)
 
 
 def _execute_lightweight_acquisition(
@@ -1635,8 +1679,8 @@ def _run_plan_step(
     }
     if isinstance(step, CommandPlan):
         result['type'] = 'command'
-        if step.log_path:
-            result['log_path'] = str(step.log_path)
+        if step.tensorboard_dir:
+            result['tensorboard_dir'] = str(step.tensorboard_dir)
         _run_subprocess_plan(
             step,
             cfg,
@@ -1665,9 +1709,9 @@ def _failed_step_result(step: PlanStep, exc: BaseException, started: float) -> D
         'finished_at': time.strftime('%Y-%m-%dT%H:%M:%S'),
         'error': str(exc),
     }
-    if isinstance(step, CommandPlan) and step.log_path:
+    if isinstance(step, CommandPlan) and step.tensorboard_dir:
         result['type'] = 'command'
-        result['log_path'] = str(step.log_path)
+        result['tensorboard_dir'] = str(step.tensorboard_dir)
     elif isinstance(step, AcquisitionPlan):
         result['type'] = 'acquisition'
     return result
@@ -1691,8 +1735,11 @@ def _format_step_result(index: int, total: int, result: Dict[str, Any]) -> str:
     ]
     if result.get('selected_count') is not None:
         parts.append('selected=%s' % result['selected_count'])
-    if result.get('log_path'):
-        parts.append('log=%s' % _display_path(Path(str(result['log_path']))))
+    if result.get('tensorboard_dir'):
+        parts.append(
+            'tensorboard=%s'
+            % _display_path(Path(str(result['tensorboard_dir'])))
+        )
     return ' '.join(parts)
 
 
@@ -1906,47 +1953,14 @@ def _read_eval_json_metrics(
     return None
 
 
-def _read_eval_log_metrics(
-    round_summary: Dict[str, Any],
-    metric_names: Iterable[str],
-) -> Optional[Dict[str, float]]:
-    steps = round_summary.get('steps', [])
-    if not isinstance(steps, list):
-        return None
-    eval_log = None
-    for step in steps:
-        if isinstance(step, dict) and step.get('label') == 'eval' and step.get('log_path'):
-            eval_log = Path(str(step['log_path']))
-            break
-    if eval_log is None:
-        return None
-    if not eval_log.is_absolute():
-        eval_log = ROOT / eval_log
-    if not eval_log.exists():
-        return None
-    try:
-        text = eval_log.read_text(encoding='utf-8', errors='replace')
-    except OSError:
-        return None
-    values = {}
-    for key in metric_names:
-        match = re.search(r"\('%s',\s*([0-9.eE+-]+)\)" % re.escape(key), text)
-        if match:
-            values[key] = float(match.group(1))
-    return values or None
-
-
 def _round_metrics(
     cfg: Dict[str, Any],
     seed_dir: Path,
     round_index: int,
-    round_summary: Dict[str, Any],
 ) -> Dict[str, float]:
     round_dir = _round_dir(seed_dir, round_index)
     metric_names = _summary_metric_names(cfg)
     metrics = _read_eval_json_metrics(round_dir, metric_names)
-    if metrics is None:
-        metrics = _read_eval_log_metrics(round_summary, metric_names)
     return metrics or {}
 
 
@@ -1966,8 +1980,9 @@ def _round_duration_sec(round_summary: Dict[str, Any]) -> Optional[float]:
 
 def _summary_writer_type() -> Any:
     try:
+        import distutils.version  # noqa: F401 - required by torch 1.10.
         from torch.utils.tensorboard import SummaryWriter
-    except ImportError as exc:
+    except (AttributeError, ImportError) as exc:
         raise RuntimeError(
             'TensorBoard is required for ALOD runs. '
             'Install it with "pip install -r requirements.txt".'
@@ -2007,7 +2022,7 @@ def _write_round_tensorboard(
     points = [
         ('validation/%s' % metric_name, value, round_index)
         for metric_name, value in sorted(
-            _round_metrics(cfg, seed_dir, round_index, round_summary).items()
+            _round_metrics(cfg, seed_dir, round_index).items()
         )
     ]
     labeled_count = _count_annotation_items(
@@ -2022,8 +2037,7 @@ def _write_round_tensorboard(
     if duration is not None:
         points.append(('runtime/round_duration_sec', duration, round_index))
 
-    log_dir = seed_dir.parent / 'tensorboard' / seed_dir.name / 'active_learning'
-    _write_tensorboard_points(log_dir, points)
+    _write_tensorboard_points(seed_dir, points)
 
 
 def _write_aggregate_tensorboard(run_dir: Path, payload: Dict[str, Any]) -> None:
@@ -2060,7 +2074,7 @@ def _write_aggregate_tensorboard(run_dir: Path, payload: Dict[str, Any]) -> None
                         round_index,
                     ))
 
-    _write_tensorboard_points(run_dir / 'tensorboard' / 'aggregate', points)
+    _write_tensorboard_points(run_dir, points)
 
 
 def _numeric_summary(values_by_seed: Dict[int, float], seeds: List[int]) -> Dict[str, Any]:
@@ -2535,7 +2549,7 @@ def main() -> None:
     )
     print('')
     print('aggregate=%s' % _display_path(aggregate_path))
-    print('tensorboard=%s' % _display_path(run_dir / 'tensorboard'))
+    print('tensorboard=%s' % _display_path(run_dir))
     print('ALOD run complete')
 
 

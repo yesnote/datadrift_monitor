@@ -369,8 +369,7 @@ def main():
     cfg = _prepare_cfg(args)
     mmcv.mkdir_or_exist(osp.abspath(cfg.work_dir))
     cfg.dump(osp.join(cfg.work_dir, osp.basename(args.config)))
-    log_file = osp.join(cfg.work_dir, '%s.log' % time.strftime('%Y%m%d_%H%M%S'))
-    logger = get_root_logger(log_file=log_file, log_level=cfg.log_level)
+    logger = get_root_logger(log_level=cfg.log_level)
 
     env_info = '\n'.join('%s: %s' % (key, value) for key, value in collect_env().items())
     logger.info('Environment info:\n%s', env_info)

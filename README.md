@@ -193,10 +193,10 @@ Install the ALOD dependencies, including TensorBoard:
 pip install -r requirements.txt
 ```
 
-New experiments write TensorBoard events directly while they run. MMDetection
-records per-iteration training scalars, and the public runner records validation,
-pool, acquisition, duration, and aggregate scalars. Previously generated event
-files for historical experiments remain available without another conversion.
+New experiments write TensorBoard events directly while they run. The public
+runner records command output, per-iteration training scalars, validation, pool,
+acquisition, duration, and aggregate scalars. Plain `.log` and `.log.json` files
+are not retained.
 
 Launch TensorBoard from the repository root:
 
@@ -213,9 +213,11 @@ python -m tensorboard.main --logdir work_dirs
 TensorBoard discovers all generated event files recursively. The Scalars page
 contains VOC mAP/AP50 or COCO bbox AP by active-learning round, labeled and
 selected image counts, round durations, aggregate mean/std curves, and per-round
-training loss/lr curves for each seed. Active-learning and aggregate events are
-stored under `work_dirs/.../<run_id>/tensorboard/`; MMDetection training events
-are stored in each round work directory and are discovered by the same command.
+training loss/lr curves for each seed. Aggregate events are stored directly in
+each timestamped run directory, per-seed active-learning events directly in each
+existing `seed_*` directory, and command/training events in each existing
+`seed_*/round_XX/logs/` directory. No parallel `tensorboard/seed_*` directory
+tree is created.
 
 Useful method aliases:
 
