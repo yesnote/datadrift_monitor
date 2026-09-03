@@ -32,8 +32,6 @@ source tree, not from `code_refs/`.
 ## Repository Layout
 
 - `tools/run_active_learning.py`: public runner for executing AL rounds.
-- `tools/export_tensorboard.py`: converts existing experiment metrics to
-  TensorBoard event files.
 - `tools/internal/`: private detector training, inference, and MIAL training
   entrypoints invoked by the public runner.
 - `tools/common/`: reusable runner and input-preparation libraries; these modules
@@ -195,13 +193,10 @@ Install the ALOD dependencies, including TensorBoard:
 pip install -r requirements.txt
 ```
 
-New completed experiments automatically write TensorBoard events below their
-timestamped run directory. Rebuild events for all existing runs after copying or
-changing historical results with:
-
-```powershell
-python -B tools/export_tensorboard.py
-```
+New experiments write TensorBoard events directly while they run. MMDetection
+records per-iteration training scalars, and the public runner records validation,
+pool, acquisition, duration, and aggregate scalars. Previously generated event
+files for historical experiments remain available without another conversion.
 
 Launch TensorBoard from the repository root:
 
@@ -218,9 +213,9 @@ python -m tensorboard.main --logdir work_dirs
 TensorBoard discovers all generated event files recursively. The Scalars page
 contains VOC mAP/AP50 or COCO bbox AP by active-learning round, labeled and
 selected image counts, round durations, aggregate mean/std curves, and per-round
-training loss/lr curves for each seed. Generated events are stored under
-`work_dirs/.../<run_id>/tensorboard/` and can be rebuilt from the original JSON
-and text logs at any time.
+training loss/lr curves for each seed. Active-learning and aggregate events are
+stored under `work_dirs/.../<run_id>/tensorboard/`; MMDetection training events
+are stored in each round work directory and are discovered by the same command.
 
 Useful method aliases:
 
