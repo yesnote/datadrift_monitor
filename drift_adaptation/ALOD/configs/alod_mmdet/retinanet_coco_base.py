@@ -134,10 +134,7 @@ runner = dict(type='EpochBasedRunner', max_epochs=12)
 checkpoint_config = dict(interval=1)
 log_config = dict(
     interval=50,
-    hooks=[
-        dict(type='TextLoggerHook', by_epoch=False),
-        dict(type='TensorboardLoggerHook', by_epoch=False),
-    ])
+    hooks=[dict(type='TextLoggerHook', by_epoch=False)])
 custom_hooks = [dict(type='NumClassCheckHook')]
 
 dist_params = dict(backend='nccl')
