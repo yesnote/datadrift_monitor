@@ -1076,6 +1076,41 @@ def _train_max_epochs(cfg: Dict[str, Any]) -> Optional[int]:
     return None
 
 
+def _progress_batch_size(
+    step: CommandPlan,
+    cfg: Dict[str, Any],
+    kind: str,
+) -> int:
+    internal_scripts = {
+        'train_detector.py',
+        'train_mial_detector.py',
+        'infer_detector.py',
+    }
+    config_path = None
+    for index, value in enumerate(step.argv[:-1]):
+        if Path(str(value)).name in internal_scripts:
+            config_path = Path(str(step.argv[index + 1]))
+            break
+    if config_path is None:
+        return 1
+    if not config_path.is_absolute():
+        config_path = ROOT / config_path
+
+    from mmcv import Config
+    resolved = Config.fromfile(str(config_path))
+    if kind == 'train':
+        samples_per_gpu = int(resolved.data.get('samples_per_gpu', 1))
+    elif isinstance(resolved.data.test, dict):
+        samples_per_gpu = int(resolved.data.test.get('samples_per_gpu', 1))
+    else:
+        samples_per_gpu = max(
+            int(dataset_cfg.get('samples_per_gpu', 1))
+            for dataset_cfg in resolved.data.test
+        )
+
+    return max(samples_per_gpu, 1) * max(int(cfg.get('gpus', 1)), 1)
+
+
 def _progress_kind(step: CommandPlan) -> str:
     if step.name.startswith('mial_train'):
         return 'train'
@@ -1150,14 +1185,21 @@ def _new_step_progress(
     if tqdm is None:
         return None
     kind = _progress_kind(step)
-    unit = 'iter' if kind == 'train' else 'img'
+    batch_size = _progress_batch_size(step, cfg, kind)
+    total = None if kind == 'train' else _progress_total_for_step(
+        step, cfg, output_dir)
     bar = tqdm(
-        total=_progress_total_for_step(step, cfg, output_dir),
+        total=total,
         desc=_step_label(step),
-        unit=unit,
+        unit='img',
         leave=True,
     )
-    return {'bar': bar, 'kind': kind, 'last': 0}
+    return {
+        'bar': bar,
+        'kind': kind,
+        'batch_size': batch_size,
+        'last': 0,
+    }
 
 
 def _set_progress_total(progress: Dict[str, Any], total: int) -> None:
@@ -1190,6 +1232,12 @@ def _update_progress_from_record(progress: Optional[Dict[str, Any]], record: str
         return
     current = int(match.group(1))
     total = int(match.group(2))
+    batch_size = int(progress.get('batch_size', 1))
+    if kind == 'train':
+        current *= batch_size
+        total *= batch_size
+    elif current < total and current % batch_size != 0:
+        return
     _set_progress_total(progress, total)
     _advance_progress(progress, current)
     if kind == 'train':
