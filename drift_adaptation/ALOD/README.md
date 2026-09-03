@@ -161,6 +161,12 @@ directory instead of being streamed to the terminal. When multiple values are
 passed through `--seeds`, each complete seed pipeline runs sequentially. Seed
 pipelines never share a GPU concurrently.
 
+All train, evaluation, and inference progress bars use image units. A completed
+batch advances the bar by the effective batch size, so batch 16 is displayed as
+`16/N`, `32/N`, and so on; a partial final inference batch is capped at the
+dataset size. The training total counts every image slot processed across all
+epochs, including samples repeated by MMDetection's grouped sampler padding.
+
 Every run is stored under a timestamp directory. Single-seed and sequential
 multi-seed runs use the same layout:
 
