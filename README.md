@@ -32,9 +32,10 @@ source tree, not from `code_refs/`.
 ## Repository Layout
 
 - `tools/run_active_learning.py`: public runner for executing AL rounds.
-- `tools/run_metrics_dashboard.py`: public launcher for the local metrics dashboard.
-- `tools/internal/`: private detector training, inference, MIAL training, and
-  Streamlit entrypoints invoked by the public launchers.
+- `tools/export_tensorboard.py`: converts existing experiment metrics to
+  TensorBoard event files.
+- `tools/internal/`: private detector training, inference, and MIAL training
+  entrypoints invoked by the public runner.
 - `tools/common/`: reusable runner and input-preparation libraries; these modules
   do not depend on private entrypoints.
 - `configs/catalog/`: supported method/detector/dataset presets.
@@ -119,7 +120,13 @@ Run one PAL round:
 python -B tools/run_active_learning.py --method pal --detector retinanet --dataset voc --rounds 1 --gpus 1
 ```
 
-Run PAL with the three seeds used for paper-style reporting:
+Run PAL with a specific seed:
+
+```powershell
+python -B tools/run_active_learning.py --method pal --detector retinanet --dataset voc --gpus 1 --seed 0
+```
+
+Run the three reporting seeds sequentially:
 
 ```powershell
 python -B tools/run_active_learning.py --method pal --detector retinanet --dataset voc --gpus 1 --seeds 0 1 2
@@ -128,19 +135,7 @@ python -B tools/run_active_learning.py --method pal --detector retinanet --datas
 Run the same PAL protocol on COCO:
 
 ```powershell
-python -B tools/run_active_learning.py --method pal --detector retinanet --dataset coco --gpus 1 --seeds 0 1 2
-```
-
-Run the three seed pipelines concurrently on the visible GPU:
-
-```powershell
-python -B tools/run_active_learning.py --method pal --detector retinanet --dataset voc --gpus 1 --seeds 0 1 2 --seed-workers 3
-```
-
-Limit each concurrent seed pipeline to a fixed CPU core block:
-
-```powershell
-python -B tools/run_active_learning.py --method pal --detector retinanet --dataset voc --gpus 1 --seeds 0 1 2 --seed-workers 3 --seed-cpu-cores 4
+python -B tools/run_active_learning.py --method pal --detector retinanet --dataset coco --gpus 1 --seed 0
 ```
 
 The default terminal output is concise. It prepares missing inputs, prints the
@@ -148,15 +143,12 @@ resolved run and output directory, then shows separate progress bars for the
 current round's train, eval, and method inference steps. Acquisition is printed
 as a short result line. Detailed command arguments, MMDetection logs, inference
 logs, input preparation details, and acquisition details are saved under the run
-directory instead of being streamed to the terminal. When `--seed-workers` is
-greater than 1, per-step progress bars are replaced by compact seed/round status
-lines so concurrent seed output does not overwrite itself. `--seed-cpu-cores`
-limits CPU placement only; the visible GPU is still shared by all concurrent
-seed pipelines. Core blocks are assigned to active seed worker slots and reused
-when later seeds start.
+directory instead of being streamed to the terminal. When multiple values are
+passed through `--seeds`, each complete seed pipeline runs sequentially. Seed
+pipelines never share a GPU concurrently.
 
-Every run is stored under a timestamp directory. Single-seed and multi-seed
-runs use the same layout:
+Every run is stored under a timestamp directory. Single-seed and sequential
+multi-seed runs use the same layout:
 
 ```text
 work_dirs/<experiment_name>/<MM-DD-YYYY_HH;mm>/
@@ -195,23 +187,40 @@ output:
 python -B tools/run_active_learning.py --method pal --detector retinanet --dataset voc --rounds 1 --gpus 1 --verbose
 ```
 
-## View Metrics
+## View Metrics with TensorBoard
 
-Install the optional dashboard dependencies:
-
-```powershell
-pip install -r requirements/dashboard.txt
-```
-
-Open the read-only local metrics dashboard:
+Install the ALOD dependencies, including TensorBoard:
 
 ```powershell
-python tools/run_metrics_dashboard.py
+pip install -r requirements.txt
 ```
 
-The dashboard scans `work_dirs` by default and lets you compare VOC mAP/AP50,
-COCO bbox AP, and train loss/lr curves across methods, seeds, rounds, and
-timestamped runs from the sidebar.
+New completed experiments automatically write TensorBoard events below their
+timestamped run directory. Rebuild events for all existing runs after copying or
+changing historical results with:
+
+```powershell
+python -B tools/export_tensorboard.py
+```
+
+Launch TensorBoard from the repository root:
+
+```powershell
+tensorboard --logdir work_dirs
+```
+
+If the console script is not on `PATH`, use the equivalent module command:
+
+```powershell
+python -m tensorboard.main --logdir work_dirs
+```
+
+TensorBoard discovers all generated event files recursively. The Scalars page
+contains VOC mAP/AP50 or COCO bbox AP by active-learning round, labeled and
+selected image counts, round durations, aggregate mean/std curves, and per-round
+training loss/lr curves for each seed. Generated events are stored under
+`work_dirs/.../<run_id>/tensorboard/` and can be rebuilt from the original JSON
+and text logs at any time.
 
 Useful method aliases:
 

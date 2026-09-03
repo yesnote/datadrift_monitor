@@ -1,4 +1,4 @@
-"""Discover ALOD experiment runs under ``work_dirs`` for metric viewing."""
+"""Discover ALOD experiment runs under ``work_dirs`` for metric export."""
 
 from __future__ import annotations
 

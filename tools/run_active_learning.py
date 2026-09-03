@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import argparse
-import copy
 import hashlib
 import json
 import os
@@ -13,13 +12,10 @@ import shutil
 import subprocess
 import sys
 import time
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from queue import Queue
 from string import Formatter
-from threading import Lock
 from typing import Any, Dict, Iterable, List, Optional, Tuple, Union
 
 try:
@@ -31,7 +27,6 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-_PRINT_LOCK = Lock()
 _INTERNAL_TOOLS_DIR = Path('tools') / 'internal'
 
 from configs.catalog import build_experiment_config, list_presets, resolve_experiment, resolve_method_alias
@@ -56,6 +51,7 @@ from tools.common.paths import (
     resolve_repo_path as tool_resolve_repo_path,
 )
 from tools.common.preparation import prepare_required_inputs
+from tools.common.tensorboard_export import export_run_directory, require_tensorboard
 
 
 def _internal_tool_script(filename: str) -> str:
@@ -1165,7 +1161,6 @@ def _run_subprocess_plan(
     output_dir: Path,
     verbose: bool = False,
     show_progress: bool = True,
-    cpu_affinity: Optional[List[int]] = None,
 ) -> None:
     stdout_handle = None
     progress = None
@@ -1185,11 +1180,6 @@ def _run_subprocess_plan(
             errors='replace',
             env=_subprocess_env(),
         )
-        try:
-            _apply_cpu_affinity(process.pid, cpu_affinity)
-        except Exception:
-            _terminate_process(process)
-            raise
         assert process.stdout is not None
         record = ''
         while True:
@@ -1633,7 +1623,6 @@ def _run_plan_step(
     seed: int,
     verbose: bool = False,
     show_progress: bool = True,
-    cpu_affinity: Optional[List[int]] = None,
 ) -> Dict[str, Any]:
     started = time.time()
     started_at = time.strftime('%Y-%m-%dT%H:%M:%S')
@@ -1654,7 +1643,6 @@ def _run_plan_step(
             output_dir,
             verbose=verbose,
             show_progress=show_progress,
-            cpu_affinity=cpu_affinity,
         )
     elif isinstance(step, AcquisitionPlan):
         result['type'] = 'acquisition'
@@ -1692,11 +1680,6 @@ def _format_duration(seconds: float) -> str:
     if hours:
         return '%d:%02d:%02d' % (hours, minutes, seconds)
     return '%02d:%02d' % (minutes, seconds)
-
-
-def _print_runner_line(message: str = '') -> None:
-    with _PRINT_LOCK:
-        print(message, flush=True)
 
 
 def _format_step_result(index: int, total: int, result: Dict[str, Any]) -> str:
@@ -1806,7 +1789,6 @@ def _run_summary_base(
     total_rounds: int,
     seed: int,
     initial_pool: InitialPoolSource,
-    cpu_affinity: Optional[List[int]] = None,
 ) -> Dict[str, Any]:
     catalog_selection = selection.get('catalog_selection')
     detector = None
@@ -1825,9 +1807,9 @@ def _run_summary_base(
         'start_round': args.start_round,
         'budget': int(cfg.get('budget', 0)),
         'seed': seed,
-        'seed_workers': int(getattr(args, 'seed_workers', 1)),
-        'seed_cpu_cores': getattr(args, 'seed_cpu_cores', None),
-        'cpu_affinity': list(cpu_affinity) if cpu_affinity is not None else None,
+        'seed_workers': 1,
+        'seed_cpu_cores': None,
+        'cpu_affinity': None,
         'gpus': int(cfg.get('gpus', 1)),
         'output_dir': str(output_dir),
         'plan_path': str(plan_log),
@@ -1890,10 +1872,7 @@ def _print_timestamp_run_header(
         'rounds=%s' % total_rounds,
         'budget=%s' % int(cfg.get('budget', 0)),
         'gpus=%s' % int(cfg.get('gpus', 1)),
-        'seed_workers=%s' % int(getattr(args, 'seed_workers', 1)),
     ]
-    if getattr(args, 'seed_cpu_cores', None) is not None:
-        header_parts.append('seed_cpu_cores=%s' % int(args.seed_cpu_cores))
     print(' '.join(header_parts))
     print('output=%s' % _display_path(run_dir))
 
@@ -2113,9 +2092,9 @@ def _build_aggregate_summary(
         'budget': int(cfg.get('budget', 0)),
         'gpus': int(cfg.get('gpus', 1)),
         'seeds': seeds,
-        'seed_workers': int(getattr(args, 'seed_workers', 1)),
-        'seed_cpu_cores': getattr(args, 'seed_cpu_cores', None),
-        'cpu_affinity_enabled': getattr(args, 'seed_cpu_cores', None) is not None,
+        'seed_workers': 1,
+        'seed_cpu_cores': None,
+        'cpu_affinity_enabled': False,
         'seed_runs': seed_runs,
         'rounds_summary': rounds_summary,
     }
@@ -2153,7 +2132,6 @@ def _catalog_epilog() -> str:
         'Examples:',
         '  python -B tools/run_active_learning.py --method pal --detector retinanet --dataset voc --rounds 1 --gpus 1',
         '  python -B tools/run_active_learning.py --method pal --detector retinanet --dataset voc --gpus 1 --seeds 0 1 2',
-        '  python -B tools/run_active_learning.py --method pal --detector retinanet --dataset voc --gpus 1 --seeds 0 1 2 --seed-workers 3',
         '  python -B tools/run_active_learning.py --preset ppal-retinanet-voc --rounds 1 --gpus 1',
         '',
         'Catalog presets:',
@@ -2255,139 +2233,18 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument('--rounds', type=int, default=None, help='Number of AL rounds to execute')
     parser.add_argument('--start-round', type=int, default=1, help='First AL round index to execute')
     parser.add_argument('--seed', type=int, default=None, help='Single run seed. Defaults to 0 when --seeds is omitted')
-    parser.add_argument('--seeds', type=int, nargs='+', default=None, help='Run one timestamped experiment over multiple seeds')
     parser.add_argument(
-        '--seed-workers',
+        '--seeds',
         type=int,
-        default=1,
-        help='Number of seed pipelines to run concurrently. Defaults to sequential execution.',
-    )
-    parser.add_argument(
-        '--seed-cpu-cores',
-        type=int,
+        nargs='+',
         default=None,
-        help='Limit each concurrently running seed pipeline to this many logical CPU cores.',
+        help='Run multiple seeds sequentially in one timestamped experiment.',
     )
     parser.add_argument('--gpus', type=int, default=None, help='Override config gpus for command planning/execution')
     parser.add_argument('--port', type=int, default=None, help='Override distributed master port')
     parser.add_argument('--python-path', default=None, help='Override config python executable')
     parser.add_argument('--verbose', action='store_true', help='Print the full plan and stream subprocess output')
     return parser.parse_args()
-
-
-def _seed_worker_count(args: argparse.Namespace, cfg: Dict[str, Any], seeds: List[int]) -> int:
-    requested_workers = int(getattr(args, 'seed_workers', 1))
-    if requested_workers < 1:
-        raise SystemExit('--seed-workers must be at least 1.')
-    workers = min(requested_workers, len(seeds))
-    if workers > 1:
-        if args.verbose:
-            raise SystemExit('--verbose cannot be combined with --seed-workers > 1.')
-        if int(cfg.get('gpus', 1)) != 1:
-            raise SystemExit('--seed-workers > 1 currently supports --gpus 1 only.')
-    return workers
-
-
-def _load_psutil_for_affinity() -> Any:
-    try:
-        import psutil
-    except ImportError as exc:
-        raise ImportError(
-            'psutil is required for --seed-cpu-cores. Install it with `pip install -r requirements.txt`.'
-        ) from exc
-    return psutil
-
-
-def _available_cpu_affinity_ids() -> List[int]:
-    psutil = _load_psutil_for_affinity()
-    process = psutil.Process()
-    if not hasattr(process, 'cpu_affinity'):
-        raise RuntimeError('CPU affinity is not supported by psutil on this platform.')
-    return [int(cpu_id) for cpu_id in process.cpu_affinity()]
-
-
-def _seed_cpu_affinity_slots(seed_workers: int, cores_per_seed: Optional[int]) -> List[Optional[List[int]]]:
-    if seed_workers < 1:
-        raise SystemExit('--seed-workers must be at least 1.')
-    if cores_per_seed is None:
-        return [None for _ in range(seed_workers)]
-    cores_per_seed = int(cores_per_seed)
-    if cores_per_seed < 1:
-        raise SystemExit('--seed-cpu-cores must be at least 1.')
-
-    available = _available_cpu_affinity_ids()
-    required = seed_workers * cores_per_seed
-    if required > len(available):
-        raise SystemExit(
-            '--seed-workers %d with --seed-cpu-cores %d requires %d logical CPU cores, '
-            'but only %d are available to this process: %s'
-            % (seed_workers, cores_per_seed, required, len(available), _format_cpu_affinity(available))
-        )
-    return [
-        available[slot_index * cores_per_seed:(slot_index + 1) * cores_per_seed]
-        for slot_index in range(seed_workers)
-    ]
-
-
-def _format_cpu_affinity(cpu_affinity: Optional[List[int]]) -> str:
-    if not cpu_affinity:
-        return 'none'
-    values = sorted(int(value) for value in cpu_affinity)
-    ranges = []
-    start = values[0]
-    previous = values[0]
-    for value in values[1:]:
-        if value == previous + 1:
-            previous = value
-            continue
-        ranges.append('%d-%d' % (start, previous) if start != previous else str(start))
-        start = value
-        previous = value
-    ranges.append('%d-%d' % (start, previous) if start != previous else str(start))
-    return ','.join(ranges)
-
-
-def _apply_cpu_affinity(pid: int, cpu_affinity: Optional[List[int]]) -> None:
-    if not cpu_affinity:
-        return
-    psutil = _load_psutil_for_affinity()
-    process = psutil.Process(pid)
-    if not hasattr(process, 'cpu_affinity'):
-        raise RuntimeError('CPU affinity is not supported by psutil on this platform.')
-    process.cpu_affinity([int(cpu_id) for cpu_id in cpu_affinity])
-
-
-def _terminate_process(process: subprocess.Popen) -> None:
-    if process.poll() is not None:
-        return
-    process.terminate()
-    try:
-        process.wait(timeout=5)
-    except subprocess.TimeoutExpired:
-        process.kill()
-        process.wait()
-
-
-def _read_seed_run_summary_or_failed(seed_dir: Path, seed: int, exc: BaseException) -> Dict[str, Any]:
-    path = _run_summary_path(seed_dir)
-    if path.exists():
-        try:
-            payload = read_json(path)
-        except (OSError, ValueError, TypeError):
-            payload = None
-        if isinstance(payload, dict):
-            if payload.get('status') not in ('done', 'failed'):
-                payload = dict(payload)
-                payload['status'] = 'failed'
-                payload['error'] = str(exc)
-                _write_json(path, payload)
-            return payload
-    return {
-        'status': 'failed',
-        'seed': seed,
-        'output_dir': str(seed_dir),
-        'error': str(exc),
-    }
 
 
 def _run_seed(
@@ -2399,10 +2256,7 @@ def _run_seed(
     seed: int,
     initial_pool: InitialPoolSource,
     preparation_results: List[Dict[str, object]],
-    compact_output: bool = False,
-    cpu_affinity: Optional[List[int]] = None,
 ) -> Dict[str, Any]:
-    seed_prefix = '[seed=%d]' % seed
     if initial_pool.seed != seed:
         raise ValueError(
             'Resolved initial pool seed=%d does not match run seed=%d.'
@@ -2420,7 +2274,6 @@ def _run_seed(
         total_rounds,
         seed,
         initial_pool,
-        cpu_affinity=cpu_affinity,
     )
     run_summary['preparation'] = preparation_results
     _write_json(_run_summary_path(output_dir), run_summary)
@@ -2428,28 +2281,21 @@ def _run_seed(
         for action in init_actions:
             print(action)
     elif init_actions:
-        if compact_output:
-            _print_runner_line('%s initial pools: round_00 annotations ready' % seed_prefix)
-        else:
-            print('initial pools: round_00 annotations ready')
+        print('initial pools: round_00 annotations ready')
 
     for round_offset, round_index in enumerate(range(args.start_round, args.start_round + total_rounds), start=1):
-        round_started = time.time()
         round_plan = build_round_plan(cfg, output_dir, args.method, round_index, seed)
         plan.extend(round_plan)
         _write_plan_log(output_dir, plan)
         round_results: List[Dict[str, Any]] = []
-        if compact_output:
-            _print_runner_line('%s Round %d/%d started' % (seed_prefix, round_offset, total_rounds))
-        else:
-            print('')
-            print('Round %d/%d' % (round_offset, total_rounds))
+        print('')
+        print('Round %d/%d' % (round_offset, total_rounds))
         if args.verbose:
             print('round plan:')
             _print_plan(round_plan)
         for step_index, step in enumerate(round_plan, start=1):
             label = _step_label(step)
-            if not compact_output and (args.verbose or (tqdm is None and isinstance(step, CommandPlan))):
+            if args.verbose or (tqdm is None and isinstance(step, CommandPlan)):
                 print('[%d/%d] %-26s running...' % (step_index, len(round_plan), label), flush=True)
             started = time.time()
             try:
@@ -2459,8 +2305,6 @@ def _run_seed(
                     output_dir,
                     seed=seed,
                     verbose=args.verbose,
-                    show_progress=not compact_output,
-                    cpu_affinity=cpu_affinity,
                 )
             except Exception as exc:
                 result = _failed_step_result(step, exc, started)
@@ -2473,17 +2317,10 @@ def _run_seed(
                 run_summary['failed_step'] = result
                 run_summary['round_summaries'].append(str(round_summary_path))
                 _write_json(_run_summary_path(output_dir), run_summary)
-                if compact_output:
-                    _print_runner_line(
-                        '%s Round %d/%d failed: %s'
-                        % (seed_prefix, round_offset, total_rounds, result.get('error'))
-                    )
                 if isinstance(exc, RunnerStepError):
                     raise SystemExit(str(exc))
                 raise
             round_results.append(result)
-            if compact_output:
-                continue
             if isinstance(step, AcquisitionPlan) and not args.verbose:
                 print(_format_acquisition_result(result), flush=True)
             elif args.verbose or tqdm is None:
@@ -2494,15 +2331,6 @@ def _run_seed(
         _write_json(round_summary_path, round_payload)
         run_summary['round_summaries'].append(str(round_summary_path))
         _write_json(_run_summary_path(output_dir), run_summary)
-        if compact_output:
-            acquisition = _latest_acquisition_result(round_results)
-            parts = [
-                '%s Round %d/%d done' % (seed_prefix, round_offset, total_rounds),
-                'duration=%s' % _format_duration(time.time() - round_started),
-            ]
-            if acquisition.get('selected_count') is not None:
-                parts.append('selected=%s' % acquisition['selected_count'])
-            _print_runner_line(' '.join(parts))
 
     run_summary['status'] = 'done'
     _write_json(_run_summary_path(output_dir), run_summary)
@@ -2518,112 +2346,23 @@ def _run_seeds(
     seeds: List[int],
     initial_pools: Dict[int, InitialPoolSource],
     preparation_results: List[Dict[str, object]],
-) -> Tuple[Dict[int, Dict[str, Any]], Dict[int, str]]:
-    workers = _seed_worker_count(args, cfg, seeds)
-    affinity_slots = _seed_cpu_affinity_slots(workers, getattr(args, 'seed_cpu_cores', None))
+) -> Dict[int, Dict[str, Any]]:
     seed_run_summaries: Dict[int, Dict[str, Any]] = {}
-    seed_failures: Dict[int, str] = {}
-
-    if workers == 1:
-        cpu_affinity = affinity_slots[0]
-        if cpu_affinity is not None:
-            print('CPU affinity: cores=%s' % _format_cpu_affinity(cpu_affinity))
-        for seed_offset, seed in enumerate(seeds, start=1):
-            print('')
-            print('Seed %d/%d: seed=%d' % (seed_offset, len(seeds), seed))
-            seed_dir = _seed_output_dir(run_dir, seed)
-            seed_run_summaries[seed] = _run_seed(
-                args,
-                cfg,
-                selection,
-                seed_dir,
-                total_rounds,
-                seed,
-                initial_pools[seed],
-                preparation_results,
-                cpu_affinity=cpu_affinity,
-            )
-        return seed_run_summaries, seed_failures
-
-    _print_runner_line('')
-    _print_runner_line('Running seed pipelines in parallel: seed_workers=%d' % workers)
-    if any(slot is not None for slot in affinity_slots):
-        for slot_index, cpu_affinity in enumerate(affinity_slots):
-            _print_runner_line(
-                'CPU affinity slot %d: cores=%s'
-                % (slot_index, _format_cpu_affinity(cpu_affinity))
-            )
-    slot_queue: Queue = Queue()
-    for slot_index in range(workers):
-        slot_queue.put(slot_index)
-
-    def _run_seed_with_affinity_slot(
-        seed_args: argparse.Namespace,
-        seed_cfg: Dict[str, Any],
-        seed_value: int,
-        seed_dir_value: Path,
-        initial_pool_value: InitialPoolSource,
-    ) -> Dict[str, Any]:
-        slot_index = slot_queue.get()
-        cpu_affinity = affinity_slots[slot_index]
-        try:
-            if cpu_affinity is not None:
-                _print_runner_line(
-                    'Seed started: seed=%d cpu_slot=%d cores=%s'
-                    % (seed_value, slot_index, _format_cpu_affinity(cpu_affinity))
-                )
-            return _run_seed(
-                seed_args,
-                seed_cfg,
-                selection,
-                seed_dir_value,
-                total_rounds,
-                seed_value,
-                initial_pool_value,
-                preparation_results,
-                True,
-                cpu_affinity=cpu_affinity,
-            )
-        finally:
-            slot_queue.put(slot_index)
-
-    futures = {}
-    with ThreadPoolExecutor(max_workers=workers) as executor:
-        for seed_offset, seed in enumerate(seeds, start=1):
-            seed_dir = _seed_output_dir(run_dir, seed)
-            _print_runner_line(
-                'Seed %d/%d submitted: seed=%d output=%s'
-                % (seed_offset, len(seeds), seed, _display_path(seed_dir))
-            )
-            future = executor.submit(
-                _run_seed_with_affinity_slot,
-                args,
-                copy.deepcopy(cfg),
-                seed,
-                seed_dir,
-                initial_pools[seed],
-            )
-            futures[future] = (seed, seed_dir)
-
-        for future in as_completed(futures):
-            seed, seed_dir = futures[future]
-            try:
-                summary = future.result()
-            except SystemExit as exc:
-                summary = _read_seed_run_summary_or_failed(seed_dir, seed, exc)
-                seed_failures[seed] = str(exc)
-            except Exception as exc:
-                summary = _read_seed_run_summary_or_failed(seed_dir, seed, exc)
-                seed_failures[seed] = str(exc)
-            seed_run_summaries[seed] = summary
-            status = str(summary.get('status', 'unknown'))
-            if status == 'done':
-                _print_runner_line('Seed done: seed=%d output=%s' % (seed, _display_path(seed_dir)))
-            else:
-                reason = seed_failures.get(seed) or str(summary.get('error', 'unknown error'))
-                _print_runner_line('Seed failed: seed=%d output=%s error=%s' % (seed, _display_path(seed_dir), reason))
-
-    return seed_run_summaries, seed_failures
+    for seed_offset, seed in enumerate(seeds, start=1):
+        print('')
+        print('Seed %d/%d: seed=%d' % (seed_offset, len(seeds), seed))
+        seed_dir = _seed_output_dir(run_dir, seed)
+        seed_run_summaries[seed] = _run_seed(
+            args,
+            cfg,
+            selection,
+            seed_dir,
+            total_rounds,
+            seed,
+            initial_pools[seed],
+            preparation_results,
+        )
+    return seed_run_summaries
 
 
 def main() -> None:
@@ -2631,6 +2370,7 @@ def main() -> None:
     if args.list_presets:
         _print_presets()
         return
+    require_tensorboard()
 
     selection = resolve_runner_selection(args)
     args.method = selection['method']
@@ -2664,14 +2404,13 @@ def main() -> None:
     total_rounds = int(args.rounds if args.rounds is not None else cfg.get('round_num', 1))
     if total_rounds < 1:
         raise ValueError('round count must be positive')
-    args.seed_workers = _seed_worker_count(args, cfg, seeds)
 
     run_id = _run_timestamp()
     run_dir = base_output_dir / run_id
     _ensure_new_timestamp_run_dir(run_dir)
     _print_timestamp_run_header(args, cfg, selection, run_dir, seeds, total_rounds)
 
-    seed_run_summaries, seed_failures = _run_seeds(
+    seed_run_summaries = _run_seeds(
         args,
         cfg,
         selection,
@@ -2693,11 +2432,10 @@ def main() -> None:
         seed_run_summaries,
         total_rounds,
     )
+    tensorboard_summary = export_run_directory(run_dir)
     print('')
     print('aggregate=%s' % _display_path(aggregate_path))
-    if seed_failures:
-        failed = ', '.join('seed=%d' % seed for seed in sorted(seed_failures))
-        raise SystemExit('ALOD run failed for %d seed(s): %s' % (len(seed_failures), failed))
+    print('tensorboard=%s' % _display_path(Path(tensorboard_summary.log_dir)))
     print('ALOD run complete')
 
 
