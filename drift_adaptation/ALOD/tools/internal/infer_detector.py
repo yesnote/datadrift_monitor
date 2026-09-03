@@ -203,6 +203,7 @@ def main():
         dataset,
         samples_per_gpu=samples_per_gpu,
         workers_per_gpu=cfg.data.workers_per_gpu,
+        persistent_workers=cfg.data.get('persistent_workers', False),
         dist=distributed,
         shuffle=False)
 
@@ -210,6 +211,8 @@ def main():
     cfg.model.train_cfg = None
     model = build_detector(cfg.model, test_cfg=cfg.get('test_cfg'))
     fp16_cfg = cfg.get('fp16', None)
+    if isinstance(fp16_cfg, str) and fp16_cfg.lower() == 'none':
+        fp16_cfg = None
     if fp16_cfg is not None:
         wrap_fp16_model(model)
     checkpoint = load_checkpoint(model, args.checkpoint, map_location='cpu')

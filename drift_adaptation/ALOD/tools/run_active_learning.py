@@ -434,6 +434,51 @@ def _input_pool_paths(output_dir: Path, round_index: int) -> Dict[str, Path]:
     return _round_annotations(output_dir, round_index - 1)
 
 
+def _skips_terminal_acquisition(cfg: Dict[str, Any], round_index: int) -> bool:
+    if not bool(cfg.get('skip_terminal_acquisition', False)):
+        return False
+    return round_index == int(cfg['round_num'])
+
+
+def _carry_forward_terminal_round_pools(
+    cfg: Dict[str, Any],
+    output_dir: Path,
+    round_index: int,
+) -> None:
+    if not _skips_terminal_acquisition(cfg, round_index):
+        return
+
+    input_paths = _input_pool_paths(output_dir, round_index)
+    output_paths = _round_annotations(output_dir, round_index)
+    output_paths['labeled'].parent.mkdir(parents=True, exist_ok=True)
+    for pool_name in ('labeled', 'unlabeled'):
+        source = input_paths[pool_name]
+        target = output_paths[pool_name]
+        source_identity = _pool_file_identity(source)
+        if target.exists():
+            target_identity = _pool_file_identity(target)
+            if (
+                target_identity.image_count != source_identity.image_count
+                or target_identity.image_ids_sha256
+                != source_identity.image_ids_sha256
+            ):
+                raise ValueError(
+                    'Existing terminal-round %s pool does not match its source: %s'
+                    % (pool_name, _display_path(target))
+                )
+            continue
+        shutil.copy2(str(source), str(target))
+        target_identity = _pool_file_identity(target)
+        if (
+            target_identity.image_count != source_identity.image_count
+            or target_identity.image_ids_sha256 != source_identity.image_ids_sha256
+        ):
+            raise RuntimeError(
+                'Copied terminal-round %s pool does not match its source: %s'
+                % (pool_name, _display_path(target))
+            )
+
+
 def _train_plan(
     cfg: Dict[str, Any],
     output_dir: Path,
@@ -832,16 +877,24 @@ def build_round_plan(
 ) -> List[PlanStep]:
     input_paths = _input_pool_paths(output_dir, round_index)
     if method == 'mial':
-        return [
+        plan = [
             _mial_train_plan(cfg, output_dir, round_index, input_paths, seed),
             _eval_plan(cfg, output_dir, round_index),
-            AcquisitionPlan('mial_acquisition_round_%02d' % round_index, method, round_index),
         ]
+        if not _skips_terminal_acquisition(cfg, round_index):
+            plan.append(AcquisitionPlan(
+                'mial_acquisition_round_%02d' % round_index,
+                method,
+                round_index,
+            ))
+        return plan
 
     plan: List[PlanStep] = [
         _train_plan(cfg, output_dir, round_index, input_paths, seed),
         _eval_plan(cfg, output_dir, round_index),
     ]
+    if _skips_terminal_acquisition(cfg, round_index):
+        return plan
     if method == 'random':
         plan.append(AcquisitionPlan('random_acquisition_round_%02d' % round_index, method, round_index))
     elif method == 'entropy':
@@ -1804,7 +1857,7 @@ def _round_summary_payload(
     outputs.setdefault('unlabeled_pool_json', str(annotations['unlabeled']))
     if acquisition.get('diagnostics_path'):
         outputs['diagnostics_json'] = acquisition.get('diagnostics_path')
-    return {
+    payload = {
         'round_index': round_index,
         'status': status,
         'budget': int(cfg.get('budget', 0)),
@@ -1812,6 +1865,10 @@ def _round_summary_payload(
         'outputs': outputs,
         'steps': round_results,
     }
+    if _skips_terminal_acquisition(cfg, round_index):
+        payload['terminal_round'] = True
+        payload['acquisition_status'] = 'skipped_terminal_round'
+    return payload
 
 
 def _config_path_summary(cfg: Dict[str, Any]) -> Dict[str, Optional[str]]:
@@ -2141,7 +2198,6 @@ def _build_aggregate_summary(
                 cfg,
                 seed_dir,
                 round_index,
-                round_summary,
             )
         round_metrics_by_seed[seed] = per_round_metrics
         final_metrics = {}
@@ -2182,12 +2238,22 @@ def _build_aggregate_summary(
             if duration is not None:
                 duration_by_seed[seed] = duration
 
-        rounds_summary.append({
+        selected_count_summary = _numeric_summary(selected_by_seed, seeds)
+        terminal_round = _skips_terminal_acquisition(cfg, round_index)
+        if terminal_round:
+            selected_count_summary['missing_seeds'] = []
+            selected_count_summary['not_applicable_seeds'] = list(seeds)
+
+        round_payload = {
             'round_index': round_index,
             'metrics': metric_payload,
-            'selected_count': _numeric_summary(selected_by_seed, seeds),
+            'selected_count': selected_count_summary,
             'duration_sec': _numeric_summary(duration_by_seed, seeds),
-        })
+        }
+        if terminal_round:
+            round_payload['terminal_round'] = True
+            round_payload['acquisition_status'] = 'skipped_terminal_round'
+        rounds_summary.append(round_payload)
 
     return {
         'schema_version': 1,
@@ -2398,6 +2464,7 @@ def _run_seed(
         print('initial pools: round_00 annotations ready')
 
     for round_offset, round_index in enumerate(range(args.start_round, args.start_round + total_rounds), start=1):
+        _carry_forward_terminal_round_pools(cfg, output_dir, round_index)
         round_plan = build_round_plan(cfg, output_dir, args.method, round_index, seed)
         plan.extend(round_plan)
         _write_plan_log(output_dir, plan)
@@ -2505,6 +2572,17 @@ def main() -> None:
     apply_cli_overrides(cfg, args)
     initial_pool_policy = validate_initial_pool_config(cfg, seeds)
     validate_experiment_config_paths(cfg)
+    total_rounds = int(args.rounds if args.rounds is not None else cfg.get('round_num', 1))
+    if total_rounds < 1:
+        raise ValueError('round count must be positive')
+    if bool(cfg.get('skip_terminal_acquisition', False)):
+        protocol_rounds = int(cfg['round_num'])
+        requested_last_round = args.start_round + total_rounds - 1
+        if requested_last_round > protocol_rounds:
+            raise ValueError(
+                'Requested last round %d exceeds configured protocol round count %d.'
+                % (requested_last_round, protocol_rounds)
+            )
     output_default = Path('work_dirs') / (config_path.stem if config_path is not None else selection['preset_name'])
     base_output_dir = _resolve_repo_path(str(cfg.get('output_dir', output_default)))
 
@@ -2515,10 +2593,6 @@ def main() -> None:
         _print_preparation_summary(preparation_results)
 
     initial_pools = resolve_initial_pool_sources(cfg, seeds, initial_pool_policy)
-
-    total_rounds = int(args.rounds if args.rounds is not None else cfg.get('round_num', 1))
-    if total_rounds < 1:
-        raise ValueError('round count must be positive')
 
     run_id = _run_timestamp()
     run_dir = base_output_dir / run_id
