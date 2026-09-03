@@ -1,1 +1,0 @@
-'''ADA-FNP model components.'''

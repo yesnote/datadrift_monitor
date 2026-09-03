@@ -1,6 +1,0 @@
-# Install MMCV with a matching prebuilt CUDA wheel as described in README.md.
-mmcv==2.1.0
-mmengine==0.10.5
-
-# MMDetection itself is vendored at repository_root/mmdet and is not installed
-# from PyPI.
