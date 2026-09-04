@@ -45,7 +45,7 @@ class MethodSpec:
         return self.method
 
     def output_dir(self, dataset: DatasetSpec, detector_name: str) -> str:
-        return 'work_dirs/%s_%s_%s_%s' % (
+        return 'work_dirs/current_work/%s_%s_%s_%s' % (
             detector_name,
             dataset.name,
             self.output_token,

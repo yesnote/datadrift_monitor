@@ -15,7 +15,7 @@ data = dict(
 )
 
 evaluation = dict(interval=999999999, metric='bbox')
-optimizer = dict(type='SGD', lr=0.032, momentum=0.9, weight_decay=0.0001)
+optimizer = dict(type='SGD', lr=0.008, momentum=0.9, weight_decay=0.0001)
 optimizer_config = dict(_delete_=True, grad_clip=dict(max_norm=35, norm_type=2))
 fp16 = dict(loss_scale='dynamic')
 
