@@ -106,12 +106,14 @@ seed. The generated files follow `voc_827_*_seed_{seed}.json` and
 
 The current VOC configuration is optimized for single-GPU PoC iteration. The
 standard QualityEMA training path uses batch 16, four persistent workers, AMP
-with dynamic loss scaling, learning rate 0.032, 32 warm-up iterations, and a
+with dynamic loss scaling, learning rate 0.008, 32 warm-up iterations, and a
 Quality EMA base momentum of 0.8514577710948755. VOC evaluation and acquisition
 inference use batch 16 with four workers in FP32. The seven evaluated pools and
 26-epoch schedule are unchanged. After evaluating round 7 at the final 20%
 labeled pool, the runner carries that pool into the round-7 artifact layout and
-skips the unused acquisition for a 22.5% pool. COCO settings are unchanged.
+skips the unused acquisition for a 22.5% pool. The runner also stops a VOC
+training step after 20 consecutive non-finite gradient norms instead of
+allowing a diverged model to complete. COCO settings are unchanged.
 
 ## Run
 
@@ -167,11 +169,24 @@ batch advances the bar by the effective batch size, so batch 16 is displayed as
 dataset size. The training total counts every image slot processed across all
 epochs, including samples repeated by MMDetection's grouped sampler padding.
 
-Every run is stored under a timestamp directory. Single-seed and sequential
-multi-seed runs use the same layout:
+New runs are stored under `work_dirs/current_work`. Runs archived after the
+September 3 PoC setting changes are stored separately under
+`work_dirs/backup_09-03-2026`. Single-seed and sequential multi-seed runs use
+the same relative layout in either area:
 
 ```text
-work_dirs/<experiment_name>/<MM-DD-YYYY_HH;mm>/
+work_dirs/
+  current_work/
+    <experiment_name>/<MM-DD-YYYY_HH;mm>/
+  backup_09-03-2026/
+    <experiment_name>/<MM-DD-YYYY_HH;mm>/
+  pal_embeddings/
+```
+
+Each timestamped run contains:
+
+```text
+<experiment_name>/<MM-DD-YYYY_HH;mm>/
   seed_0/
     active_learning_plan.json
     run_summary.json
@@ -184,20 +199,20 @@ work_dirs/<experiment_name>/<MM-DD-YYYY_HH;mm>/
 
 Important output files:
 
-- `work_dirs/.../seed_*/active_learning_plan.json`: full command/acquisition plan.
-- `work_dirs/.../seed_*/run_summary.json`: resolved method, detector, dataset, rounds,
+- `work_dirs/current_work/.../seed_*/active_learning_plan.json`: full command/acquisition plan.
+- `work_dirs/current_work/.../seed_*/run_summary.json`: resolved method, detector, dataset, rounds,
   budget, output directory, prepared inputs, and round summary paths.
-- `work_dirs/.../seed_*/round_XX/round_summary.json`: per-round step status, durations,
-  logs, and acquisition outputs. VOC round 7 records the terminal acquisition
+- `work_dirs/current_work/.../seed_*/round_XX/round_summary.json`: per-round step status, durations,
+  TensorBoard location, and acquisition outputs. VOC round 7 records the terminal acquisition
   skip explicitly and keeps `selected_count` empty.
-- `work_dirs/.../seed_*/round_XX/logs/train.log`: training stdout/stderr.
-- `work_dirs/.../seed_*/round_XX/logs/eval.log`: evaluation stdout/stderr.
-- `work_dirs/.../seed_*/round_XX/logs/*_inference.log`: method inference stdout/stderr.
-- `work_dirs/.../seed_*/round_XX/*_diagnostics.json`: method-specific acquisition
+- `work_dirs/current_work/.../seed_*/events.out.tfevents.*`: seed-wide
+  TensorBoard stream containing round-scoped console output and training
+  scalars together with active-learning metrics.
+- `work_dirs/current_work/.../seed_*/round_XX/*_diagnostics.json`: method-specific acquisition
   diagnostics.
-- `work_dirs/.../seed_*/round_XX/*_candidates.json`: compact candidate rankings and
+- `work_dirs/current_work/.../seed_*/round_XX/*_candidates.json`: compact candidate rankings and
   final selection flags for method analysis.
-- `work_dirs/.../aggregate_summary.json`: seed-level run paths plus round-wise
+- `work_dirs/current_work/.../aggregate_summary.json`: seed-level run paths plus round-wise
   metric means and standard deviations. VOC records `mAP`/`AP50`; COCO records
   `bbox_mAP`, `bbox_mAP_50`, and `bbox_mAP_75`.
 
@@ -218,29 +233,34 @@ pip install -r requirements.txt
 
 New experiments write TensorBoard events directly while they run. The public
 runner records command output, per-iteration training scalars, validation, pool,
-acquisition, duration, and aggregate scalars. Plain `.log` and `.log.json` files
-are not retained.
+acquisition, and duration scalars. Plain `.log` and `.log.json` files are not
+retained.
 
 Launch TensorBoard from the repository root:
 
 ```powershell
-tensorboard --logdir work_dirs
+tensorboard --logdir work_dirs/current_work
 ```
 
 If the console script is not on `PATH`, use the equivalent module command:
 
 ```powershell
-python -m tensorboard.main --logdir work_dirs
+python -m tensorboard.main --logdir work_dirs/current_work
 ```
+
+Use `work_dirs/backup_09-03-2026` as the log directory only when inspecting
+the archived pre-change experiments. `work_dirs/pal_embeddings` remains a
+shared prepared-input cache and is not an experiment result directory.
 
 TensorBoard discovers all generated event files recursively. The Scalars page
 contains VOC mAP/AP50 or COCO bbox AP by active-learning round, labeled and
-selected image counts, round durations, aggregate mean/std curves, and per-round
-training loss/lr curves for each seed. Aggregate events are stored directly in
-each timestamped run directory, per-seed active-learning events directly in each
-existing `seed_*` directory, and command/training events in each existing
-`seed_*/round_XX/logs/` directory. No parallel `tensorboard/seed_*` directory
-tree is created.
+selected image counts, round durations, and per-round training loss/lr curves
+for each seed. Each seed owns one TensorBoard event stream directly in its
+existing `seed_*` directory. Round-specific values use tags such as
+`round_01/train/loss` and `round_01/console/train`; no TensorBoard event is
+written to the timestamp directory or `round_XX/logs/`. Therefore the Runs
+selector shows one entry per seed instead of one entry per round. Cross-seed
+mean/std values remain available in `aggregate_summary.json`.
 
 Useful method aliases:
 

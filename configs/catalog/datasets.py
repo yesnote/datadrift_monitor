@@ -29,6 +29,7 @@ class DatasetSpec:
     mmdet_common_cfg_options: Dict[str, object] = field(default_factory=dict)
     mmdet_eval_cfg_options: Dict[str, object] = field(default_factory=dict)
     skip_terminal_acquisition: bool = False
+    max_consecutive_nonfinite_grad_norm: Optional[int] = None
 
     def __post_init__(self) -> None:
         label_template = self.init_label_json_template
@@ -89,6 +90,10 @@ class DatasetSpec:
             cfg['dataset_prep'] = dict(self.dataset_prep)
         if self.skip_terminal_acquisition:
             cfg['skip_terminal_acquisition'] = True
+        if self.max_consecutive_nonfinite_grad_norm is not None:
+            cfg['max_consecutive_nonfinite_grad_norm'] = int(
+                self.max_consecutive_nonfinite_grad_norm
+            )
         return cfg
 
 
@@ -112,6 +117,7 @@ VOC = DatasetSpec(
     summary_metrics=('mAP', 'AP50'),
     mmdet_eval_cfg_options=dict(fp16=None),
     skip_terminal_acquisition=True,
+    max_consecutive_nonfinite_grad_norm=20,
     dataset_prep=dict(
         type='voc0712',
         vocdevkit='data/VOCdevkit',

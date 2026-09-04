@@ -371,8 +371,8 @@ def _round_dir(output_dir: Path, round_index: int) -> Path:
     return output_dir / ('round_%02d' % round_index)
 
 
-def _round_tensorboard_dir(output_dir: Path, round_index: int) -> Path:
-    return _round_dir(output_dir, round_index) / 'logs'
+def _seed_tensorboard_dir(output_dir: Path) -> Path:
+    return output_dir
 
 
 def _round_annotations(output_dir: Path, round_index: int) -> Dict[str, Path]:
@@ -513,7 +513,7 @@ def _train_plan(
         argv,
         str(ROOT),
         round_index=round_index,
-        tensorboard_dir=str(_round_tensorboard_dir(output_dir, round_index)),
+        tensorboard_dir=str(_seed_tensorboard_dir(output_dir)),
     )
 
 
@@ -571,7 +571,7 @@ def _mial_train_plan(
         argv,
         str(ROOT),
         round_index=round_index,
-        tensorboard_dir=str(_round_tensorboard_dir(output_dir, round_index)),
+        tensorboard_dir=str(_seed_tensorboard_dir(output_dir)),
     )
 
 
@@ -600,7 +600,7 @@ def _eval_plan(cfg: Dict[str, Any], output_dir: Path, round_index: int) -> Comma
         argv,
         str(ROOT),
         round_index=round_index,
-        tensorboard_dir=str(_round_tensorboard_dir(output_dir, round_index)),
+        tensorboard_dir=str(_seed_tensorboard_dir(output_dir)),
     )
 
 
@@ -639,7 +639,7 @@ def _uncertainty_infer_plan(
         argv,
         str(ROOT),
         round_index=round_index,
-        tensorboard_dir=str(_round_tensorboard_dir(output_dir, round_index)),
+        tensorboard_dir=str(_seed_tensorboard_dir(output_dir)),
     )
 
 
@@ -723,7 +723,7 @@ def _feature_infer_plan(
         argv,
         str(ROOT),
         round_index=round_index,
-        tensorboard_dir=str(_round_tensorboard_dir(output_dir, round_index)),
+        tensorboard_dir=str(_seed_tensorboard_dir(output_dir)),
     )
 
 
@@ -801,7 +801,7 @@ def _pal_infer_plan(
         argv,
         str(ROOT),
         round_index=round_index,
-        tensorboard_dir=str(_round_tensorboard_dir(output_dir, round_index)),
+        tensorboard_dir=str(_seed_tensorboard_dir(output_dir)),
     )
 
 
@@ -864,7 +864,7 @@ def _ecpal_infer_plan(
         argv,
         str(ROOT),
         round_index=round_index,
-        tensorboard_dir=str(_round_tensorboard_dir(output_dir, round_index)),
+        tensorboard_dir=str(_seed_tensorboard_dir(output_dir)),
     )
 
 
@@ -1028,6 +1028,10 @@ _TRAIN_SCALAR_RE = re.compile(
     r'(?:^|[,\t]\s*)'
     r'(lr|loss(?:_[A-Za-z0-9_.-]+)?|grad_norm):\s*'
     r'([+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?)'
+)
+_GRAD_NORM_RE = re.compile(
+    r'(?:^|[,\t]\s*)grad_norm:\s*([^,\s]+)',
+    flags=re.IGNORECASE,
 )
 
 
@@ -1274,14 +1278,52 @@ def _record_command_output(
     if not record:
         return text_step
     text_step += 1
-    writer.add_text('console/%s' % _tensorboard_command_tag(step), record, text_step)
+    round_tag = 'round_%02d' % step.round_index
+    writer.add_text(
+        '%s/console/%s' % (round_tag, _tensorboard_command_tag(step)),
+        record,
+        text_step,
+    )
     if step.name.startswith(('train_', 'mial_train_')):
         iteration = _TRAIN_ITER_RE.search(record)
         if iteration:
             global_step = int(iteration.group(1))
             for name, raw_value in _TRAIN_SCALAR_RE.findall(record):
-                writer.add_scalar('train/%s' % name, float(raw_value), global_step)
+                writer.add_scalar(
+                    '%s/train/%s' % (round_tag, name),
+                    float(raw_value),
+                    global_step,
+                )
     return text_step
+
+
+def _nonfinite_grad_norm_streak(
+    step: CommandPlan,
+    record: str,
+    current_streak: int,
+) -> int:
+    if not step.name.startswith(('train_', 'mial_train_')):
+        return 0
+    if _TRAIN_ITER_RE.search(record) is None:
+        return current_streak
+    match = _GRAD_NORM_RE.search(record)
+    if match is None:
+        return 0
+    value = match.group(1).lower()
+    if value in {'inf', '+inf', '-inf', 'nan', '+nan', '-nan'}:
+        return current_streak + 1
+    return 0
+
+
+def _terminate_subprocess(process: subprocess.Popen) -> None:
+    if process.poll() is not None:
+        return
+    process.terminate()
+    try:
+        process.wait(timeout=10)
+    except subprocess.TimeoutExpired:
+        process.kill()
+        process.wait()
 
 
 def _remove_internal_text_logs(output_dir: Path, round_index: int) -> None:
@@ -1295,17 +1337,15 @@ def _run_subprocess_plan(
     step: CommandPlan,
     cfg: Dict[str, Any],
     output_dir: Path,
+    writer: Any,
     verbose: bool = False,
     show_progress: bool = True,
 ) -> None:
-    writer = None
     progress = None
     text_step = 0
+    nonfinite_grad_streak = 0
+    process = None
     try:
-        if step.tensorboard_dir:
-            tensorboard_dir = Path(step.tensorboard_dir)
-            tensorboard_dir.mkdir(parents=True, exist_ok=True)
-            writer = _summary_writer_type()(log_dir=str(tensorboard_dir))
         if show_progress and not verbose:
             progress = _new_step_progress(step, cfg, output_dir)
         process = subprocess.Popen(
@@ -1327,15 +1367,32 @@ def _run_subprocess_plan(
                 print(chunk, end='')
             if chunk in ('\r', '\n'):
                 if record:
-                    if writer is not None:
-                        text_step = _record_command_output(writer, step, record, text_step)
+                    text_step = _record_command_output(writer, step, record, text_step)
                     _update_progress_from_record(progress, record)
+                    nonfinite_grad_streak = _nonfinite_grad_norm_streak(
+                        step,
+                        record,
+                        nonfinite_grad_streak,
+                    )
+                    nonfinite_limit = int(
+                        cfg.get('max_consecutive_nonfinite_grad_norm', 0) or 0
+                    )
+                    if nonfinite_limit and nonfinite_grad_streak >= nonfinite_limit:
+                        _terminate_subprocess(process)
+                        raise RunnerStepError(
+                            'training diverged: round=%s step=%s observed '
+                            'non-finite grad_norm for %d consecutive iterations'
+                            % (
+                                step.round_index or '?',
+                                _step_label(step),
+                                nonfinite_grad_streak,
+                            )
+                        )
                     record = ''
             else:
                 record += chunk
         if record:
-            if writer is not None:
-                _record_command_output(writer, step, record, text_step)
+            _record_command_output(writer, step, record, text_step)
             _update_progress_from_record(progress, record)
         return_code = process.wait()
         if return_code:
@@ -1355,9 +1412,7 @@ def _run_subprocess_plan(
     finally:
         if progress is not None:
             progress['bar'].close()
-        if writer is not None:
-            writer.flush()
-            writer.close()
+        writer.flush()
         _remove_internal_text_logs(output_dir, step.round_index)
 
 
@@ -1766,6 +1821,7 @@ def _run_plan_step(
     cfg: Dict[str, Any],
     output_dir: Path,
     seed: int,
+    writer: Any,
     verbose: bool = False,
     show_progress: bool = True,
 ) -> Dict[str, Any]:
@@ -1786,6 +1842,7 @@ def _run_plan_step(
             step,
             cfg,
             output_dir,
+            writer,
             verbose=verbose,
             show_progress=show_progress,
         )
@@ -2103,19 +2160,15 @@ def _tensorboard_number(value: Any) -> Optional[float]:
 
 
 def _write_tensorboard_points(
-    log_dir: Path,
+    writer: Any,
     points: Iterable[Tuple[str, float, int]],
 ) -> None:
     points = list(points)
     if not points:
         return
-    writer = _summary_writer_type()(log_dir=str(log_dir))
-    try:
-        for tag, value, step in points:
-            writer.add_scalar(tag, value, step)
-        writer.flush()
-    finally:
-        writer.close()
+    for tag, value, step in points:
+        writer.add_scalar(tag, value, step)
+    writer.flush()
 
 
 def _write_round_tensorboard(
@@ -2123,6 +2176,7 @@ def _write_round_tensorboard(
     seed_dir: Path,
     round_index: int,
     round_summary: Dict[str, Any],
+    writer: Any,
 ) -> None:
     points = [
         ('validation/%s' % metric_name, value, round_index)
@@ -2142,44 +2196,7 @@ def _write_round_tensorboard(
     if duration is not None:
         points.append(('runtime/round_duration_sec', duration, round_index))
 
-    _write_tensorboard_points(seed_dir, points)
-
-
-def _write_aggregate_tensorboard(run_dir: Path, payload: Dict[str, Any]) -> None:
-    points = []
-    for round_summary in payload.get('rounds_summary', []):
-        if not isinstance(round_summary, dict):
-            continue
-        round_index = int(round_summary.get('round_index', 0) or 0)
-        if round_index <= 0:
-            continue
-        metrics = round_summary.get('metrics', {})
-        if isinstance(metrics, dict):
-            for metric_name, metric_summary in sorted(metrics.items()):
-                if not isinstance(metric_summary, dict):
-                    continue
-                for statistic in ('mean', 'std'):
-                    value = _tensorboard_number(metric_summary.get(statistic))
-                    if value is not None:
-                        points.append((
-                            'validation_%s/%s' % (statistic, metric_name),
-                            value,
-                            round_index,
-                        ))
-        for metric_name in ('selected_count', 'duration_sec'):
-            metric_summary = round_summary.get(metric_name, {})
-            if not isinstance(metric_summary, dict):
-                continue
-            for statistic in ('mean', 'std'):
-                value = _tensorboard_number(metric_summary.get(statistic))
-                if value is not None:
-                    points.append((
-                        '%s/%s' % (metric_name, statistic),
-                        value,
-                        round_index,
-                    ))
-
-    _write_tensorboard_points(run_dir, points)
+    _write_tensorboard_points(writer, points)
 
 
 def _numeric_summary(values_by_seed: Dict[int, float], seeds: List[int]) -> Dict[str, Any]:
@@ -2351,7 +2368,6 @@ def _write_aggregate_summary(
         total_rounds,
     )
     _write_json(path, payload)
-    _write_aggregate_tensorboard(run_dir, payload)
     return path
 
 
@@ -2511,60 +2527,94 @@ def _run_seed(
     elif init_actions:
         print('initial pools: round_00 annotations ready')
 
-    for round_offset, round_index in enumerate(range(args.start_round, args.start_round + total_rounds), start=1):
-        _carry_forward_terminal_round_pools(cfg, output_dir, round_index)
-        round_plan = build_round_plan(cfg, output_dir, args.method, round_index, seed)
-        plan.extend(round_plan)
-        _write_plan_log(output_dir, plan)
-        round_results: List[Dict[str, Any]] = []
-        print('')
-        print('Round %d/%d' % (round_offset, total_rounds))
-        if args.verbose:
-            print('round plan:')
-            _print_plan(round_plan)
-        for step_index, step in enumerate(round_plan, start=1):
-            label = _step_label(step)
-            if args.verbose or (tqdm is None and isinstance(step, CommandPlan)):
-                print('[%d/%d] %-26s running...' % (step_index, len(round_plan), label), flush=True)
-            started = time.time()
-            try:
-                result = _run_plan_step(
-                    step,
-                    cfg,
-                    output_dir,
-                    seed=seed,
-                    verbose=args.verbose,
-                )
-            except Exception as exc:
-                result = _failed_step_result(step, exc, started)
+    writer = _summary_writer_type()(log_dir=str(_seed_tensorboard_dir(output_dir)))
+    try:
+        for round_offset, round_index in enumerate(
+            range(args.start_round, args.start_round + total_rounds),
+            start=1,
+        ):
+            _carry_forward_terminal_round_pools(cfg, output_dir, round_index)
+            round_plan = build_round_plan(cfg, output_dir, args.method, round_index, seed)
+            plan.extend(round_plan)
+            _write_plan_log(output_dir, plan)
+            round_results: List[Dict[str, Any]] = []
+            print('')
+            print('Round %d/%d' % (round_offset, total_rounds))
+            if args.verbose:
+                print('round plan:')
+                _print_plan(round_plan)
+            for step_index, step in enumerate(round_plan, start=1):
+                label = _step_label(step)
+                if args.verbose or (tqdm is None and isinstance(step, CommandPlan)):
+                    print(
+                        '[%d/%d] %-26s running...'
+                        % (step_index, len(round_plan), label),
+                        flush=True,
+                    )
+                started = time.time()
+                try:
+                    result = _run_plan_step(
+                        step,
+                        cfg,
+                        output_dir,
+                        seed=seed,
+                        writer=writer,
+                        verbose=args.verbose,
+                    )
+                except Exception as exc:
+                    result = _failed_step_result(step, exc, started)
+                    round_results.append(result)
+                    round_payload = _round_summary_payload(
+                        cfg,
+                        output_dir,
+                        round_index,
+                        'failed',
+                        round_results,
+                    )
+                    round_summary_path = _round_summary_path(output_dir, round_index)
+                    _write_json(round_summary_path, round_payload)
+                    run_summary['status'] = 'failed'
+                    run_summary['failed_round'] = round_index
+                    run_summary['failed_step'] = result
+                    run_summary['round_summaries'].append(str(round_summary_path))
+                    _write_json(_run_summary_path(output_dir), run_summary)
+                    if isinstance(exc, RunnerStepError):
+                        raise SystemExit(str(exc))
+                    raise
                 round_results.append(result)
-                round_payload = _round_summary_payload(cfg, output_dir, round_index, 'failed', round_results)
-                round_summary_path = _round_summary_path(output_dir, round_index)
-                _write_json(round_summary_path, round_payload)
-                run_summary['status'] = 'failed'
-                run_summary['failed_round'] = round_index
-                run_summary['failed_step'] = result
-                run_summary['round_summaries'].append(str(round_summary_path))
-                _write_json(_run_summary_path(output_dir), run_summary)
-                if isinstance(exc, RunnerStepError):
-                    raise SystemExit(str(exc))
-                raise
-            round_results.append(result)
-            if isinstance(step, AcquisitionPlan) and not args.verbose:
-                print(_format_acquisition_result(result), flush=True)
-            elif args.verbose or tqdm is None:
-                print(_format_step_result(step_index, len(round_plan), result), flush=True)
+                if isinstance(step, AcquisitionPlan) and not args.verbose:
+                    print(_format_acquisition_result(result), flush=True)
+                elif args.verbose or tqdm is None:
+                    print(
+                        _format_step_result(step_index, len(round_plan), result),
+                        flush=True,
+                    )
 
-        round_payload = _round_summary_payload(cfg, output_dir, round_index, 'done', round_results)
-        round_summary_path = _round_summary_path(output_dir, round_index)
-        _write_json(round_summary_path, round_payload)
-        run_summary['round_summaries'].append(str(round_summary_path))
+            round_payload = _round_summary_payload(
+                cfg,
+                output_dir,
+                round_index,
+                'done',
+                round_results,
+            )
+            round_summary_path = _round_summary_path(output_dir, round_index)
+            _write_json(round_summary_path, round_payload)
+            run_summary['round_summaries'].append(str(round_summary_path))
+            _write_json(_run_summary_path(output_dir), run_summary)
+            _write_round_tensorboard(
+                cfg,
+                output_dir,
+                round_index,
+                round_payload,
+                writer,
+            )
+
+        run_summary['status'] = 'done'
         _write_json(_run_summary_path(output_dir), run_summary)
-        _write_round_tensorboard(cfg, output_dir, round_index, round_payload)
-
-    run_summary['status'] = 'done'
-    _write_json(_run_summary_path(output_dir), run_summary)
-    return run_summary
+        return run_summary
+    finally:
+        writer.flush()
+        writer.close()
 
 
 def _run_seeds(
@@ -2631,7 +2681,11 @@ def main() -> None:
                 'Requested last round %d exceeds configured protocol round count %d.'
                 % (requested_last_round, protocol_rounds)
             )
-    output_default = Path('work_dirs') / (config_path.stem if config_path is not None else selection['preset_name'])
+    output_default = (
+        Path('work_dirs')
+        / 'current_work'
+        / (config_path.stem if config_path is not None else selection['preset_name'])
+    )
     base_output_dir = _resolve_repo_path(str(cfg.get('output_dir', output_default)))
 
     preparation_results: List[Dict[str, object]] = []
